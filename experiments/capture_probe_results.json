@@ -1,0 +1,195 @@
+{
+  "torch": "2.14.0+cpu",
+  "device": "cpu",
+  "checks": {
+    "fused_attention": {
+      "operations": [
+        "aten.sym_size.int",
+        "aten.sym_size.int",
+        "aten.linear.default",
+        "aten.reshape.default",
+        "aten.permute.default",
+        "aten.unbind.int",
+        "<built-in function getitem>",
+        "<built-in function getitem>",
+        "<built-in function getitem>",
+        "aten.scaled_dot_product_attention.default",
+        "aten.transpose.int",
+        "aten.reshape.default",
+        "aten.linear.default"
+      ],
+      "shape_operations": [
+        "reshape: (linear, [sym_size_int_2, sym_size_int_3, 3, 4, 2])",
+        "permute: (reshape, [2, 0, 3, 1, 4])",
+        "unbind: (permute,)",
+        "reshape_1: (transpose, [sym_size_int_2, sym_size_int_3, 8])"
+      ],
+      "parameter_targets": {
+        "p_qkv_weight": "qkv.weight",
+        "p_qkv_bias": "qkv.bias",
+        "p_proj_weight": "proj.weight",
+        "p_proj_bias": "proj.bias"
+      },
+      "range_constraints": "{s6: VR[1, 8], s11: VR[1, 16]}",
+      "two_input_shapes_match_eager": true,
+      "module_stack_present": true,
+      "empty_decomposition_operations": [
+        "aten.sym_size.int",
+        "aten.sym_size.int",
+        "aten.linear.default",
+        "aten.view.default",
+        "aten.permute.default",
+        "aten.unbind.int",
+        "<built-in function getitem>",
+        "<built-in function getitem>",
+        "<built-in function getitem>",
+        "aten.scaled_dot_product_attention.default",
+        "aten.transpose.int",
+        "aten.view.default",
+        "aten.linear.default"
+      ],
+      "full_decomposition_operations": [
+        "aten.sym_size.int",
+        "aten.sym_size.int",
+        "<built-in function mul>",
+        "aten.view.default",
+        "aten.permute.default",
+        "aten.addmm.default",
+        "aten.view.default",
+        "aten.view.default",
+        "aten.permute.default",
+        "aten.slice.Tensor",
+        "aten.slice.Tensor",
+        "aten.slice.Tensor",
+        "aten.squeeze.dims",
+        "aten.squeeze.dims",
+        "aten.squeeze.dims",
+        "aten.mul.Scalar",
+        "aten.permute.default",
+        "aten.mul.Scalar",
+        "<built-in function mul>",
+        "aten.expand.default",
+        "aten.clone.default",
+        "aten.view.default",
+        "aten.expand.default",
+        "aten.clone.default",
+        "aten.view.default",
+        "aten.bmm.default",
+        "aten.view.default",
+        "aten._softmax.default",
+        "aten.eq.Scalar",
+        "aten.logical_not.default",
+        "aten.any.dim",
+        "aten.logical_not.default",
+        "aten.full_like.default",
+        "aten.where.self",
+        "aten.expand.default",
+        "aten.view.default",
+        "aten.expand.default",
+        "aten.clone.default",
+        "aten.view.default",
+        "aten.bmm.default",
+        "aten.view.default",
+        "aten.permute.default",
+        "aten.clone.default",
+        "aten.permute.default",
+        "aten.permute.default",
+        "aten.view.default",
+        "aten.permute.default",
+        "aten.expand.default",
+        "aten.view.default",
+        "aten.expand.default",
+        "aten.view.default",
+        "aten.bmm.default",
+        "aten.view.default",
+        "aten.add.Tensor"
+      ]
+    },
+    "weights_only_surgery_fails": true,
+    "head_surgery_with_attribute_updates": {
+      "masked_reference_matches": true,
+      "recapture_matches": true,
+      "max_abs_error": 2.9802322387695312e-08
+    },
+    "shared_parameters": {
+      "signature": {
+        "p_a_weight": "a.weight"
+      },
+      "source_aliases": [
+        "a.weight",
+        "b.weight"
+      ],
+      "state_dict_alias_preserved": true
+    },
+    "frozen_and_detach": {
+      "captures_under_no_grad": true,
+      "operations": [
+        "aten.linear.default",
+        "aten.detach.default",
+        "aten.sin.default"
+      ]
+    },
+    "data_branch_strict_True": "Unsupported",
+    "data_branch_strict_False": "GuardOnDataDependentSymNode",
+    "jit_trace_specializes_branch": true,
+    "symbolic_trace_rejects_data_branch": true,
+    "prune_remove": {
+      "weight_shape": [
+        8,
+        8
+      ],
+      "out_features": 8
+    },
+    "control_flow": {
+      "fixed_loop": {
+        "unrolled": true,
+        "operations": [
+          "aten.add.Tensor",
+          "aten.add.Tensor",
+          "aten.add.Tensor"
+        ]
+      },
+      "shape_branch_restricted_domain": {
+        "constraints": "{s6: VR[3, 8]}",
+        "operations": [
+          "aten.add.Tensor"
+        ]
+      },
+      "shape_branch_rejects_other_domain": true,
+      "python_while_strict_True": "Unsupported",
+      "python_while_strict_False": "GuardOnDataDependentSymNode",
+      "structured_cond": {
+        "both_branches_match": true,
+        "operations": [
+          "aten.sum.default",
+          "aten.gt.Scalar",
+          "cond",
+          "<built-in function getitem>"
+        ],
+        "graph_regions": [
+          "",
+          "true_graph_0",
+          "false_graph_0"
+        ]
+      },
+      "structured_while": {
+        "iteration_counts_checked": [
+          0,
+          2,
+          5
+        ],
+        "operations": [
+          "aten.zeros.default",
+          "while_loop",
+          "<built-in function getitem>",
+          "<built-in function getitem>"
+        ],
+        "graph_regions": [
+          "",
+          "while_loop_cond_graph_0",
+          "while_loop_body_graph_0"
+        ]
+      }
+    }
+  }
+}

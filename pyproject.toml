@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "torch-kirigami"
+version = "0.1.0"
+description = "FX-based structural dependency analysis for PyTorch"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["torch>=2.6"]
+keywords = ["pytorch", "structural-pruning", "fx"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[dependency-groups]
+dev = [
+    "numpy>=1.26",
+    "pytest>=8",
+    "ruff>=0.12",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["torch_kirigami"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/torch_kirigami",
+    "/tests",
+    "/examples",
+    "/docs",
+    "/AGENTS.md",
+    "/README.md",
+    "/pyproject.toml",
+    "/uv.lock",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["-ra", "--strict-config", "--strict-markers", "--import-mode=importlib"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = ["tmp", "dist"]
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RUF", "D", "BLE"]
+ignore = [
+    "E501",  # Let the formatter manage line length.
+    "D105",  # Standard magic methods do not need boilerplate docstrings.
+    "D107",  # Constructors are documented on their classes.
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.isort]
+known-first-party = ["torch_kirigami"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D"]
+"examples/**" = ["D"]
+"experiments/**" = ["D"]
+
+[tool.ruff.format]
+docstring-code-format = true
+
+# This index applies to the repository's uv development environment.
+# Built distributions retain the ordinary torch>=2.6 runtime dependency.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

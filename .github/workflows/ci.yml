@@ -1,0 +1,44 @@
+name: CI
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            torch: "2.6.0"
+          - python: "3.12"
+            torch: "2.14.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.11"
+          enable-cache: true
+      - name: Test compatibility pair
+        env:
+          TEST_PYTHON: ${{ matrix.python }}
+          TEST_TORCH: ${{ matrix.torch }}
+        run: >-
+          uv run --isolated --no-project --python "$TEST_PYTHON"
+          --with "torch==$TEST_TORCH+cpu" --with pytest --with numpy
+          --index https://download.pytorch.org/whl/cpu python -m pytest
+      - name: Lint, examples and package
+        if: matrix.torch == '2.14.0'
+        run: |
+          uv sync --locked --python 3.12
+          uv run --locked ruff check .
+          uv run --locked ruff format --check .
+          uv run --locked python examples/dependency.py
+          uv run --locked python examples/custom_rule.py
+          uv run --locked python examples/pruning.py
+          uv run --locked python examples/fused_attention.py
+          uv build

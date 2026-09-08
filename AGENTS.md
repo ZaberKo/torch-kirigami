@@ -1,0 +1,8 @@
+# Development
+
+- Use Python 3.10+, uv for dependencies, and the flat `torch_kirigami/` package layout.
+- Follow the Ruff configuration in `pyproject.toml`; use Google-style docstrings. Document public API contracts and explain non-obvious reasoning in comments.
+- Use pytest. Add focused regression tests for behavioral changes; keep numerical references independent of the implementation.
+- Use public, mature PyTorch APIs. Keep dependency analysis separate from pruning policy and model mutation; report unsupported cases explicitly.
+- Run `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, and relevant `uv run --locked pytest` tests. Refresh `uv.lock` when dependencies change.
+- Keep changes focused, update affected examples/docs, and leave reference repositories under `tmp/` untouched.
