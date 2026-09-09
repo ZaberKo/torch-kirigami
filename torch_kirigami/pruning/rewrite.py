@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
 import torch
 from torch import nn
@@ -10,47 +10,10 @@ from torch import nn
 from ..operators.coordinates import retained_indices as _keep
 from ..operators.shapes import evaluate
 from ..operators.shapes import reevaluate as _reevaluate
-from ..operators.validation import check_forward
-from ..selection import IndexSet, Region, Selection, TensorRef, full_region
-from .state import memory_format
-from .types import AttributeRecipe, PlanningError, TensorRecipe
-
-
-@dataclass(frozen=True)
-class RewriteContext:
-    """One captured call, its affected requirements, and the combined Impact."""
-
-    graph: object
-    operation: object
-    impact: object
-    requirements: tuple
-
-    @property
-    def spec(self):
-        """Return the operator's single shared structural description."""
-        return self.graph.operator_spec(self.operation)
-
-    def shape(self, ref):
-        """Return the ordinary compact shape, rejecting partitioned layouts."""
-        result = self.impact.selection(ref).compact_shape()
-        if result is None:
-            raise PlanningError(f"No rectangular activation layout for {ref.id}")
-        return result
-
-
-@dataclass(frozen=True)
-class RewriteResult:
-    """Pure extension result; every supplied requirement must be acknowledged.
-
-    Custom rules are responsible for proving original-forward compatibility.
-    Output strides can be supplied when proved, allowing downstream view checks.
-    """
-
-    tensors: tuple[TensorRecipe, ...] = ()
-    attributes: tuple[AttributeRecipe, ...] = ()
-    handled: tuple = ()
-    notes: tuple[str, ...] = ()
-    output_strides: tuple[tuple[TensorRef, tuple[int, ...]], ...] = ()
+from ..selection import IndexSet, Region
+from .recipes import memory_format, same_mapping, validate_recipe
+from .types import AttributeRecipe, PlanningError, RewriteContext, RewriteResult, TensorRecipe
+from .validation import check_forward
 
 
 def ordinary_recipe(selection):
@@ -65,7 +28,7 @@ def ordinary_recipe(selection):
         (
             Region(
                 tuple(
-                    IndexSet.span(0, n).subtract(selection.project(d))
+                    IndexSet.span(0, n).subtract(selection.fully_selected_indices(d))
                     for d, n in enumerate(ref.shape)
                 )
             ),
@@ -98,7 +61,7 @@ def lower_spec(ctx):
             owner = ctx.graph.model.get_submodule(path) if path else ctx.graph.model
             old = getattr(owner, name)
             new = (
-                evaluate(data["expression"], ctx.shape)
+                evaluate(data["expression"], ctx.compact_shape)
                 if "expression" in data
                 else len(_keep(impact, data["axis"]))
                 if "axis" in data
@@ -107,14 +70,13 @@ def lower_spec(ctx):
             if new != old:
                 attributes.append(AttributeRecipe(req.target, old, new))
         elif req.kind == "operator_argument":
-            name = data.get("name", "normalized_shape")
-            position = data.get("position")
-            if position is None:
-                raise PlanningError(f"No functional argument binding for {name}")
-            raw = op.node.kwargs.get(
-                name, op.node.args[position] if len(op.node.args) > position else None
+            if len(req.arguments) != 1:
+                raise PlanningError(f"Expected one functional argument binding for {req.target}")
+            name, position = req.arguments[0].name, req.arguments[0].position
+            raw = op.raw_argument(name, position)
+            current = _reevaluate(
+                raw, op.argument(name, position), op.expressions, ctx.compact_shape
             )
-            current = _reevaluate(raw, op.argument(name, position), op.expressions, ctx.shape)
             expected = (
                 len(_keep(impact, data["axis"]))
                 if "axis" in data
@@ -133,82 +95,11 @@ def lower_spec(ctx):
             recipes.append(
                 TensorRecipe(
                     descriptor.tensor,
-                    descriptor.retained(impact.selection(descriptor.tensor)),
+                    descriptor.retained_regions(impact.selection(descriptor.tensor)),
                     descriptor.concat_dim,
                 )
             )
     return RewriteResult(tuple(recipes), tuple(attributes), ctx.requirements, tuple(notes))
-
-
-def _validate_recipe(recipe, impact):
-    ref = recipe.tensor
-    if ref.kind not in ("parameter", "buffer") or not recipe.segments:
-        raise PlanningError("Recipes must retain nonempty registered tensor segments")
-    if not 0 <= recipe.concat_dim < max(1, len(ref.shape)):
-        raise PlanningError("Invalid concatenation dimension")
-    if len(recipe.segments) > 1:
-        previous_end = -1
-        for segment in recipe.segments:
-            axis = segment.axes[recipe.concat_dim]
-            if not axis or axis.intervals[0][0] < previous_end:
-                raise PlanningError("Recipes must preserve original position order")
-            previous_end = axis.intervals[-1][1]
-    kept = Selection(ref, recipe.segments)
-    if sum(Selection(ref, (r,)).count for r in recipe.segments) != kept.count:
-        raise PlanningError("Recipe segments overlap")
-    full = Selection(ref, (full_region(ref.shape),))
-    if kept != full.subtract(impact.selection(ref)):
-        raise PlanningError("Recipe retained coordinates disagree with the joint Impact")
-    shapes = [tuple(map(len, r.axes)) for r in recipe.segments]
-    if any(
-        any(
-            a != b
-            for d, (a, b) in enumerate(zip(shapes[0], shape, strict=True))
-            if d != recipe.concat_dim
-        )
-        for shape in shapes[1:]
-    ):
-        raise PlanningError("Recipe segments cannot concatenate")
-
-
-def _mapping(recipe):
-    from .types import CoordinateSegment
-
-    offset, result = 0, []
-    for region in recipe.segments:
-        axes = [IndexSet.span(0, len(a)) for a in region.axes]
-        if axes:
-            axes[recipe.concat_dim] = axes[recipe.concat_dim].shift(offset)
-            offset += len(region.axes[recipe.concat_dim])
-        result.append(CoordinateSegment(region, Region(tuple(axes))))
-    return tuple(result)
-
-
-def _same_mapping(left, right):
-    # Different segment boundaries can encode the same mapping. Compare each
-    # overlap's per-axis rank offsets, never just the removed set or output shape.
-    if left.shape != right.shape:
-        return False
-    for a in _mapping(left):
-        for b in _mapping(right):
-            intersection = a.source.intersect(b.source)
-            if intersection.empty:
-                continue
-            for dim, indices in enumerate(intersection.axes):
-                for start, stop in indices.intervals:
-                    cuts = {start, stop}
-                    for source in (a.source.axes[dim], b.source.axes[dim]):
-                        cuts.update(
-                            p for interval in source.intervals for p in interval if start < p < stop
-                        )
-                    for point in sorted(cuts)[:-1]:
-                        mapped = []
-                        for segment in (a, b):
-                            rank = len(segment.source.axes[dim].intersect(IndexSet.span(0, point)))
-                            mapped.append(next(iter(segment.destination.axes[dim])) + rank)
-                        if mapped[0] != mapped[1]:
-                            return False
-    return True
 
 
 def compile_recipes(graph, operations, impact):
@@ -250,6 +141,8 @@ def compile_recipes(graph, operations, impact):
             raise PlanningError(f"No execution rule for {op.node.target}")
         ctx = RewriteContext(graph, op, impact, reqs)
         result = rule.lower(ctx)
+        if result is None:
+            result = lower_spec(ctx)
         graph.validate()  # Lowering is an extension boundary, despite its pure contract.
         if not isinstance(result, RewriteResult):
             raise PlanningError("Rewrite rule must return RewriteResult")
@@ -270,9 +163,9 @@ def compile_recipes(graph, operations, impact):
                 explicit[ref.id] = ordinary_recipe(impact.selection(ref))
         for recipe in explicit.values():
             graph.metadata(recipe.tensor)
-            _validate_recipe(recipe, impact)
+            validate_recipe(recipe, impact)
             previous = recipes.get(recipe.tensor.id)
-            if previous is not None and not _same_mapping(previous, recipe):
+            if previous is not None and not same_mapping(previous, recipe):
                 raise PlanningError(
                     f"Shared tensor requires incompatible coordinate mappings: {recipe.tensor.paths}"
                 )
@@ -288,13 +181,13 @@ def compile_recipes(graph, operations, impact):
                 raise PlanningError(f"Shared attribute update disagrees: {attr.path}")
             attribute_bindings[identity] = attr
             attributes[attr.path] = attr
-        active.append((ctx, rule.evaluate))
+        active.append((ctx, rule.evaluate_on_meta))
     if any(id(r) not in handled for r in impact.requirements):
         raise PlanningError("Impact contains an unhandled execution requirement")
     for selection in (*impact.parameters, *impact.buffers):
         if selection.tensor.id not in recipes:
             recipe = ordinary_recipe(selection)
-            _validate_recipe(recipe, impact)
+            validate_recipe(recipe, impact)
             recipes[selection.tensor.id] = recipe
     # Validate precisely the recipes that apply will execute, including layout.
     recipes = {

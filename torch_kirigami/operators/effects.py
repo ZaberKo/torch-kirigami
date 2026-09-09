@@ -5,7 +5,7 @@ import operator
 
 import torch
 
-from ..registry import CallEffects
+from ..operation import CallEffects
 
 
 def native_effects(node, module):

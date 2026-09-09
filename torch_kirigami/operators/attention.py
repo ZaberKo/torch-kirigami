@@ -7,11 +7,11 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import AxisBarrier, Balanced, BlockBalance, Requirement, ShapeExpr
-from ..registry import CandidateAxis, OperatorSpec, tensors
-from ..relations import AxisRelation, BlockMap, BroadcastRelation, Port
+from ..errors import UnsupportedOperation
+from ..operation import CandidateAxis, OperatorSpec, OutputContract, tensors
+from ..relations import AxisPort, AxisRelation, BlockMap, BroadcastRelation
 from ..selection import IndexSet
-from .layouts import CallContract
-from .native import UnsupportedOperation, equal, layout, matmul, one, requirement
+from .native import equal, layout, matmul, one, requirement
 
 
 def addmm(ctx):
@@ -106,8 +106,8 @@ def sdpa(ctx):
                 equal(k, -3, v, -3, ctx.node.name),
                 equal(q, -3, y, -3, ctx.node.name),
                 AxisRelation(
-                    Port(k.axis(-3)),
-                    Port(q.axis(-3)),
+                    AxisPort(k.axis(-3)),
+                    AxisPort(q.axis(-3)),
                     (BlockMap(0, 0, k.shape[-3], 1, multiplier, require_full_target=True),),
                     ctx.node.name,
                 ),
@@ -151,7 +151,7 @@ def sdpa(ctx):
                 "Recompute attention logits, default scale, softmax and weighted values on compact domains",
             ),
         ),
-        contract=CallContract(fresh_output=True, output_layout="backend_dependent"),
+        contract=OutputContract(fresh_output=True, output_layout="backend_dependent"),
     )
 
 
@@ -165,7 +165,7 @@ def multihead_attention(ctx):
     module = ctx.module
     q, k, v = (one(ctx.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
     y = one(ctx.outputs[0])
-    out = one(ctx.parameter("out_proj.weight"))
+    out = one(ctx.binding("out_proj.weight"))
     axis = out.axis(0)
     width, heads = module.embed_dim, module.num_heads
     relations = [
@@ -205,12 +205,12 @@ def multihead_attention(ctx):
         )
     )
     if module.in_proj_weight is not None:
-        packed = one(ctx.parameter("in_proj_weight"))
+        packed = one(ctx.binding("in_proj_weight"))
         relations.append(AxisRelation.equal(axis, packed.axis(1), ctx.node.name))
         relations.append(
             AxisRelation(
-                Port(axis),
-                Port(packed.axis(0)),
+                AxisPort(axis),
+                AxisPort(packed.axis(0)),
                 tuple(BlockMap(0, i * width, width) for i in range(3)),
                 ctx.node.name,
             )
@@ -223,7 +223,7 @@ def multihead_attention(ctx):
         )
     else:
         for name, input_ in (("q", q), ("k", k), ("v", v)):
-            weight = one(ctx.parameter(f"{name}_proj_weight"))
+            weight = one(ctx.binding(f"{name}_proj_weight"))
             relations.extend(
                 (
                     AxisRelation.equal(axis, weight.axis(0), ctx.node.name),
@@ -233,13 +233,13 @@ def multihead_attention(ctx):
     for name, tensor in (("kdim", k), ("vdim", v)):
         requirements.append(requirement(ctx, name, tensor, -1))
     for name in ("in_proj_bias", "out_proj.bias", "bias_k", "bias_v"):
-        bias = ctx.parameter(name)
+        bias = ctx.binding(name)
         if bias is not None:
             if name == "in_proj_bias":
                 relations.append(
                     AxisRelation(
-                        Port(axis),
-                        Port(bias.axis(0)),
+                        AxisPort(axis),
+                        AxisPort(bias.axis(0)),
                         tuple(BlockMap(0, i * width, width) for i in range(3)),
                         ctx.node.name,
                     )
@@ -266,7 +266,7 @@ def multihead_attention(ctx):
         tuple(constraints),
         tuple(requirements),
         candidates=(CandidateAxis(f"{out.paths[0]}:0", axis),),
-        contract=CallContract(fresh_output=True, output_layout="backend_dependent"),
+        contract=OutputContract(fresh_output=True, output_layout="backend_dependent"),
     )
 
 

@@ -12,6 +12,23 @@ from .errors import CaptureError
 _MODULE_FIELDS = frozenset(vars(nn.Module())) | {"_kirigami_structure"}
 
 
+def storage_key(tensor):
+    """Identify nonempty dense storage for conservative alias checks.
+
+    Args:
+        tensor: Tensor whose storage should be inspected.
+
+    Returns:
+        A device/pointer pair, or None for an empty tensor.
+
+    Raises:
+        CaptureError: The tensor is quantized or does not have strided layout.
+    """
+    if tensor.layout != torch.strided or tensor.is_quantized:
+        raise CaptureError("Only dense, non-quantized strided tensors are supported")
+    return (str(tensor.device), tensor.untyped_storage().data_ptr()) if tensor.numel() else None
+
+
 @dataclass(frozen=True)
 class AttributeEdit:
     """An internal object-state assignment or deletion, prepared before commit."""

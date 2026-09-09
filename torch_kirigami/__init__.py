@@ -1,7 +1,7 @@
 """Structural dependency analysis for PyTorch, independent of pruning policy."""
 
-from .capture import TensorFacts
 from .contracts import (
+    ArgumentRef,
     AxisBarrier,
     Balanced,
     Barrier,
@@ -10,27 +10,36 @@ from .contracts import (
     Divisible,
     Fixed,
     Impact,
-    Layout,
+    LayoutConstraint,
     NonEmpty,
     Requirement,
     ShapeExpr,
 )
-from .errors import AnalysisLimitError, CaptureError, KirigamiError, StaleGraphError
+from .errors import (
+    AnalysisLimitError,
+    CaptureError,
+    KirigamiError,
+    StaleGraphError,
+    UnsupportedOperation,
+)
 from .graph import CallRef, DependencyGraph
-from .registry import (
+from .operation import (
     CallEffects,
     CandidateAxis,
     OperationContext,
-    OperatorRegistry,
     OperatorRule,
     OperatorSpec,
+    OutputContract,
+    PartitionedLayout,
+    TensorFacts,
 )
+from .registry import OperatorRegistry
 from .relations import (
+    AxisPort,
     AxisRelation,
     BlockMap,
     BroadcastRelation,
     PermuteRelation,
-    Port,
     ReshapeRelation,
     SliceRelation,
 )
@@ -38,7 +47,9 @@ from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
 
 __all__ = [
     "AnalysisLimitError",
+    "ArgumentRef",
     "AxisBarrier",
+    "AxisPort",
     "AxisRef",
     "AxisRelation",
     "Balanced",
@@ -57,14 +68,15 @@ __all__ = [
     "Impact",
     "IndexSet",
     "KirigamiError",
-    "Layout",
+    "LayoutConstraint",
     "NonEmpty",
     "OperationContext",
     "OperatorRegistry",
     "OperatorRule",
     "OperatorSpec",
+    "OutputContract",
+    "PartitionedLayout",
     "PermuteRelation",
-    "Port",
     "Region",
     "Requirement",
     "ReshapeRelation",
@@ -74,4 +86,5 @@ __all__ = [
     "StaleGraphError",
     "TensorFacts",
     "TensorRef",
+    "UnsupportedOperation",
 ]

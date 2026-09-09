@@ -104,16 +104,22 @@ class IndexSet:
     def subtract(self, other: IndexSet) -> IndexSet:
         """Return indices in this set that are absent from other."""
         result = []
+        right = 0
         for lo, hi in self.intervals:
             cursor = lo
-            for a, b in other.intervals:
+            while right < len(other.intervals):
+                a, b = other.intervals[right]
                 if b <= cursor:
+                    right += 1
                     continue
                 if a >= hi:
                     break
                 if cursor < a:
                     result.append((cursor, a))
                 cursor = max(cursor, b)
+                if b >= hi:
+                    break  # This right interval may also overlap the next left interval.
+                right += 1
             if cursor < hi:
                 result.append((cursor, hi))
         return IndexSet(tuple(result))
@@ -136,6 +142,12 @@ class Region:
     """
 
     axes: tuple[IndexSet, ...]
+
+    def __post_init__(self):
+        axes = tuple(self.axes)
+        if any(not isinstance(axis, IndexSet) for axis in axes):
+            raise TypeError("Region axes must be IndexSet instances")
+        object.__setattr__(self, "axes", axes)
 
     @property
     def empty(self):
@@ -240,6 +252,21 @@ class TensorRef:
     kind: str = "value"
     paths: tuple[str, ...] = ()
 
+    def __post_init__(self):
+        shape, paths = tuple(self.shape), tuple(self.paths)
+        if not isinstance(self.id, str) or not self.id:
+            raise ValueError("Tensor identity must be a nonempty string")
+        if any(not isinstance(n, int) or isinstance(n, bool) or n < 0 for n in shape):
+            raise ValueError("Tensor dimensions must be nonnegative integers")
+        if (
+            not isinstance(self.kind, str)
+            or not self.kind
+            or any(not isinstance(path, str) for path in paths)
+        ):
+            raise ValueError("Tensor kind and paths must be strings")
+        object.__setattr__(self, "shape", shape)
+        object.__setattr__(self, "paths", paths)
+
     def axis(self, dim: int) -> AxisRef:
         """Refer to a physical axis, normalizing negative dimension indices.
 
@@ -252,9 +279,7 @@ class TensorRef:
         Raises:
             IndexError: dim is outside the tensor rank.
         """
-        if not -len(self.shape) <= dim < len(self.shape):
-            raise IndexError(f"Axis {dim} outside rank {len(self.shape)}")
-        return AxisRef(self, dim % len(self.shape))
+        return AxisRef(self, dim)
 
     def select(self, regions: Iterable[Region]) -> Selection:
         """Construct a removal selection from Cartesian regions in original coordinates."""
@@ -267,11 +292,21 @@ class AxisRef:
 
     Attributes:
         tensor: Owning tensor reference.
-        dim: Nonnegative axis index when constructed through TensorRef.axis().
+        dim: Canonical nonnegative axis index, including direct construction.
     """
 
     tensor: TensorRef
     dim: int
+
+    def __post_init__(self):
+        if not isinstance(self.tensor, TensorRef):
+            raise TypeError("Axis owner must be a TensorRef")
+        if not isinstance(self.dim, int) or isinstance(self.dim, bool):
+            raise TypeError("Axis must be an integer")
+        rank = len(self.tensor.shape)
+        if not -rank <= self.dim < rank:
+            raise IndexError(f"Axis {self.dim} outside rank {rank}")
+        object.__setattr__(self, "dim", self.dim % rank)
 
     def select(self, indices: Iterable[int] | IndexSet) -> Selection:
         """Select complete cross-sections at the given original axis positions.
@@ -309,13 +344,14 @@ class Selection:
     regions: tuple[Region, ...] = ()
 
     def __post_init__(self):
+        regions = tuple(self.regions)
         bounds = full_region(self.tensor.shape)
-        for region in self.regions:
+        for region in regions:
             if len(region.axes) != len(bounds.axes):
                 raise ValueError("Selection rank does not match tensor")
             if any(a.subtract(b) for a, b in zip(region.axes, bounds.axes, strict=False)):
                 raise IndexError(f"Selection outside {self.tensor.shape}")
-        object.__setattr__(self, "regions", normalize(self.regions))
+        object.__setattr__(self, "regions", normalize(regions))
 
     __hash__ = None
 
@@ -354,25 +390,26 @@ class Selection:
         if self.tensor != other.tensor:
             raise ValueError("Selections refer to different tensors")
 
-    def project(self, axis: int, scope: Region | None = None) -> IndexSet:
+    def fully_selected_indices(self, dim: int, scope: Region | None = None) -> IndexSet:
         """Find axis positions whose entire scoped cross-section is selected.
 
         Args:
-            axis: Physical axis to project onto.
+            dim: Physical axis whose complete cross sections are inspected.
             scope: Region restricting the cross-section, or None for the full tensor.
 
         Returns:
             Positions fully covered inside the scope. Partial coverage does not
             imply that the corresponding physical axis position can be removed.
         """
-        if not self:
-            return IndexSet()
+        dim = self.tensor.axis(dim).dim
         scope = scope or full_region(self.tensor.shape)
         remaining = Selection(self.tensor, (scope,)).subtract(self)
+        if not self:
+            return IndexSet()
         uncovered = IndexSet()
         for region in remaining.regions:
-            uncovered = uncovered.union(region.axes[axis])
-        return scope.axes[axis].subtract(uncovered)
+            uncovered = uncovered.union(region.axes[dim])
+        return scope.axes[dim].subtract(uncovered)
 
     def compact_shape(self) -> tuple[int, ...] | None:
         """Return the shape after deleting complete axis cross-sections.
@@ -384,7 +421,7 @@ class Selection:
         covered = Selection(self.tensor)
         sizes = []
         for dim, size in enumerate(self.tensor.shape):
-            indices = self.project(dim)
+            indices = self.fully_selected_indices(dim)
             covered = covered.union(self.tensor.axis(dim).select(indices))
             sizes.append(size - len(indices))
         return tuple(sizes) if not self.subtract(covered) else None

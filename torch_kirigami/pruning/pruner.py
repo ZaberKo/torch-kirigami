@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass, replace
-from types import MappingProxyType
 
 import torch
 from torch import nn
@@ -11,8 +10,10 @@ from torch import nn
 from ..contracts import Fixed
 from ..selection import TensorRef
 from .metrics import gather_region
+from .plan import PruningPlan, PruningResult
 from .planner import Greedy, PlanningContext, discover
-from .rewrite import _mapping, compile_recipes
+from .recipes import coordinate_mapping
+from .rewrite import compile_recipes
 from .state import (
     attribute,
     check_structure,
@@ -27,8 +28,6 @@ from .types import (
     BudgetReport,
     ExecutionError,
     PlanningError,
-    PruningPlan,
-    PruningResult,
 )
 
 
@@ -51,7 +50,8 @@ class Pruner:
 
     Args:
         model: The original module, identical to graph.model.
-        graph: A fresh DependencyGraph; rebuild explicitly after each round.
+        graph: A fresh DependencyGraph for plan/prune. May be omitted when
+            applying a saved plan. Rebuild explicitly after each pruning round.
     """
 
     def __init__(self, model, *, graph=None):
@@ -60,8 +60,8 @@ class Pruner:
         self.model, self.graph = model, graph
         self.operations = graph.operations() if graph is not None else ()
 
-    def prune(self, **kwargs):
-        """Plan and apply one round, returning (original model, execution result)."""
+    def prune(self, **kwargs) -> tuple[nn.Module, PruningResult]:
+        """Plan and apply one round using the keyword arguments of :meth:`plan`."""
         return self.apply(self.plan(**kwargs))
 
     def plan(
@@ -74,13 +74,30 @@ class Pruner:
         strategy=None,
         preserve_io=True,
         constraints=(),
-    ):
+    ) -> PruningPlan:
         """Generate a verified immutable plan without materializing new weights.
 
         Manual remove is mutually exclusive with automatic selection options.
         All external tensor axes are protected unless preserve_io is False.
         Caller-supplied candidates require explicit ChannelRatio.axes. Strategies
         may omit a metric if they never request scores.
+
+        Args:
+            remove: Manual original-coordinate selections, or None for automatic selection.
+            metric: Batch importance callable; required when the strategy requests scores.
+            budget: ChannelRatio bound for automatic selection.
+            candidates: Optional candidate iterable; requires explicit budget axes.
+            strategy: Candidate selection callable; defaults to Greedy.
+            preserve_io: Protect all external input/output axes by default.
+            constraints: Additional structural constraints applied to the joint request.
+
+        Returns:
+            A portable static plan, containing no live model or newly allocated weights.
+
+        Raises:
+            ValueError: Manual and automatic options conflict or arguments are invalid.
+            PlanningError: Analysis or physical execution cannot be proved valid.
+            ExecutionError: A callback changes tracked tensor state during planning.
         """
         if self.graph is None:
             raise PlanningError("Planning requires a DependencyGraph")
@@ -159,14 +176,23 @@ class Pruner:
                 constraints,
             )
             context.exclusions.extend(protected_domains)
-            keys = tuple(dict.fromkeys((strategy or Greedy())(context)))
+            keys = tuple(dict.fromkeys((Greedy() if strategy is None else strategy)(context)))
             if any(key not in registered for key in keys):
                 raise PlanningError("Strategy returned an unregistered candidate key")
-            impact = context.impact(s for key in keys for s in registered[key].remove)
-            if not context.within_budget(impact):
+            impact = self.graph.propagate(
+                remove=(s for key in keys for s in registered[key].remove), constraints=constraints
+            )
+            # Reestablish the caller's premises after the strategy callback.
+            final_context = PlanningContext(
+                self.graph, self.operations, candidates, budget, axes, metric, constraints
+            )
+            if not final_context.within_budget(impact):
                 raise PlanningError("Strategy exceeded the joint channel budget")
-            recipes, attributes, notes = context.compile(impact)
-            report = context.report(impact)
+            final_context.trials = context.trials
+            final_context.limit_reached = context.limit_reached
+            final_context.exclusions.extend(context.exclusions)
+            recipes, attributes, notes = final_context.compile(impact)
+            report = final_context.report(impact)
         self.graph.validate(self.model)
         self._check_versions(versions)
 
@@ -211,7 +237,7 @@ class Pruner:
             ):
                 raise ExecutionError("Tensor bindings or tracked values changed since planning")
 
-    def apply(self, plan):
+    def apply(self, plan: PruningPlan) -> tuple[nn.Module, PruningResult]:
         """Validate and execute static recipes without scoring, tracing, or forward.
 
         All allocations precede binding changes. A portable decision is reusable
@@ -249,10 +275,8 @@ class Pruner:
         commit(self.model, replacements, plan.attributes, record)
         if self.graph is not None and (plan.recipes or plan.attributes):
             self.graph.invalidate()
-        parameter_map = MappingProxyType(
-            {old: new for state, old, new in replacements if state.kind == "parameter"}
-        )
-        mappings = MappingProxyType({r.tensor: _mapping(r) for r in plan.recipes})
+        parameter_map = {old: new for state, old, new in replacements if state.kind == "parameter"}
+        mappings = {r.tensor: coordinate_mapping(r) for r in plan.recipes}
         return self.model, PruningResult(
             plan,
             plan.after,

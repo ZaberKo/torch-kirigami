@@ -15,3 +15,7 @@ class AnalysisLimitError(KirigamiError):
 
 class StaleGraphError(KirigamiError):
     """The source model no longer has the captured structure."""
+
+
+class UnsupportedOperation(Exception):
+    """A captured operation has no proven rule for these arguments."""

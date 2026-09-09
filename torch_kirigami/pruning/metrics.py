@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
 
 from .types import PlanningError
@@ -60,16 +62,18 @@ class WeightTaylor:
 
 
 def _scores(metric, context, batch):
-    result = []
+    result = [0.0] * len(batch)
+    device_scores = {}
+    l2 = isinstance(metric, Magnitude) and metric.p == 2
     bindings = dict(context.graph.tensor_bindings())
     with torch.no_grad():
-        for candidate in batch:
+        for index, candidate in enumerate(batch):
             impact = context.impact(candidate.remove)
             context.require_complete(impact)
-            total = 0.0
+            totals = {}
             for selection in impact.parameters:
                 weight = bindings[selection.tensor]
-                if metric.parameter_filter:
+                if metric.parameter_filter is not None:
                     include = metric.parameter_filter(selection.tensor, weight)
                     context.graph.validate()  # A user callback cannot invalidate cached bindings.
                     if not include:
@@ -87,19 +91,49 @@ def _scores(metric, context, batch):
                 for region in selection.regions:  # Selection normalizes to a disjoint union.
                     values = gather_region(weight.detach(), region)
                     if taylor:
-                        values = values.to(dtype) * gather_region(weight.grad.detach(), region).to(
-                            dtype
-                        )
+                        # Promote before multiplication: a float64 reduction cannot
+                        # recover products already underflowed/overflowed in float32.
+                        values = values.to(torch.float64) * gather_region(
+                            weight.grad.detach(), region
+                        ).to(torch.float64)
                         if metric.mode == "elementwise_abs":
                             values = values.abs()
+                    elif l2:
+                        # Scale before squaring, including float64 extremes. Real
+                        # components avoid overflowing complex64 abs prematurely.
+                        values = (
+                            torch.view_as_real(values.resolve_conj())
+                            if values.is_complex()
+                            else values
+                        )
+                        values = values.to(dtype).abs()
+                        scale = values.amax()
+                        divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
+                        value = (values / divisor).square().sum(
+                            dtype=torch.float64
+                        ).sqrt() * scale.to(torch.float64)
                     else:
-                        values = values.abs().to(dtype)
-                        if metric.p == 2:
-                            values = values.square()
-                    total += values.sum(dtype=dtype).item()
-            if isinstance(metric, Magnitude) and metric.p == 2:
-                total = total**0.5
-            elif isinstance(metric, WeightTaylor) and metric.mode == "joint_abs":
-                total = abs(total)
-            result.append(total)
+                        values = values.to(
+                            torch.complex128 if values.is_complex() else torch.float64
+                        ).abs()
+                    if not l2:
+                        value = values.sum(dtype=torch.float64)
+                    previous = totals.get(weight.device)
+                    totals[weight.device] = (
+                        value
+                        if previous is None
+                        else torch.hypot(previous, value)
+                        if l2
+                        else previous + value
+                    )
+            for device, value in totals.items():
+                device_scores.setdefault(device, []).append((index, value))
+        # One transfer per device/batch, rather than one synchronization per
+        # selected region. Different parameter devices can still contribute.
+        for entries in device_scores.values():
+            values = torch.stack([value for _, value in entries]).cpu().tolist()
+            for (index, _), value in zip(entries, values, strict=True):
+                result[index] = math.hypot(result[index], value) if l2 else result[index] + value
+    if isinstance(metric, WeightTaylor) and metric.mode == "joint_abs":
+        result = [abs(value) for value in result]
     return result

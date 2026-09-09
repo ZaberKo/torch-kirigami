@@ -15,7 +15,7 @@ class FrozenScalar:
 
 @dataclass(frozen=True)
 class FrozenList:
-    """Preserve list identity as a type without retaining mutable configuration."""
+    """Preserve the list container type without retaining mutable configuration."""
 
     items: tuple
 
@@ -71,4 +71,17 @@ def forward_hook_paths(model):
         path or "<root>"
         for path, module in model.named_modules()
         if module._forward_hooks or module._forward_pre_hooks
+    )
+
+
+def has_registration_hooks():
+    """Detect registration callbacks whose substitutions cannot preserve a transaction.
+
+    PyTorch exposes registration but no public inspection API; keep access to
+    these process-wide registries alongside the forward-hook compatibility check.
+    """
+    return bool(
+        module_runtime._global_parameter_registration_hooks
+        or module_runtime._global_buffer_registration_hooks
+        or module_runtime._global_module_registration_hooks
     )

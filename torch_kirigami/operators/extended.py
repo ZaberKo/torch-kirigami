@@ -8,12 +8,10 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import AxisBarrier, Requirement
-from ..errors import CaptureError
-from ..registry import CandidateAxis, OperatorRule, OperatorSpec
+from ..errors import CaptureError, UnsupportedOperation
+from ..operation import CandidateAxis, OperatorRule, OperatorSpec, OutputContract
 from ..relations import ReshapeRelation
-from .layouts import CallContract
 from .native import (
-    UnsupportedOperation,
     affine_layouts,
     bind,
     equal,
@@ -55,7 +53,7 @@ def channel_operator(ctx):
             for d in range(channel + 1, len(tensor.shape))
         )
     return OperatorSpec(
-        tuple(relations), tuple(constraints), contract=CallContract(fresh_output=True)
+        tuple(relations), tuple(constraints), contract=OutputContract(fresh_output=True)
     )
 
 
@@ -78,7 +76,7 @@ def padding(ctx):
             for t in (x, y)
             for d in sorted(changed)
         ),
-        contract=CallContract(fresh_output=True),
+        contract=OutputContract(fresh_output=True),
     )
 
 
@@ -99,13 +97,6 @@ def instance_norm(ctx):
             relations.append(equal(x, channel, one(value), 0, ctx.node.name))
     requirements = () if ctx.module is None else (requirement(ctx, "num_features", x, channel),)
     return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), requirements)
-
-
-def rms_norm(ctx):
-    """Reuse normalized-axis bindings with RMSNorm's weight-only signature."""
-    result = layer_norm(ctx)
-    # F.rms_norm(input, normalized_shape, weight=None, eps=None) has no bias.
-    return result
 
 
 def prelu(ctx):
@@ -155,7 +146,7 @@ def embedding(ctx):
         constraints,
         requirements,
         candidates=candidates,
-        contract=CallContract(fresh_output=True, output_layout="contiguous"),
+        contract=OutputContract(fresh_output=True, output_layout="contiguous"),
     )
 
 
@@ -180,7 +171,7 @@ def cast(ctx):
     """Preserve input coordinates; a dtype/device reference contributes no axes."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     return OperatorSpec(
-        (ReshapeRelation(x, y, ctx.node.name),), contract=CallContract(output_layout="cast")
+        (ReshapeRelation(x, y, ctx.node.name),), contract=OutputContract(output_layout="cast")
     )
 
 
@@ -188,17 +179,17 @@ def register_extended(registry, modules, functions, methods):
     """Register common exact public API spellings through the unified interface."""
     modules([nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d], instance_norm)
     functions([F.instance_norm], instance_norm)
-    modules([nn.RMSNorm], rms_norm)
-    functions([F.rms_norm], rms_norm)
+    modules([nn.RMSNorm], layer_norm)
+    functions([F.rms_norm], layer_norm)
     modules([nn.PReLU], prelu)
     functions([F.prelu], prelu)
     functions([F.normalize], normalize)
     registry.register(
-        nn.Embedding, OperatorRule(embedding, preflight=embedding_preflight, evaluate=True)
+        nn.Embedding, OperatorRule(embedding, preflight=embedding_preflight, evaluate_on_meta=True)
     )
     registry.register(
         F.embedding,
-        OperatorRule(embedding, preflight=embedding_preflight, evaluate=True),
+        OperatorRule(embedding, preflight=embedding_preflight, evaluate_on_meta=True),
         opaque=False,
     )
     modules(

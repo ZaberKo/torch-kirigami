@@ -2,6 +2,22 @@
 
 项目使用根目录 `torch_kirigami/` 的 flat layout，安装后可直接导入，不需要设置 `PYTHONPATH`。Ruff、pytest 和打包设置统一位于 `pyproject.toml`；开发约定见根目录 `AGENTS.md`。
 
+测试导航：[逐对象契约与组合清单](testing-coverage.md) · [全部内置入口](operator-test-coverage.md)。默认 pytest 自动发现全部职责目录，根级 `conftest.py` 保留统一设备 fixture 和 `--require-cuda` 验收入口。
+
+| 目录 | 职责 |
+| --- | --- |
+| `tests/core/` | 坐标、区域、关系、约束、基础记录及有界穷举 |
+| `tests/capture/` | 捕获、绑定、来源、hooks、状态隔离与恢复 |
+| `tests/graph/` | 查询、闭包、来源解释、局部屏障、过期与分析限制 |
+| `tests/operators/` | 按算子家族分组，另逐项检查全部注册入口 |
+| `tests/pruning/` | 候选、评分、预算、规划、配方、执行报告及应用 |
+| `tests/persistence/` | 静态计划、checkpoint、损坏输入、状态及跨进程恢复 |
+| `tests/integration/` | 坐标链、共享约束、attention、策略与图、扩展及完整生命周期 |
+| `tests/architecture/` | 导入方向、公开契约、扩展边界、覆盖清单完整性 |
+| `tests/support/` | 少量确实共享的模型、坐标断言、独立数值参考和原生调用样例 |
+
+同一职责的多个类共用目录，文件按行为划分。一个回归只保留一份，可以在覆盖清单中关联多个类；测试文件不互相导入。普通边界留在所属目录，跨组件组合放在 integration。新增对象或注册入口时，应同时更新契约清单和实际测试；清单校验只检查映射完整性，不能替代数值或错误路径断言。
+
 默认开发环境通过 uv.lock 固定 Python 3.12 对应的 PyTorch 2.14 CPU 和工具依赖：
 
 ```bash
@@ -40,7 +56,7 @@ uv run --isolated --no-project --python 3.12 \
 本地已在 WSL 的 RTX 5070 Ti、Python 3.12、PyTorch 2.14.0+cu130 环境完成 GPU 验收。PyTorch 2.6 的已验证范围仍为 CPU；这些结果不证明其他 GPU 架构或自定义 CUDA kernel 的行为。若工具沙箱阻断 GPU 访问，应在具备设备访问权限的执行环境重试，不能据此断言主机没有 GPU。动态 Python 分支测试必须明确捕获失败。
 
 
-第二阶段回归另覆盖计划只读、默认输入输出保护、预算分母、初始无效的 Divisible、分组补全、分段权重行列切片、四种评分公式、低精度累积、原 forward 尺寸/切片/stride 验证、分配及提交失败、别名保持、过期计划和 inference mode 下应用后 backward。数值参考覆盖 Linear/Conv、LN/GN/BN/softmax、矩阵乘与残差循环。
+剪枝回归另覆盖计划只读、默认输入输出保护、预算分母、初始无效的 Divisible、分组补全、分段权重行列切片、四种评分公式、低精度累积、原 forward 尺寸/切片/stride 验证、分配及提交失败、别名保持、过期计划和 inference mode 下应用后 backward。数值参考覆盖 Linear/Conv、LN/GN/BN/softmax、矩阵乘与残差循环。
 
 ```bash
 uv run --locked python examples/pruning.py
@@ -53,22 +69,18 @@ uv run --locked python examples/pruning.py
 
 `CUDA validation` 工作流提供相同强制验收，需先配置带 `self-hosted/linux/x64/cuda` 标签的可信 GPU runner，再手工触发；这里没有安装 runner 或执行远端工作流。独立 `--no-project` 环境从仓库根目录用 `python -m examples.pruning` 启动示例，避免直接执行脚本时找不到未安装的本地包。
 
-2026-09-08 统一规则、静态计划与持久化改造后的本地验收记录：
+## 最近一次完整验收
 
-| 环境 | 结果 |
+以下为 2026-09-10 测试分层及补测后的已执行记录，不代表后续修改已自动获得验收。
+
+| 实际本地环境 | 全量结果 |
 | --- | --- |
-| Python 3.10 / PyTorch 2.6.0+cpu | 177 passed，87 CUDA skipped |
-| Python 3.12 / PyTorch 2.14.0+cpu | 177 passed，87 CUDA skipped |
-| Python 3.12 / PyTorch 2.14.0+cu130 / RTX 5070 Ti | 264 passed，0 skipped，使用 `--require-cuda` |
+| Python 3.10 / PyTorch 2.6.0+cpu | 925 passed，675 skipped |
+| Python 3.12 / PyTorch 2.14.0+cpu | 925 passed，675 skipped |
+| Python 3.12 / PyTorch 2.14.0+cu130 / RTX 5070 Ti | 1600 passed，0 skipped，使用 --require-cuda |
 
-新增回归覆盖尺寸消费者遗漏、同 shape 的归约轴变化、channels-last/view、静态索引值 guard、分组转置卷积、Embedding 非零预算轴、归一化、门控/重排、einsum、GQA 和 MHA 的独立数值参考。
+CPU 跳过项包括需要 CUDA 的测试和 Tensor.cuda 的 CPU 源项，均由真实 GPU 验收覆盖。GPU 执行有一条 PyTorch cuBLAS 首次 backward 建立主上下文的 warning，没有失败或跳过。Ruff 全仓库检查、格式检查和 git diff 空白检查通过。
 
-静态计划回归验证重复规划、无签发状态、释放原图、跨进程加载、结构前提和改动配方检查。checkpoint 回归覆盖两轮剪枝后训练保存、参数/模块别名、非持久 buffer、混合模式、原生 extra-state、损坏别名值，以及新进程只依赖模型构造函数恢复。
+测试包含 59 个测试文件、237 个函数。逐对象清单记录 77 个公开导出或内部组件，逐入口清单记录 339 个注册入口（模块 78、函数 166、方法 95）。覆盖清单与测试之间的引用由架构测试检查。
 
-Ruff 检查、格式检查、四个 CPU 示例和 wheel/sdist 构建通过。仓库外使用一次性虚拟环境直接安装新 wheel，验证剪枝、checkpoint 恢复及 backward，避免同版本 uv run 环境缓存误用旧包。
-
-```bash
-uv run --locked python examples/fused_attention.py
-```
-
-该融合示例只注册一个 OperatorRule，不注册独立执行或保存规则。测试结果证明这些已声明场景，不代表覆盖任意模型或全部算子参数组合。
+这些结果证明列示契约和选定组合，不能保证任意模型或全部轴、尺寸、dtype、stride、训练态组合。PyTorch 中间版本和其他设备不属于此次实际验收环境。

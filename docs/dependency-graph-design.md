@@ -23,7 +23,7 @@ TensorRef 表示参数、buffer 或 FX 值；AxisRef 表示物理轴。IndexSet 
 | 0、1 | 0 |
 | 2、3 | 1 |
 
-这两个区域不能合并成对整个权重统一删除输入列 0、1。AxisRelation 的 Port 可限定张量分区；BlockMap 表达偏移、重复对应，并明确区分触及块与完整移除块的传播条件。相同表达支持普通 Conv、grouped Conv 和 depthwise multiplier，没有特殊剪枝 callback。
+这两个区域不能合并成对整个权重统一删除输入列 0、1。AxisRelation 的 AxisPort 可限定张量分区；BlockMap 表达偏移、重复对应，并明确区分触及块与完整移除块的传播条件。相同表达支持普通 Conv、grouped Conv 和 depthwise multiplier，没有特殊剪枝 callback。
 
 其他关系包括静态 SliceRelation、PermuteRelation 和基于原逻辑元素顺序的 ReshapeRelation。只物化必要的索引区间，不为激活建立标签张量；超过 4096 个区间/区域的复杂映射明确报 analysis_limit，不近似成 identity。
 
@@ -36,7 +36,7 @@ TensorRef 表示参数、buffer 或 FX 值；AxisRef 表示物理轴。IndexSet 
 - BlockBalance：剩余逻辑组具有相同的成员数；允许整组消失或均衡减少每组成员。
 - Divisible：保留尺寸需要整除指定因子。
 - Fixed：调用方额外保护某个轴。
-- Layout：选择必须能构成受支持的紧凑或分区布局。
+- LayoutConstraint：选择必须能构成受支持的紧凑或分区布局。
 - Barrier/AxisBarrier：相关操作或轴缺少可证明的语义。
 
 Balanced、BlockBalance 和 Divisible 不替策略选择补充位置；结果保留未满足的约束。Depthwise 删除输入通道会删除其全部输出；只删除部分输出时，可以继续均衡降低 multiplier，也可以补全整组删除，分析器不会代选。

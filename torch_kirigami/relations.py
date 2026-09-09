@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import prod
 from typing import Protocol
 
 from .errors import AnalysisLimitError
@@ -43,7 +44,7 @@ class Relation(Protocol):
 
 
 @dataclass(frozen=True)
-class Port:
+class AxisPort:
     """Expose one logical axis within an optional tensor partition.
 
     Attributes:
@@ -55,6 +56,12 @@ class Port:
     axis: AxisRef
     scope: Region | None = None
 
+    def __post_init__(self):
+        if not isinstance(self.axis, AxisRef):
+            raise TypeError("Axis port requires an AxisRef")
+        if self.scope is not None:
+            Selection(self.tensor, (self.scope,))
+
     @property
     def tensor(self):
         """Return the tensor containing this logical port."""
@@ -65,9 +72,11 @@ class Port:
         """Return the explicit partition scope or the full tensor region."""
         return self.scope or full_region(self.tensor.shape)
 
-    def project(self, selection: Selection) -> IndexSet:
+    def fully_selected_indices(self, selection: Selection) -> IndexSet:
         """Return positions whose entire scoped cross sections are selected."""
-        return selection.project(self.axis.dim, self.region)
+        if selection.tensor != self.tensor:
+            raise ValueError("Selection belongs to another port tensor")
+        return selection.fully_selected_indices(self.axis.dim, self.region)
 
     def select(self, indices: IndexSet) -> Selection:
         """Select scoped cross sections at the given original axis positions."""
@@ -97,6 +106,17 @@ class BlockMap:
     target_block: int = 1
     require_full_source: bool = False
     require_full_target: bool = False
+
+    def __post_init__(self):
+        for name in ("source_start", "target_start", "count", "source_block", "target_block"):
+            value = getattr(self, name)
+            minimum = 1 if name.endswith("block") else 0
+            if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
+                raise ValueError(f"Invalid block mapping {name}")
+        if not isinstance(self.require_full_source, bool) or not isinstance(
+            self.require_full_target, bool
+        ):
+            raise TypeError("Block completion policies must be boolean")
 
     def map(self, indices: IndexSet, reverse: bool = False) -> IndexSet:
         """Map selected positions into corresponding blocks.
@@ -131,12 +151,32 @@ class BlockMap:
 
 @dataclass(frozen=True)
 class AxisRelation:
-    """Map full scoped axis positions bidirectionally through block mappings."""
+    """Map full scoped axis positions bidirectionally through block mappings.
 
-    left: Port
-    right: Port
+    Mapping ranges must fit the physical axes. Ports then intersect the mapped
+    positions with their scopes, allowing a full-axis map to serve a partition.
+    """
+
+    left: AxisPort
+    right: AxisPort
     maps: tuple[BlockMap, ...]
     reason: str = "axis correspondence"
+
+    def __post_init__(self):
+        if not isinstance(self.left, AxisPort) or not isinstance(self.right, AxisPort):
+            raise TypeError("Axis relations require AxisPort endpoints")
+        maps = tuple(self.maps)
+        for mapping in maps:
+            if not isinstance(mapping, BlockMap):
+                raise TypeError("Axis relations require BlockMap mappings")
+            if (
+                mapping.source_start + mapping.count * mapping.source_block
+                > self.left.tensor.shape[self.left.axis.dim]
+                or mapping.target_start + mapping.count * mapping.target_block
+                > self.right.tensor.shape[self.right.axis.dim]
+            ):
+                raise ValueError("Block mapping exceeds endpoint axis bounds")
+        object.__setattr__(self, "maps", maps)
 
     @classmethod
     def equal(cls, left: AxisRef, right: AxisRef, reason: str = "axis correspondence"):
@@ -156,7 +196,7 @@ class AxisRelation:
         size = left.tensor.shape[left.dim]
         if size != right.tensor.shape[right.dim]:
             raise ValueError("Equal axes must have equal sizes")
-        return cls(Port(left), Port(right), (BlockMap(0, 0, size),), reason)
+        return cls(AxisPort(left), AxisPort(right), (BlockMap(0, 0, size),), reason)
 
     @property
     def refs(self):
@@ -165,6 +205,8 @@ class AxisRelation:
 
     def propagate(self, source: Selection):
         """Map full scoped cross sections in both applicable directions."""
+        if source.tensor not in self.refs:
+            raise ValueError("Selection is not a relation endpoint")
         result = []
         for origin, target, reverse in (
             (self.left, self.right, False),
@@ -172,7 +214,7 @@ class AxisRelation:
         ):
             if source.tensor != origin.tensor:
                 continue
-            indices = origin.project(source)
+            indices = origin.fully_selected_indices(source)
             mapped = IndexSet()
             for relation in self.maps:
                 mapped = mapped.union(relation.map(indices, reverse))
@@ -210,6 +252,8 @@ class BroadcastRelation:
 
     def propagate(self, source: Selection):
         """Expand regions or require complete broadcast fibers in reverse."""
+        if source.tensor not in self.refs:
+            raise ValueError("Selection is not a relation endpoint")
         offset = len(self.big.shape) - len(self.small.shape)
         if source.tensor == self.small:
             regions = []
@@ -245,6 +289,10 @@ class ReshapeRelation:
     right: TensorRef
     reason: str = "row-major reshape"
 
+    def __post_init__(self):
+        if prod(self.left.shape) != prod(self.right.shape):
+            raise ValueError("Reshape endpoints must have equal element counts")
+
     @property
     def refs(self):
         """Return the tensor endpoints of this relation."""
@@ -252,6 +300,8 @@ class ReshapeRelation:
 
     def propagate(self, source: Selection):
         """Map regions while retaining common leading dimensions symbolically."""
+        if source.tensor not in self.refs:
+            raise ValueError("Selection is not a relation endpoint")
         target = self.right if source.tensor == self.left else self.left
         # Preserve common leading dimensions symbolically. In particular, batch/token
         # axes of attention reshapes must not multiply the number of index intervals.
@@ -286,6 +336,14 @@ class PermuteRelation:
     dims: tuple[int, ...]
     reason: str = "dimension permutation"
 
+    def __post_init__(self):
+        dims = tuple(self.left.axis(dim).dim for dim in self.dims)
+        if sorted(dims) != list(range(len(self.left.shape))):
+            raise ValueError("Permutation must contain each axis exactly once")
+        if tuple(self.left.shape[dim] for dim in dims) != self.right.shape:
+            raise ValueError("Permutation does not match the output shape")
+        object.__setattr__(self, "dims", dims)
+
     @property
     def refs(self):
         """Return the tensor endpoints of this relation."""
@@ -293,6 +351,8 @@ class PermuteRelation:
 
     def propagate(self, source: Selection):
         """Permute region axes, using the inverse order for reverse propagation."""
+        if source.tensor not in self.refs:
+            raise ValueError("Selection is not a relation endpoint")
         if source.tensor == self.left:
             target, order = self.right, self.dims
         else:
@@ -335,13 +395,36 @@ class SliceRelation:
 
     Notes:
         Rules expand ellipses before constructing this relation. Axis insertion
-        uses a separate unsqueeze relation; advanced indexing is unsupported.
+        uses ReshapeRelation; advanced indexing is unsupported.
     """
 
     big: TensorRef
     small: TensorRef
     index: tuple[int | slice, ...]
     reason: str = "static slice"
+
+    def __post_init__(self):
+        index = tuple(self.index)
+        if len(index) != len(self.big.shape):
+            raise ValueError("Basic indexing requires one entry per source axis")
+        normalized, shape = [], []
+        for item, size in zip(index, self.big.shape, strict=True):
+            if isinstance(item, int) and not isinstance(item, bool):
+                if not -size <= item < size:
+                    raise IndexError("Integer index exceeds source axis bounds")
+                normalized.append(item % size)
+            elif isinstance(item, slice):
+                start, stop, step = item.indices(size)
+                if step <= 0:
+                    raise ValueError("Only positive slice steps are supported")
+                stop = max(start, stop)
+                normalized.append(slice(start, stop, step))
+                shape.append(len(range(start, stop, step)))
+            else:
+                raise TypeError("Basic indices must be integers or slices")
+        if tuple(shape) != self.small.shape:
+            raise ValueError("Basic index does not match the output shape")
+        object.__setattr__(self, "index", tuple(normalized))
 
     @property
     def refs(self):
@@ -350,6 +433,8 @@ class SliceRelation:
 
     def propagate(self, source: Selection):
         """Clip source regions into a slice or inject slice coordinates back."""
+        if source.tensor not in self.refs:
+            raise ValueError("Selection is not a relation endpoint")
         forward = source.tensor == self.big
         regions = []
         for region in source.regions:

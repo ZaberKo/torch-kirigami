@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from types import MappingProxyType
+from typing import Any, Literal, Protocol
 
-from .relations import Port
-from .selection import AxisRef, IndexSet, Selection, TensorRef
+from .relations import AxisPort
+from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,22 @@ class Diagnostic:
         severity: Unresolved for missing proof or conflict for a violation.
         node: FX node name, when the issue belongs to a particular operation.
         tensors: IDs of tensor entities involved in the issue.
+        complete: Whether the influence range is known despite this diagnostic.
     """
 
     code: str
     message: str
-    severity: str = "unresolved"
+    severity: Literal["unresolved", "conflict"] = "unresolved"
     node: str | None = None
     tensors: tuple[str, ...] = ()
     complete: bool = True
+
+    def __post_init__(self):
+        if self.severity not in ("unresolved", "conflict"):
+            raise ValueError("Invalid diagnostic severity")
+        if not isinstance(self.complete, bool):
+            raise TypeError("Diagnostic completeness must be boolean")
+        object.__setattr__(self, "tensors", tuple(self.tensors))
 
 
 class Constraint(Protocol):
@@ -53,7 +62,12 @@ class Constraint(Protocol):
 
 def chosen(selections, tensor):
     """Return a tensor's accumulated selection, or an empty selection."""
-    return selections.get(tensor.id, Selection(tensor))
+    selection = selections.get(tensor.id)
+    if selection is None:
+        return Selection(tensor)
+    if selection.tensor != tensor:
+        raise ValueError("Tensor reference does not match the selection")
+    return selection
 
 
 @dataclass(frozen=True)
@@ -70,9 +84,7 @@ class NonEmpty:
     def check(self, selections):
         """Report a conflict if the entire axis would disappear."""
         selection = chosen(selections, self.axis.tensor)
-        if not selection:
-            return None
-        indices = selection.project(self.axis.dim)
+        indices = selection.fully_selected_indices(self.axis.dim)
         if len(indices) == self.axis.tensor.shape[self.axis.dim]:
             return Diagnostic(
                 "empty_axis",
@@ -97,7 +109,7 @@ class Fixed:
     def check(self, selections):
         """Check that the protected structural axis is preserved."""
         selection = chosen(selections, self.axis.tensor)
-        if selection.project(self.axis.dim):
+        if selection.fully_selected_indices(self.axis.dim):
             return Diagnostic(
                 "fixed_axis",
                 "A protected axis would change",
@@ -121,6 +133,8 @@ class Balanced:
     Attributes:
         axis: Logical axis whose original positions belong to the partitions.
         partitions: Original-coordinate index sets defining the fixed groups.
+            Partitions must be nonempty, disjoint, and bounded; covering the
+            entire axis is optional.
         nonempty: Whether removing an entire partition is a conflict.
 
     Notes:
@@ -130,6 +144,20 @@ class Balanced:
     axis: AxisRef
     partitions: tuple[IndexSet, ...]
     nonempty: bool = True
+
+    def __post_init__(self):
+        partitions = tuple(self.partitions)
+        bounds = IndexSet.span(0, self.axis.tensor.shape[self.axis.dim])
+        seen = IndexSet()
+        if not partitions:
+            raise ValueError("Balance requires nonempty partitions")
+        for partition in partitions:
+            if not isinstance(partition, IndexSet) or not partition:
+                raise ValueError("Each balance partition must be a nonempty IndexSet")
+            if partition.subtract(bounds) or partition.intersect(seen):
+                raise ValueError("Balance partitions must be bounded and disjoint")
+            seen = seen.union(partition)
+        object.__setattr__(self, "partitions", partitions)
 
     @property
     def refs(self):
@@ -145,7 +173,7 @@ class Balanced:
                 "Balance must be checked on the corresponding logical axis",
                 tensors=(self.axis.tensor.id,),
             )
-        indices = selection.project(self.axis.dim)
+        indices = selection.fully_selected_indices(self.axis.dim)
         remaining = tuple(len(p) - len(p.intersect(indices)) for p in self.partitions)
         if self.nonempty and any(n == 0 for n in remaining):
             return Diagnostic(
@@ -180,6 +208,8 @@ class BlockBalance:
     node: str | None = None
 
     def __post_init__(self):
+        if not isinstance(self.block_size, int) or isinstance(self.block_size, bool):
+            raise ValueError("Block size must be a positive integer")
         if self.block_size <= 0 or (
             self.groups.tensor.shape[self.groups.dim] * self.block_size
             != self.members.tensor.shape[self.members.dim]
@@ -193,8 +223,12 @@ class BlockBalance:
 
     def check(self, selections):
         """Check member counts in surviving groups without completing the request."""
-        removed_groups = chosen(selections, self.groups.tensor).project(self.groups.dim)
-        removed_members = chosen(selections, self.members.tensor).project(self.members.dim)
+        removed_groups = chosen(selections, self.groups.tensor).fully_selected_indices(
+            self.groups.dim
+        )
+        removed_members = chosen(selections, self.members.tensor).fully_selected_indices(
+            self.members.dim
+        )
         surviving = IndexSet.span(0, self.groups.tensor.shape[self.groups.dim]).subtract(
             removed_groups
         )
@@ -242,7 +276,9 @@ class Divisible:
                 "Divisibility must be checked on the corresponding logical axis",
                 tensors=(self.axis.tensor.id,),
             )
-        remaining = self.axis.tensor.shape[self.axis.dim] - len(selection.project(self.axis.dim))
+        remaining = self.axis.tensor.shape[self.axis.dim] - len(
+            selection.fully_selected_indices(self.axis.dim)
+        )
         if remaining % self.factor:
             return Diagnostic(
                 "indivisible_axis",
@@ -260,6 +296,9 @@ class Barrier:
     message: str
     node: str | None = None
     code: str = "unsupported"
+
+    def __post_init__(self):
+        object.__setattr__(self, "refs", tuple(self.refs))
 
     def check(self, selections):
         """Report the barrier only if a referenced tensor is affected."""
@@ -289,7 +328,7 @@ class AxisBarrier:
 
     def check(self, selections):
         """Report the barrier only if full positions on this axis are affected."""
-        if chosen(selections, self.axis.tensor).project(self.axis.dim):
+        if chosen(selections, self.axis.tensor).fully_selected_indices(self.axis.dim):
             return Diagnostic(
                 "unsupported_axis",
                 self.message,
@@ -301,7 +340,7 @@ class AxisBarrier:
 
 
 @dataclass(frozen=True)
-class Layout:
+class LayoutConstraint:
     """Validate the compact layouts accepted by one tensor use.
 
     Attributes:
@@ -315,8 +354,14 @@ class Layout:
     """
 
     tensor: TensorRef
-    ports: tuple[Port, ...] = ()
+    ports: tuple[AxisPort, ...] = ()
     node: str | None = None
+
+    def __post_init__(self):
+        ports = tuple(self.ports)
+        if any(not isinstance(port, AxisPort) or port.tensor != self.tensor for port in ports):
+            raise ValueError("LayoutConstraint ports must belong to the layout tensor")
+        object.__setattr__(self, "ports", ports)
 
     @property
     def refs(self):
@@ -333,7 +378,7 @@ class Layout:
         else:
             covered = Selection(self.tensor)
             for port in self.ports:
-                covered = covered.union(port.select(port.project(selection)))
+                covered = covered.union(port.select(port.fully_selected_indices(selection)))
             valid = not selection.subtract(covered)
         if not valid:
             return Diagnostic(
@@ -355,21 +400,126 @@ class ShapeExpr:
         args: Operand expressions for supported shape operations.
     """
 
-    kind: str
+    kind: Literal[
+        "constant",
+        "infer",
+        "unknown",
+        "dimension",
+        "shape",
+        "dim",
+        "numel",
+        "tuple",
+        "add",
+        "sub",
+        "mul",
+        "floordiv",
+        "mod",
+    ]
     value: Any = None
     args: tuple[ShapeExpr, ...] = ()
+
+    def __post_init__(self):
+        args = tuple(self.args)
+        if any(not isinstance(arg, ShapeExpr) for arg in args):
+            raise TypeError("Shape operands must be ShapeExpr instances")
+        binary = {"add", "sub", "mul", "floordiv", "mod"}
+        leaves = {"constant", "infer", "unknown", "dimension", "shape", "dim", "numel"}
+        if self.kind not in binary | leaves | {"tuple"}:
+            raise ValueError(f"Unknown shape expression kind: {self.kind}")
+        if (self.kind in binary and len(args) != 2) or (self.kind in leaves and args):
+            raise ValueError("Invalid shape expression arity")
+        value = self.value
+        if self.kind in ("constant", "infer"):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise ValueError("Shape constants must be integers")
+            if self.kind == "infer" and value != -1:
+                raise ValueError("Inferred dimension must be -1")
+        elif self.kind == "dimension":
+            if (
+                not isinstance(value, (tuple, list))
+                or len(value) != 2
+                or not isinstance(value[0], TensorRef)
+            ):
+                raise TypeError("Dimension provenance requires a tensor and axis pair")
+            ref, dim = value
+            value = (ref, ref.axis(dim).dim)
+        elif self.kind in ("shape", "dim", "numel"):
+            if not isinstance(value, TensorRef):
+                raise TypeError("Shape reads require a TensorRef")
+        elif self.kind == "unknown":
+            if not isinstance(value, str):
+                raise TypeError("Unknown provenance requires a description")
+        elif value is not None:
+            raise ValueError("Composite shape expressions have no scalar payload")
+        object.__setattr__(self, "args", args)
+        object.__setattr__(self, "value", value)
+
+    @property
+    def refs(self) -> tuple[TensorRef, ...]:
+        """Return unique tensor sources without retaining capture state."""
+        own = ()
+        if isinstance(self.value, TensorRef):
+            own = (self.value,)
+        elif self.kind == "dimension":
+            own = (self.value[0],)
+        return tuple(dict.fromkeys(own + tuple(ref for arg in self.args for ref in arg.refs)))
+
+
+def _requirement_value(value, depth=0):
+    """Detach nested payload sequences, rejecting mutable opaque state."""
+    if depth > 50:
+        raise ValueError("Requirement data is cyclic or too deeply nested")
+    if isinstance(value, (tuple, list)):
+        return tuple(_requirement_value(item, depth + 1) for item in value)
+    if value is None or isinstance(
+        value, (str, int, float, bool, TensorRef, AxisRef, IndexSet, Region, ShapeExpr)
+    ):
+        return value
+    if isinstance(value, slice) and all(
+        item is None or (isinstance(item, int) and not isinstance(item, bool))
+        for item in (value.start, value.stop, value.step)
+    ):
+        return value
+    raise TypeError(f"Unsupported requirement payload: {type(value).__name__}")
+
+
+@dataclass(frozen=True)
+class ArgumentRef:
+    """Identify one call parameter whose changes an execution requirement verifies.
+
+    Args:
+        name: Canonical keyword name, resolved with the native alias table.
+        position: Positional slot in FX call arguments, including the Tensor receiver.
+        variadic: Whether all remaining positional slots belong to this parameter.
+    """
+
+    name: str
+    position: int
+    variadic: bool = False
+
+    def __post_init__(self):
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("Argument name must be a nonempty string")
+        if type(self.position) is not int or self.position < 0:
+            raise ValueError("Argument position must be a nonnegative integer")
+        if type(self.variadic) is not bool:
+            raise TypeError("Argument variadic must be boolean")
 
 
 @dataclass(frozen=True)
 class Requirement:
-    """Describe a modification a future executor would need to implement.
+    """Describe a modification an executor needs to implement.
 
     Attributes:
         kind: Modification category, such as attribute, layout, or graph argument.
         target: Module attribute or graph location to change.
         tensors: Tensor entities determining the modification.
         detail: Human-readable explanation and limitations.
-        data: Structured bindings and original-coordinate information.
+        data: Unique named values containing scalar data, slices, structural
+            references, or nested sequences. Sequences are frozen as tuples;
+            opaque mutable objects are rejected. Kind names remain extensible.
+        arguments: Specific parameters this requirement validates when they change.
+            All other dimension-derived semantic parameters must remain unchanged.
 
     Notes:
         A requirement is descriptive; it neither mutates the model nor guarantees
@@ -381,6 +531,44 @@ class Requirement:
     tensors: tuple[TensorRef, ...]
     detail: str
     data: tuple[tuple[str, Any], ...] = ()
+    arguments: tuple[ArgumentRef, ...] = ()
+
+    def __post_init__(self):
+        if not isinstance(self.kind, str) or not self.kind or not isinstance(self.target, str):
+            raise ValueError("Requirement kind and target must be strings")
+        data = tuple(tuple(item) for item in self.data)
+        if any(len(item) != 2 or not isinstance(item[0], str) for item in data):
+            raise ValueError("Requirement data must contain named pairs")
+        if len({key for key, _ in data}) != len(data):
+            raise ValueError("Requirement data keys must be unique")
+        tensors = tuple(self.tensors)
+        if any(not isinstance(ref, TensorRef) for ref in tensors):
+            raise TypeError("Requirement tensors must be TensorRef instances")
+        object.__setattr__(self, "tensors", tensors)
+        arguments = tuple(self.arguments)
+        if any(not isinstance(arg, ArgumentRef) for arg in arguments):
+            raise TypeError("Requirement arguments must be ArgumentRef records")
+        object.__setattr__(self, "arguments", arguments)
+        object.__setattr__(
+            self, "data", tuple((key, _requirement_value(value)) for key, value in data)
+        )
+
+    @property
+    def refs(self) -> tuple[TensorRef, ...]:
+        """Include sources embedded in payloads for graph ownership validation."""
+
+        def visit(value):
+            if isinstance(value, TensorRef):
+                yield value
+            elif isinstance(value, AxisRef):
+                yield value.tensor
+            elif isinstance(value, ShapeExpr):
+                yield from value.refs
+            elif isinstance(value, tuple):
+                for item in value:
+                    yield from visit(item)
+
+        return tuple(dict.fromkeys((*self.tensors, *visit(self.data))))
 
 
 @dataclass(frozen=True)
@@ -407,11 +595,12 @@ class Impact:
         requested: Original removal requests.
         selections: Closure of known selections, keyed by tensor ID.
         diagnostics: Conflicts and reasons that part of the analysis is unresolved.
-        requirements: Modifications needed by a future executor.
+        requirements: Modifications the execution layer must handle or explicitly reject.
         provenance: Reasons for newly discovered selections.
         interfaces: Affected external input and output tensor references.
         status: Resolved, unresolved, or conflict.
         constraints: Conditions checked against the closure.
+        tensors: Known references, including unaffected values, for ownership checks.
 
     Notes:
         A resolved result only proves the declared structural conditions under the
@@ -427,6 +616,22 @@ class Impact:
     interfaces: tuple[TensorRef, ...]
     status: str
     constraints: tuple[Constraint, ...] = field(repr=False)
+    tensors: Mapping[str, TensorRef] = field(repr=False)
+
+    def __post_init__(self):
+        if self.status not in ("resolved", "unresolved", "conflict"):
+            raise ValueError("Invalid impact status")
+        for name in (
+            "requested",
+            "diagnostics",
+            "requirements",
+            "provenance",
+            "interfaces",
+            "constraints",
+        ):
+            object.__setattr__(self, name, tuple(getattr(self, name)))
+        object.__setattr__(self, "selections", MappingProxyType(dict(self.selections)))
+        object.__setattr__(self, "tensors", MappingProxyType(dict(self.tensors)))
 
     @property
     def complete(self):
@@ -435,6 +640,8 @@ class Impact:
 
     def selection(self, tensor: TensorRef) -> Selection:
         """Return the accumulated selection for a tensor, or an empty selection."""
+        if self.tensors.get(tensor.id) != tensor:
+            raise ValueError("Tensor reference does not belong to this impact")
         return chosen(self.selections, tensor)
 
     @property

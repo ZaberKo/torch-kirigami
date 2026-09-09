@@ -26,7 +26,7 @@ class FusedProjection(nn.Module):
 
 
 def fused_rule(ctx: OperationContext) -> OperatorSpec:
-    x, y, weight = ctx.inputs[0], ctx.outputs[0], ctx.parameter("weight")
+    x, y, weight = ctx.inputs[0], ctx.outputs[0], ctx.binding("weight")
     assert ctx.metadata[weight.id].dtype == torch.float32
     return OperatorSpec(
         relations=(

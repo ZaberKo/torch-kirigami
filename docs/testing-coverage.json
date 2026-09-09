@@ -1,0 +1,3558 @@
+{
+  "schema_version": 1,
+  "objects": [
+    {
+      "object": "torch_kirigami.IndexSet",
+      "contracts": [
+        {
+          "behavior": "非法索引、集合并交差；有限全集穷举与大域符号化",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_all_small_interval_pairs_against_python_sets",
+            "tests/core/test_selection.py::test_invalid_indices_and_foreign_selections",
+            "tests/core/test_selection.py::test_large_simple_axis_does_not_materialize_elements"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Region",
+      "contracts": [
+        {
+          "behavior": "几何相等、区域并差、完整/局部截面、紧凑形状与零形状",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_all_small_selection_pairs_against_coordinate_sets",
+            "tests/core/test_coordinate_properties.py::test_every_small_removal_has_the_correct_compact_shape_and_scoped_axes",
+            "tests/core/test_selection.py::test_selection_equality_is_geometric",
+            "tests/core/test_selection.py::test_empty_selection_preserves_zero_shape"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Selection",
+      "contracts": [
+        {
+          "behavior": "几何相等、区域并差、完整/局部截面、紧凑形状与零形状",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_all_small_selection_pairs_against_coordinate_sets",
+            "tests/core/test_coordinate_properties.py::test_every_small_removal_has_the_correct_compact_shape_and_scoped_axes",
+            "tests/core/test_selection.py::test_selection_equality_is_geometric",
+            "tests/core/test_selection.py::test_empty_selection_preserves_zero_shape"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.TensorRef",
+      "contracts": [
+        {
+          "behavior": "轴身份/负轴、越界、同 ID 不同结构和跨图拒绝",
+          "tests": [
+            "tests/core/test_selection.py::test_axis_identity_and_empty_selection_validation",
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AxisRef",
+      "contracts": [
+        {
+          "behavior": "轴身份/负轴、越界、同 ID 不同结构和跨图拒绝",
+          "tests": [
+            "tests/core/test_selection.py::test_axis_identity_and_empty_selection_validation",
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AxisPort",
+      "contracts": [
+        {
+          "behavior": "局部坐标、完整截面、端点归属、正反传播与闭包",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_scoped_axis_relation_requires_complete_cross_sections",
+            "tests/core/test_relations.py::test_relation_constructors_and_endpoint_checks",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AxisRelation",
+      "contracts": [
+        {
+          "behavior": "局部坐标、完整截面、端点归属、正反传播与闭包",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_scoped_axis_relation_requires_complete_cross_sections",
+            "tests/core/test_relations.py::test_relation_constructors_and_endpoint_checks",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.BlockMap",
+      "contracts": [
+        {
+          "behavior": "构造校验；块宽/全覆盖策略/方向的穷举集合参考",
+          "tests": [
+            "tests/core/test_relations.py::test_block_map_constructor_rejects_invalid_fields",
+            "tests/core/test_constraint_properties.py::test_block_maps_match_explicit_block_sets"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.BroadcastRelation",
+      "contracts": [
+        {
+          "behavior": "正向复制、反向完整覆盖、标量不删、部分区域参考",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_broadcast_requires_every_copy_before_reverse_removal",
+            "tests/core/test_relations.py::test_broadcast_partial_regions_match_dense_reference",
+            "tests/core/test_relations.py::test_broadcast_does_not_delete_scalar_operand"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.ReshapeRelation",
+      "contracts": [
+        {
+          "behavior": "行优先坐标/逆映射、小域所有子集、大域符号表示/分析限制",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_reshape_every_subset_uses_row_major_coordinates",
+            "tests/core/test_relations.py::test_reshape_keeps_large_token_prefix_symbolic",
+            "tests/graph/test_limits.py::test_analysis_limit_remains_explicit"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.PermuteRelation",
+      "contracts": [
+        {
+          "behavior": "所有小域子集与逆排列、非法维度/端点",
+          "tests": [
+            "tests/core/test_coordinate_properties.py::test_permutation_every_subset_has_the_correct_inverse",
+            "tests/core/test_relations.py::test_relation_constructors_and_endpoint_checks"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.SliceRelation",
+      "contracts": [
+        {
+          "behavior": "索引/输出构造校验、原始坐标与同形错误映射",
+          "tests": [
+            "tests/core/test_relations.py::test_slice_constructor_validates_index_and_output",
+            "tests/operators/test_indexing.py::test_static_indexing_accepts_only_original_coordinate_preserving_compaction",
+            "tests/operators/test_indexing.py::test_coordinate_mapping_compares_order_not_shape"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Fixed",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Balanced",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Divisible",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.NonEmpty",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AxisBarrier",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Barrier",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.LayoutConstraint",
+      "contracts": [
+        {
+          "behavior": "全部小域删除的诊断/完整性；不猜测补全；局部非矩形边界",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/core/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
+            "tests/graph/test_propagation.py::test_multiple_partition_constraints"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.BlockBalance",
+      "contracts": [
+        {
+          "behavior": "组/成员联合删除的存活数约束、深度卷积块补全",
+          "tests": [
+            "tests/core/test_constraint_properties.py::test_block_balance_matches_surviving_group_counts_exhaustively",
+            "tests/operators/test_convolution.py::test_depthwise_input_removal_forces_whole_output_blocks",
+            "tests/integration/test_compact_networks.py::test_groupnorm_depthwise_batchnorm_joint_compaction"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Diagnostic",
+      "contracts": [
+        {
+          "behavior": "诊断类别、严重性与 complete；非法字段拒绝",
+          "tests": [
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.ShapeExpr",
+      "contracts": [
+        {
+          "behavior": "构造冻结、双来源算术、紧凑求值、零除、未知表达式",
+          "tests": [
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/capture/test_shape_expressions.py::test_shape_arithmetic_tracks_both_sources_and_compact_dimensions",
+            "tests/capture/test_shape_expressions.py::test_invalid_compact_arithmetic_has_a_stable_error"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.ArgumentRef",
+      "contracts": [
+        {
+          "behavior": "位置/参数角色、嵌套来源、冻结与外图引用拒绝",
+          "tests": [
+            "tests/capture/test_shape_expressions.py::test_requirement_keeps_embedded_sources_and_precise_argument_roles",
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Requirement",
+      "contracts": [
+        {
+          "behavior": "位置/参数角色、嵌套来源、冻结与外图引用拒绝",
+          "tests": [
+            "tests/capture/test_shape_expressions.py::test_requirement_keeps_embedded_sources_and_precise_argument_roles",
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.OperationContext",
+      "contracts": [
+        {
+          "behavior": "真实 dtype/stride 与捕获上下文；查询隔离；命名/位置/别名参数",
+          "tests": [
+            "tests/graph/test_queries.py::test_metadata_and_capture_context_are_queryable",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/operators/test_arguments.py::test_native_keyword_spellings_have_same_coordinates",
+            "tests/architecture/test_extensions.py::test_custom_torch_prefix_does_not_enable_native_aliases"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.TensorFacts",
+      "contracts": [
+        {
+          "behavior": "真实 dtype/stride 与捕获上下文；查询隔离；命名/位置/别名参数",
+          "tests": [
+            "tests/graph/test_queries.py::test_metadata_and_capture_context_are_queryable",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/operators/test_arguments.py::test_native_keyword_spellings_have_same_coordinates",
+            "tests/architecture/test_extensions.py::test_custom_torch_prefix_does_not_enable_native_aliases"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.CandidateAxis",
+      "contracts": [
+        {
+          "behavior": "逻辑预算域/block_size 校验；分区预算和共享候选去重",
+          "tests": [
+            "tests/pruning/test_records.py::test_candidates_freeze_seeds_and_reject_invalid_domains",
+            "tests/pruning/test_budget.py::test_depthwise_candidate_denominator_and_custom_blocks",
+            "tests/pruning/test_context.py::test_candidate_domains_use_axes_not_keys"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.PartitionedLayout",
+      "contracts": [
+        {
+          "behavior": "分区冻结/不重叠/归属，保留局部坐标及不同组局部列",
+          "tests": [
+            "tests/core/test_constraints.py::test_partition_contracts_preserve_subset_and_local_coordinates",
+            "tests/operators/test_convolution.py::test_grouped_rows_and_different_local_columns"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.OutputContract",
+      "contracts": [
+        {
+          "behavior": "描述字段/布局校验、冻结、外图拒绝；布局与原调用一致",
+          "tests": [
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references",
+            "tests/operators/test_shapes.py::test_channels_last_weight_layout_is_validated_before_execution"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.OperatorSpec",
+      "contracts": [
+        {
+          "behavior": "描述字段/布局校验、冻结、外图拒绝；布局与原调用一致",
+          "tests": [
+            "tests/core/test_records.py::test_nested_descriptors_are_detached_and_validated",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references",
+            "tests/operators/test_shapes.py::test_channels_last_weight_layout_is_validated_before_execution"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.CallEffects",
+      "contracts": [
+        {
+          "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
+          "tests": [
+            "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
+            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.OperatorRule",
+      "contracts": [
+        {
+          "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
+          "tests": [
+            "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
+            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.OperatorRegistry",
+      "contracts": [
+        {
+          "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
+          "tests": [
+            "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
+            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.CallRef",
+      "contracts": [
+        {
+          "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
+          "tests": [
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/integration/test_shared_constraints.py::test_shared_module_paths_and_calls",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests",
+            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
+            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.DependencyGraph",
+      "contracts": [
+        {
+          "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
+          "tests": [
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/integration/test_shared_constraints.py::test_shared_module_paths_and_calls",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests",
+            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
+            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.Impact",
+      "contracts": [
+        {
+          "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
+          "tests": [
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/integration/test_shared_constraints.py::test_shared_module_paths_and_calls",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests",
+            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
+            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Candidate",
+      "contracts": [
+        {
+          "behavior": "冻结/字段校验、候选域去重、分母保持、local/global、shortfall",
+          "tests": [
+            "tests/pruning/test_records.py::test_candidates_freeze_seeds_and_reject_invalid_domains",
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_context.py::test_candidate_domains_use_axes_not_keys",
+            "tests/pruning/test_budget.py::test_global_budget_no_hidden_local_cap",
+            "tests/pruning/test_budget.py::test_unknown_branch_underfill_keeps_denominator"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ChannelRatio",
+      "contracts": [
+        {
+          "behavior": "冻结/字段校验、候选域去重、分母保持、local/global、shortfall",
+          "tests": [
+            "tests/pruning/test_records.py::test_candidates_freeze_seeds_and_reject_invalid_domains",
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_context.py::test_candidate_domains_use_axes_not_keys",
+            "tests/pruning/test_budget.py::test_global_budget_no_hidden_local_cap",
+            "tests/pruning/test_budget.py::test_unknown_branch_underfill_keeps_denominator"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.BudgetReport",
+      "contracts": [
+        {
+          "behavior": "冻结/字段校验、候选域去重、分母保持、local/global、shortfall",
+          "tests": [
+            "tests/pruning/test_records.py::test_candidates_freeze_seeds_and_reject_invalid_domains",
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_context.py::test_candidate_domains_use_axes_not_keys",
+            "tests/pruning/test_budget.py::test_global_budget_no_hidden_local_cap",
+            "tests/pruning/test_budget.py::test_unknown_branch_underfill_keeps_denominator"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.PlanningContext",
+      "contracts": [
+        {
+          "behavior": "归属、只读前提、缓存验证、回调完整批量、不变表达式",
+          "tests": [
+            "tests/pruning/test_context.py::test_cache_hit_validates_full_reference_and_impact_owner",
+            "tests/pruning/test_context.py::test_context_premises_are_readonly",
+            "tests/pruning/test_strategy.py::test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Greedy",
+      "contracts": [
+        {
+          "behavior": "联合约束、稳定同分排序、试探限制、零预算、非可加评分",
+          "tests": [
+            "tests/pruning/test_strategy.py::test_balanced_completion_multiple_constraints_and_stable_ties",
+            "tests/pruning/test_strategy.py::test_greedy_initial_invalid_divisibility_and_limit",
+            "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
+            "tests/pruning/test_strategy.py::test_default_zero_budget_avoids_candidate_scoring"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Magnitude",
+      "contracts": [
+        {
+          "behavior": "独立公式、区域去重、低精度/复数/极值溢出、梯度前提",
+          "tests": [
+            "tests/pruning/test_metrics.py::test_metric_union_formula_and_precision",
+            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation_and_filter",
+            "tests/pruning/test_precision.py::test_l2_extreme_finite_values_preserve_scores_and_order",
+            "tests/pruning/test_precision.py::test_taylor_promotes_before_multiplying",
+            "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.WeightTaylor",
+      "contracts": [
+        {
+          "behavior": "独立公式、区域去重、低精度/复数/极值溢出、梯度前提",
+          "tests": [
+            "tests/pruning/test_metrics.py::test_metric_union_formula_and_precision",
+            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation_and_filter",
+            "tests/pruning/test_precision.py::test_l2_extreme_finite_values_preserve_scores_and_order",
+            "tests/pruning/test_precision.py::test_taylor_promotes_before_multiplying",
+            "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Metric",
+      "contracts": [
+        {
+          "behavior": "实现/第三方 callable：批量对齐、有限分数、falsey callable、返回决定重验",
+          "tests": [
+            "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
+            "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",
+            "tests/pruning/test_apply.py::test_final_accepted_compilation_is_revalidated"
+          ],
+          "conditions": "Protocol 用实现/扩展验证，不实例化协议",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Strategy",
+      "contracts": [
+        {
+          "behavior": "实现/第三方 callable：批量对齐、有限分数、falsey callable、返回决定重验",
+          "tests": [
+            "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
+            "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",
+            "tests/pruning/test_apply.py::test_final_accepted_compilation_is_revalidated"
+          ],
+          "conditions": "Protocol 用实现/扩展验证，不实例化协议",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.TensorRecipe",
+      "contracts": [
+        {
+          "behavior": "构造校验、分段完整定义域/坐标顺序、布局、配方执行与映射",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_recipes.py::test_mapping_requires_identical_source_domains",
+            "tests/operators/test_convolution.py::test_grouped_rows_and_different_local_columns",
+            "tests/pruning/test_records.py::test_execution_report_detaches_maps_and_preserves_original_coordinate_segments"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.CoordinateSegment",
+      "contracts": [
+        {
+          "behavior": "构造校验、分段完整定义域/坐标顺序、布局、配方执行与映射",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_recipes.py::test_mapping_requires_identical_source_domains",
+            "tests/operators/test_convolution.py::test_grouped_rows_and_different_local_columns",
+            "tests/pruning/test_records.py::test_execution_report_detaches_maps_and_preserves_original_coordinate_segments"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.AttributeRecipe",
+      "contracts": [
+        {
+          "behavior": "构造校验、分段完整定义域/坐标顺序、布局、配方执行与映射",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/pruning/test_recipes.py::test_mapping_requires_identical_source_domains",
+            "tests/operators/test_convolution.py::test_grouped_rows_and_different_local_columns",
+            "tests/pruning/test_records.py::test_execution_report_detaches_maps_and_preserves_original_coordinate_segments"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.RewriteContext",
+      "contracts": [
+        {
+          "behavior": "自定义 lowering 紧凑形状、声明处理要求、结果字段验证",
+          "tests": [
+            "tests/integration/test_extensions.py::test_custom_root_nested_extension",
+            "tests/integration/test_persistence.py::test_single_fused_definition_supports_pruning_and_checkpoint",
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.RewriteResult",
+      "contracts": [
+        {
+          "behavior": "自定义 lowering 紧凑形状、声明处理要求、结果字段验证",
+          "tests": [
+            "tests/integration/test_extensions.py::test_custom_root_nested_extension",
+            "tests/integration/test_persistence.py::test_single_fused_definition_supports_pruning_and_checkpoint",
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.AnalysisSummary",
+      "contracts": [
+        {
+          "behavior": "结构记录冻结/校验、原引用校验、静态计划和跨进程恢复",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/persistence/test_plan.py::test_plan_direct_construction_is_static_and_bad_decode_is_value_error",
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ModelStructure",
+      "contracts": [
+        {
+          "behavior": "结构记录冻结/校验、原引用校验、静态计划和跨进程恢复",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/persistence/test_plan.py::test_plan_direct_construction_is_static_and_bad_decode_is_value_error",
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.PruningPlan",
+      "contracts": [
+        {
+          "behavior": "纯静态无图引用、重复规划、数据往返/坏输入、前提失效拒绝",
+          "tests": [
+            "tests/persistence/test_plan.py::test_static_plan_is_pure_repeatable_and_does_not_retain_graph",
+            "tests/persistence/test_plan.py::test_plan_direct_construction_is_static_and_bad_decode_is_value_error",
+            "tests/integration/test_lifecycle.py::test_rebuild_explicit_second_round_and_all_old_plans_stale"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.PruningResult",
+      "contracts": [
+        {
+          "behavior": "只读且独立的参数/坐标映射；替换梯度处理",
+          "tests": [
+            "tests/pruning/test_records.py::test_execution_report_detaches_maps_and_preserves_original_coordinate_segments",
+            "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.Pruner",
+      "contracts": [
+        {
+          "behavior": "IO 保护、联合配方、原子提交、失败后全状态回滚/重试、重建图再次剪枝",
+          "tests": [
+            "tests/pruning/test_apply.py::test_io_protection_and_mutual_exclusion",
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings",
+            "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
+            "tests/integration/test_compact_networks.py::test_request_permutations_and_duplicates_preserve_shared_closure_and_values"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.load_checkpoint",
+      "contracts": [
+        {
+          "behavior": "结构/数值往返、共享关系/extra state、损坏输入、跨进程、事务恢复",
+          "tests": [
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process",
+            "tests/persistence/test_checkpoint_validation.py::test_checkpoint_rejects_corrupt_alias_values_before_mutation",
+            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_commits_entire_final_module_graph",
+            "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.save_checkpoint",
+      "contracts": [
+        {
+          "behavior": "结构/数值往返、共享关系/extra state、损坏输入、跨进程、事务恢复",
+          "tests": [
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process",
+            "tests/persistence/test_checkpoint_validation.py::test_checkpoint_rejects_corrupt_alias_values_before_mutation",
+            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_commits_entire_final_module_graph",
+            "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.KirigamiError",
+      "contracts": [
+        {
+          "behavior": "捕获失败和写入拒绝的实际异常路径",
+          "tests": [
+            "tests/capture/test_boundaries.py::test_dynamic_python_control_flow_fails",
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+          ],
+          "conditions": "异常通过错误路径验证",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.CaptureError",
+      "contracts": [
+        {
+          "behavior": "捕获失败和写入拒绝的实际异常路径",
+          "tests": [
+            "tests/capture/test_boundaries.py::test_dynamic_python_control_flow_fails",
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+          ],
+          "conditions": "异常通过错误路径验证",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AnalysisLimitError",
+      "contracts": [
+        {
+          "behavior": "分析限制/不支持坐标经公开 API 转换为明确未解决诊断",
+          "tests": [
+            "tests/graph/test_limits.py::test_analysis_limit_remains_explicit",
+            "tests/operators/test_convolution.py::test_parameter_kernel_axis_is_explicitly_unsupported"
+          ],
+          "conditions": "异常通过规则/图错误路径验证",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.UnsupportedOperation",
+      "contracts": [
+        {
+          "behavior": "分析限制/不支持坐标经公开 API 转换为明确未解决诊断",
+          "tests": [
+            "tests/graph/test_limits.py::test_analysis_limit_remains_explicit",
+            "tests/operators/test_convolution.py::test_parameter_kernel_axis_is_explicitly_unsupported"
+          ],
+          "conditions": "异常通过规则/图错误路径验证",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.StaleGraphError",
+      "contracts": [
+        {
+          "behavior": "替换参数/修改配置及完成剪枝后原图失效",
+          "tests": [
+            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate",
+            "tests/graph/test_freshness.py::test_list_configuration_is_frozen_and_guarded_in_graph_and_plan"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.PlanningError",
+      "contracts": [
+        {
+          "behavior": "非法请求/损坏配方拒绝、分配/提交失败且状态不变",
+          "tests": [
+            "tests/pruning/test_apply.py::test_io_protection_and_mutual_exclusion",
+            "tests/pruning/test_apply.py::test_allocation_and_commit_failures_restore",
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ExecutionError",
+      "contracts": [
+        {
+          "behavior": "非法请求/损坏配方拒绝、分配/提交失败且状态不变",
+          "tests": [
+            "tests/pruning/test_apply.py::test_io_protection_and_mutual_exclusion",
+            "tests/pruning/test_apply.py::test_allocation_and_commit_failures_restore",
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.configuration.FrozenScalar",
+      "contracts": [
+        {
+          "behavior": "标量类型/NaN 语义与 list 类型；graph/plan/checkpoint 一致",
+          "tests": [
+            "tests/graph/test_freshness.py::test_scalar_types_are_part_of_configuration_guards",
+            "tests/graph/test_freshness.py::test_list_configuration_is_frozen_and_guarded_in_graph_and_plan",
+            "tests/persistence/test_checkpoint_state.py::test_list_configuration_checkpoint_retains_container_types",
+            "tests/persistence/test_checkpoint_state.py::test_nan_configuration_checkpoint_equality"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.configuration.FrozenList",
+      "contracts": [
+        {
+          "behavior": "标量类型/NaN 语义与 list 类型；graph/plan/checkpoint 一致",
+          "tests": [
+            "tests/graph/test_freshness.py::test_scalar_types_are_part_of_configuration_guards",
+            "tests/graph/test_freshness.py::test_list_configuration_is_frozen_and_guarded_in_graph_and_plan",
+            "tests/persistence/test_checkpoint_state.py::test_list_configuration_checkpoint_retains_container_types",
+            "tests/persistence/test_checkpoint_state.py::test_nan_configuration_checkpoint_equality"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.bindings.AttributeEdit",
+      "contracts": [
+        {
+          "behavior": "绑定赋值/删除、容器别名提交、失败重试/完整对象图恢复",
+          "tests": [
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings",
+            "tests/persistence/test_checkpoint_state.py::test_checkpoint_extra_state_transaction_restores_deleted_attributes"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.capture._LeafTracer",
+      "contracts": [
+        {
+          "behavior": "根/嵌套扩展一致、函数捕获局部性、动态控制流边界",
+          "tests": [
+            "tests/architecture/test_extensions.py::test_external_root_and_nested_module_use_one_rule_interface",
+            "tests/architecture/test_extensions.py::test_external_function_capture_is_local",
+            "tests/capture/test_boundaries.py::test_dynamic_python_control_flow_fails"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.capture._MetadataPropagator",
+      "contracts": [
+        {
+          "behavior": "成功/失败隔离输入 buffer RNG 模式，释放中间激活/临时壳，正确元数据",
+          "tests": [
+            "tests/capture/test_isolation.py::test_input_buffer_rng_and_mode_preserved",
+            "tests/capture/test_isolation.py::test_failure_restores_buffer_and_input",
+            "tests/capture/test_isolation.py::test_successful_metadata_execution_releases_intermediate_activations",
+            "tests/capture/test_isolation.py::test_dependency_graph_releases_temporary_graphmodule_buffers",
+            "tests/graph/test_queries.py::test_metadata_and_capture_context_are_queryable"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.capture.CaptureResult",
+      "contracts": [
+        {
+          "behavior": "成功/失败隔离输入 buffer RNG 模式，释放中间激活/临时壳，正确元数据",
+          "tests": [
+            "tests/capture/test_isolation.py::test_input_buffer_rng_and_mode_preserved",
+            "tests/capture/test_isolation.py::test_failure_restores_buffer_and_input",
+            "tests/capture/test_isolation.py::test_successful_metadata_execution_releases_intermediate_activations",
+            "tests/capture/test_isolation.py::test_dependency_graph_releases_temporary_graphmodule_buffers",
+            "tests/graph/test_queries.py::test_metadata_and_capture_context_are_queryable"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.contracts.Constraint",
+      "contracts": [
+        {
+          "behavior": "具体关系/约束及扩展；外图引用拒绝和局部传播",
+          "tests": [
+            "tests/core/test_relations.py::test_relation_constructors_and_endpoint_checks",
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references"
+          ],
+          "conditions": "内部 Protocol 按实现行为验收",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.relations.Relation",
+      "contracts": [
+        {
+          "behavior": "具体关系/约束及扩展；外图引用拒绝和局部传播",
+          "tests": [
+            "tests/core/test_relations.py::test_relation_constructors_and_endpoint_checks",
+            "tests/core/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
+            "tests/architecture/test_extensions.py::test_extension_spec_rejects_foreign_references"
+          ],
+          "conditions": "内部 Protocol 按实现行为验收",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.contracts.Provenance",
+      "contracts": [
+        {
+          "behavior": "只记录新增目标区域；来源已知，全部步骤重建闭包",
+          "tests": [
+            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.operators.shapes.CallArgumentConstraint",
+      "contracts": [
+        {
+          "behavior": "捕获状态隔离、精确参数角色、相同 shape 不同坐标拒绝",
+          "tests": [
+            "tests/capture/test_provenance.py::test_argument_constraints_do_not_export_capture_state",
+            "tests/integration/test_shape_provenance.py::test_nested_dimension_selector_is_guarded",
+            "tests/integration/test_shape_provenance.py::test_size_consumers_on_unchanged_tensors_are_checked",
+            "tests/operators/test_indexing.py::test_coordinate_mapping_compares_order_not_shape"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.operators.shapes._PendingLayout",
+      "contracts": [
+        {
+          "behavior": "延迟布局证明在最终编译中解决或明确拒绝",
+          "tests": [
+            "tests/operators/test_shapes.py::test_channels_last_weight_layout_is_validated_before_execution",
+            "tests/operators/test_shapes.py::test_nonrectangular_reshape_is_unresolved"
+          ],
+          "conditions": "内部控制流异常经最终规划结果验证",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.types.ModuleState",
+      "contracts": [
+        {
+          "behavior": "结构构造校验/冻结，回调后结构重验、静态往返",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/persistence/test_checkpoint_validation.py::test_checkpoint_checks_callback_final_tensor_structure",
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.types.TensorState",
+      "contracts": [
+        {
+          "behavior": "结构构造校验/冻结，回调后结构重验、静态往返",
+          "tests": [
+            "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs",
+            "tests/persistence/test_checkpoint_validation.py::test_checkpoint_checks_callback_final_tensor_structure",
+            "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        }
+      ]
+    }
+  ],
+  "operators": [
+    {
+      "entry": "module:torch.nn.modules.activation.Softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.LogSoftmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.linear.Linear",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.Conv1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.Conv2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.Conv3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.ConvTranspose1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.ConvTranspose2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.conv.ConvTranspose3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.batchnorm.BatchNorm1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.batchnorm.BatchNorm2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.batchnorm.BatchNorm3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.normalization.LayerNorm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.normalization.GroupNorm",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (1,)，删除 ((1, 4),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.linear.Identity",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.flatten.Flatten",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.flatten.Unflatten",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.ReLU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.ReLU6",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.GELU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.SiLU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Sigmoid",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Tanh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.dropout.Dropout",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.dropout.Dropout1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.dropout.Dropout2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.dropout.Dropout3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.instancenorm.InstanceNorm1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.instancenorm.InstanceNorm2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.instancenorm.InstanceNorm3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.normalization.RMSNorm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.PReLU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.sparse.Embedding",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(5, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxPool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxPool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxPool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AvgPool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AvgPool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AvgPool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveAvgPool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveAvgPool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveAvgPool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveMaxPool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveMaxPool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.AdaptiveMaxPool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxUnpool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxUnpool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pooling.MaxUnpool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2, 2, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.upsampling.Upsample",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReflectionPad1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReflectionPad2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReflectionPad3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReplicationPad1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReplicationPad2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ReplicationPad3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ConstantPad1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ConstantPad2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ConstantPad3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.padding.ZeroPad2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.ELU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.CELU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.SELU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.LeakyReLU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Mish",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Hardswish",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Hardsigmoid",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Hardtanh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Softplus",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Softsign",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Tanhshrink",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.Threshold",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.GLU",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.channelshuffle.ChannelShuffle",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pixelshuffle.PixelShuffle",
+      "contract": "输入原坐标轴 1，删除 [4, 5, 6, 7]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 12, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.pixelshuffle.PixelUnshuffle",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((4, 5, 6, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.fold.Unfold",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((4, 5, 6, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.fold.Fold",
+      "contract": "输入原坐标轴 1，删除 [4, 5, 6, 7]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 12, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "module:torch.nn.modules.activation.MultiheadAttention",
+      "contract": "输入原坐标轴 2，删除 [1, 4]；输出轴 (2, None)，删除 ((1, 4), ())，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.log_softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.log_softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.linear",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv_transpose1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv_transpose2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.conv_transpose3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.batch_norm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.layer_norm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.group_norm",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (1,)，删除 ((1, 4),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.add",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.sub",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.mul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.truediv",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.neg",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.add",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sub",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.mul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.div",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.neg",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.relu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sigmoid",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.tanh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.clone",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.relu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.relu6",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.gelu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.silu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.dropout",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.matmul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.matmul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.mm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.bmm",
+      "contract": "输入原坐标轴 2，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.permute",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.transpose",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.swapaxes",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.swapdims",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.t",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (0,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.reshape",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.flatten",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.squeeze",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 1)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.unsqueeze",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.cat",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.concat",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.concatenate",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.functional.split",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, None)，删除 ((1,), ())，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.unbind",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1, 1)，删除 ((1,), (1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.getitem",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.floordiv",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.mod",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.floor_divide",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.remainder",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:builtins.getattr",
+      "contract": "输入原坐标轴 1，删除 [1]；尺寸表达式保留来源/秩",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.mean",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.instance_norm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 2 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.rms_norm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.prelu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.normalize",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.embedding",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(5, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.avg_pool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.avg_pool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.avg_pool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool1d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool2d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_pool3d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.adaptive_avg_pool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_avg_pool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_avg_pool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool1d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool2d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.adaptive_max_pool3d_with_indices",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1)，删除 ((1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_unpool1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_unpool2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.max_unpool3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 2, 2, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.interpolate",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.pad",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sin",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.cos",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.exp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.log",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sqrt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.rsqrt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.abs",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.square",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.reciprocal",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.floor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.ceil",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.round",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.expm1",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.log1p",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.erf",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sign",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.sinh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.cosh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.pow",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.maximum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.minimum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.eq",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.ne",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.lt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.le",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.gt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.ge",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.where",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.clamp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.clamp_min",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.clamp_max",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.pow",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.eq",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.ne",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.lt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.le",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.gt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.ge",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.abs",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.pos",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.and_",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.or_",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:_operator.xor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.dropout1d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.dropout2d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.dropout3d",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.elu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.celu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.selu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.leaky_relu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.mish",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.hardswish",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.hardsigmoid",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.hardtanh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.softplus",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.softsign",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.tanhshrink",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional._threshold",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.amax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.amin",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.prod",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.logsumexp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.stack",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.chunk",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, None)，删除 ((1,), ())，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.narrow",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.index_select",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.tile",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.repeat_interleave",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.broadcast_to",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.glu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.channel_shuffle",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.pixel_shuffle",
+      "contract": "输入原坐标轴 1，删除 [4, 5, 6, 7]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 12, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.pixel_unshuffle",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((4, 5, 6, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 4, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.unfold",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((4, 5, 6, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 3, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.nn.functional.fold",
+      "contract": "输入原坐标轴 1，删除 [4, 5, 6, 7]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 12, 4)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.addmm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.baddbmm",
+      "contract": "输入原坐标轴 2，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.functional.einsum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch._C._nn.scaled_dot_product_attention",
+      "contract": "输入原坐标轴 3，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:log_softmax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:add",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sub",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:mul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:div",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:neg",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:relu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sigmoid",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:tanh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:clone",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:detach",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:contiguous",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:relu_",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:add_",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:mul_",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:matmul",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:mm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bmm",
+      "contract": "输入原坐标轴 2，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:permute",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:transpose",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:swapaxes",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:swapdims",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:t",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (0,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:reshape",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:view",
+      "contract": "输入原坐标轴 1，删除 [1, 4]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:flatten",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 3, 2)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:squeeze",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 1)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:unsqueeze",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (2,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:split",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, None)，删除 ((1,), ())，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:unbind",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, 1, 1)，删除 ((1,), (1,), (1,))，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:floor_divide",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:remainder",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:mean",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:size",
+      "contract": "输入原坐标轴 1，删除 [1]；尺寸表达式保留来源/秩",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:dim",
+      "contract": "输入原坐标轴 1，删除 [1]；尺寸表达式保留来源/秩",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:numel",
+      "contract": "输入原坐标轴 1，删除 [1]；尺寸表达式保留来源/秩",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sin",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:cos",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:exp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:log",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sqrt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:rsqrt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:abs",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:square",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:reciprocal",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:floor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:ceil",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:round",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:expm1",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:log1p",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:erf",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sign",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:sinh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:cosh",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:pow",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:maximum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:minimum",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:eq",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:ne",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:lt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:le",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:gt",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:ge",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:where",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:clamp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:clamp_min",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:clamp_max",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:masked_fill",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:to",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:type_as",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:float",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:double",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:half",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bfloat16",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bool",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:long",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:int",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:cpu",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:cuda",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA；两个源设备参数项都要求真实 CUDA 可用",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:amax",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:amin",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:prod",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:logsumexp",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:chunk",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1, None)，删除 ((1,), ())，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:narrow",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:index_select",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:repeat",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:tile",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1, 7),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:repeat_interleave",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((2, 3),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:expand",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:expand_as",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",
+      "conditions": "样例 shape=(1, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:addmm",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:baddbmm",
+      "contract": "输入原坐标轴 2，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    }
+  ]
+}

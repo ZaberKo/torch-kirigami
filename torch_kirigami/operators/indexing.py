@@ -1,17 +1,26 @@
 """Axis, partition, and block-coordinate families without activation label tensors."""
 
+from dataclasses import replace
 from math import prod
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from ..contracts import AxisBarrier, Balanced, Requirement
-from ..registry import OperatorSpec
-from ..relations import AxisRelation, BlockMap, BroadcastRelation, Port, SliceRelation
+from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
+from ..errors import UnsupportedOperation
+from ..operation import OperatorSpec
+from ..relations import (
+    AxisPort,
+    AxisRelation,
+    BlockMap,
+    BroadcastRelation,
+    ReshapeRelation,
+    SliceRelation,
+)
 from ..selection import IndexSet
 from .coordinates import narrow_index
-from .native import UnsupportedOperation, equal, one, split
+from .native import equal, one, split
 
 
 def stack(ctx):
@@ -34,14 +43,12 @@ def stack(ctx):
 
 def chunk(ctx):
     """Describe captured chunk ports and retain their original coordinate identity."""
-    from dataclasses import replace
-
     x = one(ctx.argument("input", 0))
     dim = ctx.argument("dim", 2, 0) % len(x.shape)
     width = ctx.outputs[0].shape[dim]
     result = split(replace(ctx, args=(x, width, dim), kwargs={}))
     requirements = tuple(
-        replace(r, data=(*r.data, ("chunks", ctx.argument("chunks", 1))))
+        replace(r, data=(*r.data, ("chunks", ctx.argument("chunks", 1))), arguments=())
         for r in result.requirements
     )
     return replace(result, requirements=requirements)
@@ -64,6 +71,7 @@ def narrow(ctx):
                 (x, y),
                 "Preserve narrow coordinates",
                 (("index", tuple(index)), ("narrow_dim", dim)),
+                arguments=(ArgumentRef("start", 2), ArgumentRef("length", 3)),
             ),
         ),
     )
@@ -82,7 +90,17 @@ def repeat(ctx):
             tuple(relations),
             requirements=(
                 Requirement(
-                    "call_arguments", ctx.node.name, (x, y), "Validate compact broadcast dimensions"
+                    "call_arguments",
+                    ctx.node.name,
+                    (x, y),
+                    "Validate compact broadcast dimensions",
+                    arguments=(
+                        ArgumentRef(
+                            "size" if target is torch.broadcast_to else "sizes", 1, variadic=True
+                        ),
+                    )
+                    if target != "expand_as"
+                    else (),
                 ),
             ),
         )
@@ -98,17 +116,19 @@ def repeat(ctx):
         for d, size in enumerate(x.shape):
             relations.append(
                 AxisRelation(
-                    Port(x.axis(d)),
-                    Port(y.axis(d)),
+                    AxisPort(x.axis(d)),
+                    AxisPort(y.axis(d)),
                     (BlockMap(0, 0, size, 1, count if d == dim else 1),),
                     ctx.node.name,
                 )
             )
     else:
         # Repetition factors come from the arguments, never coincidentally equal shapes.
-        factors = ctx.argument("dims" if target in (torch.tile, "tile") else "sizes", 1)
-        if isinstance(factors, int):
-            factors = ctx.args[1:]
+        factors = ctx.argument(
+            "dims" if target in (torch.tile, "tile") else "sizes", 1, variadic=True
+        )
+        if len(factors) == 1 and isinstance(factors[0], (tuple, list)):
+            factors = factors[0]
         if not isinstance(factors, (tuple, list)) or not all(
             type(n) is int and n > 0 for n in factors
         ):
@@ -122,8 +142,8 @@ def repeat(ctx):
         for d, size in enumerate(x.shape):
             relations.append(
                 AxisRelation(
-                    Port(x.axis(d)),
-                    Port(y.axis(d + leading)),
+                    AxisPort(x.axis(d)),
+                    AxisPort(y.axis(d + leading)),
                     tuple(BlockMap(0, k * size, size) for k in range(factors[d + leading])),
                     ctx.node.name,
                 )
@@ -134,18 +154,29 @@ def repeat(ctx):
 def index_select(ctx):
     """Map captured constant indices and guard their values for portable replay."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    dim = ctx.argument("dim", 1) % len(x.shape)
+    dim = ctx.argument("dim", 1)
     index = one(ctx.argument("index", 2))
     indices = ctx.constants.get(index.id)
     if indices is None or len(index.shape) != 1:
         raise UnsupportedOperation("index_select requires a captured constant integer vector")
+    if not x.shape:
+        return OperatorSpec(
+            (ReshapeRelation(x, y, ctx.node.name),),
+            (
+                AxisBarrier(
+                    index.axis(0), "Static index vector entries cannot be deleted", ctx.node.name
+                ),
+            ),
+            constants=(index,),
+        )
+    dim %= len(x.shape)
     if any(type(i) is not int or not 0 <= i < x.shape[dim] for i in indices):
         raise UnsupportedOperation("Invalid static index_select coordinates")
     relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != dim]
     relations.append(
         AxisRelation(
-            Port(x.axis(dim)),
-            Port(y.axis(dim)),
+            AxisPort(x.axis(dim)),
+            AxisPort(y.axis(dim)),
             tuple(BlockMap(i, j, 1) for j, i in enumerate(indices)),
             ctx.node.name,
         )
@@ -178,8 +209,8 @@ def glu(ctx):
     relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != dim]
     relations.append(
         AxisRelation(
-            Port(y.axis(dim)),
-            Port(x.axis(dim)),
+            AxisPort(y.axis(dim)),
+            AxisPort(x.axis(dim)),
             (BlockMap(0, 0, width), BlockMap(0, width, width)),
             ctx.node.name,
         )
@@ -203,8 +234,8 @@ def channel_shuffle(ctx):
         for group in range(groups):
             relations.append(
                 AxisRelation(
-                    Port(x.axis(1)),
-                    Port(y.axis(1)),
+                    AxisPort(x.axis(1)),
+                    AxisPort(y.axis(1)),
                     (BlockMap(group * width + local, local * groups + group, 1),),
                     ctx.node.name,
                 )
@@ -212,8 +243,8 @@ def channel_shuffle(ctx):
             if group:
                 relations.append(
                     AxisRelation(
-                        Port(x.axis(1)),
-                        Port(x.axis(1)),
+                        AxisPort(x.axis(1)),
+                        AxisPort(x.axis(1)),
                         (BlockMap(local, group * width + local, 1),),
                         ctx.node.name,
                     )
@@ -244,8 +275,8 @@ def pixel_shuffle(ctx):
     relations = [equal(x, d, y, d, ctx.node.name) for d in range(channel)]
     relations.append(
         AxisRelation(
-            Port(b.axis(channel)),
-            Port(a.axis(channel)),
+            AxisPort(b.axis(channel)),
+            AxisPort(a.axis(channel)),
             (BlockMap(0, 0, b.shape[channel], 1, factor * factor),),
             ctx.node.name,
         )
@@ -277,8 +308,8 @@ def unfold_fold(ctx):
     relations = (
         equal(x, 0, y, 0, ctx.node.name),
         AxisRelation(
-            Port(image.axis(1)),
-            Port(columns.axis(1)),
+            AxisPort(image.axis(1)),
+            AxisPort(columns.axis(1)),
             (BlockMap(0, 0, image.shape[1], 1, prod(kernel)),),
             ctx.node.name,
         ),

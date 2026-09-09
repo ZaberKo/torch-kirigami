@@ -12,27 +12,11 @@ import torch
 from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
 
-from .bindings import reference_edits, reference_signature
-from .configuration import attributes, forward_hook_paths
+from .bindings import reference_edits, reference_signature, storage_key
+from .configuration import attributes, forward_hook_paths, has_registration_hooks
 from .errors import CaptureError
+from .operation import TensorFacts
 from .registry import OperatorRegistry
-
-
-@dataclass(frozen=True)
-class TensorFacts:
-    """Tensor metadata detached from activation storage.
-
-    Attributes:
-        shape: Logical dimensions observed during metadata execution.
-        stride: Strides measured in tensor elements.
-        dtype: PyTorch element type.
-        device: Device on which the sample tensor was observed.
-    """
-
-    shape: tuple[int, ...]
-    stride: tuple[int, ...]
-    dtype: torch.dtype
-    device: torch.device
 
 
 def tree_map(fn, value):
@@ -51,23 +35,6 @@ def tensor_leaves(value):
     result = []
     tree_map(lambda item: result.append(item) if isinstance(item, torch.Tensor) else None, value)
     return result
-
-
-def storage_key(tensor):
-    """Identify nonempty dense storage for conservative alias checks.
-
-    Args:
-        tensor: Tensor whose storage should be inspected.
-
-    Returns:
-        A device/pointer pair, or None for an empty tensor.
-
-    Raises:
-        CaptureError: The tensor is quantized or does not have strided layout.
-    """
-    if tensor.layout != torch.strided or tensor.is_quantized:
-        raise CaptureError("Only dense, non-quantized strided tensors are supported")
-    return (str(tensor.device), tensor.untyped_storage().data_ptr()) if tensor.numel() else None
 
 
 def fingerprint(model):
@@ -130,6 +97,8 @@ def isolated_execution(model, args, kwargs):
         state on both success and failure. Arbitrary forward side effects and
         concurrent use of the same model are outside this contract.
     """
+    if has_registration_hooks():
+        raise CaptureError("Module registration callbacks are unsupported during capture")
     reference_signature(model)
     buffers = [
         (module, name, tensor)
@@ -162,17 +131,18 @@ def isolated_execution(model, args, kwargs):
                 parent, _, name = edit.path.rpartition(".")
                 owner = model.get_submodule(parent)
                 restored.append((owner, name, getattr(owner, name)))
-                setattr(owner, name, edit.value)
+                object.__setattr__(owner, name, edit.value)
             for (module, name, _), clone in zip(buffers, copies, strict=False):
-                setattr(module, name, clone)
+                module._buffers[name] = clone
             yield copied_args, copied_kwargs, aliases
     finally:
         for owner, name, original in reversed(restored):
-            setattr(owner, name, original)
+            object.__setattr__(owner, name, original)
         for module, name, original in buffers:
-            setattr(module, name, original)
+            # Restore exact bindings without re-running registration callbacks.
+            module._buffers[name] = original
         for module, mode in modes:
-            module.training = mode
+            object.__setattr__(module, "training", mode)
 
 
 class _LeafTracer(fx.Tracer):
@@ -235,7 +205,15 @@ def _reject_parameter_writes(gm, registry):
             mutates = mutates or getattr(gm.get_submodule(str(node.target)), "inplace", False)
         if mutates and inputs & tainted:
             raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
-        if "out" in node.kwargs:
+        out = node.kwargs.get("out")
+        if node.op == "call_function":
+            try:
+                bound = inspect.signature(node.target).bind_partial(*node.args, **node.kwargs)
+            except (TypeError, ValueError):
+                pass  # Many native functions expose only keyword-only out=, without a signature.
+            else:
+                out = bound.arguments.get("out", out)
+        if out is not None:
             raise CaptureError(f"out= mutation is unsupported at {node.name}")
         fresh = rule.effects(node, module).fresh_output if rule is not None else False
         if inputs & tainted and not fresh:
@@ -243,7 +221,7 @@ def _reject_parameter_writes(gm, registry):
             tainted.add(node)
 
 
-class _Metadata(ShapeProp):
+class _MetadataPropagator(ShapeProp):
     """Execute ShapeProp while retaining facts instead of intermediate activations."""
 
     def __init__(self, module, bound):
@@ -284,23 +262,23 @@ class _Metadata(ShapeProp):
 
 
 @dataclass
-class Captured:
+class CaptureResult:
     """Internal capture result and original-buffer provenance.
 
     Attributes:
         module: FX GraphModule produced by the fixed capture path.
         facts: Result metadata indexed by FX nodes.
-        root_leaf: Whether the root was wrapped as a single opaque call.
         buffer_aliases: Temporary buffer object IDs mapped to original tensors.
     """
 
     module: fx.GraphModule
     facts: dict[fx.Node, Any]
-    root_leaf: bool
     buffer_aliases: dict[int, torch.Tensor]
 
 
-def capture(model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegistry) -> Captured:
+def capture(
+    model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegistry
+) -> CaptureResult:
     """Trace and execute metadata under the library's state-isolation contract.
 
     Args:
@@ -335,7 +313,7 @@ def capture(model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegis
             _reject_parameter_writes(gm, registry)
             bound = signature.bind(*safe_args, **safe_kwargs)
             bound.apply_defaults()
-            metadata = _Metadata(gm, bound.arguments)
+            metadata = _MetadataPropagator(gm, bound.arguments)
             metadata.propagate()
         except CaptureError:
             raise
@@ -344,4 +322,4 @@ def capture(model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegis
                 f"FX capture/metadata execution failed: {error}. "
                 "Tensor-dependent Python control flow is not specialized from examples."
             ) from error
-    return Captured(gm, metadata.facts, root_leaf, aliases)
+    return CaptureResult(gm, metadata.facts, aliases)

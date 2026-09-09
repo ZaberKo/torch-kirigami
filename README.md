@@ -71,6 +71,8 @@ restored = load_checkpoint(make_original_model(), "pruned.pt", map_location="cpu
 
 [架构与 API 契约](docs/dependency-graph-design.md) · [扩展示例](examples/custom_rule.py) · [测试与兼容性](docs/testing.md) · [结构化剪枝设计与扩展 API](docs/pruning-design.md)
 
+[逐类契约与组合测试](docs/testing-coverage.md) · [全部注册入口的测试清单](docs/operator-test-coverage.md)
+
 [融合 GQA 的完整扩展示例](examples/fused_attention.py) 展示一处定义完成自动剪枝与 checkpoint 恢复。
 
 `experiments/capture_probe.py` 保留为早期技术调研材料，其中 export/JIT 实验不属于当前库的实现流程。

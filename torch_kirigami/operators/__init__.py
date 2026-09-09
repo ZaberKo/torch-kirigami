@@ -1,22 +1,21 @@
 """Reusable operator families and the public extension interface."""
 
-from ..registry import (
+from ..operation import (
     CallEffects,
     CandidateAxis,
     OperationContext,
-    OperatorRegistry,
     OperatorRule,
     OperatorSpec,
+    OutputContract,
+    PartitionedLayout,
 )
-from .layouts import CallContract, PartitionedLayout
 
 __all__ = [
-    "CallContract",
     "CallEffects",
     "CandidateAxis",
     "OperationContext",
-    "OperatorRegistry",
     "OperatorRule",
     "OperatorSpec",
+    "OutputContract",
     "PartitionedLayout",
 ]

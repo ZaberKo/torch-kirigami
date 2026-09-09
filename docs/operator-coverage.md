@@ -14,13 +14,13 @@
 | to/type_as、常用 dtype/device 方法、clone/detach/contiguous | 数据坐标保持，转换参考的 shape 不构成广播依赖 | 无 | view/copy 切换的写入安全仍需证明 |
 | matmul/mm/bmm、addmm/baddbmm、einsum | 收缩轴、自由轴和广播 batch | 无 | einsum 要求显式输出方程；不支持操作数内重复标签/对角语义 |
 | cat、stack、split、chunk、unbind | 分段与端口对应 | 无 | stack/unbind 端口固定；split/chunk 原写法须保持保留坐标与端口 |
-| 基础切片、narrow、index_select | 原坐标映射及执行后坐标检查 | 无 | 正步长基础索引；index_select 使用捕获常量整数向量及值 guard；不自动重写索引 buffer |
+| 基础切片、narrow、index_select | 原坐标映射及执行后坐标检查；合法标量 index_select 保持零维 | 无 | 正步长基础索引；index_select 的整数向量须注册为 parameter/buffer，以持久化值 guard；普通属性、闭包或临时 Tensor 常量阻断相关剪枝；不自动重写索引 buffer |
 | transpose/permute、reshape/view、flatten、squeeze/unsqueeze | 轴变换和有来源的尺寸计算 | 无 | 硬编码尺寸、rank 变化或不可证明 view stride 拒绝相关请求 |
 | repeat/tile、repeat_interleave、expand | 重复和广播映射 | 无 | 静态正重复因子；repeat_interleave 需标量次数和显式 dim |
 | expand_as | 数据源广播关系，以及模板 Tensor 到输出的尺寸对应 | 无 | 模板决定 shape，与仅提供 dtype/device 的 type_as 参考不同 |
 | GLU、ChannelShuffle、PixelShuffle/Unshuffle | 成对 gate、通道置换和完整通道块 | 无 | Shuffle 保守要求对应组的局部保留模式一致；pixel 空间轴固定 |
 | Unfold/Fold | 通道与 im2col 通道块 | 无 | batched 2D 形式；空间和 kernel 位置固定 |
-| sum/mean/prod、amax/amin、logsumexp、softmax/log_softmax | 区分归约轴，保留轴联动 | 无 | 不支持返回位置索引的归约；变化后重新计算紧凑域 |
+| sum/mean/prod、amax/amin、logsumexp、softmax/log_softmax | 区分归约轴，保留轴联动 | 无 | 按原生语义解释合法的空 dim 序列和标量轴；不支持返回位置索引的归约；变化后重新计算紧凑域 |
 | scaled_dot_product_attention | Q/K 特征、K/V 序列、V 输出、batch/head 和 mask | 无 | GQA 整 KV 组或合法 multiplier 收缩；is_causal=True 固定 Q/K token 轴以避免隐式三角 mask 改变原坐标语义；不负责 KV cache 更新 |
 | MultiheadAttention | 打包/分离投影、自/交叉注意力、固定 head 数的平衡宽度收缩 | 宽度 | batch/token/mask 位置固定；不实现保持外部宽度的内部删 head |
 | 第三方融合模块 | 一个 OperatorRule 声明关系、候选、布局/属性及必要 lowering | 规则可声明 | opaque 内部语义由扩展保证；保存不需要另写算子规则 |

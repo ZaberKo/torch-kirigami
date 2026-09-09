@@ -2,10 +2,9 @@
 
 from .checkpoint import load_checkpoint, save_checkpoint
 from .metrics import Magnitude, WeightTaylor
+from .plan import PruningPlan, PruningResult
 from .planner import Greedy, PlanningContext
 from .pruner import Pruner
-from .rewrite import RewriteContext, RewriteResult
-from .state import ModelStructure
 from .types import (
     AnalysisSummary,
     AttributeRecipe,
@@ -15,9 +14,10 @@ from .types import (
     CoordinateSegment,
     ExecutionError,
     Metric,
+    ModelStructure,
     PlanningError,
-    PruningPlan,
-    PruningResult,
+    RewriteContext,
+    RewriteResult,
     Strategy,
     TensorRecipe,
 )

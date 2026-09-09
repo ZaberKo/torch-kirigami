@@ -8,8 +8,11 @@ from collections import OrderedDict
 import torch
 
 from ..contracts import Balanced, Divisible
+from .metrics import Magnitude, WeightTaylor
 from .rewrite import compile_recipes
 from .types import BudgetReport, Candidate, PlanningError
+
+_IMPACT_CACHE_SIZE = 32
 
 
 class PlanningContext:
@@ -21,12 +24,12 @@ class PlanningContext:
     """
 
     def __init__(self, graph, operations, candidates, budget, axes, metric, constraints):
-        self.graph, self.operations = graph, operations
-        self.candidates = tuple(candidates)
-        self.budget, self.axes, self.metric = budget, tuple(axes), metric
-        self.constraints = tuple(constraints)
-        self.widths = tuple(a.tensor.shape[a.dim] for a in self.axes)
-        self.targets = (
+        self._graph, self._operations = graph, tuple(operations)
+        self._candidates = tuple(candidates)
+        self._budget, self._axes, self._metric = budget, tuple(dict.fromkeys(axes)), metric
+        self._constraints = tuple(constraints)
+        self._widths = tuple(a.tensor.shape[a.dim] for a in self.axes)
+        self._targets = (
             tuple(math.floor(budget.ratio * w) for w in self.widths)
             if budget.scope == "local"
             else (math.floor(budget.ratio * sum(self.widths)),)
@@ -36,13 +39,60 @@ class PlanningContext:
         self._cache = OrderedDict()
         self._compiled = OrderedDict()
 
+    @property
+    def graph(self):
+        """Return the source dependency snapshot."""
+        return self._graph
+
+    @property
+    def operations(self):
+        """Return captured calls used for recipe compilation."""
+        return self._operations
+
+    @property
+    def candidates(self):
+        """Return the fixed candidate universe."""
+        return self._candidates
+
+    @property
+    def budget(self):
+        """Return the caller's immutable budget."""
+        return self._budget
+
+    @property
+    def axes(self):
+        """Return unique original budget axes."""
+        return self._axes
+
+    @property
+    def metric(self):
+        """Return the supplied scoring callable, if any."""
+        return self._metric
+
+    @property
+    def constraints(self):
+        """Return fixed analysis premises; callbacks must not mutate constraints."""
+        return self._constraints
+
+    @property
+    def widths(self):
+        """Return the frozen budget denominator."""
+        return self._widths
+
+    @property
+    def targets(self):
+        """Return fixed local caps or the single global cap."""
+        return self._targets
+
     def impact(self, remove):
         """Analyze joint original-coordinate seeds without executing the model."""
         remove = tuple(remove)
-        key = tuple((s.tensor.id, s.regions) for s in remove)
+        for selection in remove:
+            self.graph.metadata(selection.tensor)
+        key = tuple((s.tensor, s.regions) for s in remove)
         if key not in self._cache:
             self._cache[key] = self.graph.propagate(remove=remove, constraints=self.constraints)
-            if len(self._cache) > 32:
+            if len(self._cache) > _IMPACT_CACHE_SIZE:
                 self._cache.popitem(last=False)
         else:
             self.graph.validate()  # propagate performs the entry check on cache misses.
@@ -83,7 +133,10 @@ class PlanningContext:
 
     def counts(self, impact):
         """Measure actual full-axis removals, counting each logical axis once."""
-        return tuple(len(impact.selection(a.tensor).project(a.dim)) for a in self.axes)
+        self.graph.validate_impact(impact)
+        return tuple(
+            len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.axes
+        )
 
     def within_budget(self, impact):
         """Check the frozen budget against the whole dependency closure."""
@@ -95,16 +148,19 @@ class PlanningContext:
         )
 
     def compile(self, impact):
-        """Check execution support and produce recipes without allocating weights."""
+        """Return (tensor recipes, attribute recipes, notes), without new weights."""
         self.graph.validate()
-        key = (tuple((s.tensor.id, s.regions) for s in impact.requested), impact.status)
+        self.graph.validate_impact(impact)
+        # Cache a specific analysis result, not merely seeds/status: extra
+        # constraints can produce a different closure or execution requirements.
+        key = id(impact)
         if key not in self._compiled:
-            self._compiled[key] = compile_recipes(self.graph, self.operations, impact)
+            self._compiled[key] = (impact, compile_recipes(self.graph, self.operations, impact))
             if len(self._compiled) > 4:
                 self._compiled.popitem(last=False)
         else:
             self._compiled.move_to_end(key)
-        return self._compiled[key]
+        return self._compiled[key][1]
 
     def report(self, impact):
         """Freeze the measured budget and strategy diagnostics."""
@@ -122,26 +178,29 @@ class PlanningContext:
 
 def discover(graph, operations):
     """Generate declared logical-axis candidates, deduplicating shared domains."""
-    result, axes, seen = [], [], set()
+    result, domains, keys = [], {}, {}
     for op in operations:
         for domain in graph.operator_spec(op).candidates:
-            if domain.key in seen:
-                continue
-            seen.add(domain.key)
-            axis, block = domain.axis, domain.block
-            axes.append(axis)
-            width = axis.tensor.shape[axis.dim]
-            if block < 1 or width % block:
-                raise PlanningError("Candidate block must divide the logical width")
-            for start in range(0, width, block):
-                result.append(
-                    Candidate(
-                        f"{domain.key}:{start:012d}",
-                        (axis.select(range(start, start + block)),),
-                        axis,
-                    )
+            axis, block = domain.axis, domain.block_size
+            if domain.key in keys and keys[domain.key] != (axis, block):
+                raise PlanningError(f"Conflicting candidate domain key: {domain.key}")
+            keys[domain.key] = (axis, block)
+            if axis in domains and domains[axis].block_size != block:
+                raise PlanningError("Conflicting block sizes for one candidate axis")
+            domains.setdefault(axis, domain)
+    for axis, domain in domains.items():
+        block, width = domain.block_size, axis.tensor.shape[axis.dim]
+        if width % block:
+            raise PlanningError("Candidate block must divide the logical width")
+        for start in range(0, width, block):
+            result.append(
+                Candidate(
+                    f"{domain.key}:{start:012d}",
+                    (axis.select(range(start, start + block)),),
+                    axis,
                 )
-    return tuple(result), tuple(axes)
+            )
+    return tuple(result), tuple(domains)
 
 
 class Greedy:
@@ -180,7 +239,7 @@ class Greedy:
             and not any(context.targets)
             and all(
                 any(
-                    s.tensor == a.tensor and s.project(a.dim)
+                    s.tensor == a.tensor and s.fully_selected_indices(a.dim)
                     for s in c.remove
                     for a in context.axes
                 )
@@ -189,15 +248,27 @@ class Greedy:
         ):
             context.exclusions.extend((c.key, "Zero channel budget") for c in context.candidates)
             return ()
-        eligible = []
-        for candidate in context.candidates:
-            try:
-                context.require_complete(context.impact(candidate.remove))
-            except PlanningError as error:
-                context.exclusions.append((candidate.key, str(error)))
-            else:
-                eligible.append(candidate)
-        scores = context.score(eligible) if eligible else ()
+        eligible, scores = [], []
+        # Only our exact built-in metrics promise batch-independent scores.
+        # Keep their eligibility/score queries inside the impact cache window;
+        # arbitrary custom callables still receive one complete eligible batch.
+        batch_size = (
+            _IMPACT_CACHE_SIZE
+            if type(context.metric) in (Magnitude, WeightTaylor)
+            else max(1, len(context.candidates))
+        )
+        for start in range(0, len(context.candidates), batch_size):
+            batch = []
+            for candidate in context.candidates[start : start + batch_size]:
+                try:
+                    context.require_complete(context.impact(candidate.remove))
+                except PlanningError as error:
+                    context.exclusions.append((candidate.key, str(error)))
+                else:
+                    batch.append(candidate)
+            if batch:
+                scores.extend(context.score(batch))
+                eligible.extend(batch)
         ranked = [
             c
             for _, c in sorted(
@@ -249,7 +320,7 @@ class Greedy:
                     if repair is None:
                         break
                     axis = repair.axis
-                    before = impact.selection(axis.tensor).project(axis.dim)
+                    before = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
                     partitions = ()
                     if isinstance(repair, Balanced):
                         counts = [len(p.subtract(before)) for p in repair.partitions]
@@ -265,7 +336,11 @@ class Greedy:
                         new = attempt([*trial, extra])
                         if new is None:
                             break
-                        delta = new.selection(axis.tensor).project(axis.dim).subtract(before)
+                        delta = (
+                            new.selection(axis.tensor)
+                            .fully_selected_indices(axis.dim)
+                            .subtract(before)
+                        )
                         if not delta or (
                             partitions and not any(delta.intersect(p) for p in partitions)
                         ):

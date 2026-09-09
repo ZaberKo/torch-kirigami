@@ -8,7 +8,8 @@ from math import prod
 from torch import fx
 
 from ..contracts import Diagnostic, ShapeExpr
-from ..registry import tensors
+from ..errors import UnsupportedOperation
+from ..operation import PartitionedLayout, argument_locations
 from ..selection import TensorRef
 
 
@@ -31,6 +32,9 @@ def expression_for(ctx):
     if node.op == "call_method" and isinstance(x, TensorRef):
         if node.target == "size":
             dim = ctx.argument("dim", 1)
+            raw_dim = ctx.raw_argument("dim", 1)
+            if isinstance(raw_dim, fx.Node) and raw_dim not in ctx.expressions:
+                raise UnsupportedOperation("Dimension selector has unknown provenance")
             expression = (
                 ShapeExpr("shape", x)
                 if dim is None
@@ -41,6 +45,8 @@ def expression_for(ctx):
     if node.op == "call_function" and node.target is operator.getitem:
         source = ctx.expressions.get(node.args[0])
         if source and source.kind == "shape" and isinstance(ctx.args[1], int):
+            if isinstance(node.args[1], fx.Node) and node.args[1] not in ctx.expressions:
+                raise UnsupportedOperation("Dimension selector has unknown provenance")
             expression = ShapeExpr(
                 "dimension", (source.value, ctx.args[1] % len(source.value.shape))
             )
@@ -111,38 +117,89 @@ def reevaluate(raw, normalized, expressions, shape):
 
 def dependencies(ctx):
     """Return dimension-source tensors used by scalar arguments of a call."""
-    result = []
-
-    def visit(expr):
-        if isinstance(expr.value, TensorRef):
-            result.append(expr.value)
-        elif isinstance(expr.value, tuple):
-            result.extend(tensors(expr.value))
-        for arg in expr.args:
-            visit(arg)
-
-    for node in ctx.node.all_input_nodes:
-        if node in ctx.expressions:
-            visit(ctx.expressions[node])
-    return tuple(dict.fromkeys(result))
+    return tuple(
+        dict.fromkeys(
+            ref
+            for node in ctx.node.all_input_nodes
+            if node in ctx.expressions
+            for ref in ctx.expressions[node].refs
+        )
+    )
 
 
 @dataclass(frozen=True)
-class ArgumentDependencies:
-    """Trigger scalar-argument checks independently of removal propagation."""
+class CallArgumentConstraint:
+    """Check immutable scalar provenance independently of removal propagation.
 
-    context: object
-    allow_changes: bool = False
-    layouts: tuple = ()
+    Only expression/value pairs are retained; no FX node, model, or mutable
+    OperationContext escapes through graph and impact constraint inspection.
+    """
+
+    node: str
+    arguments: tuple[tuple[ShapeExpr, int | tuple[int, ...]], ...]
+    layouts: tuple[PartitionedLayout, ...] = ()
+
+    def __post_init__(self):
+        arguments = tuple(
+            (expr, tuple(value) if isinstance(value, (list, tuple)) else value)
+            for expr, value in self.arguments
+        )
+        for expr, value in arguments:
+            if not isinstance(expr, ShapeExpr) or not (
+                isinstance(value, int)
+                or (isinstance(value, tuple) and all(isinstance(item, int) for item in value))
+            ):
+                raise TypeError("Call argument checks require shape expressions and integer values")
+        object.__setattr__(self, "arguments", arguments)
+        object.__setattr__(self, "layouts", tuple(self.layouts))
+
+    @classmethod
+    def from_operation(cls, context, *, checked_arguments=()):
+        """Detach the used shape expressions and observed values from capture."""
+        arguments = []
+
+        def visit(raw, observed):
+            if isinstance(raw, fx.Node):
+                expression = context.expressions.get(raw)
+                if expression is not None:
+                    arguments.append((expression, observed))
+            elif isinstance(raw, (tuple, list)):
+                for item, value in zip(raw, observed, strict=True):
+                    visit(item, value)
+            elif isinstance(raw, dict):
+                for key, item in raw.items():
+                    visit(item, observed[key])
+
+        # Match parameter locations, not expression identity: the same size()
+        # node may feed a checked groups argument and an unchecked stride.
+        checked = {
+            location
+            for arg in checked_arguments
+            for location in argument_locations(
+                context.node.args,
+                context.node.kwargs,
+                arg.name,
+                arg.position,
+                target=context.node.target if context.module is None else None,
+                variadic=arg.variadic,
+            )
+        }
+        for index, (raw, observed) in enumerate(zip(context.node.args, context.args, strict=True)):
+            if ("args", index) not in checked:
+                visit(raw, observed)
+        for key, raw in context.node.kwargs.items():
+            if ("kwargs", key) not in checked:
+                visit(raw, context.kwargs[key])
+        return cls(context.node.name, tuple(arguments))
 
     @property
     def refs(self):
         """Return tensors whose sizes feed this call's scalar arguments."""
-        return dependencies(self.context)
+        return tuple(dict.fromkeys(ref for expr, _ in self.arguments for ref in expr.refs))
 
     def check(self, selections):
         """Reject changed semantic arguments while permitting declared shape contracts."""
-        if self.allow_changes or not any(r.id in selections for r in self.refs):
+        if not any(r.id in selections for r in self.refs):
             return None
 
         def shape(ref):
@@ -156,7 +213,7 @@ class ArgumentDependencies:
             for layout in self.layouts:
                 if layout.tensor != ref:
                     continue
-                segments = layout.retained(selection)
+                segments = layout.retained_regions(selection)
                 sizes = [tuple(len(a) for a in r.axes) for r in segments]
                 if not sizes or any(
                     a != b
@@ -172,28 +229,26 @@ class ArgumentDependencies:
                 return shapes[0]
             raise _PendingLayout("Compact layout has not been established")
 
-        ctx = self.context
         try:
-            args = reevaluate(ctx.node.args, ctx.args, ctx.expressions, shape)
-            kwargs = reevaluate(ctx.node.kwargs, ctx.kwargs, ctx.expressions, shape)
+            changed = any(evaluate(expr, shape) != value for expr, value in self.arguments)
         except _PendingLayout:
             return Diagnostic(
                 "argument_layout",
                 "Scalar arguments require a resolved compact layout",
-                node=ctx.node.name,
+                node=self.node,
             )
         except (TypeError, ValueError, ZeroDivisionError, IndexError):
             return Diagnostic(
                 "argument_provenance",
                 "Cannot reevaluate scalar arguments",
-                node=ctx.node.name,
+                node=self.node,
                 complete=False,
             )
-        if args != ctx.args or kwargs != ctx.kwargs:
+        if changed:
             return Diagnostic(
                 "changed_arguments",
                 "Compaction changes a semantic argument in the original forward",
                 "conflict",
-                ctx.node.name,
+                self.node,
             )
         return None

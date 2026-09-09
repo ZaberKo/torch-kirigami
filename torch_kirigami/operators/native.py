@@ -2,42 +2,34 @@
 
 from __future__ import annotations
 
-import builtins
-import operator
-from dataclasses import replace
 from math import prod
 
 import torch
-from torch import nn
+from torch import fx, nn
 from torch.nn import functional as F
 
 from ..contracts import (
+    ArgumentRef,
     AxisBarrier,
     Balanced,
     BlockBalance,
-    Layout,
+    LayoutConstraint,
     NonEmpty,
     Requirement,
     ShapeExpr,
 )
-from ..registry import CandidateAxis, OperatorRule, OperatorSpec, tensors
+from ..errors import UnsupportedOperation
+from ..operation import CandidateAxis, OperatorSpec, OutputContract, PartitionedLayout, tensors
 from ..relations import (
+    AxisPort,
     AxisRelation,
     BlockMap,
     BroadcastRelation,
     PermuteRelation,
-    Port,
     ReshapeRelation,
     SliceRelation,
 )
 from ..selection import IndexSet, Region, TensorRef, full_region
-from .effects import native_effects
-from .layouts import CallContract, PartitionedLayout
-from .shapes import expression_for
-
-
-class UnsupportedOperation(Exception):
-    """A captured operation has no proven rule for these arguments."""
 
 
 def one(value):
@@ -60,13 +52,16 @@ def requirement(ctx, name, tensor, dim, *, kind="attribute", position=None):
         target,
         (tensor,),
         f"Update {name} from the retained axis size",
-        (("name", name), ("axis", tensor.axis(dim)), ("position", position)),
+        (("axis", tensor.axis(dim)),),
+        arguments=(ArgumentRef(name, position),)
+        if ctx.module is None and position is not None
+        else (),
     )
 
 
 def bind(ctx, name, position, default=None):
     """Resolve a module-local binding or a normalized functional argument."""
-    return ctx.parameter(name) if ctx.module is not None else ctx.argument(name, position, default)
+    return ctx.binding(name) if ctx.module is not None else ctx.argument(name, position, default)
 
 
 def _identity(ctx):
@@ -91,7 +86,7 @@ def pointwise(ctx):
 
 def layout(ctx, tensor, ports=()):
     """Declare the compact layouts accepted by a particular tensor use."""
-    return Layout(tensor, tuple(ports), node=ctx.node.name)
+    return LayoutConstraint(tensor, tuple(ports), node=ctx.node.name)
 
 
 def affine_layouts(ctx):
@@ -116,7 +111,7 @@ def linear(ctx):
         (layout(ctx, x), layout(ctx, y), layout(ctx, w)),
         reqs,
         candidates=candidates,
-        contract=CallContract(fresh_output=True, output_layout="contiguous"),
+        contract=OutputContract(fresh_output=True, output_layout="contiguous"),
     )
 
 
@@ -154,8 +149,8 @@ def convolution(ctx):
         if not depthwise:
             relations.append(
                 AxisRelation(
-                    Port(local_tensor.axis(channel)),
-                    Port(w.axis(1), region),
+                    AxisPort(local_tensor.axis(channel)),
+                    AxisPort(w.axis(1), region),
                     (BlockMap(group * local_block, 0, local_block),),
                     ctx.node.name,
                 )
@@ -164,8 +159,8 @@ def convolution(ctx):
             # A retained input row owns its own local multiplier columns.
             relations.append(
                 AxisRelation(
-                    Port(y.axis(channel)),
-                    Port(w.axis(1), region),
+                    AxisPort(y.axis(channel)),
+                    AxisPort(w.axis(1), region),
                     (BlockMap(group * local_block, 0, local_block),),
                     ctx.node.name,
                 )
@@ -173,8 +168,8 @@ def convolution(ctx):
     if depthwise:
         relations.append(
             AxisRelation(
-                Port(x.axis(channel)),
-                Port(y.axis(channel)),
+                AxisPort(x.axis(channel)),
+                AxisPort(y.axis(channel)),
                 (BlockMap(0, 0, cin, 1, cout // cin, require_full_target=True),),
                 ctx.node.name,
             )
@@ -230,7 +225,7 @@ def convolution(ctx):
         tuple(requirements),
         candidates=candidates,
         layouts=(PartitionedLayout(w, tuple(partitions)),),
-        contract=CallContract(fresh_output=True, output_layout="convolution"),
+        contract=OutputContract(fresh_output=True, output_layout="convolution"),
     )
 
 
@@ -281,10 +276,8 @@ def layer_norm(ctx):
             else ctx.node.name,
             (x,),
             "Update normalized_shape; compact normalization is not zero-mask equivalence",
-            (
-                ("axes", tuple(x.axis(len(x.shape) - rank + d) for d in range(rank))),
-                ("position", 1),
-            ),
+            (("axes", tuple(x.axis(len(x.shape) - rank + d) for d in range(rank))),),
+            arguments=(ArgumentRef("normalized_shape", 1),) if ctx.module is None else (),
         ),
     )
     return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), requirements)
@@ -355,13 +348,14 @@ def permute(ctx):
         d0 = ctx.argument("dim0", 1)
         d1 = ctx.argument("dim1", 2)
         dims = list(range(rank))
-        dims[d0 % rank], dims[d1 % rank] = dims[d1 % rank], dims[d0 % rank]
+        if rank:
+            dims[d0 % rank], dims[d1 % rank] = dims[d1 % rank], dims[d0 % rank]
     elif target in ("t", torch.t):
         dims = list(reversed(range(rank)))
     else:
-        dims = ctx.argument("dims", 1)
-        if isinstance(dims, int):
-            dims = ctx.args[1:]
+        dims = ctx.argument("dims", 1, variadic=True)
+        if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
+            dims = dims[0]
         if not isinstance(dims, (tuple, list)):
             raise UnsupportedOperation("Permutation must be static")
     dims = tuple(d % rank for d in dims)
@@ -372,8 +366,6 @@ def permute(ctx):
 
 def _expr(ctx, value):
     """Resolve dimension provenance without guessing from numeric equality."""
-    from torch import fx
-
     if isinstance(value, fx.Node):
         return ctx.expressions.get(value, ShapeExpr("unknown", value.name))
     if isinstance(value, (tuple, list)):
@@ -411,7 +403,7 @@ def reshape(ctx):
         return OperatorSpec((relation,), requirements=(requirement_,))
     target = ctx.node.target
     if target in ("reshape", "view", torch.reshape):
-        raw = ctx.node.kwargs.get("shape", ctx.node.args[1:])
+        raw = ctx.raw_argument("shape", 1, variadic=True)
         expression = _expr(ctx, raw)
         if not _known(expression):
             raise UnsupportedOperation("Cannot prove reshape size argument provenance")
@@ -428,6 +420,7 @@ def reshape(ctx):
                 ("requires_view", target == "view"),
                 ("unpack_shape", target is not torch.reshape),
             ),
+            arguments=(ArgumentRef("shape", 1, variadic=True),),
         )
         return OperatorSpec((relation,), requirements=(requirement_,))
     if target in ("squeeze", torch.squeeze):
@@ -498,8 +491,10 @@ def split(ctx):
             ("axis", x.axis(dim)),
             ("outputs", ctx.outputs),
             ("unbound", target in ("unbind", torch.unbind)),
-            ("argument", ("split_size_or_sections", 1)),
         ),
+        arguments=()
+        if target in ("unbind", torch.unbind)
+        else (ArgumentRef("split_size_or_sections", 1),),
     )
     return OperatorSpec(tuple(relations), tuple(constraints), (requirement_,))
 
@@ -550,6 +545,7 @@ def getitem(ctx):
         (source, y),
         "Remap slice coordinates after upstream compaction",
         (("index", tuple(normalized)),),
+        arguments=(ArgumentRef("index", 1),),
     )
     return OperatorSpec(
         (SliceRelation(source, y, tuple(normalized), ctx.node.name),), requirements=(req,)
@@ -560,13 +556,13 @@ def reduction(ctx):
     """Connect retained axes while recording changes to the reduction domain."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     dims = ctx.argument("dim", 1)
-    if dims is None:
+    if dims is None or (isinstance(dims, (tuple, list)) and not dims):
         dims = tuple(range(len(x.shape)))
     elif isinstance(dims, int):
         dims = (dims,)
     if not isinstance(dims, (tuple, list)) or not all(isinstance(d, int) for d in dims):
         raise UnsupportedOperation("Reduction axes must be static")
-    dims = tuple(d % len(x.shape) for d in dims)
+    dims = tuple(d % len(x.shape) for d in dims) if x.shape else ()
     keep = ctx.argument("keepdim", 2, False)
     relations, outdim = [], 0
     for dim in range(len(x.shape)):
@@ -616,156 +612,6 @@ def softmax(ctx):
         ctx.node.name,
         (x,),
         "Recompute softmax/log_softmax over retained positions; zero masks are not equivalent",
-        (("axes", (dim % len(x.shape),)),),
+        (("axes", (dim % len(x.shape),) if x.shape else ()),),
     )
     return OperatorSpec(result.relations, result.constraints, (requirement_,))
-
-
-def register_defaults(registry):
-    """Populate a local registry with exact built-in operation matches."""
-
-    def native(rule):
-        def analyze(ctx):
-            expression = expression_for(ctx)
-            if expression is not None and not ctx.outputs:
-                return OperatorSpec(expression=expression)
-            result = rule(ctx)
-            if result.contract is None:
-                fresh = native_effects(ctx.node, ctx.module).fresh_output
-                dense = ctx.node.target == "contiguous"
-                result = replace(
-                    result,
-                    contract=CallContract(
-                        fresh_output=fresh,
-                        output_layout="contiguous" if dense else "unknown",
-                    ),
-                )
-            return result
-
-        return OperatorRule(analyze, evaluate=True, effects=native_effects)
-
-    def modules(types, rule):
-        for target in types:
-            registry.register(target, native(rule))
-
-    def functions(targets, rule):
-        for target in targets:
-            registry.register(target, native(rule), opaque=False)
-
-    def methods(names, rule):
-        for name in names:
-            registry.register_method(name, native(rule))
-
-    modules([nn.Softmax, nn.LogSoftmax], softmax)
-    functions([F.softmax, F.log_softmax, torch.softmax, torch.log_softmax], softmax)
-    methods(["softmax", "log_softmax"], softmax)
-    modules([nn.Linear], linear)
-    functions([F.linear], linear)
-    modules(
-        [
-            nn.Conv1d,
-            nn.Conv2d,
-            nn.Conv3d,
-            nn.ConvTranspose1d,
-            nn.ConvTranspose2d,
-            nn.ConvTranspose3d,
-        ],
-        convolution,
-    )
-    functions(
-        [F.conv1d, F.conv2d, F.conv3d, F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d],
-        convolution,
-    )
-    modules([nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d], batch_norm)
-    functions([F.batch_norm], batch_norm)
-    modules([nn.LayerNorm], layer_norm)
-    functions([F.layer_norm], layer_norm)
-    modules([nn.GroupNorm], group_norm)
-    functions([F.group_norm], group_norm)
-    modules([nn.Identity], _identity)
-    modules([nn.Flatten, nn.Unflatten], reshape)
-    modules(
-        [
-            nn.ReLU,
-            nn.ReLU6,
-            nn.GELU,
-            nn.SiLU,
-            nn.Sigmoid,
-            nn.Tanh,
-            nn.Dropout,
-            nn.Dropout1d,
-            nn.Dropout2d,
-            nn.Dropout3d,
-        ],
-        pointwise,
-    )
-    functions(
-        [
-            operator.add,
-            operator.sub,
-            operator.mul,
-            operator.truediv,
-            operator.neg,
-            torch.add,
-            torch.sub,
-            torch.mul,
-            torch.div,
-            torch.neg,
-            torch.relu,
-            torch.sigmoid,
-            torch.tanh,
-            torch.clone,
-            F.relu,
-            F.relu6,
-            F.gelu,
-            F.silu,
-            F.dropout,
-        ],
-        pointwise,
-    )
-    methods(
-        [
-            "add",
-            "sub",
-            "mul",
-            "div",
-            "neg",
-            "relu",
-            "sigmoid",
-            "tanh",
-            "clone",
-            "detach",
-            "contiguous",
-            "relu_",
-            "add_",
-            "mul_",
-        ],
-        pointwise,
-    )
-    functions([operator.matmul, torch.matmul, torch.mm, torch.bmm], matmul)
-    methods(["matmul", "mm", "bmm"], matmul)
-    functions([torch.permute, torch.transpose, torch.swapaxes, torch.swapdims, torch.t], permute)
-    methods(["permute", "transpose", "swapaxes", "swapdims", "t"], permute)
-    functions([torch.reshape, torch.flatten, torch.squeeze, torch.unsqueeze], reshape)
-    methods(["reshape", "view", "flatten", "squeeze", "unsqueeze"], reshape)
-    functions([torch.cat, torch.concat, torch.concatenate], concatenate)
-    functions([torch.split, torch.unbind], split)
-    methods(["split", "unbind"], split)
-    functions([operator.getitem], getitem)
-    # The wrapper extracts proven scalar size expressions first. Tensor overloads
-    # must retain pointwise dependencies instead of silently emitting an empty rule.
-    functions([operator.floordiv, operator.mod, torch.floor_divide, torch.remainder], pointwise)
-    methods(["floor_divide", "remainder"], pointwise)
-    functions([builtins.getattr], getattr_rule)
-    functions([torch.sum, torch.mean], reduction)
-    methods(["sum", "mean"], reduction)
-    methods(["size", "dim", "numel"], shape_only)
-    from .extended import register_extended
-
-    register_extended(registry, modules, functions, methods)
-    from .indexing import register_indexing
-
-    register_indexing(modules, functions, methods)
-    from .attention import register_attention
-
-    register_attention(modules, functions, methods)

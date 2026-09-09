@@ -6,7 +6,7 @@ from ..selection import IndexSet
 def retained_indices(impact, axis):
     """Return retained original axis coordinates without reordering."""
     return IndexSet.span(0, axis.tensor.shape[axis.dim]).subtract(
-        impact.selection(axis.tensor).project(axis.dim)
+        impact.selection(axis.tensor).fully_selected_indices(axis.dim)
     )
 
 

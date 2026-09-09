@@ -1,6 +1,6 @@
 # torch-kirigami 当前架构说明
 
-本文面向没有阅读代码的审阅者，说明 **2026-09-09 工作区当前实现**，包括尚未提交的独立 review 修复。它描述已经落地的职责、流程与边界，不是后续实施计划；与早期讨论不一致时，以本文描述的当前行为为准。
+本文说明库的职责、流程、扩展接口与支持边界，适合首次阅读项目时查阅。
 
 ## 1. 整体设计
 
@@ -76,13 +76,28 @@ assert model(x).shape == (3, 2)
 | 捕获 | 参数绑定、FX 叶子接入、样例执行、元数据与状态隔离 | [capture.py](../torch_kirigami/capture.py) |
 | 来源与配置 | 注册对象、普通容器引用、配置冻结、共享状态编辑 | [bindings.py](../torch_kirigami/bindings.py)、[configuration.py](../torch_kirigami/configuration.py) |
 | 结构表示 | 张量、轴、区间与区域选择、索引映射、约束、诊断 | [selection.py](../torch_kirigami/selection.py)、[relations.py](../torch_kirigami/relations.py)、[contracts.py](../torch_kirigami/contracts.py) |
+| 算子共享契约 | TensorFacts、调用上下文、PartitionedLayout、OutputContract、OperatorSpec 和 OperatorRule | [operation.py](../torch_kirigami/operation.py) |
 | 依赖图 | FX 节点与原实体关联、联合传播、来源解释、有效性检查 | [graph.py](../torch_kirigami/graph.py) |
-| 算子语义 | 统一注册接口及内置算子家族，提供共享结构描述 | [registry.py](../torch_kirigami/registry.py)、[operators/](../torch_kirigami/operators/) |
+| 算子语义与组装 | 各家族实现结构语义；上层注册表组装内置规则 | [registry.py](../torch_kirigami/registry.py)、[operators/defaults.py](../torch_kirigami/operators/defaults.py)、[operators/](../torch_kirigami/operators/) |
 | 规划与评分 | 候选发现、预算、Metric、Strategy、生成静态 plan | [pruning/planner.py](../torch_kirigami/pruning/planner.py)、[metrics.py](../torch_kirigami/pruning/metrics.py)、[pruner.py](../torch_kirigami/pruning/pruner.py) |
-| 配方与提交 | 联合保留布局、原调用检查、结构前提、分配及事务提交 | [pruning/rewrite.py](../torch_kirigami/pruning/rewrite.py)、[state.py](../torch_kirigami/pruning/state.py)、[operators/validation.py](../torch_kirigami/operators/validation.py) |
-| 持久化 | plan 数据编码、最终结构 checkpoint 与恢复 | [pruning/serialization.py](../torch_kirigami/pruning/serialization.py)、[checkpoint.py](../torch_kirigami/pruning/checkpoint.py) |
+| 剪枝共享数据 | 候选、预算、配方、结构快照及 RewriteContext/RewriteResult | [pruning/types.py](../torch_kirigami/pruning/types.py) |
+| 配方与提交 | 联合保留布局、共享坐标校验、原调用检查、分配及事务提交 | [pruning/recipes.py](../torch_kirigami/pruning/recipes.py)、[rewrite.py](../torch_kirigami/pruning/rewrite.py)、[validation.py](../torch_kirigami/pruning/validation.py)、[state.py](../torch_kirigami/pruning/state.py) |
+| 持久化 | 静态 plan、数据编码、最终结构 checkpoint 与恢复 | [pruning/plan.py](../torch_kirigami/pruning/plan.py)、[serialization.py](../torch_kirigami/pruning/serialization.py)、[checkpoint.py](../torch_kirigami/pruning/checkpoint.py) |
 
-依赖核心可以单独调用，不导入评分策略或执行权重修改。统一的 `OperatorRule` 持有分析和 lowering 入口，但依赖建图只调用分析部分；默认 lowering 在剪枝阶段才使用。
+依赖核心可以单独调用，不导入评分策略或执行权重修改。统一的 `OperatorRule` 持有分析和可选 lowering 入口，但依赖建图只调用分析部分。没有自定义 lowering 时，规则返回 `None`，由剪枝编译层消费共享描述；规则契约不反向导入执行器。
+
+模块依赖按以下方向组织，箭头表示“左侧导入右侧”：
+
+```text
+capture / graph → registry → operators.defaults → 算子家族 → operation
+pruner → rewrite → validation / recipes → pruning.types
+pruner → plan → serialization / state → pruning.types / recipes
+checkpoint → serialization / state → pruning.types / recipes
+```
+
+`operation` 只依赖基础结构表示，`pruning.types` 不依赖 plan、编解码或执行实现。共享 storage 身份检查归入 bindings，剪枝状态操作无需导入 FX 捕获。所有导入位于模块顶层，没有 `TYPE_CHECKING` 或函数内延迟导入；[导入架构测试](../tests/architecture/test_imports.py) 检查声明依赖图无环、公开记录的运行时类型注解可解析，以及单独导入依赖核心不会加载剪枝层。
+
+`OperatorRegistry` 从根包导入；`OperationContext`、`OperatorRule` 等共享对象的定义位于 operation，根包继续提供这些公开名称。`PruningPlan`、`PruningResult` 的定义位于 pruning.plan，用户仍从 `torch_kirigami.pruning` 导入。
 
 仓库采用 flat layout：包直接位于 `torch_kirigami/`。运行依赖只有 PyTorch；Torch-Pruning 和 NNI 不是本库的运行依赖。本库直接执行结构收缩，不走 NNI 式的 mask 训练再 speedup 管线。
 
@@ -97,7 +112,7 @@ assert model(x).shape == (3, 2)
 3. 通过 FX 的叶子模块钩子与函数包装配置捕获计算图。注册的 opaque 根模块使用公开 FX Graph 构造单个 `call_module`，解决根模块绕过叶子钩子的问题。
 4. 对已识别的写入及其他不支持条件做检查，在隔离状态中运行 ShapeProp，取得 shape、stride、dtype、device 和受支持的标量元数据。
 5. 调用每个算子的语义规则，建立关系、约束、尺寸来源、候选轴和执行要求。
-6. 释放中间激活。之后的依赖查询不再运行原模型。
+6. 释放中间激活，并解除 FX Graph 对临时 GraphModule 的持有，避免长期保留隔离 buffer。之后的依赖查询不再运行原模型。
 
 支持普通数据流分叉与合流、FX 可展开的配置常量分支和固定次数循环。Tensor 数据或输入 shape 控制的 Python `if`、动态循环若不能 symbolic trace，会给出捕获失败；没有降级到其他 tracer。
 
@@ -115,11 +130,13 @@ assert model(x).shape == (3, 2)
 
 FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道对应哪个权重区域，也不能说明删通道后一个写死的索引是否仍正确。因此仍需算子语义代码，但同类算子可以组合共享原语，无需为每个模型重写一套规则。
 
-捕获依赖成熟公开接口；实现并非完全没有私有状态读取：全局 forward hook 的检查集中读取 PyTorch hook 注册状态，规划期间还读取 Tensor 的 `_version` 辅助检测变化。这些是局部兼容性检查，不是自研捕获机制。
+捕获依赖成熟公开接口；实现并非完全没有私有状态访问：全局 forward/registration hook 检查集中读取 PyTorch hook 注册状态，隔离时直接恢复 `_buffers` 绑定以免再次触发回调，规划期间还读取 Tensor 的 `_version` 辅助检测变化。这些是局部兼容性处理，不是自研捕获机制。
 
 ### 4.3 状态保护与前提
 
 建图保留 train/eval 和梯度上下文；样例输入与注册 buffer 一起隔离复制，保留受支持的共享关系。模型普通容器中缓存的 buffer 引用也临时指向隔离副本。成功或异常退出均恢复绑定、模式以及 CPU/已初始化 CUDA 的随机数状态。
+
+隔离开始前拒绝全局 parameter/buffer/module registration hooks，避免安装或恢复 buffer 时被回调替换。`out=None` 是普通只读调用；真实的 `out=Tensor` 写入仍在元数据执行前拒绝，包括可解析的 Python 函数位置参数。
 
 参数不会整体复制。契约要求 `forward` 不修改参数、不产生外部 Python 副作用，也不要与同一模型的训练并发建图。已识别的不支持写入、安全复制失败、forward/pre-forward hooks（包括全局 hooks）会明确拒绝；这不是任意 Python 程序的副作用沙箱。
 
@@ -153,7 +170,7 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 不能把删除列合并为 `{0, 1}` 后统一切整个 weight。当前表示保留两个独立区域，执行按旧组分别 gather，再按原组序 concat，得到前两轴为 `(4, 2)` 的紧凑权重。
 
-`Selection.project(dim)` 用于寻找被完整选中的轴横截面；`compact_shape()` 判断能否直接得到矩形保留形状。分组场景可能需要额外布局描述，不能只靠这个 shape 判断函数完成执行。
+`Selection.fully_selected_indices(dim)` 用于寻找被完整选中的轴横截面；`compact_shape()` 判断能否直接得到矩形保留形状。分组场景可能需要额外布局描述，不能只靠这个 shape 判断函数完成执行。
 
 ### 5.3 别名、共享与普通容器引用
 
@@ -169,7 +186,7 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 | 原语 | 主要用途 |
 | --- | --- |
-| `AxisRelation` + `Port` | 两个轴或局部分区之间的对应 |
+| `AxisRelation` + `AxisPort` | 两个轴或局部分区之间的对应 |
 | `BlockMap` | 恒等、偏移、分段、一个位置对应一整块，以及完整块联动 |
 | `BroadcastRelation` | 广播维度和重复横截面的对应 |
 | `PermuteRelation` | transpose/permute 等轴置换 |
@@ -196,7 +213,7 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 | `Balanced` | 固定分区的保留数量必须相同 |
 | `BlockBalance` | 存活组内保留成员数量一致，例如 depthwise multiplier |
 | `Divisible` | 保留宽度须能被某个数整除 |
-| `Layout` | 选择需要满足可支持的紧凑排列 |
+| `LayoutConstraint` | 选择需要满足可支持的紧凑排列 |
 | `Barrier` / `AxisBarrier` | 某个操作或轴缺少可证明的语义，阻断相关完整性结论 |
 
 依赖层传播必然发生的联动，但不会为了满足“每组一样多”偷偷挑选另一组哪个通道。存在多种补全方式时由策略决定，手工请求则按原请求验证。
@@ -219,6 +236,12 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 只读快照查询不都重新扫描模型；传播和活 Tensor 绑定访问等入口会检查有效性。取得活 Tensor 对象不意味着持有读锁。模型原属性中的别名只能说明对象共享，不能恢复每次 Python 调用究竟使用了哪个属性拼写。
 
+所有接收 TensorRef 的分析入口核对完整登记信息，不能仅凭 ID 相同接受不同 shape 的引用。操作查询同时检查 `graph_id` 与已登记调用身份，正常的 `operations()` 检查副本可以继续查询；跨图操作和 Impact 会直接报错。`Impact.selection(ref)` 只对本图未受影响的张量返回空选择。
+
+公开内置约束保存不可变的分析事实。`CallArgumentConstraint` 仅持有节点名称、需要保持不变的尺寸表达式及捕获值、分区布局，不持有 OperationContext、FX 节点或共享字典。`operations()` 的参数容器是检查副本，表达式表则是各调用共享的一份只读映射，避免按调用重复复制全图表达式。自定义规则及约束仍必须遵守无副作用契约。
+
+基础描述在构造时统一校验：负轴规范化，块宽为正整数，映射范围不越界，排列和切片与目标 shape 一致，reshape 元素数一致，分区有界且不重叠。`Balanced` 允许只约束轴的部分位置；零长度轴可以由 TensorRef 表示，但会违反显式 NonEmpty。图不对完全未参与计算的注册张量自动附加 NonEmpty，未使用的空 buffer 不会阻断其他分支。这些检查不替策略决定补选，也不替代原 forward 和 stride 验证。
+
 ## 7. 尺寸、索引与原 forward 的检查
 
 执行器保留原 Python `forward`，因此必须验证：换成紧凑张量之后，原调用写法是否仍表示计划要求的结构。
@@ -226,6 +249,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 ### 7.1 尺寸来源不是 shape 相等
 
 `ShapeExpr` 保存常量、维度读取、`numel`、`-1` 推断以及受支持的整数运算等来源。标量尺寸依赖也会参与受影响操作的调度，即使该操作的输入没有直接收到删除区域。
+
+`ShapeExpr.refs` 统一提供尺寸来源；`Requirement` 的命名载荷只保存标量、切片、结构引用和不可变嵌套序列。修改类别可以由扩展定义，图在接收 OperatorSpec 时也会检查载荷内的引用归属。
 
 `x.reshape(x.size(0), -1)` 可能在收缩后自然成立；写死的 `reshape(batch, 64)` 若需要改成 48，则不能自动改原 Python。两个尺寸恰好都等于 64，不意味着它们来自同一个可更新属性。
 
@@ -267,13 +292,17 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 | `preflight` | 元数据执行前检查已识别的不支持行为 |
 | `effects` | 描述是否原地写入、是否产生独立输出 |
 | `analyze(OperationContext)` | 返回共享的 `OperatorSpec` |
-| `lower(RewriteContext)` | 可选；默认根据共享描述生成声明式修改配方 |
+| `lower(RewriteContext)` | 可选；返回特殊修改配方，或返回 `None` 让剪枝层编译共享描述 |
 
-`OperationContext` 包含 FX 节点、参数角色、输入输出元数据、模块、绑定和尺寸来源。`argument()` / `raw_argument()` 统一读取位置或关键词参数；这不是覆盖所有 PyTorch 签名的自动规范化引擎，特殊公开拼写仍需要登记。
+`OperationContext` 包含 FX 节点、参数角色、输入输出元数据、模块、绑定和尺寸来源。`argument()` / `raw_argument()` 统一读取位置、关键词及变长参数，原生别名（如 axis/keepdims、view 的 size、repeat 的 repeats）由共享表解析，原始尺寸来源和执行参数复核复用相同入口。它不是覆盖所有 PyTorch 签名的自动规范化引擎，新增拼写仍需登记。`RewriteContext.compact_shape(ref)` 查询普通紧凑形状，不能替代分区布局描述。
 
 `OperatorSpec` 可声明关系、约束、修改要求、候选轴、分区布局、原调用契约、尺寸表达式和需要守卫的整数常量。分析读取关系和约束，候选发现读取候选轴，通用 lowering 读取布局和属性绑定；保存恢复读取最终结构，不再按算子重新写保存 callback。
 
-已声明安全的原生规则可设置 `evaluate=True` 复用 meta 调用；第三方规则默认依赖声明的结构事实。opaque 内部行为和自定义 lowering 的正确性由扩展作者保证，框架不会自动证明任意融合代码等价。下游 view 需要的输出 stride 只有在能证明时才应声明。
+`Requirement.arguments` 使用 `ArgumentRef(name, position, variadic=False)` 指明该要求会验证哪些调用参数的变化。许可按具体参数位置匹配；即使同一个 size 表达式同时用于 groups 和 stride，允许并验证 groups 变化也不豁免 stride。没有声明专门验证的尺寸来源参数必须保持原值。数据未裁剪、仅尺寸来源改变的消费者，同样激活它的全部执行要求；索引改变而 shape 相同不能通过剪枝规划。
+
+算子声明的结构整数常量必须有注册 parameter/buffer 来源，才能进入图有效性及静态计划的值 guard。普通属性、闭包和临时 Tensor 常量不具备这份持久化保证，相关剪枝明确拒绝；可将索引注册为 buffer。其他独立组件仍可分析和剪枝。
+
+已声明安全的原生规则可设置 `evaluate_on_meta=True` 复用 meta 调用；第三方规则默认依赖声明的结构事实。opaque 内部行为和自定义 lowering 的正确性由扩展作者保证，框架不会自动证明任意融合代码等价。下游 view 需要的输出 stride 只有在能证明时才应声明。
 
 注册方式为 `OperatorRegistry.default().register(MyModule, OperatorRule(my_analyze))`，再通过 `DependencyGraph.build(..., operators=registry)` 使用。完整可运行例子见 [融合 GQA](../examples/fused_attention.py) 和 [基础融合模块](../examples/custom_rule.py)。前者在一个定义中声明 Q/K/V 联动、整 KV 组候选和 head/投影属性，使用默认 lowering 即可剪枝和保存恢复。
 
@@ -306,6 +335,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 | `Strategy(context)` | 返回已经登记的候选 key；最终联合请求仍由框架验证 |
 | `PlanningContext` | 提供图、候选、预算、联合影响查询、批量评分与执行检查 |
 
+上下文的图、候选、预算轴、约束和目标是只读前提，策略仅记录计数及排除说明。候选发现按 AxisRef 去重预算域，key 的重复声明必须语义一致。缓存命中也验证完整引用和 Impact 图归属；最终计划按调用方原预算与约束独立重验，不信任策略修改后的前提。
+
 没有额外 Proposal、prepare、Session、候选生成协议或独立统计注册中心。Metric 的梯度/统计由对象或调用方持有；自定义 Strategy 可以不使用 metric。自定义 Metric 可以对临时组合 Candidate 联合评分，框架不要求分数可加；默认 Greedy 则只做一次静态候选评分。
 
 ### 9.3 内置重要性指标
@@ -320,6 +351,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 | `WeightTaylor(mode="joint_abs")` | `abs(sum(w * grad))`，先跨 S 求和再取绝对值 |
 
 默认包括受影响的 bias 和归一化参数，不包括 buffer；可用参数过滤器调整范围。共享参数、重复调用和区域交集不重复计分。低精度至少用 float32 累积，float64 不降精度。
+
+L1 在取绝对值前提升到 float64/complex128，Taylor 在乘法前提升到 float64，避免低精度中间结果先丢失数值。L2 继续使用缩放与 hypot 合并。最终归约为 float64；这不保证超出 float64 表示范围的运算或任意抵消均可精确计算。
 
 WeightTaylor 只支持实数参数，读取调用方当前未缩放的 `.grad`，不执行 backward、清梯度或 optimizer.step。loss reduction、梯度累积和 AMP 去缩放由调用方负责；它不是逐样本 Fisher。缺梯度、非有限分数、返回长度错误会明确报错。没有默认层间归一化，全局选择不保证不同层的原始分数天然可比。
 
@@ -429,6 +462,8 @@ assert restored[0].out_features == 4
 
 恢复过程先验证目标骨架，再分配最终结构张量，在隔离的模块状态中执行原生加载，最后验证并提交。最终普通属性引用按准备完成后的模块图映射回原模型，包含受支持的新增/删除状态；不会把临时模块引用留在恢复结果里。
 
+提交前的最终检查包括注册张量的类型、存储共享和实际目标设备；设备以本次 map_location 分配结果为准。加载回调改变这些结构前提时拒绝提交，保留原模型的绑定与值。
+
 `ModelStructure` 记录模块类型与路径、注册槽位、已知配置、Tensor 的 shape/stride/dtype/device/requires_grad、持久性和别名，以及受支持的普通引用结构。配置冻结保留 bool/int/float、list/tuple 等类型区别。模型上的 `_kirigami_structure` 是受管理的纯结构记录，不包含剪枝历史或权重。
 
 保存和加载都会验证实际 state_dict payload，拒绝注册的 state_dict pre/post hooks，以及不符合键、shape、dtype、共享值等约定的自定义返回。支持符合数据契约的 `get_extra_state` / `set_extra_state`，但不会自动捕获任意未注册 Python 状态。
@@ -475,7 +510,7 @@ replayed, report = Pruner(original).apply(saved_plan)
 
 测试使用 pytest，覆盖依赖闭包、别名、分组坐标、约束补全、评分公式、原调用限制、执行回滚、静态计划和 checkpoint。数值参考使用手工紧凑模型或算子对应的独立保留域公式，不能仅凭 forward 成功，更不能统一把 LN/GN/softmax 与置零 mask 比较。
 
-最近实现修复的验收记录见 [review-fixes.md](review-fixes.md)：PyTorch 2.6 CPU 与 2.14 CPU 各 230 passed、111 CUDA skipped；RTX 5070 Ti / PyTorch 2.14 CUDA 使用 `--require-cuda`，341 passed、零跳过。这是该次代码验收记录，不是本文编写时重新运行全套矩阵的声明。
+逐对象契约与组合用例见 [测试覆盖清单](testing-coverage.md)，完整环境矩阵见 [测试与兼容性](testing.md)。包括参数别名与尺寸来源的坐标/数值参考、预算域去重、缓存归属、注册回调和 checkpoint 结构检查。
 
 仓库要求 Python 3.10+、PyTorch 2.6+，uv 开发锁当前为 PyTorch 2.14 CPU。Ruff 采用 Google docstring 与常用 Python 检查；CI 配置覆盖最低/开发 CPU 组合，另有兼容性与 CUDA 工作流。工作流配置存在不代表远端已成功执行，操作说明见 [testing.md](testing.md)。
 

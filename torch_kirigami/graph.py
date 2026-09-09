@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -10,20 +11,21 @@ from uuid import uuid4
 import torch
 from torch import fx, nn
 
-from .capture import TensorFacts, capture, fingerprint, storage_key, tree_map
+from .bindings import storage_key
+from .capture import capture, fingerprint, tree_map
 from .contracts import (
     Barrier,
     Diagnostic,
     Impact,
-    Layout,
+    LayoutConstraint,
     NonEmpty,
     Provenance,
     Requirement,
 )
-from .errors import AnalysisLimitError, StaleGraphError
-from .operators.native import UnsupportedOperation
-from .operators.shapes import ArgumentDependencies, dependencies
-from .registry import OperationContext, OperatorRegistry, OperatorSpec, tensors
+from .errors import AnalysisLimitError, StaleGraphError, UnsupportedOperation
+from .operation import OperationContext, OperatorSpec, TensorFacts, tensors
+from .operators.shapes import CallArgumentConstraint, dependencies
+from .registry import OperatorRegistry
 from .relations import AxisRelation
 from .selection import Selection, TensorRef
 
@@ -123,12 +125,12 @@ class DependencyGraph:
         self._refs = {}
         self._tensor_facts = {}
         self._parameters, self._buffers = {}, {}
-        self._by_object = {}
-        self._module_paths = defaultdict(list)
+        by_object = {}
+        module_paths = defaultdict(list)
         storage_groups = defaultdict(list)
         # FX may canonicalize shared module paths, so preserve aliases first.
         for path, module in model.named_modules(remove_duplicate=False):
-            self._module_paths[id(module)].append(path)
+            module_paths[id(module)].append(path)
         for kind, entries, paths in (
             ("parameter", model.named_parameters(remove_duplicate=False), self._parameters),
             ("buffer", model.named_buffers(remove_duplicate=False), self._buffers),
@@ -143,7 +145,7 @@ class DependencyGraph:
                 self._tensor_facts[ref.id] = TensorFacts(
                     tuple(tensor.shape), tuple(tensor.stride()), tensor.dtype, tensor.device
                 )
-                self._by_object[identity] = ref
+                by_object[identity] = ref
                 self._refs[ref.id] = ref
                 for path in aliases:
                     paths[path] = ref
@@ -152,17 +154,16 @@ class DependencyGraph:
                     storage_groups[key].append(ref)
         captured = capture(model, tuple(args), dict(kwargs or {}), self._registry)
         for identity, original in captured.buffer_aliases.items():
-            self._by_object[identity] = self._by_object[id(original)]
+            by_object[identity] = by_object[id(original)]
         gm = captured.module
         self._fx_graph = gm.graph
         self._values = {}
-        self._facts = captured.facts
         self._expressions = {}
         self._literal_values = {}
         self._relations, self._constraints, self._requirements = [], [], []
         self._diagnostics = []
         self._calls = []
-        self._operations = []
+        self._operations = {}
         self._specs = {}
         self._valid = True
         self._interfaces = set()
@@ -184,8 +185,8 @@ class DependencyGraph:
                 continue
             if node.op == "get_attr":
                 value = _attribute(gm, str(node.target))
-                if id(value) in self._by_object:
-                    self._values[node] = self._by_object[id(value)]
+                if id(value) in by_object:
+                    self._values[node] = by_object[id(value)]
                     if (
                         not value.is_floating_point()
                         and not value.is_complex()
@@ -213,7 +214,7 @@ class DependencyGraph:
                 continue
             args_, kwargs_ = self._resolve(node.args), self._resolve(node.kwargs)
             module = gm.get_submodule(str(node.target)) if node.op == "call_module" else None
-            paths = tuple(self._module_paths.get(id(module), ())) if module is not None else ()
+            paths = tuple(module_paths.get(id(module), ())) if module is not None else ()
             path = paths[0] if paths else None
             bindings = {}
             if module is not None:
@@ -221,7 +222,7 @@ class DependencyGraph:
                     *module.named_parameters(remove_duplicate=False),
                     *module.named_buffers(remove_duplicate=False),
                 ):
-                    ref = self._by_object.get(id(value))
+                    ref = by_object.get(id(value))
                     if ref is not None:
                         bindings[name] = ref
             ctx = OperationContext(
@@ -235,9 +236,10 @@ class DependencyGraph:
                 self._expressions,
                 MappingProxyType(self._tensor_facts),
                 MappingProxyType(self._literal_values),
+                self.id,
             )
             self._calls.append(CallRef(node.name, paths, ctx.inputs, ctx.outputs))
-            self._operations.append(ctx)
+            self._operations[node.name] = ctx
             rule = self._registry.lookup(node, module)
             try:
                 if rule is None:
@@ -245,6 +247,12 @@ class DependencyGraph:
                 result = rule.analyze(ctx)
                 if not isinstance(result, OperatorSpec):
                     raise TypeError("OperatorRule.analyze must return OperatorSpec")
+                self._validate_spec(result)
+                if any(not ref.paths for ref in result.constants):
+                    raise UnsupportedOperation(
+                        "Structural constants require registered parameter/buffer value guards; "
+                        "register integer index tensors as buffers"
+                    )
                 self._specs[node.name] = result
                 if result.expression is not None:
                     self._expressions[node] = result.expression
@@ -280,18 +288,10 @@ class DependencyGraph:
             )
             if result.expression is None and dependencies(ctx):
                 self._constraints.append(
-                    ArgumentDependencies(
+                    CallArgumentConstraint.from_operation(
                         ctx,
-                        any(
-                            r.kind
-                            in (
-                                "shape_arguments",
-                                "partition_arguments",
-                                "operator_argument",
-                                "slice_arguments",
-                                "call_arguments",
-                            )
-                            for r in result.requirements
+                        checked_arguments=tuple(
+                            a for r in result.requirements for a in r.arguments
                         ),
                     )
                 )
@@ -306,8 +306,9 @@ class DependencyGraph:
                     ports[port.tensor.id].append(port)
         for ref in self._refs.values():
             scoped = ports[ref.id] if any(p.scope is not None for p in ports[ref.id]) else ()
-            self._constraints.append(Layout(ref, tuple(scoped)))
-            self._constraints.extend(NonEmpty(ref.axis(d)) for d in range(len(ref.shape)))
+            self._constraints.append(LayoutConstraint(ref, tuple(scoped)))
+            if ref.id not in self._unused:
+                self._constraints.extend(NonEmpty(ref.axis(d)) for d in range(len(ref.shape)))
             if ref.id in self._unused:
                 self._constraints.append(
                     Barrier(
@@ -321,15 +322,24 @@ class DependencyGraph:
         self._relations = tuple(self._relations)
         layouts = tuple(layout for spec in self._specs.values() for layout in spec.layouts)
         self._constraints = tuple(
-            replace(constraint, layouts=layouts)
-            if isinstance(constraint, ArgumentDependencies)
+            replace(
+                constraint,
+                layouts=tuple(layout for layout in layouts if layout.tensor in constraint.refs),
+            )
+            if isinstance(constraint, CallArgumentConstraint)
             else constraint
             for constraint in self._constraints
         )
         self._requirements = tuple(self._requirements)
         self._calls = tuple(self._calls)
         self._diagnostics = tuple(self._diagnostics)
+        self._constant_refs = tuple(
+            dict.fromkeys(ref for spec in self._specs.values() for ref in spec.constants)
+        )
         self._check_fresh()
+        # FX nodes are sufficient after analysis. Keeping the owning GraphModule
+        # also retains its isolated get_attr buffers for the graph's whole lifetime.
+        self._fx_graph.owning_module = None
         return self
 
     def _make_values(self, node, facts):
@@ -372,8 +382,6 @@ class DependencyGraph:
     @property
     def fx_graph(self):
         """Return an inspection copy of the captured FX graph."""
-        import copy
-
         return copy.deepcopy(self._fx_graph)
 
     @property
@@ -414,7 +422,7 @@ class DependencyGraph:
         """Return the buffer reference for an original path, or raise KeyError."""
         return self._buffers[path]
 
-    def calls(self, module_path=None):
+    def calls(self, module_path: str | None = None) -> tuple[CallRef, ...]:
         """Return operation calls, optionally filtered by an original module alias.
 
         Args:
@@ -431,7 +439,7 @@ class DependencyGraph:
             else tuple(call for call in self._calls if module_path in call.module_paths)
         )
 
-    def metadata(self, tensor):
+    def metadata(self, tensor: TensorRef) -> TensorFacts:
         """Return captured tensor metadata without retaining its activation.
 
         Args:
@@ -443,11 +451,27 @@ class DependencyGraph:
         Raises:
             ValueError: The tensor reference belongs to another graph.
         """
-        if tensor.id not in self._refs or self._refs[tensor.id] != tensor:
-            raise ValueError("Tensor belongs to another graph")
+        self._validate_ref(tensor)
         return self._tensor_facts[tensor.id]
 
-    def values(self):
+    def _validate_ref(self, tensor):
+        """Check complete reference identity, without rescanning model state."""
+        if not isinstance(tensor, TensorRef) or self._refs.get(tensor.id) != tensor:
+            raise ValueError("Tensor belongs to another graph or has altered metadata")
+
+    def _validate_spec(self, spec):
+        """Reject extension descriptors referring outside the captured snapshot."""
+        refs = [ref for item in (*spec.relations, *spec.constraints) for ref in item.refs]
+        refs.extend(ref for item in spec.requirements for ref in item.refs)
+        refs.extend(item.axis.tensor for item in spec.candidates)
+        refs.extend(item.tensor for item in spec.layouts)
+        refs.extend(spec.constants)
+        if spec.expression is not None:
+            refs.extend(spec.expression.refs)
+        for ref in refs:
+            self._validate_ref(ref)
+
+    def values(self) -> tuple[TensorRef, ...]:
         """Return all parameter, buffer, and captured value references."""
         return tuple(self._refs.values())
 
@@ -456,7 +480,7 @@ class DependencyGraph:
         """Return the original module owning this snapshot."""
         return self._model
 
-    def validate(self, model=None):
+    def validate(self, model: nn.Module | None = None) -> None:
         """Check snapshot freshness and optional model ownership."""
         if model is not None and model is not self._model:
             raise ValueError("Graph belongs to a different model")
@@ -492,7 +516,7 @@ class DependencyGraph:
         )
 
     def bindings(self, ref):
-        """Return every original (owner module, attribute name) binding of a tensor."""
+        """Return unique registered (owner module, attribute name) binding slots."""
         self.tensor(ref)
         result = []
         seen = set()
@@ -520,51 +544,59 @@ class DependencyGraph:
 
     def operator_spec(self, operation):
         """Return shared structural descriptors for a captured operation."""
+        operation = self._canonical_operation(operation)
         return self._specs.get(operation.node.name, OperatorSpec())
 
     def operator_rule(self, operation):
         """Return the exact operator definition used during capture."""
+        operation = self._canonical_operation(operation)
         return self._registry.lookup(operation.node, operation.module)
+
+    def _canonical_operation(self, operation):
+        """Accept inspection copies only when their captured call identity matches."""
+        if not isinstance(operation, OperationContext) or operation.graph_id != self.id:
+            raise ValueError("Operation belongs to another graph")
+        original = self._operations.get(operation.node.name)
+        if original is None:
+            raise ValueError("Operation does not belong to this graph")
+        if (
+            original.node.op != operation.node.op
+            or original.node.target != operation.node.target
+            or original.module is not operation.module
+        ):
+            raise ValueError("Operation identity was altered")
+        return original
 
     def constant_guards(self):
         """Return registered integer tensors whose values are analysis preconditions."""
-        return tuple(
-            dict.fromkeys(
-                ref.paths[0] for spec in self._specs.values() for ref in spec.constants if ref.paths
-            )
-        )
+        return tuple(ref.paths[0] for ref in self._constant_refs)
 
     def affected_operations(self, impact):
         """Include size-expression consumers even without removed tensor regions."""
+        self.validate_impact(impact)
 
-        def expression_refs(expr):
-            if isinstance(expr.value, TensorRef):
-                yield expr.value
-            elif isinstance(expr.value, tuple):
-                yield from tensors(expr.value)
-            for arg in expr.args:
-                yield from expression_refs(arg)
+        return self._affected_operations(impact.selections)
 
+    def _affected_operations(self, selections):
+        """Find data and dimension consumers using one activation rule."""
         affected = set()
-        for op in self._operations:
-            if any(impact.selection(r) for r in (*op.inputs, *op.outputs, *op.bindings.values())):
+        for op in self._operations.values():
+            if any(r.id in selections for r in (*op.inputs, *op.outputs, *op.bindings.values())):
                 affected.add(op.node.name)
             for node in op.node.all_input_nodes:
                 expr = self._expressions.get(node)
-                if expr and any(impact.selection(r) for r in expression_refs(expr)):
+                if expr and any(r.id in selections for r in expr.refs):
                     affected.add(op.node.name)
         return frozenset(affected)
 
-    def operations(self):
+    def operations(self) -> tuple[OperationContext, ...]:
         """Return inspection contexts with copied FX nodes and argument containers.
 
         Module and tensor bindings refer to the original model. No activations are
         retained. Editing the returned argument containers cannot change analysis.
         """
-        import copy
-        from dataclasses import replace
-
         nodes = {node.name: node for node in self.fx_graph.nodes}
+        expressions = MappingProxyType({nodes[n.name]: e for n, e in self._expressions.items()})
         return tuple(
             replace(
                 ctx,
@@ -573,28 +605,21 @@ class DependencyGraph:
                 kwargs=copy.deepcopy(ctx.kwargs),
                 output=copy.deepcopy(ctx.output),
                 bindings=dict(ctx.bindings),
-                expressions={nodes[n.name]: e for n, e in self._expressions.items()},
+                expressions=expressions,
             )
-            for ctx in self._operations
+            for ctx in self._operations.values()
         )
 
     def _check_fresh(self):
         """Reject detectable structural changes without comparing weight values."""
         if not self._valid or fingerprint(self._model) != self._fingerprint:
             raise StaleGraphError("Model structure/mode/configuration changed; rebuild the graph")
-        for spec in self._specs.values():
-            for ref in spec.constants:
-                if ref.paths:
-                    value = _attribute(self._model, ref.paths[0])
-                    if (
-                        tuple(value.detach().cpu().reshape(-1).tolist())
-                        != self._literal_values[ref.id]
-                    ):
-                        raise StaleGraphError(
-                            "An integer tensor used as a structural constant changed"
-                        )
+        for ref in self._constant_refs:
+            value = _attribute(self._model, ref.paths[0])
+            if tuple(value.detach().cpu().reshape(-1).tolist()) != self._literal_values[ref.id]:
+                raise StaleGraphError("An integer tensor used as a structural constant changed")
 
-    def propagate(self, *, remove, constraints=()):
+    def propagate(self, *, remove, constraints=()) -> Impact:
         """Compute the structural closure of joint removal requests.
 
         Args:
@@ -618,11 +643,7 @@ class DependencyGraph:
         provenance, diagnostics = [], []
 
         def add(selection):
-            if (
-                selection.tensor.id not in self._refs
-                or self._refs[selection.tensor.id] != selection.tensor
-            ):
-                raise ValueError("Selection belongs to another graph")
+            self._validate_ref(selection.tensor)
             old = current.get(selection.tensor.id, Selection(selection.tensor))
             delta = selection.subtract(old)
             if delta:
@@ -661,16 +682,25 @@ class DependencyGraph:
                     )
         all_constraints = (*self._constraints, *tuple(constraints))
         for constraint in all_constraints:
-            if any(ref.id not in self._refs for ref in constraint.refs):
-                raise ValueError("Constraint belongs to another graph")
+            for ref in constraint.refs:
+                self._validate_ref(ref)
             try:
-                diagnostic = constraint.check(current)
+                diagnostic = constraint.check(MappingProxyType(current))
             except AnalysisLimitError as error:
                 diagnostic = Diagnostic("analysis_limit", str(error), complete=False)
             if diagnostic is not None:
                 diagnostics.append(diagnostic)
+        affected = self._affected_operations(current)
+        activated = {
+            id(req)
+            for name in affected
+            if name in self._specs
+            for req in self._specs[name].requirements
+        }
         requirements = tuple(
-            req for req in self._requirements if any(ref.id in current for ref in req.tensors)
+            req
+            for req in self._requirements
+            if id(req) in activated or any(ref.id in current for ref in req.refs)
         )
         diagnostics = tuple(dict.fromkeys(diagnostics))
         status = (
@@ -688,7 +718,13 @@ class DependencyGraph:
             tuple(self._refs[k] for k in sorted(self._interfaces) if k in current),
             status,
             all_constraints,
+            self._refs,
         )
+
+    def validate_impact(self, impact: Impact) -> None:
+        """Reject analysis results from another snapshot without executing the model."""
+        if not isinstance(impact, Impact) or impact.graph_id != self.id:
+            raise ValueError("Impact belongs to another graph")
 
     def explain(self, impact):
         """Format the selected regions, propagation reasons, and remaining requirements.
@@ -702,8 +738,7 @@ class DependencyGraph:
         Raises:
             ValueError: The impact belongs to another graph.
         """
-        if impact.graph_id != self.id:
-            raise ValueError("Impact belongs to another graph")
+        self.validate_impact(impact)
         lines = [f"Structural analysis: {impact.status}"]
         for selection in impact.selections.values():
             label = ", ".join(selection.tensor.paths) or selection.tensor.id.split(":value:")[-1]

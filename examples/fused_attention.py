@@ -7,6 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_kirigami import (
+    AxisPort,
     AxisRelation,
     BlockMap,
     CandidateAxis,
@@ -14,7 +15,6 @@ from torch_kirigami import (
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
-    Port,
     Requirement,
     ShapeExpr,
 )
@@ -43,7 +43,7 @@ class FusedGQA(nn.Module):
 def fused_gqa(ctx):
     """Declare group linkage and attribute bindings once; no rewrite/save callback."""
     x, y = ctx.inputs[0], ctx.outputs[0]
-    q, k, v, out = (ctx.parameter(f"{name}.weight") for name in ("q", "k", "v", "out"))
+    q, k, v, out = (ctx.binding(f"{name}.weight") for name in ("q", "k", "v", "out"))
     d = ctx.module.head_dim
     multiplier = ctx.module.q_heads // ctx.module.kv_heads
     relations = [AxisRelation.equal(x.axis(-1), w.axis(1)) for w in (q, k, v)]
@@ -53,8 +53,8 @@ def fused_gqa(ctx):
             AxisRelation.equal(k.axis(0), v.axis(0)),
             AxisRelation.equal(out.axis(0), y.axis(-1)),
             AxisRelation(
-                Port(k.axis(0)),
-                Port(q.axis(0)),
+                AxisPort(k.axis(0)),
+                AxisPort(q.axis(0)),
                 (BlockMap(0, 0, ctx.module.kv_heads, d, multiplier * d),),
             ),
         )

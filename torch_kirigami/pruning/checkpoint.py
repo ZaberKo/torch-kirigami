@@ -13,14 +13,13 @@ from ..configuration import thaw
 from .serialization import decode, encode
 from .state import (
     STRUCTURE_ATTRIBUTE,
-    ModelStructure,
     attribute,
     commit,
     managed_record,
     snapshot,
     validate_managed,
 )
-from .types import AttributeRecipe, ExecutionError
+from .types import AttributeRecipe, ExecutionError, ModelStructure
 
 
 def _check_state_hooks(model):
@@ -278,6 +277,9 @@ def load_checkpoint(model, path, *, map_location=None):
     for edit in changes:
         owner, name = attribute(prepared, edit.path)
         object.__setattr__(owner, name, edit.new)
+    # Allocation already applied map_location. Compare the final callback state
+    # against these actual devices, rather than the source checkpoint devices.
+    prepared_devices = tuple(s.device for s in snapshot(prepared).tensors)
     try:
         payload = OrderedDict(values)
         if hasattr(values, "_metadata"):
@@ -286,15 +288,40 @@ def load_checkpoint(model, path, *, map_location=None):
             prepared.load_state_dict(payload, strict=True)
     except Exception as error:
         raise ExecutionError(f"State loading failed before commit: {error}") from error
-    final = snapshot(prepared)
+    try:
+        final = snapshot(prepared)
+    except Exception as error:
+        raise ExecutionError(f"Loading hooks produced an invalid structure: {error}") from error
     if skeleton(final) != skeleton(structure) or tuple(
-        (s.paths, s.kind, s.shape, s.stride, s.dtype, s.requires_grad, s.persistent)
+        (
+            s.paths,
+            s.kind,
+            s.shape,
+            s.stride,
+            s.dtype,
+            s.requires_grad,
+            s.persistent,
+            s.storage_aliases,
+            s.type_name,
+        )
         for s in final.tensors
     ) != tuple(
-        (s.paths, s.kind, s.shape, s.stride, s.dtype, s.requires_grad, s.persistent)
+        (
+            s.paths,
+            s.kind,
+            s.shape,
+            s.stride,
+            s.dtype,
+            s.requires_grad,
+            s.persistent,
+            s.storage_aliases,
+            s.type_name,
+        )
         for s in structure.tensors
     ):
         raise ExecutionError("Loading hooks changed the declared final structure")
+    if tuple(s.device for s in final.tensors) != prepared_devices:
+        raise ExecutionError("Loading hooks changed the mapped tensor devices")
     if tuple(m.attributes for m in final.modules) != tuple(m.attributes for m in structure.modules):
         raise ExecutionError("Restored configuration differs from the checkpoint")
     if final.references != structure.references:

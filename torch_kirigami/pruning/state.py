@@ -2,53 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import replace
 
-import torch
-
-from ..bindings import AttributeEdit, reference_edits, reference_signature
-from ..capture import storage_key
+from ..bindings import AttributeEdit, reference_edits, reference_signature, storage_key
 from ..configuration import attributes as configuration_attributes
-from ..configuration import forward_hook_paths, freeze
-from .types import ExecutionError
+from ..configuration import forward_hook_paths, freeze, has_registration_hooks
+from .recipes import compact_stride, validate_recipe
+from .types import ExecutionError, ModelStructure, ModuleState, TensorState
 
 STRUCTURE_ATTRIBUTE = "_kirigami_structure"
-
-
-@dataclass(frozen=True)
-class ModuleState:
-    """Module type, aliases, ordinary configuration, and registered slot schema."""
-
-    paths: tuple[str, ...]
-    type_name: str
-    attributes: tuple[tuple[str, object], ...]
-    slots: tuple[tuple[str, str, bool], ...]
-
-
-@dataclass(frozen=True)
-class TensorState:
-    """Tensor binding facts without storage or process-local object identities."""
-
-    paths: tuple[str, ...]
-    kind: str
-    shape: tuple[int, ...]
-    stride: tuple[int, ...]
-    dtype: str
-    device: str
-    requires_grad: bool
-    persistent: tuple[bool, ...]
-    storage_aliases: tuple[str, ...]
-    type_name: str
-    values: tuple[int, ...] | None = None
-
-
-@dataclass(frozen=True)
-class ModelStructure:
-    """Immutable structural state usable without an FX graph or model reference."""
-
-    modules: tuple[ModuleState, ...]
-    tensors: tuple[TensorState, ...]
-    references: tuple = ()
 
 
 def attribute(model, path):
@@ -115,33 +77,6 @@ def snapshot(model, *, guarded=()):
     return ModelStructure(tuple(module_states), tuple(tensors), reference_signature(model))
 
 
-def compact_stride(shape, memory_format):
-    """Calculate supported dense strides without allocating a tensor."""
-    if memory_format == "contiguous":
-        order = tuple(reversed(range(len(shape))))
-    elif memory_format == "channels_last" and len(shape) == 4:
-        order = (1, 3, 2, 0)
-    elif memory_format == "channels_last_3d" and len(shape) == 5:
-        order = (1, 4, 3, 2, 0)
-    else:
-        raise ValueError("Unsupported compact memory format")
-    stride, result = 1, [0] * len(shape)
-    for dim in order:
-        result[dim] = stride
-        stride *= max(1, shape[dim])
-    return tuple(result)
-
-
-def memory_format(tensor):
-    """Preserve an unambiguous channels-last layout; gather other layouts densely."""
-    if not tensor.is_contiguous():
-        if tensor.ndim == 4 and tensor.is_contiguous(memory_format=torch.channels_last):
-            return "channels_last"
-        if tensor.ndim == 5 and tensor.is_contiguous(memory_format=torch.channels_last_3d):
-            return "channels_last_3d"
-    return "contiguous"
-
-
 def transformed(before, recipes, attributes):
     """Derive the final structural state from validated declarative modifications."""
     replacements = {r.tensor.paths[0]: r for r in recipes}
@@ -206,9 +141,7 @@ def validate_plan(plan):
             raise ValueError("Tensor recipe disagrees with its original binding")
         if len(state.storage_aliases) > 1:
             raise ValueError("Compacting distinct tensors sharing storage is unsupported")
-        from .rewrite import _validate_recipe
-
-        _validate_recipe(recipe, plan.analysis)
+        validate_recipe(recipe, plan.analysis)
         compact_stride(recipe.shape, recipe.memory_format)
     required = {
         s.tensor.paths[0]
@@ -242,6 +175,8 @@ def commit(model, replacements, attributes, record):
         attributes: Validated AttributeRecipe objects.
         record: Pure structural metadata to attach only on successful application.
     """
+    if has_registration_hooks():
+        raise ExecutionError("Global registration hooks are unsupported during structural commit")
     # Every lifecycle uses the same reference rebinding. Explicit final-state
     # edits from checkpoint take precedence over constructor container copies.
     implicit = reference_edits(model, {id(old): new for _, old, new in replacements})
@@ -268,6 +203,13 @@ def commit(model, replacements, attributes, record):
             (model, STRUCTURE_ATTRIBUTE, getattr(model, STRUCTURE_ATTRIBUTE, missing), "attribute")
         )
         setattr(model, STRUCTURE_ATTRIBUTE, record)
+        for state, _, new in replacements:
+            for path in state.paths:
+                owner, name = attribute(model, path)
+                if getattr(owner, name) is not new:
+                    raise ExecutionError(
+                        "Committed tensor binding differs from the prepared object"
+                    )
     except Exception as error:
         for owner, name, old, kind in reversed(journal):
             if kind == "parameter":
