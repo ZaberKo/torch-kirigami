@@ -136,6 +136,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 建图保留 train/eval 和梯度上下文；样例输入与注册 buffer 一起隔离复制，保留受支持的共享关系。模型普通容器中缓存的 buffer 引用也临时指向隔离副本。成功或异常退出均恢复绑定、模式以及 CPU/已初始化 CUDA 的随机数状态。
 
+先按原 forward 签名补齐默认值，再共同隔离全部实际入参，包括可变默认对象。内部 FX placeholder 不保存默认对象，ShapeProp 总是读取已绑定的隔离输入；这也避免 FX 将 Tensor 默认值嵌入生成函数定义的错误。用户原 forward 签名与默认值保持不变。
+
 隔离开始前拒绝全局 parameter/buffer/module registration hooks，避免安装或恢复 buffer 时被回调替换。`out=None` 是普通只读调用；真实的 `out=Tensor` 写入仍在元数据执行前拒绝，包括可解析的 Python 函数位置参数。
 
 参数不会整体复制。契约要求 `forward` 不修改参数、不产生外部 Python 副作用，也不要与同一模型的训练并发建图。已识别的不支持写入、安全复制失败、forward/pre-forward hooks（包括全局 hooks）会明确拒绝；这不是任意 Python 程序的副作用沙箱。
@@ -382,7 +384,7 @@ plan 决定**删什么、怎样保留、需要改哪些属性、什么结构可�
 
 这使预览、保存决定、换脚本执行、统一分配前检查成为可能。普通调用不需要承担两步的操作负担，`prune()` 已封装。不存在必须持有原 Pruner 的隐藏计划签发状态。
 
-`plan()` 不修改模型，不提前生成新权重，也不在模型上登记 plan。它会执行分析、评分和规则 callback，产生临时查询缓存、评分张量或 meta 张量；callback 需要遵守纯函数契约，框架不会完整隔离任意用户 Python 副作用。
+`plan()` 不修改模型，不提前生成新权重，也不在模型上登记 plan。它会执行分析、评分和规则 callback，产生临时查询缓存、评分张量或 meta 张量。有属性修改时，还会用同一 FX 流程在隔离配置副本上重新 symbolic trace：副本共享原 Parameter、隔离 buffer，不运行真实输入的 forward/ShapeProp，不调用自定义 Module.__deepcopy__。callback 与 tracing 执行的 Python 代码仍须遵守副作用契约。
 
 ### 10.2 plan 保存什么
 
@@ -407,6 +409,10 @@ plan 不保存模型、FX 图、活 Tensor、callback 或原图的运行期身�
 最终 memory format 在原调用与布局验证之前确定。包括 channels-last 在内的实际执行布局必须与规划检查一致，不能验证完 contiguous 配方后再改成另一种格式。
 
 属性更新依据显式绑定计算；多个调用要求同一属性时必须一致。无法处理的修改要求导致 `PlanningError`，因此返回的 plan 已经过执行支持检查。
+
+旧 FX 图可能把 `self.layer.out_features` 折叠成常量，无法证明它没有其他消费者。配置重捕获因此核对整个图的节点、边、调用常量和输出：任一变化均拒绝相关请求，不靠整数相等猜测绑定。这样可以发现另一分支的 reshape、同形状索引、标量输出、配置条件和固定循环变化。该检查要求捕获结构在属性修改后保持一致；不透明算子内部继续依靠声明的规则，也不声称完整证明任意 Python 程序等价。
+
+属性配方保留 list/tuple 类型前提：列表冻结成既有 FrozenList 数据，提交与恢复时生成独立列表。合法的 nn.Unflatten 列表配置与元组配置均支持计划序列化和 checkpoint。
 
 ### 10.4 apply 的提交过程
 

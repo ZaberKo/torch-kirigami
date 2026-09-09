@@ -16,6 +16,7 @@ from .bindings import reference_edits, reference_signature, storage_key
 from .configuration import attributes, forward_hook_paths, has_registration_hooks
 from .errors import CaptureError
 from .operation import TensorFacts
+from .operators.effects import named_inplace
 from .registry import OperatorRegistry
 
 
@@ -166,10 +167,7 @@ def _root_graph(model, signature):
     for parameter in signature.parameters.values():
         if parameter.kind in (parameter.VAR_POSITIONAL, parameter.VAR_KEYWORD):
             raise CaptureError("Opaque root modules with variadic signatures are unsupported")
-        if parameter.default is inspect.Parameter.empty:
-            node = graph.placeholder(parameter.name)
-        else:
-            node = graph.placeholder(parameter.name, default_value=parameter.default)
+        node = graph.placeholder(parameter.name)
         if parameter.kind == parameter.KEYWORD_ONLY:
             kwargs[parameter.name] = node
         else:
@@ -177,6 +175,86 @@ def _root_graph(model, signature):
     output = graph.call_module("_root", tuple(args), kwargs)
     graph.output(output)
     return fx.GraphModule({"_root": model}, graph)
+
+
+def trace_module(model, registry):
+    """Use the same public FX leaf policy for capture and configuration validation."""
+    tracer = _LeafTracer(registry)
+    if tracer.is_leaf_module(model, ""):
+        return _root_graph(model, inspect.signature(model.forward))
+    graph = tracer.trace(model)
+    for node in graph.nodes:
+        if node.op == "placeholder":
+            # Metadata execution always supplies fully bound isolated arguments.
+            # Do not retain defaults or ask FX codegen to embed Tensor defaults.
+            node.args = ()
+    return fx.GraphModule(model, graph)
+
+
+def validate_attribute_changes(model, registry, original_graph, updates):
+    """Reject attribute edits that change the captured Python computation.
+
+    Trace an isolated configuration copy with proposed attributes, sharing the
+    original parameters without allocating compact weights or running ShapeProp.
+    A changed constant, operator, edge or output is not justified by old metadata.
+    Opaque leaf internals remain governed by their declared operator contracts.
+    """
+    if not updates:
+        return
+
+    def same(left, right):
+        if isinstance(left, fx.Node) or isinstance(right, fx.Node):
+            return (
+                isinstance(left, fx.Node) and isinstance(right, fx.Node) and left.name == right.name
+            )
+        if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
+            return (
+                isinstance(left, torch.Tensor)
+                and isinstance(right, torch.Tensor)
+                and torch.equal(left, right)
+            )
+        if type(left) is not type(right):
+            return False
+        if isinstance(left, (tuple, list)):
+            return len(left) == len(right) and all(
+                same(a, b) for a, b in zip(left, right, strict=True)
+            )
+        if isinstance(left, dict):
+            return left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
+        if isinstance(left, slice):
+            return same((left.start, left.stop, left.step), (right.start, right.stop, right.step))
+        return left is right or left == right
+
+    try:
+        with isolated_execution(model, (), {}):
+            # Copy configuration without invoking Module.__deepcopy__, which may
+            # return the source object. Preallocate module shells to preserve shared
+            # submodules and ordinary references; registered tensors remain shared.
+            shells = {id(m): object.__new__(type(m)) for m in model.modules()}
+            memo = {**shells, **{id(t): t for t in (*model.parameters(), *model.buffers())}}
+            for module in model.modules():
+                object.__setattr__(
+                    shells[id(module)], "__dict__", copy.deepcopy(vars(module), memo)
+                )
+            prepared = shells[id(model)]
+            for path, value in updates:
+                parent, _, name = path.rpartition(".")
+                object.__setattr__(prepared.get_submodule(parent), name, value)
+            revised = trace_module(prepared, registry)
+            old_nodes, new_nodes = tuple(original_graph.nodes), tuple(revised.graph.nodes)
+            if len(old_nodes) != len(new_nodes) or any(
+                not same((a.op, a.target, a.args, a.kwargs), (b.op, b.target, b.args, b.kwargs))
+                for a, b in zip(old_nodes, new_nodes, strict=False)
+            ):
+                raise CaptureError(
+                    "Attribute updates change captured forward structure or constants"
+                )
+    except CaptureError:
+        raise
+    except Exception as error:
+        raise CaptureError(
+            f"Cannot validate attribute updates against original forward: {error}"
+        ) from error
 
 
 def _reject_parameter_writes(gm, registry):
@@ -195,10 +273,9 @@ def _reject_parameter_writes(gm, registry):
             if id(value) in params:
                 tainted.add(node)
         inputs = set(node.all_input_nodes)
-        target_name = getattr(node.target, "__name__", str(node.target))
         mutates = (
             (rule.effects(node, module).mutates_input if rule is not None else False)
-            or (node.op in ("call_method", "call_function") and target_name.endswith("_"))
+            or named_inplace(node)
             or node.kwargs.get("inplace") is True
         )
         if node.op == "call_module":
@@ -298,21 +375,15 @@ def capture(
         raise CaptureError(f"Forward hooks are outside captured semantics: {hooks}")
     signature = inspect.signature(model.forward)
     try:
-        signature.bind(*args, **kwargs)
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
     except TypeError as error:
         raise CaptureError(f"Invalid forward arguments: {error}") from error
-    with isolated_execution(model, args, kwargs) as (safe_args, safe_kwargs, aliases):
-        tracer = _LeafTracer(registry)
-        root_leaf = tracer.is_leaf_module(model, "")
+    with isolated_execution(model, bound.args, bound.kwargs) as (safe_args, safe_kwargs, aliases):
         try:
-            gm = (
-                _root_graph(model, signature)
-                if root_leaf
-                else fx.GraphModule(model, tracer.trace(model))
-            )
+            gm = trace_module(model, registry)
             _reject_parameter_writes(gm, registry)
             bound = signature.bind(*safe_args, **safe_kwargs)
-            bound.apply_defaults()
             metadata = _MetadataPropagator(gm, bound.arguments)
             metadata.propagate()
         except CaptureError:

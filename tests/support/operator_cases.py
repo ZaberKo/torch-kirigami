@@ -63,6 +63,12 @@ UNARY = {
     "pos",
 }
 BINARY = {
+    "bitwise_and",
+    "bitwise_or",
+    "bitwise_xor",
+    "logical_and",
+    "logical_or",
+    "logical_xor",
     "add",
     "sub",
     "mul",
@@ -253,7 +259,7 @@ def callable_case(kind, target):
     if public_name in UNARY:
         return NativeCase((x,), x, 1)
     if public_name in BINARY:
-        if public_name in {"and_", "or_", "xor"}:
+        if public_name in {"and_", "or_", "xor", "bitwise_and", "bitwise_or", "bitwise_xor"}:
             x = sample((2, 6, 3), integer=True)
         other = torch.full_like(x, 2)
         return NativeCase((x, other), x, 1, companions=((other, 1, (1,)),))

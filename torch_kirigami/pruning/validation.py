@@ -6,6 +6,7 @@ import copy
 
 import torch
 
+from ..configuration import thaw
 from ..operation import argument
 from ..operators.coordinates import narrow_index
 from ..operators.coordinates import retained_indices as _keep
@@ -231,7 +232,7 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                     )
                     for attr in attributes.values():
                         if attr.path.rpartition(".")[0] == owner_path:
-                            object.__setattr__(result, attr.path.rpartition(".")[2], attr.new)
+                            object.__setattr__(result, attr.path.rpartition(".")[2], thaw(attr.new))
                     return result
 
                 module = shell(op.module)

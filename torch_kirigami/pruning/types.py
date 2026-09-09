@@ -6,7 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from ..configuration import FrozenList, FrozenScalar
+from ..configuration import FrozenList, FrozenScalar, freeze, thaw
 from ..contracts import Impact, Requirement
 from ..errors import KirigamiError
 from ..graph import DependencyGraph
@@ -162,7 +162,7 @@ class TensorRecipe:
 
 @dataclass(frozen=True)
 class AttributeRecipe:
-    """Assign a verified module attribute after checking its old value."""
+    """Assign a verified attribute; lists use detached FrozenList configuration."""
 
     path: str
     old: Any
@@ -170,17 +170,18 @@ class AttributeRecipe:
 
     def __post_init__(self):
         def frozen(value):
+            if isinstance(value, (list, FrozenList)):
+                return freeze(thaw(value))
             if isinstance(value, tuple):
-                return all(frozen(v) for v in value)
-            return value is None or type(value) in (int, float, bool, str)
+                return tuple(frozen(v) for v in value)
+            if value is None or type(value) in (int, float, bool, str):
+                return value
+            raise ValueError("Attribute recipes require scalar/list/tuple configuration values")
 
-        if (
-            not isinstance(self.path, str)
-            or not self.path
-            or not frozen(self.old)
-            or not frozen(self.new)
-        ):
-            raise ValueError("Attribute recipes require a path and immutable scalar/tuple values")
+        if not isinstance(self.path, str) or not self.path:
+            raise ValueError("Attribute recipes require a path")
+        object.__setattr__(self, "old", frozen(self.old))
+        object.__setattr__(self, "new", frozen(self.new))
 
 
 @dataclass(frozen=True)

@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from ..bindings import AttributeEdit, reference_edits, reference_signature, storage_key
 from ..configuration import attributes as configuration_attributes
-from ..configuration import forward_hook_paths, freeze, has_registration_hooks
+from ..configuration import forward_hook_paths, freeze, has_registration_hooks, thaw
 from .recipes import compact_stride, validate_recipe
 from .types import ExecutionError, ModelStructure, ModuleState, TensorState
 
@@ -46,6 +46,8 @@ def snapshot(model, *, guarded=()):
         ("buffer", model.named_buffers(remove_duplicate=False)),
     ):
         for path, tensor in items:
+            if id(tensor) in entities and entities[id(tensor)][1] != kind:
+                raise ValueError("A tensor cannot share parameter and buffer registration kinds")
             entities.setdefault(id(tensor), (tensor, kind, []))[2].append(path)
     for tensor, _, paths in entities.values():
         key = storage_key(tensor)
@@ -105,13 +107,13 @@ def transformed(before, recipes, attributes):
                 key = f"{path}.{name}".lstrip(".")
                 if key in edits:
                     edit = edits[key]
-                    if dict(state.attributes)[name] != freeze(edit.old):
+                    if dict(state.attributes)[name] != freeze(thaw(edit.old)):
                         raise ValueError(f"Attribute precondition mismatch: {key}")
                     if name in {k for k, v in state.attributes if v != attrs[k]} and attrs[
                         name
-                    ] != freeze(edit.new):
+                    ] != freeze(thaw(edit.new)):
                         raise ValueError("Shared attribute edits disagree")
-                    attrs[name] = freeze(edit.new)
+                    attrs[name] = freeze(thaw(edit.new))
                     consumed.add(key)
         modules.append(replace(state, attributes=tuple(sorted(attrs.items()))))
     if consumed != set(edits):
@@ -182,7 +184,9 @@ def commit(model, replacements, attributes, record):
     implicit = reference_edits(model, {id(old): new for _, old, new in replacements})
     edits = {edit.path: edit for edit in implicit}
     for edit in attributes:
-        normalized = edit if isinstance(edit, AttributeEdit) else AttributeEdit(edit.path, edit.new)
+        normalized = (
+            edit if isinstance(edit, AttributeEdit) else AttributeEdit(edit.path, thaw(edit.new))
+        )
         edits[normalized.path] = normalized
     missing = object()
     journal = []

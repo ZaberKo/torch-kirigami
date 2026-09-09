@@ -276,7 +276,7 @@ def load_checkpoint(model, path, *, map_location=None):
             table[name] = tensor
     for edit in changes:
         owner, name = attribute(prepared, edit.path)
-        object.__setattr__(owner, name, edit.new)
+        object.__setattr__(owner, name, thaw(edit.new))
     # Allocation already applied map_location. Compare the final callback state
     # against these actual devices, rather than the source checkpoint devices.
     prepared_devices = tuple(s.device for s in snapshot(prepared).tensors)

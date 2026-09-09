@@ -18,6 +18,8 @@
 
 同一职责的多个类共用目录，文件按行为划分。一个回归只保留一份，可以在覆盖清单中关联多个类；测试文件不互相导入。普通边界留在所属目录，跨组件组合放在 integration。新增对象或注册入口时，应同时更新契约清单和实际测试；清单校验只检查映射完整性，不能替代数值或错误路径断言。
 
+跨层修复先检查测试有没有经过出错的公共流程：手工 OperationContext 的 analyze 测试不能代替 build/plan/apply；配置记录往返不能代替原模型 forward 与 checkpoint 恢复。每类修复保留最小失败复现，并加入相邻合法写法、拒绝后的状态检查及适用的独立数值/梯度参考。具体矩阵见 [跨层契约加固](testing-coverage.md#跨层契约加固)，不将注册入口数解释为完整组合覆盖率。
+
 默认开发环境通过 uv.lock 固定 Python 3.12 对应的 PyTorch 2.14 CPU 和工具依赖：
 
 ```bash
@@ -71,16 +73,18 @@ uv run --locked python examples/pruning.py
 
 ## 最近一次完整验收
 
-以下为 2026-09-10 测试分层及补测后的已执行记录，不代表后续修改已自动获得验收。
+以下为 2026-09-10 跨层契约修复与补测后的已执行记录，不代表后续修改已自动获得验收。
 
 | 实际本地环境 | 全量结果 |
 | --- | --- |
-| Python 3.10 / PyTorch 2.6.0+cpu | 925 passed，675 skipped |
-| Python 3.12 / PyTorch 2.14.0+cpu | 925 passed，675 skipped |
-| Python 3.12 / PyTorch 2.14.0+cu130 / RTX 5070 Ti | 1600 passed，0 skipped，使用 --require-cuda |
+| Python 3.10 / PyTorch 2.6.0+cpu | 1004 passed，746 skipped |
+| Python 3.12 / PyTorch 2.14.0+cpu | 1004 passed，746 skipped |
+| Python 3.12 / PyTorch 2.14.0+cu130 / RTX 5070 Ti | 1750 passed，0 skipped，使用 --require-cuda |
 
 CPU 跳过项包括需要 CUDA 的测试和 Tensor.cuda 的 CPU 源项，均由真实 GPU 验收覆盖。GPU 执行有一条 PyTorch cuBLAS 首次 backward 建立主上下文的 warning，没有失败或跳过。Ruff 全仓库检查、格式检查和 git diff 空白检查通过。
 
-测试包含 59 个测试文件、237 个函数。逐对象清单记录 77 个公开导出或内部组件，逐入口清单记录 339 个注册入口（模块 78、函数 166、方法 95）。覆盖清单与测试之间的引用由架构测试检查。
+测试包含 62 个测试文件、246 个函数。逐对象清单记录 77 个公开导出或内部组件，逐入口清单记录 351 个注册入口（模块 78、函数 172、方法 101）。覆盖清单与测试之间的引用由架构测试检查。
 
 这些结果证明列示契约和选定组合，不能保证任意模型或全部轴、尺寸、dtype、stride、训练态组合。PyTorch 中间版本和其他设备不属于此次实际验收环境。
+
+本轮另通过四个 CPU 示例、wheel/sdist 构建及独立临时环境安装验证。安装验证从 site-packages 导入，执行列表 Unflatten 配置的静态 plan 往返、物理剪枝、checkpoint 恢复和 backward；临时环境退出后清理。

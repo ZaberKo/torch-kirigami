@@ -13,6 +13,7 @@ from torch import fx, nn
 
 from .bindings import storage_key
 from .capture import capture, fingerprint, tree_map
+from .capture import validate_attribute_changes as _validate_attribute_changes
 from .contracts import (
     Barrier,
     Diagnostic,
@@ -479,6 +480,24 @@ class DependencyGraph:
     def model(self):
         """Return the original module owning this snapshot."""
         return self._model
+
+    def validate_attribute_changes(self, updates) -> None:
+        """Check (path, value) edits against the captured Python computation.
+
+        Args:
+            updates: Iterable of attribute paths and proposed configuration values.
+
+        Raises:
+            CaptureError: Configuration cannot be isolated or re-tracing changes
+                the captured structure or constants.
+            StaleGraphError: The source no longer matches this snapshot.
+
+        This checks edits without modifying weights or choosing removals. Opaque
+        leaf internals remain the responsibility of their declared operator rules.
+        """
+        self.validate()
+        _validate_attribute_changes(self._model, self._registry, self._fx_graph, tuple(updates))
+        self.validate()
 
     def validate(self, model: nn.Module | None = None) -> None:
         """Check snapshot freshness and optional model ownership."""

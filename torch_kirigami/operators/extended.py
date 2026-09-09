@@ -277,6 +277,12 @@ def register_extended(registry, modules, functions, methods):
         "cosh",
     ]
     binary = [
+        "bitwise_and",
+        "bitwise_or",
+        "bitwise_xor",
+        "logical_and",
+        "logical_or",
+        "logical_xor",
         "pow",
         "maximum",
         "minimum",

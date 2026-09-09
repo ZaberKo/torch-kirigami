@@ -527,6 +527,17 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "属性改变后的 FX 结构一致性；省略/显式默认入参统一隔离",
+          "tests": [
+            "tests/integration/test_python_contracts.py::test_attribute_consumers_outside_the_pruned_branch_are_checked",
+            "tests/capture/test_default_inputs.py::test_mutable_default_is_isolated_on_success_and_failure"
+          ],
+          "conditions": "CPU/CUDA；列示的跨层组合",
+          "gaps": [
+            "未穷举任意 Python 配置读取及所有组合"
+          ]
         }
       ]
     },
@@ -739,6 +750,17 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "嵌套 list/tuple 类型、冻结与编解码；Unflatten 完整生命周期",
+          "tests": [
+            "tests/pruning/test_records.py::test_attribute_recipe_freezes_nested_container_types_and_codec",
+            "tests/integration/test_python_contracts.py::test_unflatten_configuration_survives_plan_and_checkpoint"
+          ],
+          "conditions": "CPU/CUDA；列示的跨层组合",
+          "gaps": [
+            "未穷举任意 Python 配置读取及所有组合"
+          ]
         }
       ]
     },
@@ -844,6 +866,17 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "原 Python 属性消费者、只读规划与独立路径；布尔算子完整捕获与梯度",
+          "tests": [
+            "tests/integration/test_python_contracts.py::test_attribute_barrier_preserves_independent_pruning_and_readonly_planning",
+            "tests/integration/test_python_contracts.py::test_python_boolean_operators_run_through_capture_plan_and_backward"
+          ],
+          "conditions": "CPU/CUDA；列示的跨层组合",
+          "gaps": [
+            "未穷举任意 Python 配置读取及所有组合"
+          ]
         }
       ]
     },
@@ -878,6 +911,16 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "跨 parameter/buffer 类别别名在输出前拒绝",
+          "tests": [
+            "tests/persistence/test_registration_kinds.py::test_cross_kind_alias_is_rejected_before_checkpoint_output"
+          ],
+          "conditions": "CPU/CUDA；列示的跨层组合",
+          "gaps": [
+            "未穷举任意 Python 配置读取及所有组合"
+          ]
         }
       ]
     },
@@ -3553,6 +3596,95 @@
       "conditions": "样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA",
       "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
       "gaps": []
+    },
+    {
+      "entry": "function:torch.bitwise_and",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.bitwise_or",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.bitwise_xor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.logical_and",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.logical_or",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "function:torch.logical_xor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bitwise_and",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bitwise_or",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:bitwise_xor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:logical_and",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:logical_or",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
+    },
+    {
+      "entry": "method:logical_xor",
+      "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项",
+      "conditions": "样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "gaps": []
     }
-  ]
+  ],
+  "operator_verification": {
+    "level": "rule",
+    "scope": "手工 OperationContext 的规则匹配、关系闭包和约束断言",
+    "limits": "不代表完整捕获、规划、执行或持久化组合覆盖；跨层专项见 testing-coverage.md"
+  }
 }

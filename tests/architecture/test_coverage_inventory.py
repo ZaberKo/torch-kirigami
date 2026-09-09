@@ -66,6 +66,9 @@ def test_registered_entry_inventory_has_no_missing_or_obsolete_targets():
         for target in table
     }
     entries = inventory["operators"]
+    # Registration coverage is a rule-level claim, never an implicit claim
+    # that capture, lowering, commit and restoration all ran for every entry.
+    assert inventory["operator_verification"]["level"] == "rule"
     assert len(entries) == len({entry["entry"] for entry in entries})
     assert {entry["entry"] for entry in entries} == expected
     for entry in entries:

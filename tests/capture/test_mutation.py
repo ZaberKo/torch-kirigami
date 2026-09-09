@@ -1,5 +1,7 @@
 """capture / mutation contracts."""
 
+import operator
+
 import pytest
 import torch
 from torch import nn
@@ -13,6 +15,8 @@ from torch_kirigami import (
     OperatorRule,
     OperatorSpec,
 )
+from torch_kirigami.capture import _reject_parameter_writes
+from torch_kirigami.operators.effects import native_effects
 from torch_kirigami.pruning import (
     PlanningError,
 )
@@ -152,3 +156,32 @@ def test_inplace_single_consumer_proof(unsafe):
         plan = pruner.plan(remove=remove)
         pruner.apply(plan)
         assert model(x).shape == (2, 2)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        operator.iadd,
+        operator.iand,
+        operator.setitem,
+        "__iadd__",
+        "__setitem__",
+        "add_",
+        torch.relu_,
+    ],
+)
+def test_shared_effect_detection_still_rejects_real_parameter_writes(target):
+    graph = torch.fx.Graph()
+    weight = graph.get_attr("weight")
+    args = (weight, 0, 1) if target in (operator.setitem, "__setitem__") else (weight, 0)
+    node = graph.create_node(
+        "call_method" if isinstance(target, str) else "call_function", target, args
+    )
+    graph.output(weight)
+    model = nn.Module()
+    model.weight = nn.Parameter(torch.ones(3))
+    gm = torch.fx.GraphModule(model, graph)
+    assert native_effects(node, None).mutates_input
+    with pytest.raises(CaptureError, match="write"):
+        _reject_parameter_writes(gm, OperatorRegistry.default())
+    torch.testing.assert_close(model.weight, torch.ones(3))

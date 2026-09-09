@@ -7,6 +7,8 @@ from dataclasses import replace
 import torch
 from torch import nn
 
+from ..configuration import freeze, thaw
+from ..errors import CaptureError
 from ..operators.coordinates import retained_indices as _keep
 from ..operators.shapes import evaluate
 from ..operators.shapes import reevaluate as _reevaluate
@@ -67,7 +69,9 @@ def lower_spec(ctx):
                 if "axis" in data
                 else tuple(len(_keep(impact, a)) for a in data["axes"])
             )
-            if new != old:
+            if isinstance(old, list) and isinstance(new, tuple):
+                new = list(new)
+            if freeze(new) != freeze(old):
                 attributes.append(AttributeRecipe(req.target, old, new))
         elif req.kind == "operator_argument":
             if len(req.arguments) != 1:
@@ -173,7 +177,7 @@ def compile_recipes(graph, operations, impact):
         for attr in result.attributes:
             path, _, name = attr.path.rpartition(".")
             owner = graph.model.get_submodule(path) if path else graph.model
-            if getattr(owner, name) != attr.old:
+            if freeze(getattr(owner, name)) != freeze(thaw(attr.old)):
                 raise PlanningError(f"Rewrite attribute precondition disagrees: {attr.path}")
             identity = (id(owner), name)
             previous = attribute_bindings.get(identity)
@@ -195,4 +199,8 @@ def compile_recipes(graph, operations, impact):
         for key, recipe in recipes.items()
     }
     check_forward(graph, operations, active, impact, recipes, attributes, strides)
+    try:
+        graph.validate_attribute_changes((a.path, thaw(a.new)) for a in attributes.values())
+    except CaptureError as error:
+        raise PlanningError(str(error)) from error
     return tuple(recipes.values()), tuple(attributes.values()), tuple(dict.fromkeys(notes))

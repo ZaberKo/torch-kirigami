@@ -8,7 +8,9 @@ from torch import nn
 
 from tests.support.pruning import build
 from torch_kirigami import CandidateAxis, TensorRef
-from torch_kirigami.pruning import Candidate, ChannelRatio, PruningResult
+from torch_kirigami.configuration import thaw
+from torch_kirigami.pruning import AttributeRecipe, Candidate, ChannelRatio, PruningResult
+from torch_kirigami.pruning.serialization import decode, encode
 
 
 def test_candidates_freeze_seeds_and_reject_invalid_domains():
@@ -64,3 +66,18 @@ def test_execution_report_detaches_maps_and_preserves_original_coordinate_segmen
         detached.parameter_map[original] = original
     with pytest.raises(TypeError):
         detached.coordinate_maps[ref] = ()
+
+
+def test_attribute_recipe_freezes_nested_container_types_and_codec():
+    # An attribute plan must not retain caller lists, including nested lists in tuples.
+    old = [2, (3, [4])]
+    new = [1, (3, [4])]
+    recipe = AttributeRecipe("shape", old, new)
+    old[1][1].append(5)
+    new[0] = 9
+    decoded = decode(encode(recipe))
+    assert thaw(decoded.old) == [2, (3, [4])]
+    assert thaw(decoded.new) == [1, (3, [4])]
+    restored = thaw(decoded.new)
+    restored[1][1].clear()
+    assert thaw(decoded.new) == [1, (3, [4])]

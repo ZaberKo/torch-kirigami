@@ -1,10 +1,12 @@
 # 内置算子入口契约
 
-默认注册表共 339 个入口：78 个模块、166 个函数、95 个 Tensor 方法。每项先执行合法的原生调用取得元数据，再检查精确规则匹配、关键轴闭包、约束诊断和关联输入/参数坐标；期望坐标由 [独立样例表](../tests/support/operator_cases.py) 明确指定。注册表只提供被检查入口集合，不提供期望结果。
+默认注册表共 351 个入口：78 个模块、172 个函数、101 个 Tensor 方法。每项先执行合法的原生调用取得元数据，再检查精确规则匹配、关键轴闭包、约束诊断和关联输入/参数坐标；期望坐标由 [独立样例表](../tests/support/operator_cases.py) 明确指定。注册表只提供被检查入口集合，不提供期望结果。
 
 执行入口为 [参数化测试](../tests/operators/test_registered_entries.py)，每一行对应 CPU 和 CUDA 两个参数项。Tensor.cuda 的 CPU 源项仍需要真实 GPU；普通 CPU 环境中此项与 CUDA 源项跳过，强制 GPU 验收覆盖两者。
 
 这里是逐入口结构契约。剪枝后数值/梯度、关键词参数、负轴、非连续布局、训练态和拒绝边界由各家族专项以及 [组合矩阵](testing-coverage.md#组合验收) 验证，未把每个参数维度与全部入口做笛卡尔积。
+
+这些逐入口测试手工构造 OperationContext，主要验证 analyze 的关系与约束，**没有经过 DependencyGraph.build → Pruner.plan/apply → 原模型 forward**。JSON 明确标记 operator_verification.level=rule；不能据此断言捕获写保护、属性 lowering 或持久化已覆盖。Python 布尔运算及其 torch 函数/Tensor 方法的完整流程另由 [跨层测试](../tests/integration/test_python_contracts.py) 验证。
 
 | 家族 | 专项测试 |
 | --- | --- |
@@ -365,3 +367,16 @@
 | method:expand_as | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项 | 样例 shape=(1, 6)；torch.float64；CPU/CUDA |
 | method:addmm | 输入原坐标轴 1，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(3, 6)；torch.float64；CPU/CUDA |
 | method:baddbmm | 输入原坐标轴 2，删除 [1]；输出轴 (None,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 3, 6)；torch.float64；CPU/CUDA |
+
+| function:torch.bitwise_and | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| function:torch.bitwise_or | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| function:torch.bitwise_xor | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| function:torch.logical_and | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |
+| function:torch.logical_or | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |
+| function:torch.logical_xor | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |
+| method:bitwise_and | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| method:bitwise_or | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| method:bitwise_xor | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.int64；CPU/CUDA |
+| method:logical_and | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |
+| method:logical_or | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |
+| method:logical_xor | 输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 1 项 | 样例 shape=(2, 6, 3)；torch.float64；CPU/CUDA |

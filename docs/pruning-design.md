@@ -87,6 +87,8 @@ Impact.complete 区分影响范围是否已知；计数/布局约束暂未满足
 
 每项 Requirement 必须被处理：完成声明修改、证明原写法仍有效，或拒绝请求。
 
+属性更新另作全图配置验证：在隔离配置副本上用相同 FX symbolic trace 重新捕获，要求节点、边、常量和输出与原捕获一致。副本共享 Parameter、不分配紧凑权重、不执行 ShapeProp；buffer 和 RNG 隔离。任一属性诱发的捕获差异都会拒绝相关请求，包含不消费被剪 Tensor 的另一分支。不能安全复制配置或重捕获失败也明确拒绝。opaque 内部仍由其算子规则负责。
+
 - reshape/view 重算有来源的尺寸读取、整数运算和 -1，不因整数恰好相等而猜测属性绑定；view 另检查 stride。
 - slice/narrow/static index_select 检查保留后的原坐标；split/chunk/unbind 检查边界与端口，不只核对 shape。
 - 作为索引使用的注册整数张量记录值 guard；修改这些值会使图和相关计划失效。其他权重训练更新不需要内容哈希。
@@ -101,6 +103,8 @@ Impact.complete 区分影响范围是否已知；计数/布局约束暂未满足
 PruningPlan 保存 analysis 摘要、原坐标配方、属性修改、候选/预算/原因，以及 before/after 结构记录。它不保存 live Impact、模型、Parameter、FX 节点、callback、对象地址或签发者身份。冻结 TensorRef 使用稳定标签；查询时以 paths 辨认原注册绑定，不依赖原图 UUID。
 
 plan() 不修改模型、梯度、图、Pruner 或全局 RNG，不登记已签发计划，不分配新权重。自定义回调同样须只读；这不是任意 Python 代码的副作用沙箱。
+
+AttributeRecipe 使用既有配置冻结/恢复表示保留列表及嵌套容器类型，不能把 list 与 tuple 的前提混同。静态格式已有 FrozenList 支持，未新增持久化记录类型。
 
 ```python
 torch.save(plan.to_dict(), "plan.pt")
@@ -128,6 +132,8 @@ model = load_checkpoint(make_original_model(), "pruned.pt", map_location="cpu")
 加载要求兼容原始模块骨架及配置。自定义模型类应放在稳定可导入的模块中，类型路径属于结构前提。所有张量先准备；原生 load_state_dict 和 get/set_extra_state 在隔离模块壳上运行。普通自定义状态通过事务提交，包含属性创建、删除和更新；容器中的临时模块引用映射回原模块，保留共享关系。外部副作用和任意自定义资源生命周期不属于回滚保证。
 
 注册的 state_dict 保存/加载 pre/post hooks 当前明确不支持：保存前和加载目标均检查，避免生成依赖未声明键转换的文件。get/set_extra_state 不属于这项限制。复杂 storage 共享、无法证明无内部重叠的 stride（如 expand 产生的零 stride）和特殊 tensor 存储在保存前拒绝；加载也检查。共享别名值检查允许对应位置的 NaN，同时严格检查其他值，可保存训练异常现场。
+
+同一 Tensor 对象跨 parameter/buffer 类别注册时，在结构快照阶段明确拒绝，保存不会写出无法恢复的 checkpoint；同一类别内的别名继续支持。
 
 静态计划与依赖图共用标量和嵌套 list/tuple 配置 guard；列表冻结为不可变数据，后续原列表修改不会修改计划。apply 拒绝任何注册的 forward/pre-forward hook，包括生成计划后新增的 hook。
 
