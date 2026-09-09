@@ -76,3 +76,5 @@ restored = load_checkpoint(make_original_model(), "pruned.pt", map_location="cpu
 [融合 GQA 的完整扩展示例](examples/fused_attention.py) 展示一处定义完成自动剪枝与 checkpoint 恢复。
 
 `experiments/capture_probe.py` 保留为早期技术调研材料，其中 export/JIT 实验不属于当前库的实现流程。
+
+本项目采用 [MIT License](LICENSE)。
