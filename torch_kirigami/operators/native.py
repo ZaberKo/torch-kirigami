@@ -752,7 +752,10 @@ def register_defaults(registry):
     functions([torch.split, torch.unbind], split)
     methods(["split", "unbind"], split)
     functions([operator.getitem], getitem)
-    functions([operator.floordiv, operator.mod], shape_only)
+    # The wrapper extracts proven scalar size expressions first. Tensor overloads
+    # must retain pointwise dependencies instead of silently emitting an empty rule.
+    functions([operator.floordiv, operator.mod, torch.floor_divide, torch.remainder], pointwise)
+    methods(["floor_divide", "remainder"], pointwise)
     functions([builtins.getattr], getattr_rule)
     functions([torch.sum, torch.mean], reduction)
     methods(["sum", "mean"], reduction)

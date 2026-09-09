@@ -8,18 +8,20 @@
 | Conv / ConvTranspose 1d–3d | 普通、分组和深度卷积通道；按原分区切片拼接 | 输出通道，深度卷积默认整组 | 空间/卷积核轴固定；functional 尺寸参数须无需改写 |
 | BN / LN / GN / InstanceNorm / RMSNorm / PReLU / normalize | 仿射参数、统计 buffer 和声明属性联动 | 无 | GN 固定组数与平衡；归一化在紧凑域重算 |
 | Embedding | 特征轴、后续消费者 | 特征宽度 | 词表轴固定；max_norm 在执行样例前拒绝 |
-| Max/Avg/AdaptivePool、MaxUnpool、pad、interpolate/Upsample | 通道与 batch 对应；池化值/索引共同约束 | 无 | 空间变化固定；不能用本规则剪 padding 产生的新通道 |
-| 常用逐元素数学、激活、比较、where、masked_fill | 广播对应与多输入联动 | 无 | 未登记函数仍为未知；复杂写入/别名不推断 |
+| Max/Avg/AdaptivePool、MaxUnpool、interpolate/Upsample | 通道与 batch 对应；池化值/索引共同约束 | 无 | 空间变化固定 |
+| pad / padding 模块 | 按实际 padding 参数识别轴；未变换轴保持坐标对应 | 无 | 发生 padding/crop 的轴两端固定，即使 (-1, 1) 保持 shape 不变；其他轴和独立分支仍可剪 |
+| 常用逐元素数学、激活、比较、where、masked_fill、Tensor // 和 % | 广播对应与多输入联动 | 无 | 标量尺寸表达式另行保留来源；未登记函数仍为未知；复杂写入/别名不推断 |
 | to/type_as、常用 dtype/device 方法、clone/detach/contiguous | 数据坐标保持，转换参考的 shape 不构成广播依赖 | 无 | view/copy 切换的写入安全仍需证明 |
 | matmul/mm/bmm、addmm/baddbmm、einsum | 收缩轴、自由轴和广播 batch | 无 | einsum 要求显式输出方程；不支持操作数内重复标签/对角语义 |
 | cat、stack、split、chunk、unbind | 分段与端口对应 | 无 | stack/unbind 端口固定；split/chunk 原写法须保持保留坐标与端口 |
 | 基础切片、narrow、index_select | 原坐标映射及执行后坐标检查 | 无 | 正步长基础索引；index_select 使用捕获常量整数向量及值 guard；不自动重写索引 buffer |
 | transpose/permute、reshape/view、flatten、squeeze/unsqueeze | 轴变换和有来源的尺寸计算 | 无 | 硬编码尺寸、rank 变化或不可证明 view stride 拒绝相关请求 |
 | repeat/tile、repeat_interleave、expand | 重复和广播映射 | 无 | 静态正重复因子；repeat_interleave 需标量次数和显式 dim |
+| expand_as | 数据源广播关系，以及模板 Tensor 到输出的尺寸对应 | 无 | 模板决定 shape，与仅提供 dtype/device 的 type_as 参考不同 |
 | GLU、ChannelShuffle、PixelShuffle/Unshuffle | 成对 gate、通道置换和完整通道块 | 无 | Shuffle 保守要求对应组的局部保留模式一致；pixel 空间轴固定 |
 | Unfold/Fold | 通道与 im2col 通道块 | 无 | batched 2D 形式；空间和 kernel 位置固定 |
 | sum/mean/prod、amax/amin、logsumexp、softmax/log_softmax | 区分归约轴，保留轴联动 | 无 | 不支持返回位置索引的归约；变化后重新计算紧凑域 |
-| scaled_dot_product_attention | Q/K 特征、K/V 序列、V 输出、batch/head 和 mask | 无 | GQA 整 KV 组或合法 multiplier 收缩；不负责 KV cache 更新 |
+| scaled_dot_product_attention | Q/K 特征、K/V 序列、V 输出、batch/head 和 mask | 无 | GQA 整 KV 组或合法 multiplier 收缩；is_causal=True 固定 Q/K token 轴以避免隐式三角 mask 改变原坐标语义；不负责 KV cache 更新 |
 | MultiheadAttention | 打包/分离投影、自/交叉注意力、固定 head 数的平衡宽度收缩 | 宽度 | batch/token/mask 位置固定；不实现保持外部宽度的内部删 head |
 | 第三方融合模块 | 一个 OperatorRule 声明关系、候选、布局/属性及必要 lowering | 规则可声明 | opaque 内部语义由扩展保证；保存不需要另写算子规则 |
 

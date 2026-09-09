@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 from torch import nn
 
+from ..operators.coordinates import retained_indices as _keep
 from ..operators.shapes import evaluate
 from ..operators.shapes import reevaluate as _reevaluate
 from ..operators.validation import check_forward
 from ..selection import IndexSet, Region, Selection, TensorRef, full_region
+from .state import memory_format
 from .types import AttributeRecipe, PlanningError, TensorRecipe
 
 
@@ -51,12 +53,6 @@ class RewriteResult:
     output_strides: tuple[tuple[TensorRef, tuple[int, ...]], ...] = ()
 
 
-def _keep(impact, axis):
-    return IndexSet.span(0, axis.tensor.shape[axis.dim]).subtract(
-        impact.selection(axis.tensor).project(axis.dim)
-    )
-
-
 def ordinary_recipe(selection):
     """Describe a single Cartesian compaction, or reject its nonrectangular layout."""
     if selection.compact_shape() is None:
@@ -80,8 +76,6 @@ def ordinary_recipe(selection):
 def lower_spec(ctx):
     """Lower shared layouts and bound attributes without dispatching on operators."""
     op, impact = ctx.operation, ctx.impact
-    if op.module is not None and (op.module._forward_hooks or op.module._forward_pre_hooks):
-        raise PlanningError(f"{op.node.name}: built-in rewrite cannot prove forward-hook semantics")
     recipes, attributes, notes = [], [], []
     known = {
         "attribute",
@@ -221,9 +215,10 @@ def compile_recipes(graph, operations, impact):
     """Prove all affected requirements and combine per-use recipes without weights."""
     if impact.status != "resolved":
         raise PlanningError("; ".join(f"{d.code}: {d.message}" for d in impact.diagnostics))
+    bindings = dict(graph.tensor_bindings())
     for selection in (*impact.parameters, *impact.buffers):
         expected_type = nn.Parameter if selection.tensor.kind == "parameter" else torch.Tensor
-        if type(graph.tensor(selection.tensor)) is not expected_type:
+        if type(bindings[selection.tensor]) is not expected_type:
             raise PlanningError("Physical replacement of custom tensor subclasses is unsupported")
     for ref, path in graph.constants():
         if impact.selection(ref):
@@ -255,6 +250,7 @@ def compile_recipes(graph, operations, impact):
             raise PlanningError(f"No execution rule for {op.node.target}")
         ctx = RewriteContext(graph, op, impact, reqs)
         result = rule.lower(ctx)
+        graph.validate()  # Lowering is an extension boundary, despite its pure contract.
         if not isinstance(result, RewriteResult):
             raise PlanningError("Rewrite rule must return RewriteResult")
         if any(r not in result.handled for r in reqs):
@@ -300,5 +296,10 @@ def compile_recipes(graph, operations, impact):
             recipe = ordinary_recipe(selection)
             _validate_recipe(recipe, impact)
             recipes[selection.tensor.id] = recipe
+    # Validate precisely the recipes that apply will execute, including layout.
+    recipes = {
+        key: replace(recipe, memory_format=memory_format(bindings[recipe.tensor]))
+        for key, recipe in recipes.items()
+    }
     check_forward(graph, operations, active, impact, recipes, attributes, strides)
     return tuple(recipes.values()), tuple(attributes.values()), tuple(dict.fromkeys(notes))

@@ -298,26 +298,28 @@ def test_depthwise_partial_outputs_do_not_choose_input_removal():
     assert set(whole.selection(input_).project(1)) == {1}
 
 
-def test_successful_metadata_execution_releases_intermediate_activations():
+def test_successful_metadata_execution_releases_intermediate_activations(monkeypatch):
     import gc
     import weakref
 
+    from torch.fx.passes.shape_prop import ShapeProp
+
     references = []
     model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3))
-    handles = [
-        module.register_forward_hook(
-            lambda module, args, output: references.append(weakref.ref(output))
-        )
-        for module in model
-    ]
-    try:
-        graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-        gc.collect()
-        assert references and all(ref() is None for ref in references)
-        assert (
-            graph.propagate(remove=[graph.parameter("0.weight").axis(0).select([1])]).status
-            == "resolved"
-        )
-    finally:
-        for handle in handles:
-            handle.remove()
+    run_node = ShapeProp.run_node
+
+    def observe(self, node):
+        output = run_node(self, node)
+        if node.op == "call_module":
+            references.append(weakref.ref(output))
+        return output
+
+    # Observe the interpreter without adding unmodeled hooks to the input model.
+    monkeypatch.setattr(ShapeProp, "run_node", observe)
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
+    gc.collect()
+    assert references and all(ref() is None for ref in references)
+    assert (
+        graph.propagate(remove=[graph.parameter("0.weight").axis(0).select([1])]).status
+        == "resolved"
+    )

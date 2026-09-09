@@ -7,7 +7,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import AxisBarrier, Balanced, BlockBalance, Requirement, ShapeExpr
-from ..registry import CandidateAxis, OperatorSpec
+from ..registry import CandidateAxis, OperatorSpec, tensors
 from ..relations import AxisRelation, BlockMap, BroadcastRelation, Port
 from ..selection import IndexSet
 from .layouts import CallContract
@@ -91,6 +91,11 @@ def sdpa(ctx):
         equal(v, -1, y, -1, ctx.node.name),
     ]
     constraints = []
+    if ctx.argument("is_causal", 5, False):
+        constraints.extend(
+            AxisBarrier(t.axis(-2), "Implicit causal token coordinates are fixed", ctx.node.name)
+            for t in (q, k)
+        )
     gqa = ctx.argument("enable_gqa", 7, False)
     if gqa:
         if k.shape[-3] != v.shape[-3] or q.shape[-3] % k.shape[-3]:
@@ -250,7 +255,8 @@ def multihead_attention(ctx):
         for t in (q, k, v, y)
         for d in range(len(t.shape) - 1)
     )
-    for ref in (*ctx.inputs[3:], *ctx.outputs[1:]):
+    masks = tuple(tensors((ctx.argument("key_padding_mask", 3), ctx.argument("attn_mask", 5))))
+    for ref in (*masks, *ctx.outputs[1:]):
         constraints.extend(
             AxisBarrier(ref.axis(d), "Native MHA mask/weight axes are fixed", ctx.node.name)
             for d in range(len(ref.shape))

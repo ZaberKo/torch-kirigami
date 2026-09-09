@@ -93,11 +93,19 @@ torch.nn.utils.prune 可以在后续用于 mask 训练/验证；它不会物理�
 
 ## 6. 状态、有效期与当前边界
 
-建图隔离 args/kwargs 和注册 buffer，尽可能通过共同 deepcopy 保留输入及 buffer 的共享关系；恢复原 buffer 绑定、模块模式和 CPU/已初始化 CUDA RNG。参数不整体复制，forward 必须不写参数、不修改外部 Python 状态。同一 OperatorRule 的 preflight/effects 入口在 ShapeProp 前检查写入，包含 Embedding max_norm 和已识别的参数/别名写操作；这不是任意 Python 代码的副作用沙箱。
+建图隔离 args/kwargs 和注册 buffer，尽可能通过共同 deepcopy 保留输入及 buffer 的共享关系；恢复原 buffer 绑定、模块模式和 CPU/已初始化 CUDA RNG。普通属性及 plain list/tuple/dict 中对注册 Tensor 的引用也通过共享绑定工具临时重定向到 clone，成功和失败均恢复原容器及绑定。参数不整体复制，forward 必须不写参数、不修改外部 Python 状态。同一 OperatorRule 的 preflight/effects 入口在 ShapeProp 前检查写入，包含 Embedding max_norm 和已识别的参数/别名写操作；这不是任意 Python 代码的副作用沙箱。
+
+同一绑定描述记录普通容器里的注册 Tensor/Module 引用和相邻标量配置，供 graph、静态 plan、apply 和 checkpoint 共用。不同 Tensor 对象即使共享注册 storage，也不能当作可直接重绑定的对象别名；容器中这类视图在执行前拒绝。任意自定义对象、闭包、外部全局容器中隐藏的 Tensor 引用不在扫描范围内，调用方不得通过它们绕过注册绑定；不承诺通用 Python 对象迁移。
 
 非叶 Tensor 样例等无法 deepcopy 的输入明确失败；输入或 buffer 共享参数 storage 也拒绝。不同 Parameter 对象共享 storage 不合并，涉及它们的重写返回 unresolved。不要对同一模型并发建图或训练。
 
-快照记录注册结构、对象身份、形状、dtype/device/stride、模块模式与可识别的标量配置。普通权重数值更新不使图过期；结构、对象替换、模式、已记录配置改变会抛出 StaleGraphError。任意外部状态变化不能由此得到完整检测，修改结构后必须重新建图。
+当前区域表示不能保留零元素张量的独立轴删除意图，因此样例或中间执行结果含零元素张量时明确拒绝建图。原模型注册的 forward/pre-forward hooks（包括根模块、被 FX 展开的父模块及 PyTorch 全局 hooks）也在执行前拒绝；它们的任意代码不属于当前算子描述。建图后增加这类 hook 会使图过期，静态 plan 的 apply 也重新检查。PyTorch 无公开的全局 hook 查询接口，对其稳定注册表的读取集中在一个辅助函数内，并在最低/开发版本测试。
+
+快照记录注册结构、对象身份、形状、dtype/device/stride、模块模式与可识别的标量及嵌套 list/tuple 配置。依赖图和静态计划共用配置冻结逻辑，区分 list/tuple 且不保留可变列表引用。普通权重数值更新不使图过期；结构、对象替换、模式、已记录配置改变会抛出 StaleGraphError。任意外部状态变化不能由此得到完整检测，修改结构后必须重新建图。
+
+标量 guard 保留精确类型，True、1、1.0 不等同；浮点数使用稳定表示，NaN 配置在结构 guard 中可匹配。tensor_bindings() 提供经过一次完整校验的批量注册绑定读取；用户回调或模型可能变化后必须再次验证，不把返回值当作锁。
+
+grad/inference 上下文记录仅用于说明捕获前提，不是完整的 Python 路径 guard。forward 若依赖 torch.is_grad_enabled()、is_inference_mode_enabled() 或外部全局状态选择不同结构，切换后必须重新建图；跨这些上下文复用结构分支不属于支持契约。普通模型可在 no_grad 中查询或 inference_mode 中 apply，不因上下文本身不同而一律拒绝。
 
 当前覆盖卷积及转置卷积、常用归一化/池化/Embedding、矩阵与轴操作、SDPA/GQA/MHA 等已声明形式；每类可剪轴、自动候选和执行边界见[覆盖矩阵](operator-coverage.md)。小型静态整数索引记录值 guard，修改这些值必须重新建图。
 

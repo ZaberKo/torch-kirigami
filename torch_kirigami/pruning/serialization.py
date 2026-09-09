@@ -4,6 +4,7 @@ from dataclasses import fields, is_dataclass
 
 
 def _types():
+    from ..configuration import FrozenList, FrozenScalar
     from ..selection import AxisRef, IndexSet, Region, Selection, TensorRef
     from .state import ModelStructure, ModuleState, TensorState
     from .types import (
@@ -18,6 +19,8 @@ def _types():
     return {
         t.__name__: t
         for t in (
+            FrozenList,
+            FrozenScalar,
             AxisRef,
             IndexSet,
             Region,

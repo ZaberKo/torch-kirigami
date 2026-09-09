@@ -16,7 +16,8 @@ class PlanningContext:
     """Read-only model access, candidates, joint analysis, scoring, and budget checks.
 
     Metrics own their statistics and are never cached. Impact queries use a bounded
-    32-entry cache; candidates and tensor data are not copied into that cache.
+    32-entry cache; four recent verified recipe sets may also be reused. No tensor
+    data is copied into either cache, and callback boundaries still validate state.
     """
 
     def __init__(self, graph, operations, candidates, budget, axes, metric, constraints):
@@ -33,10 +34,10 @@ class PlanningContext:
         self.trials, self.limit_reached = 0, False
         self.exclusions = []
         self._cache = OrderedDict()
+        self._compiled = OrderedDict()
 
     def impact(self, remove):
         """Analyze joint original-coordinate seeds without executing the model."""
-        self.graph.validate()
         remove = tuple(remove)
         key = tuple((s.tensor.id, s.regions) for s in remove)
         if key not in self._cache:
@@ -44,6 +45,7 @@ class PlanningContext:
             if len(self._cache) > 32:
                 self._cache.popitem(last=False)
         else:
+            self.graph.validate()  # propagate performs the entry check on cache misses.
             self._cache.move_to_end(key)
         return self._cache[key]
 
@@ -64,6 +66,7 @@ class PlanningContext:
         for candidate in batch:
             self.require_complete(self.impact(candidate.remove))
         values = self.metric(self, batch)
+        self.graph.validate()
         if isinstance(values, torch.Tensor):
             if values.ndim != 1 or values.is_complex():
                 raise PlanningError("Metric must return a real one-dimensional score batch")
@@ -93,7 +96,15 @@ class PlanningContext:
 
     def compile(self, impact):
         """Check execution support and produce recipes without allocating weights."""
-        return compile_recipes(self.graph, self.operations, impact)
+        self.graph.validate()
+        key = (tuple((s.tensor.id, s.regions) for s in impact.requested), impact.status)
+        if key not in self._compiled:
+            self._compiled[key] = compile_recipes(self.graph, self.operations, impact)
+            if len(self._compiled) > 4:
+                self._compiled.popitem(last=False)
+        else:
+            self._compiled.move_to_end(key)
+        return self._compiled[key]
 
     def report(self, impact):
         """Freeze the measured budget and strategy diagnostics."""
@@ -148,6 +159,36 @@ class Greedy:
 
     def __call__(self, context):
         """Return only a fully verified set, with an explicit underfill report."""
+        committed = []
+        committed_impact = context.impact(())
+        try:
+            context.compile(committed_impact)
+            valid = context.within_budget(committed_impact)
+        except PlanningError:
+            valid = False
+        if self.max_trials == 0:
+            context.limit_reached = bool(context.candidates)
+            if not valid:
+                raise PlanningError("The empty request is invalid and the strategy limit is zero")
+            context.exclusions.extend((c.key, "Strategy limit is zero") for c in context.candidates)
+            return ()
+        # A zero budget proves no choice is possible only when each candidate
+        # directly removes a budgeted position. Custom unbudgeted seeds may still
+        # be legal, so do not infer this solely from ratio or candidate count.
+        if (
+            valid
+            and not any(context.targets)
+            and all(
+                any(
+                    s.tensor == a.tensor and s.project(a.dim)
+                    for s in c.remove
+                    for a in context.axes
+                )
+                for c in context.candidates
+            )
+        ):
+            context.exclusions.extend((c.key, "Zero channel budget") for c in context.candidates)
+            return ()
         eligible = []
         for candidate in context.candidates:
             try:
@@ -163,13 +204,6 @@ class Greedy:
                 zip(scores, eligible, strict=True), key=lambda item: (item[0], item[1].key)
             )
         ]
-        committed = []
-        committed_impact = context.impact(())
-        try:
-            context.compile(committed_impact)
-            valid = context.within_budget(committed_impact)
-        except PlanningError:
-            valid = False
 
         def attempt(keys):
             if context.trials >= self.max_trials:

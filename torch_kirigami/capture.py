@@ -12,6 +12,8 @@ import torch
 from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
 
+from .bindings import reference_edits, reference_signature
+from .configuration import attributes, forward_hook_paths
 from .errors import CaptureError
 from .registry import OperatorRegistry
 
@@ -96,29 +98,16 @@ def fingerprint(model):
         for name, t in entries
     )
 
-    def stable(value):
-        if value is None or isinstance(value, (bool, int, float, str)):
-            return value
-        if isinstance(value, (tuple, list)) and all(
-            x is None or isinstance(x, (bool, int, float, str)) for x in value
-        ):
-            return tuple(value)
-        return None
-
     modules = tuple(
         (
             name,
             id(m),
             type(m),
-            tuple(
-                (key, stable(value))
-                for key, value in sorted(vars(m).items())
-                if key != "_kirigami_structure" and stable(value) is not None
-            ),
+            attributes(m),
         )
         for name, m in model.named_modules(remove_duplicate=False)
     )
-    return tensor_state, modules
+    return tensor_state, modules, forward_hook_paths(model), reference_signature(model)
 
 
 @contextmanager
@@ -141,6 +130,7 @@ def isolated_execution(model, args, kwargs):
         state on both success and failure. Arbitrary forward side effects and
         concurrent use of the same model are outside this contract.
     """
+    reference_signature(model)
     buffers = [
         (module, name, tensor)
         for module in model.modules()
@@ -161,13 +151,24 @@ def isolated_execution(model, args, kwargs):
     aliases = {
         id(clone): original for (_, _, original), clone in zip(buffers, copies, strict=False)
     }
+    edits = reference_edits(
+        model, {id(old): new for (_, _, old), new in zip(buffers, copies, strict=True)}
+    )
+    restored = []
     devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
     try:
         with torch.random.fork_rng(devices=devices):
+            for edit in edits:
+                parent, _, name = edit.path.rpartition(".")
+                owner = model.get_submodule(parent)
+                restored.append((owner, name, getattr(owner, name)))
+                setattr(owner, name, edit.value)
             for (module, name, _), clone in zip(buffers, copies, strict=False):
                 setattr(module, name, clone)
             yield copied_args, copied_kwargs, aliases
     finally:
+        for owner, name, original in reversed(restored):
+            setattr(owner, name, original)
         for module, name, original in buffers:
             setattr(module, name, original)
         for module, mode in modes:
@@ -264,6 +265,11 @@ class _Metadata(ShapeProp):
         def facts(value):
             if isinstance(value, torch.Tensor):
                 storage_key(value)
+                if value.numel() == 0:
+                    raise CaptureError(
+                        f"Zero-element tensor at {node.name}: structural axis intent on empty "
+                        "tensors is unsupported; provide nonempty examples"
+                    )
                 return TensorFacts(
                     tuple(value.shape), tuple(value.stride()), value.dtype, value.device
                 )
@@ -309,6 +315,9 @@ def capture(model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegis
     Raises:
         CaptureError: Argument binding, tracing, write checks, or execution fail.
     """
+    hooks = forward_hook_paths(model)
+    if hooks:
+        raise CaptureError(f"Forward hooks are outside captured semantics: {hooks}")
     signature = inspect.signature(model.forward)
     try:
         signature.bind(*args, **kwargs)

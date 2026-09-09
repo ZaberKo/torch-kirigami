@@ -6,7 +6,10 @@ from dataclasses import dataclass, replace
 
 import torch
 
+from ..bindings import AttributeEdit, reference_edits, reference_signature
 from ..capture import storage_key
+from ..configuration import attributes as configuration_attributes
+from ..configuration import forward_hook_paths, freeze
 from .types import ExecutionError
 
 STRUCTURE_ATTRIBUTE = "_kirigami_structure"
@@ -45,21 +48,13 @@ class ModelStructure:
 
     modules: tuple[ModuleState, ...]
     tensors: tuple[TensorState, ...]
+    references: tuple = ()
 
 
 def attribute(model, path):
     """Resolve a registered or declared attribute to its original owner."""
     parent, _, name = path.rpartition(".")
     return model.get_submodule(parent) if parent else model, name
-
-
-def primitive(value):
-    """Whether an attribute can be guarded without interpreting Python objects."""
-    return (
-        value is None
-        or type(value) in (str, int, float, bool)
-        or (type(value) is tuple and all(primitive(v) for v in value))
-    )
 
 
 def snapshot(model, *, guarded=()):
@@ -69,13 +64,7 @@ def snapshot(model, *, guarded=()):
         modules.setdefault(id(module), (module, []))[1].append(path)
     module_states = []
     for module, paths in modules.values():
-        attrs = tuple(
-            sorted(
-                (name, value)
-                for name, value in vars(module).items()
-                if name != STRUCTURE_ATTRIBUTE and primitive(value)
-            )
-        )
+        attrs = configuration_attributes(module)
         slots = tuple(
             (kind, name, name not in module._non_persistent_buffers_set)
             for kind, table in (("parameter", module._parameters), ("buffer", module._buffers))
@@ -123,7 +112,7 @@ def snapshot(model, *, guarded=()):
                 else None,
             )
         )
-    return ModelStructure(tuple(module_states), tuple(tensors))
+    return ModelStructure(tuple(module_states), tuple(tensors), reference_signature(model))
 
 
 def compact_stride(shape, memory_format):
@@ -181,19 +170,18 @@ def transformed(before, recipes, attributes):
                 key = f"{path}.{name}".lstrip(".")
                 if key in edits:
                     edit = edits[key]
-                    if dict(state.attributes)[name] != edit.old:
+                    if dict(state.attributes)[name] != freeze(edit.old):
                         raise ValueError(f"Attribute precondition mismatch: {key}")
-                    if (
-                        name in {k for k, v in state.attributes if v != attrs[k]}
-                        and attrs[name] != edit.new
-                    ):
+                    if name in {k for k, v in state.attributes if v != attrs[k]} and attrs[
+                        name
+                    ] != freeze(edit.new):
                         raise ValueError("Shared attribute edits disagree")
-                    attrs[name] = edit.new
+                    attrs[name] = freeze(edit.new)
                     consumed.add(key)
         modules.append(replace(state, attributes=tuple(sorted(attrs.items()))))
     if consumed != set(edits):
         raise ValueError("Attribute recipe has no portable original binding")
-    return ModelStructure(tuple(modules), tuple(tensors))
+    return ModelStructure(tuple(modules), tuple(tensors), before.references)
 
 
 def validate_plan(plan):
@@ -237,6 +225,9 @@ def validate_plan(plan):
 
 def check_structure(model, expected):
     """Reject detectable type, binding, mode, configuration, or layout changes."""
+    hooks = forward_hook_paths(model)
+    if hooks:
+        raise ExecutionError(f"Forward hooks are outside plan semantics: {hooks}")
     guarded = tuple(s.paths[0] for s in expected.tensors if s.values is not None)
     if snapshot(model, guarded=guarded) != expected:
         raise ExecutionError("Model structure/mode/configuration does not match plan preconditions")
@@ -251,6 +242,13 @@ def commit(model, replacements, attributes, record):
         attributes: Validated AttributeRecipe objects.
         record: Pure structural metadata to attach only on successful application.
     """
+    # Every lifecycle uses the same reference rebinding. Explicit final-state
+    # edits from checkpoint take precedence over constructor container copies.
+    implicit = reference_edits(model, {id(old): new for _, old, new in replacements})
+    edits = {edit.path: edit for edit in implicit}
+    for edit in attributes:
+        normalized = edit if isinstance(edit, AttributeEdit) else AttributeEdit(edit.path, edit.new)
+        edits[normalized.path] = normalized
     missing = object()
     journal = []
     try:
@@ -259,10 +257,13 @@ def commit(model, replacements, attributes, record):
                 owner, name = attribute(model, path)
                 journal.append((owner, name, old, state.kind))
                 setattr(owner, name, new)
-        for edit in attributes:
+        for edit in edits.values():
             owner, name = attribute(model, edit.path)
             journal.append((owner, name, getattr(owner, name, missing), "attribute"))
-            setattr(owner, name, edit.new)
+            if edit.delete:
+                delattr(owner, name)
+            else:
+                setattr(owner, name, edit.value)
         journal.append(
             (model, STRUCTURE_ATTRIBUTE, getattr(model, STRUCTURE_ATTRIBUTE, missing), "attribute")
         )
@@ -297,6 +298,7 @@ def managed_record(model, structure, attributes=()):
         "values": tuple(values),
         "tensors": tuple((s.paths, s.kind, s.shape) for s in structure.tensors),
         "modules": tuple((s.paths, s.type_name, s.slots) for s in structure.modules),
+        "references": structure.references,
     }
 
 

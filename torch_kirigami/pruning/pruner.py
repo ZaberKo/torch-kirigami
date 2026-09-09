@@ -18,7 +18,6 @@ from .state import (
     check_structure,
     commit,
     managed_record,
-    memory_format,
     snapshot,
     transformed,
     validate_plan,
@@ -42,15 +41,9 @@ def _version(tensor):
 
 def _snapshot(graph):
     return tuple(
-        (ref, graph.tensor(ref), _version(graph.tensor(ref)), graph.tensor(ref).requires_grad)
-        for ref in graph.values()
-        if ref.kind in ("parameter", "buffer")
+        (ref, tensor, _version(tensor), tensor.requires_grad)
+        for ref, tensor in graph.tensor_bindings()
     )
-
-
-def _attribute(model, path):
-    parent, _, name = path.rpartition(".")
-    return model.get_submodule(parent) if parent else model, name
 
 
 class Pruner:
@@ -188,9 +181,6 @@ class Pruner:
                 )
             return value
 
-        recipes = tuple(
-            replace(r, memory_format=memory_format(self.graph.tensor(r.tensor))) for r in recipes
-        )
         summary = AnalysisSummary(
             impact.status,
             impact.requested,
@@ -211,8 +201,9 @@ class Pruner:
         return plan
 
     def _check_versions(self, versions):
+        bindings = dict(self.graph.tensor_bindings())
         for ref, old, version, requires_grad in versions:
-            current = self.graph.tensor(ref)
+            current = bindings[ref]
             if (
                 current is not old
                 or _version(current) != version

@@ -42,7 +42,7 @@ def channel_operator(ctx):
     if channel not in (0, 1) or len(x.shape) < channel + 2:
         raise UnsupportedOperation("Expected a channel/spatial tensor")
     relations, constraints = [], []
-    for y in (*outputs, *ctx.inputs[1:]):
+    for y in (*outputs, *(t for t in ctx.inputs if t != x)):
         if len(y.shape) != len(x.shape) or y.shape[channel] != x.shape[channel]:
             raise UnsupportedOperation("Only channel-preserving spatial calls are supported")
         for d in range(channel + 1):
@@ -56,6 +56,29 @@ def channel_operator(ctx):
         )
     return OperatorSpec(
         tuple(relations), tuple(constraints), contract=CallContract(fresh_output=True)
+    )
+
+
+def padding(ctx):
+    """Preserve only axes untouched by padding, independently of their names/size."""
+    x, y = one(ctx.argument("input", 0)), one(ctx.output)
+    pad = ctx.module.padding if ctx.module is not None else ctx.argument("pad", 1)
+    if isinstance(pad, int) and ctx.module is not None:
+        spatial = next(n for n in (1, 2, 3) if f"{n}d" in type(ctx.module).__name__.lower())
+        pad = (pad,) * (2 * spatial)
+    if not isinstance(pad, (tuple, list)) or len(pad) % 2 or len(pad) > 2 * len(x.shape):
+        raise UnsupportedOperation("Padding requires explicit axis pairs")
+    changed = {len(x.shape) - 1 - i // 2 for i, value in enumerate(pad) if value != 0}
+    # Equal final sizes do not establish identity: (-1, 1) crops one position
+    # and appends another. Protect that axis on both sides, allowing other axes.
+    return OperatorSpec(
+        tuple(equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d not in changed),
+        tuple(
+            AxisBarrier(t.axis(d), "Padded/cropped coordinates are fixed", ctx.node.name)
+            for t in (x, y)
+            for d in sorted(changed)
+        ),
+        contract=CallContract(fresh_output=True),
     )
 
 
@@ -196,6 +219,11 @@ def register_extended(registry, modules, functions, methods):
             nn.MaxUnpool2d,
             nn.MaxUnpool3d,
             nn.Upsample,
+        ],
+        channel_operator,
+    )
+    modules(
+        [
             nn.ReflectionPad1d,
             nn.ReflectionPad2d,
             nn.ReflectionPad3d,
@@ -207,7 +235,7 @@ def register_extended(registry, modules, functions, methods):
             nn.ConstantPad3d,
             nn.ZeroPad2d,
         ],
-        channel_operator,
+        padding,
     )
     functions(
         [
@@ -232,11 +260,11 @@ def register_extended(registry, modules, functions, methods):
             F.max_unpool1d,
             F.max_unpool2d,
             F.max_unpool3d,
-            F.pad,
             F.interpolate,
         ],
         channel_operator,
     )
+    functions([F.pad], padding)
     unary = [
         "sin",
         "cos",

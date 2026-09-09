@@ -7,6 +7,7 @@ from torch.nn import functional as F
 
 from torch_kirigami import (
     AxisRelation,
+    CaptureError,
     DependencyGraph,
     OperatorRegistry,
     OperatorRule,
@@ -458,9 +459,8 @@ def test_unregistered_tensor_constant_cannot_be_silently_compacted():
         pruner.plan(remove=[graph.parameter("fc.weight").axis(0).select([1])])
 
 
-def test_forward_hook_needs_explicit_execution_semantics():
+def test_forward_hook_is_rejected_before_its_unmodeled_effects():
     model = nn.Linear(4, 6)
     model.register_forward_hook(lambda module, args, output: output.flip(-1))
-    graph, pruner = build(model, torch.randn(2, 4))
-    with pytest.raises(PlanningError, match="forward-hook"):
-        pruner.plan(remove=[graph.parameter("weight").axis(0).select([1])], preserve_io=False)
+    with pytest.raises(CaptureError, match="hooks"):
+        build(model, torch.randn(2, 4))

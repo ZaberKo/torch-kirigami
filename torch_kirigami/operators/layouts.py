@@ -39,6 +39,5 @@ class CallContract:
     Native evaluation checks shapes; it cannot by itself prove backend strides.
     """
 
-    shape_arguments: bool = False
     fresh_output: bool = False
     output_layout: str = "unknown"

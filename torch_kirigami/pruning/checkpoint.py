@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import copy
 from collections import OrderedDict
-from dataclasses import dataclass
 
 import torch
 from torch import nn
 
+from ..bindings import final_state_edits
+from ..configuration import thaw
 from .serialization import decode, encode
 from .state import (
     STRUCTURE_ATTRIBUTE,
@@ -22,12 +23,81 @@ from .state import (
 from .types import AttributeRecipe, ExecutionError
 
 
-@dataclass(frozen=True)
-class _StateAttribute:
-    """Prepared ordinary Python state; used only inside the loading transaction."""
+def _check_state_hooks(model):
+    # The format binds payload names to registered slots before allocation.
+    # Arbitrary state_dict rewrites need a separate storage/schema contract.
+    for path, module in model.named_modules():
+        if any(
+            getattr(module, name)
+            for name in (
+                "_state_dict_pre_hooks",
+                "_state_dict_hooks",
+                "_load_state_dict_pre_hooks",
+                "_load_state_dict_post_hooks",
+            )
+        ):
+            raise ExecutionError(f"Checkpoint state_dict hooks are unsupported: {path or '<root>'}")
 
-    path: str
-    new: object
+
+def _check_nonoverlap(state):
+    # Sufficient proof for dense/permuted/strided-with-gaps layouts using public
+    # size/stride facts. No private overlap checker or elementwise index table.
+    span = 1
+    for stride, size in sorted(zip(state.stride, state.shape, strict=True)):
+        if size <= 1:
+            continue
+        if stride < span:
+            raise ExecutionError(f"Checkpoint cannot prove non-overlapping layout: {state.paths}")
+        span += (size - 1) * stride
+
+
+def _same_values(left, right):
+    if left.is_complex():
+        return _same_values(left.real, right.real) and _same_values(left.imag, right.imag)
+    if left.is_floating_point():
+        missing = torch.isnan(left)
+        return torch.equal(missing, torch.isnan(right)) and torch.equal(
+            left.masked_fill(missing, 0), right.masked_fill(missing, 0)
+        )
+    return torch.equal(left, right)
+
+
+def _validate_payload(model, structure, values, buffers):
+    """Validate actual saved values, independently of how state_dict produced them."""
+    if not isinstance(values, dict) or not isinstance(buffers, dict):
+        raise ExecutionError("Checkpoint requires state dictionaries")
+    expected = {
+        p
+        for s in structure.tensors
+        for p, persistent in zip(s.paths, s.persistent, strict=True)
+        if persistent
+    }
+    expected.update(
+        f"{path}._extra_state".lstrip(".")
+        for path, module in model.named_modules(remove_duplicate=False)
+        if type(module).get_extra_state is not nn.Module.get_extra_state
+    )
+    expected_buffers = {
+        p
+        for s in structure.tensors
+        for p, persistent in zip(s.paths, s.persistent, strict=True)
+        if not persistent
+    }
+    if set(values) != expected or set(buffers) != expected_buffers:
+        raise ExecutionError("Checkpoint payload keys disagree with registered structure")
+    for state in structure.tensors:
+        entries = []
+        for name, persistent in zip(state.paths, state.persistent, strict=True):
+            value = (values if persistent else buffers)[name]
+            if (
+                not isinstance(value, torch.Tensor)
+                or tuple(value.shape) != state.shape
+                or str(value.dtype) != state.dtype
+            ):
+                raise ExecutionError(f"Invalid checkpoint tensor: {name}")
+            entries.append(value)
+        if any(not _same_values(entries[0], v) for v in entries[1:]):
+            raise ExecutionError(f"Conflicting values for shared aliases: {state.paths}")
 
 
 def save_checkpoint(model, path):
@@ -40,11 +110,13 @@ def save_checkpoint(model, path):
     Registered nonpersistent buffers are included explicitly. Model code and its
     original constructor configuration remain the caller's responsibility.
     """
+    _check_state_hooks(model)
     structure = snapshot(model)
     validate_managed(model, structure)
     if any(len(s.storage_aliases) > 1 for s in structure.tensors):
         raise ExecutionError("Checkpoint cannot reconstruct distinct tensors sharing storage")
     for state_ in structure.tensors:
+        _check_nonoverlap(state_)
         owner, name = attribute(model, state_.paths[0])
         expected = nn.Parameter if state_.kind == "parameter" else torch.Tensor
         if type(getattr(owner, name)) is not expected:
@@ -56,6 +128,7 @@ def save_checkpoint(model, path):
             if item.kind == "buffer" and not persistent:
                 owner, field = attribute(model, name)
                 buffers[name] = getattr(owner, field).detach()
+    _validate_payload(model, structure, state, buffers)
     torch.save(
         {
             "format": "torch-kirigami.checkpoint",
@@ -84,10 +157,11 @@ def load_checkpoint(model, path, *, map_location=None):
     Raises:
         ExecutionError: The schema, skeleton, aliases, or state payload is incompatible.
 
-    Ordinary registered state is prepared before committing. Custom state hooks
-    run on an isolated module shell; external side effects in user hooks remain
-    outside the transaction contract.
+    Ordinary registered state is prepared before committing. get/set_extra_state
+    runs on an isolated module shell; external side effects remain outside the
+    transaction contract. Registered state_dict hooks are explicitly unsupported.
     """
+    _check_state_hooks(model)
     data = torch.load(path, map_location=map_location, weights_only=True)
     if (
         not isinstance(data, dict)
@@ -130,52 +204,46 @@ def load_checkpoint(model, path, *, map_location=None):
     if not all(isinstance(p, str) for p in managed):
         raise ExecutionError("Invalid managed attribute paths")
     changes = []
+    custom_state = any(
+        type(m).set_extra_state is not nn.Module.set_extra_state for m in model.modules()
+    )
     for old, new in zip(original.modules, structure.modules, strict=True):
         before, after = dict(old.attributes), dict(new.attributes)
-        if before.keys() != after.keys():
+        if before.keys() != after.keys() and not custom_state:
             raise ExecutionError("Module configuration fields differ")
         for name, value in after.items():
-            if before[name] != value:
+            if name not in before or before[name] != value:
                 paths = [f"{p}.{name}".lstrip(".") for p in old.paths]
-                owner = model.get_submodule(old.paths[0]) if old.paths[0] else model
-                custom_state = type(owner).set_extra_state is not nn.Module.set_extra_state
                 if name != "training" and not any(p in managed for p in paths) and not custom_state:
                     raise ExecutionError(f"Original constructor configuration differs: {paths[0]}")
-                changes.append(AttributeRecipe(paths[0], before[name], value))
+                if name == "training" or any(p in managed for p in paths):
+                    changes.append(AttributeRecipe(paths[0], thaw(before.get(name)), thaw(value)))
+                # Extra state must itself restore other fields, including creation
+                # and deletion. Validate its final configuration before committing.
     values = data["state_dict"]
     buffers = data["nonpersistent_buffers"]
-    if not isinstance(values, dict) or not isinstance(buffers, dict):
-        raise ExecutionError("Checkpoint requires state dictionaries")
-    expected_buffers = {
-        p
-        for s in structure.tensors
-        for p, persistent in zip(s.paths, s.persistent, strict=True)
-        if not persistent
-    }
-    if set(buffers) != expected_buffers:
-        raise ExecutionError("Nonpersistent buffer keys differ from the structure")
+    _validate_payload(model, structure, values, buffers)
     replacements = []
+    standard_load = not custom_state and all(
+        type(m).load_state_dict is nn.Module.load_state_dict
+        and type(m)._load_from_state_dict is nn.Module._load_from_state_dict
+        for m in model.modules()
+    )
     with torch.inference_mode(False), torch.no_grad():
         for old, state in zip(original.tensors, structure.tensors, strict=True):
+            _check_nonoverlap(state)
             if len(state.storage_aliases) > 1:
                 raise ExecutionError("Unsupported checkpoint storage sharing")
             entries = []
             for name, persistent in zip(state.paths, state.persistent, strict=True):
                 source = values if persistent else buffers
                 value = source.get(name)
-                if (
-                    not isinstance(value, torch.Tensor)
-                    or tuple(value.shape) != state.shape
-                    or str(value.dtype) != state.dtype
-                ):
-                    raise ExecutionError(f"Invalid checkpoint tensor: {name}")
                 entries.append(value)
-            if any(not torch.equal(entries[0], v) for v in entries[1:]):
-                raise ExecutionError(f"Conflicting values for shared aliases: {state.paths}")
             tensor = torch.empty_strided(
                 state.shape, state.stride, dtype=entries[0].dtype, device=entries[0].device
             )
-            tensor.copy_(entries[0])
+            if not standard_load or not any(state.persistent):
+                tensor.copy_(entries[0])  # Other tensors are populated once by load_state_dict.
             new = (
                 nn.Parameter(tensor, requires_grad=state.requires_grad)
                 if state.kind == "parameter"
@@ -229,18 +297,11 @@ def load_checkpoint(model, path, *, map_location=None):
         raise ExecutionError("Loading hooks changed the declared final structure")
     if tuple(m.attributes for m in final.modules) != tuple(m.attributes for m in structure.modules):
         raise ExecutionError("Restored configuration differs from the checkpoint")
+    if final.references != structure.references:
+        raise ExecutionError("Restored ordinary tensor references differ from the checkpoint")
     # Transfer prepared custom state as binding assignments, preserving rollback
     # for ordinary failures without invoking set_extra_state on the original.
-    extra_changes = []
-    module_fields = set(vars(nn.Module()))
-    for module_state in original.modules:
-        path_ = module_state.paths[0]
-        original_module = model.get_submodule(path_) if path_ else model
-        restored_module = prepared.get_submodule(path_) if path_ else prepared
-        if type(original_module).set_extra_state is not nn.Module.set_extra_state:
-            for name, value in vars(restored_module).items():
-                if name not in module_fields and name != STRUCTURE_ATTRIBUTE:
-                    extra_changes.append(_StateAttribute(f"{path_}.{name}".lstrip("."), value))
+    extra_changes = final_state_edits(model, prepared)
     replacements = [
         (state, old, getattr(*attribute(prepared, state.paths[0])))
         for state, old, _ in replacements

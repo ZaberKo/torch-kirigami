@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+import torch
 from torch import fx, nn
 
 from .contracts import Constraint, Requirement, ShapeExpr
@@ -14,6 +15,19 @@ from .selection import AxisRef, TensorRef
 
 if TYPE_CHECKING:
     from .capture import TensorFacts
+
+
+def argument(args, kwargs, name, position, default=None):
+    """Resolve a named or positional argument without evaluating an absent index."""
+    if name in kwargs:
+        return kwargs[name]
+    return args[position] if position < len(args) else default
+
+
+_KEYWORD_ALIASES = {
+    torch.swapaxes: {"dim0": "axis0", "dim1": "axis1"},
+    "swapaxes": {"dim0": "axis0", "dim1": "axis1"},
+}
 
 
 def tensors(value):
@@ -84,7 +98,13 @@ class OperationContext:
         Returns:
             The normalized argument, preferring an explicitly supplied keyword.
         """
-        return self.kwargs.get(name, self.args[position] if position < len(self.args) else default)
+        name = _KEYWORD_ALIASES.get(self.node.target, {}).get(name, name)
+        return argument(self.args, self.kwargs, name, position, default)
+
+    def raw_argument(self, name, position, default=None):
+        """Resolve the original FX operand using the same public-name aliases."""
+        name = _KEYWORD_ALIASES.get(self.node.target, {}).get(name, name)
+        return argument(self.node.args, self.node.kwargs, name, position, default)
 
     def parameter(self, name: str) -> TensorRef | None:
         """Return a module-local parameter or buffer binding, or None."""

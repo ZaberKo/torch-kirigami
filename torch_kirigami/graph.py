@@ -166,7 +166,6 @@ class DependencyGraph:
         self._specs = {}
         self._valid = True
         self._interfaces = set()
-        self._source_modules = {}
         self._unused = set(self._refs)
         for refs in storage_groups.values():
             unique = tuple(dict.fromkeys(refs))
@@ -478,6 +477,19 @@ class DependencyGraph:
         if ref.kind not in ("parameter", "buffer"):
             raise ValueError("Only registered tensors have persistent bindings")
         return _attribute(self._model, ref.paths[0])
+
+    def tensor_bindings(self):
+        """Validate once and return all registered (reference, tensor) bindings.
+
+        The caller must revalidate after user callbacks or other possible model
+        changes; the returned objects are live and do not confer a read lock.
+        """
+        self._check_fresh()
+        return tuple(
+            (ref, _attribute(self._model, ref.paths[0]))
+            for ref in self._refs.values()
+            if ref.kind in ("parameter", "buffer")
+        )
 
     def bindings(self, ref):
         """Return every original (owner module, attribute name) binding of a tensor."""

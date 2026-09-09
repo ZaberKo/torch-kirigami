@@ -61,17 +61,19 @@ class WeightTaylor:
 
 def _scores(metric, context, batch):
     result = []
+    bindings = dict(context.graph.tensor_bindings())
     with torch.no_grad():
         for candidate in batch:
             impact = context.impact(candidate.remove)
             context.require_complete(impact)
             total = 0.0
             for selection in impact.parameters:
-                weight = context.graph.tensor(selection.tensor)
-                if metric.parameter_filter and not metric.parameter_filter(
-                    selection.tensor, weight
-                ):
-                    continue
+                weight = bindings[selection.tensor]
+                if metric.parameter_filter:
+                    include = metric.parameter_filter(selection.tensor, weight)
+                    context.graph.validate()  # A user callback cannot invalidate cached bindings.
+                    if not include:
+                        continue
                 taylor = isinstance(metric, WeightTaylor)
                 if taylor and (weight.is_complex() or weight.grad is None or weight.grad.is_sparse):
                     raise PlanningError(

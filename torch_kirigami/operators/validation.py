@@ -7,15 +7,12 @@ import copy
 import torch
 
 from ..pruning.types import PlanningError
-from ..selection import IndexSet, TensorRef
+from ..registry import argument
+from ..selection import TensorRef
+from .coordinates import narrow_index
+from .coordinates import retained_indices as _keep
 from .shapes import evaluate as _expression
 from .shapes import reevaluate as _reevaluate
-
-
-def _keep(impact, axis):
-    return IndexSet.span(0, axis.tensor.shape[axis.dim]).subtract(
-        impact.selection(axis.tensor).project(axis.dim)
-    )
 
 
 def _slice_coordinates(ctx, new_index):
@@ -137,13 +134,17 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
             if req.kind == "slice_arguments":
                 data = dict(req.data)
                 if "narrow_dim" in data:
-                    dim = normalized_kwargs.get("dim", normalized_args[1]) % len(op.inputs[0].shape)
+                    dim = argument(normalized_args, normalized_kwargs, "dim", 1) % len(
+                        op.inputs[0].shape
+                    )
                     if dim != data["narrow_dim"]:
                         raise PlanningError("narrow dimension changed")
-                    start = normalized_kwargs.get("start", normalized_args[2])
-                    length = normalized_kwargs.get("length", normalized_args[3])
-                    index = [slice(None)] * len(op.inputs[0].shape)
-                    index[dim] = slice(start, start + length)
+                    start = argument(normalized_args, normalized_kwargs, "start", 2)
+                    length = argument(normalized_args, normalized_kwargs, "length", 3)
+                    try:
+                        index = narrow_index(shape(op.inputs[0]), dim, start, length)
+                    except ValueError as error:
+                        raise PlanningError(f"{op.node.name}: {error}") from error
                 else:
                     index = normalized_args[1]
                 _slice_coordinates(ctx, tuple(index) if isinstance(index, list) else index)
@@ -189,7 +190,7 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                     args, kwargs = (tensor(op.inputs[0]), *dimensions), {}
         inplace = graph.operator_rule(op).effects(op.node, op.module).mutates_input
         if inplace:
-            source = op.node.args[0] if op.node.args else None
+            source = op.raw_argument("input", 0)
             producer = next(
                 (p for p in operations if p.node.name == getattr(source, "name", None)), None
             )

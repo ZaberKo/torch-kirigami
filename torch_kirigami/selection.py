@@ -89,14 +89,17 @@ class IndexSet:
 
     def intersect(self, other: IndexSet) -> IndexSet:
         """Return indices contained in both sets."""
-        return IndexSet(
-            tuple(
-                (max(a, c), min(b, d))
-                for a, b in self.intervals
-                for c, d in other.intervals
-                if max(a, c) < min(b, d)
-            )
-        )
+        result, i, j = [], 0, 0
+        while i < len(self.intervals) and j < len(other.intervals):
+            a, b = self.intervals[i]
+            c, d = other.intervals[j]
+            if max(a, c) < min(b, d):
+                result.append((max(a, c), min(b, d)))
+            if b <= d:
+                i += 1
+            else:
+                j += 1
+        return IndexSet(tuple(result))
 
     def subtract(self, other: IndexSet) -> IndexSet:
         """Return indices in this set that are absent from other."""
@@ -362,6 +365,8 @@ class Selection:
             Positions fully covered inside the scope. Partial coverage does not
             imply that the corresponding physical axis position can be removed.
         """
+        if not self:
+            return IndexSet()
         scope = scope or full_region(self.tensor.shape)
         remaining = Selection(self.tensor, (scope,)).subtract(self)
         uncovered = IndexSet()

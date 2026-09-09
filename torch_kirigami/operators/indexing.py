@@ -10,6 +10,7 @@ from ..contracts import AxisBarrier, Balanced, Requirement
 from ..registry import OperatorSpec
 from ..relations import AxisRelation, BlockMap, BroadcastRelation, Port, SliceRelation
 from ..selection import IndexSet
+from .coordinates import narrow_index
 from .native import UnsupportedOperation, equal, one, split
 
 
@@ -53,9 +54,7 @@ def narrow(ctx):
     if not all(type(v) is int for v in (dim, start, length)):
         raise UnsupportedOperation("narrow requires static integer arguments")
     dim %= len(x.shape)
-    start %= x.shape[dim]
-    index = [slice(None)] * len(x.shape)
-    index[dim] = slice(start, start + length)
+    index = narrow_index(x.shape, dim, start, length)
     return OperatorSpec(
         (SliceRelation(x, y, tuple(index), ctx.node.name),),
         requirements=(
@@ -75,8 +74,12 @@ def repeat(ctx):
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     target = ctx.node.target
     if target in ("expand", "expand_as", torch.broadcast_to):
+        relations = [BroadcastRelation(x, y, ctx.node.name)]
+        if target == "expand_as":
+            template = one(ctx.argument("other", 1))
+            relations.append(BroadcastRelation(template, y, ctx.node.name))
         return OperatorSpec(
-            (BroadcastRelation(x, y, ctx.node.name),),
+            tuple(relations),
             requirements=(
                 Requirement(
                     "call_arguments", ctx.node.name, (x, y), "Validate compact broadcast dimensions"
