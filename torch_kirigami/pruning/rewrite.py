@@ -69,8 +69,8 @@ def lower_spec(ctx):
                 if "axis" in data
                 else tuple(len(_keep(impact, a)) for a in data["axes"])
             )
-            if isinstance(old, list) and isinstance(new, tuple):
-                new = list(new)
+            if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
+                new = type(old)(new)
             if freeze(new) != freeze(old):
                 attributes.append(AttributeRecipe(req.target, old, new))
         elif req.kind == "operator_argument":
@@ -106,7 +106,7 @@ def lower_spec(ctx):
     return RewriteResult(tuple(recipes), tuple(attributes), ctx.requirements, tuple(notes))
 
 
-def compile_recipes(graph, operations, impact):
+def compile_recipes(graph, operations, impact, *, attribute_checks=None):
     """Prove all affected requirements and combine per-use recipes without weights."""
     if impact.status != "resolved":
         raise PlanningError("; ".join(f"{d.code}: {d.message}" for d in impact.diagnostics))
@@ -199,8 +199,25 @@ def compile_recipes(graph, operations, impact):
         for key, recipe in recipes.items()
     }
     check_forward(graph, operations, active, impact, recipes, attributes, strides)
-    try:
-        graph.validate_attribute_changes((a.path, thaw(a.new)) for a in attributes.values())
-    except CaptureError as error:
-        raise PlanningError(str(error)) from error
+    # Attribute validation depends on configuration, not which same-width channels
+    # were selected. The context owns/invalidate this bounded cache; manual and final
+    # independent compilation still validate without sharing another context's cache.
+    key = tuple(sorted((a.path, freeze(thaw(a.new))) for a in attributes.values()))
+    if attribute_checks is not None and key in attribute_checks:
+        error = attribute_checks[key]
+        attribute_checks.move_to_end(key)
+        if error is not None:
+            raise PlanningError(error)
+    else:
+        error = None
+        try:
+            graph.validate_attribute_changes((a.path, thaw(a.new)) for a in attributes.values())
+        except CaptureError as cause:
+            error = str(cause)
+        if attribute_checks is not None:
+            attribute_checks[key] = error
+            if len(attribute_checks) > 32:
+                attribute_checks.popitem(last=False)
+        if error is not None:
+            raise PlanningError(error)
     return tuple(recipes.values()), tuple(attributes.values()), tuple(dict.fromkeys(notes))

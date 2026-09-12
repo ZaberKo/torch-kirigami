@@ -11,6 +11,7 @@ from ..contracts import AxisBarrier, Requirement
 from ..errors import CaptureError, UnsupportedOperation
 from ..operation import CandidateAxis, OperatorRule, OperatorSpec, OutputContract
 from ..relations import ReshapeRelation
+from .effects import native_effects
 from .native import (
     affine_layouts,
     bind,
@@ -52,9 +53,7 @@ def channel_operator(ctx):
             )
             for d in range(channel + 1, len(tensor.shape))
         )
-    return OperatorSpec(
-        tuple(relations), tuple(constraints), contract=OutputContract(fresh_output=True)
-    )
+    return OperatorSpec(tuple(relations), tuple(constraints), contract=OutputContract())
 
 
 def padding(ctx):
@@ -76,7 +75,7 @@ def padding(ctx):
             for t in (x, y)
             for d in sorted(changed)
         ),
-        contract=OutputContract(fresh_output=True),
+        contract=OutputContract(),
     )
 
 
@@ -146,7 +145,7 @@ def embedding(ctx):
         constraints,
         requirements,
         candidates=candidates,
-        contract=OutputContract(fresh_output=True, output_layout="contiguous"),
+        contract=OutputContract(output_layout="contiguous"),
     )
 
 
@@ -185,11 +184,16 @@ def register_extended(registry, modules, functions, methods):
     functions([F.prelu], prelu)
     functions([F.normalize], normalize)
     registry.register(
-        nn.Embedding, OperatorRule(embedding, preflight=embedding_preflight, evaluate_on_meta=True)
+        nn.Embedding,
+        OperatorRule(
+            embedding, preflight=embedding_preflight, evaluate_on_meta=True, effects=native_effects
+        ),
     )
     registry.register(
         F.embedding,
-        OperatorRule(embedding, preflight=embedding_preflight, evaluate_on_meta=True),
+        OperatorRule(
+            embedding, preflight=embedding_preflight, evaluate_on_meta=True, effects=native_effects
+        ),
         opaque=False,
     )
     modules(

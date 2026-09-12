@@ -57,6 +57,24 @@ save_checkpoint(model, "pruned.pt")
 restored = load_checkpoint(make_original_model(), "pruned.pt", map_location="cpu")
 ```
 
+## 稀疏训练与算法组合
+
+`torch_kirigami.sparsity` 提供统一的标量稀疏正则、显式门控、参数操作、累计预算和调度组件。训练循环与具体算法在 `examples/workflows/` 中；用户提供任务 loss 和 optimizer。没有手动改梯度的第二套正则入口。
+
+[稀疏训练契约](docs/sparse-training.md) · [七类算法示例](examples/workflows/README.md)
+
+七类 workflow 统一使用官方预训练 ResNet-18 或 ViT-B/16 和 ImageNet，比较各阶段精度、MACs 与延迟。安装、数据下载和运行命令见上方示例说明。
+
+七类示例默认输出剪枝前后的 #Params、#MACs 和推理延迟；加 --compile 可测量 torch.compile 推理。库内通用测量接口及统计口径见[测量说明](docs/measurement.md)。
+
+在 workflow 环境中执行（安装见示例说明）：
+
+```bash
+cd examples/workflows
+python group_sparsity.py --model vit_b_16
+python gate_pruning.py --model vit_b_16
+```
+
 ## 能力与边界
 
 - 固定使用 FX symbolic tracing 和 ShapeProp；没有可选前端或捕获降级。

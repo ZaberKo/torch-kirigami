@@ -11,7 +11,9 @@ from pathlib import Path
 from typing import get_type_hints
 
 import torch_kirigami
+import torch_kirigami.measurement
 import torch_kirigami.pruning
+import torch_kirigami.sparsity
 
 
 def test_package_import_dependencies_are_explicit_and_acyclic():
@@ -60,7 +62,12 @@ def test_dependency_core_does_not_import_pruning():
 
 
 def test_public_record_annotations_resolve_at_runtime():
-    for package in (torch_kirigami, torch_kirigami.pruning):
+    for package in (
+        torch_kirigami,
+        torch_kirigami.pruning,
+        torch_kirigami.sparsity,
+        torch_kirigami.measurement,
+    ):
         for name in package.__all__:
             value = getattr(package, name)
             if inspect.isclass(value) and is_dataclass(value):

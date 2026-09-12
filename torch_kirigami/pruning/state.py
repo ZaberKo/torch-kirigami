@@ -239,7 +239,6 @@ def managed_record(model, structure, attributes=()):
         state = next(s for s in structure.modules if parent in s.paths)
         values.append((path, dict(state.attributes)[name]))
     return {
-        "version": 1,
         "attributes": tuple(sorted(paths)),
         "values": tuple(values),
         "tensors": tuple((s.paths, s.kind, s.shape) for s in structure.tensors),

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from itertools import product
 from math import prod
 
@@ -267,6 +267,16 @@ class TensorRef:
         object.__setattr__(self, "shape", shape)
         object.__setattr__(self, "paths", paths)
 
+    def portable(self) -> TensorRef:
+        """Remove a graph UUID, retaining a structural label for saved-plan queries.
+
+        Portable labels do not establish ownership of a live dependency graph.
+        """
+        prefix, separator, suffix = self.id.partition(":")
+        if separator and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
+            return replace(self, id=suffix)
+        return self
+
     def axis(self, dim: int) -> AxisRef:
         """Refer to a physical axis, normalizing negative dimension indices.
 
@@ -284,6 +294,47 @@ class TensorRef:
     def select(self, regions: Iterable[Region]) -> Selection:
         """Construct a removal selection from Cartesian regions in original coordinates."""
         return Selection(self, tuple(regions))
+
+
+def resolve_reference(query, references):
+    """Resolve compatible portable labels; distinguish unknown from unaffected.
+
+    Raises:
+        KeyError: The label is absent from this snapshot's catalog.
+        ValueError: The label exists but its shape, kind, or aliases disagree.
+    """
+    if not isinstance(query, TensorRef):
+        raise TypeError("Expected a TensorRef")
+    label = query.portable()
+    for ref in references:
+        if ref.portable().id == label.id or (ref.paths and set(ref.paths) & set(label.paths)):
+            if (ref.shape, ref.kind, ref.paths) != (label.shape, label.kind, label.paths):
+                raise ValueError("Query does not match the original tensor shape/kind/aliases")
+            return ref
+    raise KeyError(query.id)
+
+
+@dataclass(frozen=True)
+class TensorRefMap(Mapping):
+    """Immutable mapping accepting compatible live or portable tensor labels."""
+
+    entries: tuple
+
+    def __post_init__(self):
+        entries = tuple((ref, tuple(value)) for ref, value in self.entries)
+        if len({ref.portable().id for ref, _ in entries}) != len(entries):
+            raise ValueError("Duplicate tensor mapping labels")
+        object.__setattr__(self, "entries", entries)
+
+    def __getitem__(self, query):
+        ref = resolve_reference(query, self)
+        return next(value for key, value in self.entries if key == ref)
+
+    def __iter__(self):
+        return (ref for ref, _ in self.entries)
+
+    def __len__(self):
+        return len(self.entries)
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,1 @@
+"""Sparse-training component contracts."""

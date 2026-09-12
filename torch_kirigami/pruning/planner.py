@@ -10,7 +10,7 @@ import torch
 from ..contracts import Balanced, Divisible
 from .metrics import Magnitude, WeightTaylor
 from .rewrite import compile_recipes
-from .types import BudgetReport, Candidate, PlanningError
+from .types import BudgetReport, PlanningError, channel_targets
 
 _IMPACT_CACHE_SIZE = 32
 
@@ -19,8 +19,9 @@ class PlanningContext:
     """Read-only model access, candidates, joint analysis, scoring, and budget checks.
 
     Metrics own their statistics and are never cached. Impact queries use a bounded
-    32-entry cache; four recent verified recipe sets may also be reused. No tensor
-    data is copied into either cache, and callback boundaries still validate state.
+    32-entry cache; four recent verified recipe sets and 32 configuration checks
+    may also be reused. Caches retain no tensor data; version changes invalidate
+    compilation caches, and callback boundaries still validate state.
     """
 
     def __init__(self, graph, operations, candidates, budget, axes, metric, constraints):
@@ -29,15 +30,13 @@ class PlanningContext:
         self._budget, self._axes, self._metric = budget, tuple(dict.fromkeys(axes)), metric
         self._constraints = tuple(constraints)
         self._widths = tuple(a.tensor.shape[a.dim] for a in self.axes)
-        self._targets = (
-            tuple(math.floor(budget.ratio * w) for w in self.widths)
-            if budget.scope == "local"
-            else (math.floor(budget.ratio * sum(self.widths)),)
-        )
+        self._targets = channel_targets(budget, self.widths)
         self.trials, self.limit_reached = 0, False
         self.exclusions = []
         self._cache = OrderedDict()
         self._compiled = OrderedDict()
+        self._attribute_checks = OrderedDict()
+        self._compile_versions = None
 
     @property
     def graph(self):
@@ -151,11 +150,27 @@ class PlanningContext:
         """Return (tensor recipes, attribute recipes, notes), without new weights."""
         self.graph.validate()
         self.graph.validate_impact(impact)
+        try:
+            versions = tuple((id(t), t._version) for _, t in self.graph.tensor_bindings())
+        except RuntimeError:
+            versions = None  # Inference tensors cannot safely key a mutation-aware cache.
+        if versions is None or versions != self._compile_versions:
+            self._compiled.clear()
+            self._attribute_checks.clear()
+            self._compile_versions = versions
         # Cache a specific analysis result, not merely seeds/status: extra
         # constraints can produce a different closure or execution requirements.
         key = id(impact)
         if key not in self._compiled:
-            self._compiled[key] = (impact, compile_recipes(self.graph, self.operations, impact))
+            self._compiled[key] = (
+                impact,
+                compile_recipes(
+                    self.graph,
+                    self.operations,
+                    impact,
+                    attribute_checks=self._attribute_checks if versions is not None else None,
+                ),
+            )
             if len(self._compiled) > 4:
                 self._compiled.popitem(last=False)
         else:
@@ -174,33 +189,6 @@ class PlanningContext:
             self.limit_reached,
             tuple(self.exclusions),
         )
-
-
-def discover(graph, operations):
-    """Generate declared logical-axis candidates, deduplicating shared domains."""
-    result, domains, keys = [], {}, {}
-    for op in operations:
-        for domain in graph.operator_spec(op).candidates:
-            axis, block = domain.axis, domain.block_size
-            if domain.key in keys and keys[domain.key] != (axis, block):
-                raise PlanningError(f"Conflicting candidate domain key: {domain.key}")
-            keys[domain.key] = (axis, block)
-            if axis in domains and domains[axis].block_size != block:
-                raise PlanningError("Conflicting block sizes for one candidate axis")
-            domains.setdefault(axis, domain)
-    for axis, domain in domains.items():
-        block, width = domain.block_size, axis.tensor.shape[axis.dim]
-        if width % block:
-            raise PlanningError("Candidate block must divide the logical width")
-        for start in range(0, width, block):
-            result.append(
-                Candidate(
-                    f"{domain.key}:{start:012d}",
-                    (axis.select(range(start, start + block)),),
-                    axis,
-                )
-            )
-    return tuple(result), tuple(domains)
 
 
 class Greedy:

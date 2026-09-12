@@ -113,7 +113,7 @@ def test_python_boolean_operators_run_through_capture_plan_and_backward(
     torch.testing.assert_close(model.fc.weight.grad, w.grad)
 
 
-@pytest.mark.parametrize("container", [list, tuple])
+@pytest.mark.parametrize("container", [list, tuple, torch.Size])
 def test_unflatten_configuration_survives_plan_and_checkpoint(container, execution_device):
     def make():
         return nn.Sequential(

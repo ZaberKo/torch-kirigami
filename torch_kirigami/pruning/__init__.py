@@ -1,6 +1,8 @@
 """Plan and apply structural pruning on the original PyTorch Module."""
 
+from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
+from .groups import ParameterGroup
 from .metrics import Magnitude, WeightTaylor
 from .plan import PruningPlan, PruningResult
 from .planner import Greedy, PlanningContext
@@ -10,6 +12,7 @@ from .types import (
     AttributeRecipe,
     BudgetReport,
     Candidate,
+    ChannelCount,
     ChannelRatio,
     CoordinateSegment,
     ExecutionError,
@@ -27,6 +30,8 @@ __all__ = [
     "AttributeRecipe",
     "BudgetReport",
     "Candidate",
+    "CandidateSpace",
+    "ChannelCount",
     "ChannelRatio",
     "CoordinateSegment",
     "ExecutionError",
@@ -34,6 +39,7 @@ __all__ = [
     "Magnitude",
     "Metric",
     "ModelStructure",
+    "ParameterGroup",
     "PlanningContext",
     "PlanningError",
     "Pruner",

@@ -115,7 +115,12 @@ def isolated_execution(model, args, kwargs):
             "Inputs or buffers alias parameter storage; safe isolation is unsupported"
         )
     try:
-        copied_args, copied_kwargs, copies = copy.deepcopy((args, kwargs, [b[2] for b in buffers]))
+        # Normal clones retain mutation counters even when capture is requested
+        # inside inference mode. Execution itself preserves the caller's mode.
+        with torch.inference_mode(False):
+            copied_args, copied_kwargs, copies = copy.deepcopy(
+                (args, kwargs, [b[2] for b in buffers])
+            )
     except Exception as error:
         raise CaptureError("Cannot safely copy example inputs and registered buffers") from error
     aliases = {
@@ -177,21 +182,129 @@ def _root_graph(model, signature):
     return fx.GraphModule({"_root": model}, graph)
 
 
-def trace_module(model, registry):
-    """Use the same public FX leaf policy for capture and configuration validation."""
+def _tensor_version(tensor):
+    """Return a mutation counter where PyTorch exposes one."""
+    try:
+        return tensor._version
+    except RuntimeError:
+        return None
+
+
+def _same_tensor_values(left, right):
+    """Compare values exactly, treating corresponding NaNs as unchanged."""
+    if left.shape != right.shape or left.dtype != right.dtype or left.device != right.device:
+        return False
+    if torch.equal(left, right):
+        return True
+    if left.is_complex():
+        return _same_tensor_values(torch.view_as_real(left), torch.view_as_real(right))
+    return left.is_floating_point() and bool(
+        ((left == right) | (torch.isnan(left) & torch.isnan(right))).all()
+    )
+
+
+def trace_module(model, registry, *, buffer_sources):
+    """Trace without leaking generated constants or silently executing buffer writes."""
     tracer = _LeafTracer(registry)
     if tracer.is_leaf_module(model, ""):
         return _root_graph(model, inspect.signature(model.forward))
-    graph = tracer.trace(model)
-    for node in graph.nodes:
-        if node.op == "placeholder":
-            # Metadata execution always supplies fully bound isolated arguments.
-            # Do not retain defaults or ask FX codegen to embed Tensor defaults.
-            node.args = ()
-    return fx.GraphModule(model, graph)
+    state = [
+        (m, set(vars(m)), dict(m._buffers), set(m._non_persistent_buffers_set))
+        for m in model.modules()
+    ]
+    # Compare isolated buffers against their unchanged source bindings as well
+    # as version counters: .data writes can bypass the latter. No second copy.
+    before = [
+        (
+            m,
+            name,
+            t,
+            tuple(t.shape),
+            tuple(t.stride()),
+            (storage_key(t), t.storage_offset()),
+            _tensor_version(t),
+            buffer_sources[id(t)],
+        )
+        for m, _, buffers, _ in state
+        for name, t in buffers.items()
+        if t is not None
+    ]
+    try:
+        graph = tracer.trace(model)
+        for m, _, buffers, _ in state:
+            if m._buffers.keys() != buffers.keys() or any(
+                m._buffers[name] is not tensor for name, tensor in buffers.items()
+            ):
+                raise CaptureError("Unrecorded buffer registration/write during symbolic tracing")
+        for m, name, t, shape, stride, storage, version, value in before:
+            if (
+                m._buffers.get(name) is not t
+                or tuple(t.shape) != shape
+                or tuple(t.stride()) != stride
+                or (storage_key(t), t.storage_offset()) != storage
+                or _tensor_version(t) != version
+                or not _same_tensor_values(t, value)
+            ):
+                raise CaptureError("Unrecorded buffer write during symbolic tracing")
+        for node in graph.nodes:
+            if node.op == "placeholder":
+                node.args = ()
+        # GraphModule must copy constant bindings before source cleanup.
+        return fx.GraphModule(model, graph)
+    finally:
+        for m, names, buffers, nonpersistent in state:
+            for name in set(vars(m)) - names:
+                object.__delattr__(m, name)
+            m._buffers.clear()
+            m._buffers.update(buffers)
+            m._non_persistent_buffers_set.clear()
+            m._non_persistent_buffers_set.update(nonpersistent)
 
 
-def validate_attribute_changes(model, registry, original_graph, updates):
+def capture_signature(gm, model):
+    """Record computation and actual binding facts, ignoring FX-generated names.
+
+    Registered tensors use aliases and metadata. Only unregistered constants are
+    copied by value; no parameter snapshots or intermediate activations are held.
+    """
+    bindings = {}
+    for kind, entries in (
+        ("parameter", model.named_parameters(remove_duplicate=False)),
+        ("buffer", model.named_buffers(remove_duplicate=False)),
+    ):
+        for path, tensor in entries:
+            bindings.setdefault(id(tensor), (kind, []))[1].append(path)
+    ordinals = {node: i for i, node in enumerate(gm.graph.nodes)}
+
+    def encode(value):
+        if isinstance(value, fx.Node):
+            return ("node", ordinals[value])
+        if isinstance(value, torch.Tensor):
+            metadata = (tuple(value.shape), tuple(value.stride()), value.dtype, value.device)
+            if id(value) in bindings:
+                kind, paths = bindings[id(value)]
+                return ("binding", kind, tuple(paths), metadata)
+            return ("constant", metadata, value.detach().clone())
+        if isinstance(value, (tuple, list)):
+            return (type(value), tuple(encode(v) for v in value))
+        if isinstance(value, dict):
+            return (dict, tuple((k, encode(v)) for k, v in value.items()))
+        if isinstance(value, slice):
+            return (slice, encode((value.start, value.stop, value.step)))
+        return value
+
+    result = []
+    for node in gm.graph.nodes:
+        target = node.target
+        if node.op == "get_attr":
+            target = gm
+            for component in str(node.target).split("."):
+                target = getattr(target, component)
+        result.append((node.op, encode(target), encode(node.args), encode(node.kwargs)))
+    return tuple(result)
+
+
+def validate_attribute_changes(model, registry, original_signature, updates):
     """Reject attribute edits that change the captured Python computation.
 
     Trace an isolated configuration copy with proposed attributes, sharing the
@@ -203,15 +316,11 @@ def validate_attribute_changes(model, registry, original_graph, updates):
         return
 
     def same(left, right):
-        if isinstance(left, fx.Node) or isinstance(right, fx.Node):
-            return (
-                isinstance(left, fx.Node) and isinstance(right, fx.Node) and left.name == right.name
-            )
         if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
             return (
                 isinstance(left, torch.Tensor)
                 and isinstance(right, torch.Tensor)
-                and torch.equal(left, right)
+                and _same_tensor_values(left, right)
             )
         if type(left) is not type(right):
             return False
@@ -226,7 +335,7 @@ def validate_attribute_changes(model, registry, original_graph, updates):
         return left is right or left == right
 
     try:
-        with isolated_execution(model, (), {}):
+        with isolated_execution(model, (), {}) as (_, _, aliases):
             # Copy configuration without invoking Module.__deepcopy__, which may
             # return the source object. Preallocate module shells to preserve shared
             # submodules and ordinary references; registered tensors remain shared.
@@ -240,12 +349,8 @@ def validate_attribute_changes(model, registry, original_graph, updates):
             for path, value in updates:
                 parent, _, name = path.rpartition(".")
                 object.__setattr__(prepared.get_submodule(parent), name, value)
-            revised = trace_module(prepared, registry)
-            old_nodes, new_nodes = tuple(original_graph.nodes), tuple(revised.graph.nodes)
-            if len(old_nodes) != len(new_nodes) or any(
-                not same((a.op, a.target, a.args, a.kwargs), (b.op, b.target, b.args, b.kwargs))
-                for a, b in zip(old_nodes, new_nodes, strict=False)
-            ):
+            revised = trace_module(prepared, registry, buffer_sources=aliases)
+            if not same(original_signature, capture_signature(revised, prepared)):
                 raise CaptureError(
                     "Attribute updates change captured forward structure or constants"
                 )
@@ -346,11 +451,13 @@ class CaptureResult:
         module: FX GraphModule produced by the fixed capture path.
         facts: Result metadata indexed by FX nodes.
         buffer_aliases: Temporary buffer object IDs mapped to original tensors.
+        signature: Captured computation and binding facts before metadata execution.
     """
 
     module: fx.GraphModule
     facts: dict[fx.Node, Any]
     buffer_aliases: dict[int, torch.Tensor]
+    signature: tuple
 
 
 def capture(
@@ -381,7 +488,8 @@ def capture(
         raise CaptureError(f"Invalid forward arguments: {error}") from error
     with isolated_execution(model, bound.args, bound.kwargs) as (safe_args, safe_kwargs, aliases):
         try:
-            gm = trace_module(model, registry)
+            gm = trace_module(model, registry, buffer_sources=aliases)
+            captured_signature = capture_signature(gm, model)
             _reject_parameter_writes(gm, registry)
             bound = signature.bind(*safe_args, **safe_kwargs)
             metadata = _MetadataPropagator(gm, bound.arguments)
@@ -393,4 +501,4 @@ def capture(
                 f"FX capture/metadata execution failed: {error}. "
                 "Tensor-dependent Python control flow is not specialized from examples."
             ) from error
-    return CaptureResult(gm, metadata.facts, aliases)
+    return CaptureResult(gm, metadata.facts, aliases, captured_signature)

@@ -240,20 +240,17 @@ class PartitionedLayout:
 
 @dataclass(frozen=True)
 class OutputContract:
-    """Declare allocation and layout facts for original-call validation.
+    """Declare layout facts for original-call validation.
 
     Native meta execution can check shapes but cannot prove backend strides.
     Shape argument permissions are described separately by requirements.
     """
 
-    fresh_output: bool = False
     output_layout: Literal["unknown", "contiguous", "convolution", "cast", "backend_dependent"] = (
         "unknown"
     )
 
     def __post_init__(self):
-        if not isinstance(self.fresh_output, bool):
-            raise TypeError("Output freshness must be boolean")
         if self.output_layout not in (
             "unknown",
             "contiguous",

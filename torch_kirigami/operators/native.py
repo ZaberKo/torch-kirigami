@@ -98,20 +98,26 @@ def linear(ctx):
     """Connect Linear feature axes, batch dimensions, weight, and bias."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
-    relations = [equal(x, -1, w, 1, ctx.node.name), equal(y, -1, w, 0, ctx.node.name)]
+    if len(w.shape) not in (1, 2):
+        raise UnsupportedOperation("Linear requires rank-one or rank-two weight")
+    relations = [equal(x, -1, w, -1, ctx.node.name)]
+    if len(w.shape) == 2:
+        relations.append(equal(y, -1, w, 0, ctx.node.name))
     relations.extend(equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape) - 1))
     if b is not None:
-        relations.append(equal(y, -1, one(b), 0, ctx.node.name))
-    reqs = (requirement(ctx, "in_features", x, -1), requirement(ctx, "out_features", y, -1))
-    if ctx.module is None:
-        reqs = ()
+        relations.append(BroadcastRelation(one(b), y, ctx.node.name))
+    reqs = (
+        ()
+        if ctx.module is None
+        else (requirement(ctx, "in_features", x, -1), requirement(ctx, "out_features", y, -1))
+    )
     candidates = () if ctx.module is None else (CandidateAxis(f"{w.paths[0]}:0", w.axis(0)),)
     return OperatorSpec(
         tuple(relations),
         (layout(ctx, x), layout(ctx, y), layout(ctx, w)),
         reqs,
         candidates=candidates,
-        contract=OutputContract(fresh_output=True, output_layout="contiguous"),
+        contract=OutputContract(output_layout="contiguous"),
     )
 
 
@@ -225,7 +231,7 @@ def convolution(ctx):
         tuple(requirements),
         candidates=candidates,
         layouts=(PartitionedLayout(w, tuple(partitions)),),
-        contract=OutputContract(fresh_output=True, output_layout="convolution"),
+        contract=OutputContract(output_layout="convolution"),
     )
 
 

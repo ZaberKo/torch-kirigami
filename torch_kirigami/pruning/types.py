@@ -6,12 +6,14 @@ import math
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+import torch
+
 from ..configuration import FrozenList, FrozenScalar, freeze, thaw
 from ..contracts import Impact, Requirement
 from ..errors import KirigamiError
 from ..graph import DependencyGraph
 from ..operation import OperationContext, OperatorSpec
-from ..selection import AxisRef, Region, Selection, TensorRef
+from ..selection import AxisRef, Region, Selection, TensorRef, resolve_reference
 
 
 def _static(value, depth=0):
@@ -87,6 +89,56 @@ class ChannelRatio:
             if any(not isinstance(axis, AxisRef) for axis in axes):
                 raise TypeError("Budget axes must be AxisRef instances")
             object.__setattr__(self, "axes", tuple(dict.fromkeys(axes)))
+
+
+@dataclass(frozen=True)
+class ChannelCount:
+    """Integer removal caps over explicit logical axes.
+
+    Args:
+        counts: Local tuple aligned with axes, or one integer for global scope.
+        axes: Explicit unique logical axes; no protected-domain filtering occurs.
+        scope: Local per-axis caps or a global joint cap.
+    """
+
+    counts: int | tuple[int, ...]
+    axes: tuple[AxisRef, ...]
+    scope: str = "local"
+
+    def __post_init__(self):
+        axes = tuple(self.axes)
+        if any(not isinstance(a, AxisRef) for a in axes) or len(set(axes)) != len(axes):
+            raise ValueError("ChannelCount requires unique explicit axes")
+        if self.scope not in ("local", "global"):
+            raise ValueError("scope must be local or global")
+        counts = (self.counts,) if self.scope == "global" else tuple(self.counts)
+        if len(counts) != (1 if self.scope == "global" else len(axes)) or any(
+            type(c) is not int or c < 0 for c in counts
+        ):
+            raise ValueError("Invalid integer channel caps")
+        widths = tuple(a.tensor.shape[a.dim] for a in axes)
+        if (self.scope == "global" and counts[0] > sum(widths)) or (
+            self.scope == "local" and any(c > w for c, w in zip(counts, widths, strict=True))
+        ):
+            raise ValueError("Channel cap exceeds current width")
+        object.__setattr__(self, "axes", axes)
+        if self.scope == "local":
+            object.__setattr__(self, "counts", counts)
+
+
+def channel_targets(budget, widths):
+    """Resolve ratio or integer caps using one planner-independent definition."""
+    if isinstance(budget, ChannelRatio):
+        return (
+            tuple(math.floor(budget.ratio * w) for w in widths)
+            if budget.scope == "local"
+            else (math.floor(budget.ratio * sum(widths)),)
+        )
+    if isinstance(budget, ChannelCount):
+        if tuple(a.tensor.shape[a.dim] for a in budget.axes) != tuple(widths):
+            raise ValueError("Integer budget axes do not match planning widths")
+        return (budget.counts,) if budget.scope == "global" else budget.counts
+    raise TypeError("Expected ChannelRatio or ChannelCount")
 
 
 class Metric(Protocol):
@@ -170,7 +222,7 @@ class AttributeRecipe:
 
     def __post_init__(self):
         def frozen(value):
-            if isinstance(value, (list, FrozenList)):
+            if isinstance(value, (list, FrozenList, FrozenScalar, torch.Size)):
                 return freeze(thaw(value))
             if isinstance(value, tuple):
                 return tuple(frozen(v) for v in value)
@@ -260,26 +312,36 @@ class AnalysisSummary:
     requested: tuple[Selection, ...]
     selections: tuple[Selection, ...]
     reasons: tuple[str, ...]
+    tensors: tuple[TensorRef, ...] = ()
 
     def __post_init__(self):
         if self.status not in ("resolved", "unresolved", "conflict"):
             raise ValueError("Invalid analysis status")
-        for name in ("requested", "selections", "reasons"):
+        for name in ("requested", "selections", "reasons", "tensors"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if any(not isinstance(s, Selection) for s in (*self.requested, *self.selections)):
             raise TypeError("Analysis summary requires Selection records")
         if any(not isinstance(reason, str) for reason in self.reasons):
             raise TypeError("Analysis reasons must be strings")
 
+        catalog = self.tensors or tuple(
+            dict.fromkeys(s.tensor for s in (*self.requested, *self.selections))
+        )
+        if any(not isinstance(ref, TensorRef) for ref in catalog):
+            raise TypeError("Analysis catalog requires TensorRef records")
+        if len({ref.portable().id for ref in catalog}) != len(catalog):
+            raise ValueError("Duplicate analysis tensor labels")
+        object.__setattr__(self, "tensors", catalog)
+        for selection in (*self.requested, *self.selections):
+            try:
+                resolve_reference(selection.tensor, catalog)
+            except KeyError as error:
+                raise ValueError("Analysis selection is absent from the tensor catalog") from error
+
     def selection(self, tensor):
-        """Find a frozen selection by stable tensor identity or registered path."""
-        for selected in self.selections:
-            ref = selected.tensor
-            if ref.id == tensor.id or (ref.paths and set(ref.paths) & set(tensor.paths)):
-                if ref.shape != tensor.shape or ref.kind != tensor.kind:
-                    raise ValueError("Query does not match the original tensor shape/kind")
-                return selected
-        return Selection(tensor)
+        """Query compatible labels; unknown references raise instead of appearing empty."""
+        ref = resolve_reference(tensor, self.tensors)
+        return next((s for s in self.selections if s.tensor == ref), Selection(ref))
 
 
 @dataclass(frozen=True)

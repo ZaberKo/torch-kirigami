@@ -151,7 +151,7 @@ def sdpa(ctx):
                 "Recompute attention logits, default scale, softmax and weighted values on compact domains",
             ),
         ),
-        contract=OutputContract(fresh_output=True, output_layout="backend_dependent"),
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
@@ -266,7 +266,7 @@ def multihead_attention(ctx):
         tuple(constraints),
         tuple(requirements),
         candidates=(CandidateAxis(f"{out.paths[0]}:0", axis),),
-        contract=OutputContract(fresh_output=True, output_layout="backend_dependent"),
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 

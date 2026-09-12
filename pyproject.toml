@@ -46,7 +46,7 @@ include = [
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "examples/workflows"]
 addopts = ["-ra", "--strict-config", "--strict-markers", "--import-mode=importlib"]
 
 [tool.ruff]

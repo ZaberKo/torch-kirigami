@@ -131,7 +131,6 @@ def save_checkpoint(model, path):
     torch.save(
         {
             "format": "torch-kirigami.checkpoint",
-            "version": 1,
             "structure": encode(structure),
             "managed": getattr(model, STRUCTURE_ATTRIBUTE, {}).get("attributes", ()),
             "state_dict": state,
@@ -167,16 +166,14 @@ def load_checkpoint(model, path, *, map_location=None):
         or set(data)
         != {
             "format",
-            "version",
             "structure",
             "managed",
             "state_dict",
             "nonpersistent_buffers",
         }
         or data["format"] != "torch-kirigami.checkpoint"
-        or data["version"] != 1
     ):
-        raise ExecutionError("Unsupported checkpoint schema/version")
+        raise ExecutionError("Invalid checkpoint schema")
     try:
         structure = decode(data["structure"])
     except (TypeError, ValueError, KeyError) as error:
@@ -253,7 +250,9 @@ def load_checkpoint(model, path, *, map_location=None):
 
     # Shallow module shells isolate hooks and extra state from original tensor
     # bindings; tensors are already newly allocated, and module aliases persist.
-    shells = {id(m): copy.copy(m) for m in model.modules()}
+    # User-defined __copy__ may return the original module. Never invoke it:
+    # changing such a "shell" would corrupt the destination before commit.
+    shells = {id(m): object.__new__(type(m)) for m in model.modules()}
     memo = dict(shells)
     memo.update((id(old), new) for _, old, new in replacements)
     for module in model.modules():

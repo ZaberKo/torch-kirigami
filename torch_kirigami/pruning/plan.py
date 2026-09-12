@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 from torch import nn
 
-from ..selection import TensorRef
+from ..selection import TensorRef, TensorRefMap
 from .serialization import RECORD_TYPES, decode, encode
 from .state import validate_plan
 from .types import (
@@ -62,20 +62,19 @@ class PruningPlan:
             raise ValueError("Duplicate selected candidate keys")
 
     def to_dict(self) -> dict:
-        """Export versioned basic data suitable for weights-only torch loading."""
+        """Export basic data suitable for weights-only torch loading."""
         return {
             "format": "torch-kirigami.plan",
-            "version": 1,
             "plan": encode(self, record_types=PLAN_TYPES),
         }
 
     @classmethod
     def from_dict(cls, data) -> PruningPlan:
         """Load and validate a portable plan without importing model classes."""
-        if not isinstance(data, dict) or set(data) != {"format", "version", "plan"}:
+        if not isinstance(data, dict) or set(data) != {"format", "plan"}:
             raise ValueError("Invalid plan envelope")
-        if data["format"] != "torch-kirigami.plan" or data["version"] != 1:
-            raise ValueError("Unsupported plan format/version")
+        if data["format"] != "torch-kirigami.plan":
+            raise ValueError("Unsupported plan format")
         result = decode(data["plan"], record_types=PLAN_TYPES)
         if not isinstance(result, cls):
             raise ValueError("Payload is not a pruning plan")
@@ -119,9 +118,7 @@ class PruningResult:
         object.__setattr__(
             self,
             "coordinate_maps",
-            MappingProxyType(
-                {ref: tuple(segments) for ref, segments in self.coordinate_maps.items()}
-            ),
+            TensorRefMap(tuple(self.coordinate_maps.items())),
         )
         object.__setattr__(self, "report", tuple(self.report))
 

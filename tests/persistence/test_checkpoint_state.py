@@ -33,6 +33,59 @@ class ParentState(nn.Module):
         self.layers = [self.drop]
 
 
+@pytest.mark.parametrize("copy_behavior", ["self", "raise"])
+@pytest.mark.parametrize("reject_load", [False, True])
+def test_checkpoint_shells_bypass_copy_and_preserve_failure_state(
+    copy_behavior, reject_load, execution_device
+):
+    class CustomCopy(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(2, device=execution_device))
+            self.register_buffer("offset", torch.zeros(2, device=execution_device))
+            self.child = nn.Identity()
+            self.alias = self.child
+
+        def __copy__(self):
+            if copy_behavior == "raise":
+                raise AssertionError("User copy must not run during loading")
+            return self
+
+        def forward(self, x):
+            return self.alias(x * self.weight + self.offset)
+
+        def _load_from_state_dict(self, *args, **kwargs):
+            if reject_load:
+                self.weight.fill_(99)
+                raise RuntimeError("Rejected on the isolated shell")
+            return super()._load_from_state_dict(*args, **kwargs)
+
+    source, target = CustomCopy(), CustomCopy()
+    with torch.no_grad():
+        source.weight.fill_(3)
+        source.offset.fill_(2)
+    stream = io.BytesIO()
+    save_checkpoint(source, stream)
+    stream.seek(0)
+    weight, offset, child = target.weight, target.offset, target.child
+    fields = set(vars(target))
+    if reject_load:
+        with pytest.raises(ExecutionError, match="Rejected on the isolated shell"):
+            load_checkpoint(target, stream)
+        assert set(vars(target)) == fields
+        assert target.weight is weight and target.offset is offset
+        assert target.child is child and target.alias is child
+        torch.testing.assert_close(target.weight, torch.ones_like(weight))
+        torch.testing.assert_close(target.offset, torch.zeros_like(offset))
+    else:
+        load_checkpoint(target, stream)
+        assert target.alias is target.child
+        x = torch.ones(2, device=execution_device)
+        torch.testing.assert_close(target(x), source(x))
+        target(x).sum().backward()
+        torch.testing.assert_close(target.weight.grad, x)
+
+
 class ExtraState(nn.Module):
     def __init__(self):
         super().__init__()

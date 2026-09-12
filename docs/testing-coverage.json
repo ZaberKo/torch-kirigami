@@ -1,5 +1,4 @@
 {
-  "schema_version": 1,
   "objects": [
     {
       "object": "torch_kirigami.IndexSet",
@@ -58,6 +57,14 @@
             "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "原引用/静态引用查询、未知标签与空影响、序列化后执行",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_portable_queries.py::test_portable_queries_cover_affected_unaffected_and_unknown"
+          ],
           "gaps": []
         }
       ]
@@ -461,6 +468,15 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "共享分配契约经过捕获与执行，Linear/Conv、BN、原地激活、训练/评估",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_effect_contracts.py::test_fresh_producers_support_inplace_consumers",
+            "tests/integration/test_effect_contracts.py::test_functional_linear_vector_and_scalar_bias"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -538,6 +554,16 @@
           "gaps": [
             "未穷举任意 Python 配置读取及所有组合"
           ]
+        },
+        {
+          "behavior": "捕获实际常量、隐式 buffer 写入和退出状态",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_capture_equivalence.py::test_unrecorded_buffer_writes_are_rejected_and_restored",
+            "tests/integration/test_capture_equivalence.py::test_generated_constants_are_compared_by_fact_and_do_not_leak",
+            "tests/integration/test_capture_equivalence.py::test_trace_failure_restores_constants_buffers_inputs_and_rng"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -621,6 +647,15 @@
             "tests/pruning/test_strategy.py::test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "同宽属性验证复用、失败缓存、版本失效与最终复验",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_configuration_cache.py::test_same_width_configuration_checks_are_shared",
+            "tests/integration/test_configuration_cache.py::test_configuration_cache_invalidates_after_tensor_write"
+          ],
           "gaps": []
         }
       ]
@@ -761,6 +796,14 @@
           "gaps": [
             "未穷举任意 Python 配置读取及所有组合"
           ]
+        },
+        {
+          "behavior": "list/tuple/torch.Size 配置的完整剪枝和恢复",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_python_contracts.py::test_unflatten_configuration_survives_plan_and_checkpoint"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -806,6 +849,14 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "原引用/静态引用查询、未知标签与空影响、序列化后执行",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_portable_queries.py::test_portable_queries_cover_affected_unaffected_and_unknown"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -850,6 +901,14 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "原引用/静态引用查询、未知标签与空影响、序列化后执行",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_portable_queries.py::test_portable_queries_cover_affected_unaffected_and_unknown"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -890,7 +949,8 @@
             "tests/persistence/test_checkpoint_validation.py::test_checkpoint_rejects_corrupt_alias_values_before_mutation",
             "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_commits_entire_final_module_graph",
             "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
-            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
+            "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings",
+            "tests/persistence/test_checkpoint_state.py::test_checkpoint_shells_bypass_copy_and_preserve_failure_state"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -1037,6 +1097,14 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "list/tuple/torch.Size 配置的完整剪枝和恢复",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_python_contracts.py::test_unflatten_configuration_survives_plan_and_checkpoint"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -1115,6 +1183,16 @@
             "tests/graph/test_queries.py::test_metadata_and_capture_context_are_queryable"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "捕获实际常量、隐式 buffer 写入和退出状态",
+          "conditions": "CPU/CUDA；公开生命周期及列示变体",
+          "tests": [
+            "tests/integration/test_capture_equivalence.py::test_unrecorded_buffer_writes_are_rejected_and_restored",
+            "tests/integration/test_capture_equivalence.py::test_generated_constants_are_compared_by_fact_and_do_not_leak",
+            "tests/integration/test_capture_equivalence.py::test_trace_failure_restores_constants_buffers_inputs_and_rng"
+          ],
           "gaps": []
         }
       ]
@@ -1219,6 +1297,411 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.selection.TensorRefMap",
+      "contracts": [
+        {
+          "behavior": "不可变坐标查询统一接受原图和静态引用，拒绝未知标签",
+          "conditions": "公开 plan 序列化、apply 和 backward；CPU/CUDA",
+          "tests": [
+            "tests/integration/test_portable_queries.py::test_portable_queries_cover_affected_unaffected_and_unknown"
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.CandidateSpace",
+      "contracts": [
+        {
+          "behavior": "候选发现、保护域、过滤及依赖组去重",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_group_discovery_filter_duplicates_and_incomplete_path",
+            "tests/sparsity/test_regularizers.py::test_unknown_influence_rejects_groups_but_valid_alternative_can_train",
+            "tests/sparsity/test_budget_schedule.py::test_cumulative_budget_retains_newly_protected_domain_and_restores"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ParameterGroup",
+      "contracts": [
+        {
+          "behavior": "区域并集、共享坐标及重叠组的独立数值/梯度",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ChannelCount",
+      "contracts": [
+        {
+          "behavior": "local/global 整数上限、保护和非法预算",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_count_budget_local_global_constraints_and_validation"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.GroupLasso",
+      "contracts": [
+        {
+          "behavior": "正则值、梯度、零次梯度与训练接入",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity",
+            "tests/sparsity/test_regularizers.py::test_public_regularizer_gradcheck_and_zero_subgradient",
+            "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.GroupSquaredL2",
+      "contracts": [
+        {
+          "behavior": "正则值、梯度、零次梯度与训练接入",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity",
+            "tests/sparsity/test_regularizers.py::test_public_regularizer_gradcheck_and_zero_subgradient",
+            "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.ScaleL1",
+      "contracts": [
+        {
+          "behavior": "显式缩放参数、别名去重、精度和失效",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_precision_scale_aliases_and_freshness",
+            "tests/sparsity/test_operations_gates.py::test_gate_and_scale_parameter_aliases_are_not_counted_twice"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.Constant",
+      "contracts": [
+        {
+          "behavior": "纯调度端点、插值、分段及非法输入",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.Linear",
+      "contracts": [
+        {
+          "behavior": "纯调度端点、插值、分段及非法输入",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.Polynomial",
+      "contracts": [
+        {
+          "behavior": "纯调度端点、插值、分段及非法输入",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.Piecewise",
+      "contracts": [
+        {
+          "behavior": "纯调度端点、插值、分段及非法输入",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.SelectionWindow",
+      "contracts": [
+        {
+          "behavior": "按保留身份计算相似度、窗口恢复与失败不修改",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_selection_identity_window_resume_and_failure_purity"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.selection_similarity",
+      "contracts": [
+        {
+          "behavior": "按保留身份计算相似度、窗口恢复与失败不修改",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_selection_identity_window_resume_and_failure_purity"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.CumulativeChannelBudget",
+      "contracts": [
+        {
+          "behavior": "累计整数目标、欠达、结构过期和checkpoint恢复",
+          "tests": [
+            "tests/sparsity/test_budget_schedule.py::test_cumulative_integer_rounds_and_checkpoint_resume",
+            "tests/sparsity/test_budget_schedule.py::test_underfill_and_unrecorded_structure_do_not_advance_budget",
+            "tests/sparsity/test_budget_schedule.py::test_cumulative_budget_retains_newly_protected_domain_and_restores",
+            "tests/integration/test_pretrained_examples.py::test_pretrained_workflow"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.ChannelGate",
+      "contracts": [
+        {
+          "behavior": "显式门控训练、候选绑定、物理剪枝及恢复",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_training_pruning_independent_reference_and_checkpoint",
+            "tests/integration/test_sparse_workflows.py::test_transformer_head_gate_compaction_and_checkpoint"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        },
+        {
+          "behavior": "门控分配新输出允许单消费者原地 ReLU，保留多消费者拒绝与失败纯净性",
+          "conditions": "单消费者在 CPU/CUDA；拒绝路径在 CPU",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_allocation_allows_following_relu_and_physical_pruning",
+            "tests/sparsity/test_operations_gates.py::test_gate_allocation_does_not_relax_inplace_multiple_consumer_guard"
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.GateBinding",
+      "contracts": [
+        {
+          "behavior": "显式门控训练、候选绑定、物理剪枝及恢复",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_training_pruning_independent_reference_and_checkpoint",
+            "tests/integration/test_sparse_workflows.py::test_transformer_head_gate_compaction_and_checkpoint"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.GateMagnitude",
+      "contracts": [
+        {
+          "behavior": "显式门控训练、候选绑定、物理剪枝及恢复",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_training_pruning_independent_reference_and_checkpoint",
+            "tests/sparsity/test_operations_gates.py::test_gate_and_scale_parameter_aliases_are_not_counted_twice",
+            "tests/integration/test_sparse_workflows.py::test_transformer_head_gate_compaction_and_checkpoint",
+            "tests/sparsity/test_operations_gates.py::test_shared_gate_weights_with_distinct_masks_score_and_prune"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.register_gate_operators",
+      "contracts": [
+        {
+          "behavior": "显式门控训练、候选绑定、物理剪枝及恢复",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_training_pruning_independent_reference_and_checkpoint",
+            "tests/integration/test_sparse_workflows.py::test_transformer_head_gate_compaction_and_checkpoint"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        },
+        {
+          "behavior": "门控分配新输出允许单消费者原地 ReLU，保留多消费者拒绝与失败纯净性",
+          "conditions": "单消费者在 CPU/CUDA；拒绝路径在 CPU",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_allocation_allows_following_relu_and_physical_pruning",
+            "tests/sparsity/test_operations_gates.py::test_gate_allocation_does_not_relax_inplace_multiple_consumer_guard"
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.scale_groups_",
+      "contracts": [
+        {
+          "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
+            "tests/sparsity/test_operations_gates.py::test_parameter_operations_reject_storage_aliases_atomically"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.zero_groups_",
+      "contracts": [
+        {
+          "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
+            "tests/sparsity/test_operations_gates.py::test_parameter_operations_reject_storage_aliases_atomically",
+            "tests/integration/test_sparse_workflows.py::test_soft_example_regrowth_keeps_momentum_and_can_compact"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.set_group_norms_",
+      "contracts": [
+        {
+          "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
+            "tests/sparsity/test_operations_gates.py::test_parameter_operations_reject_storage_aliases_atomically",
+            "tests/sparsity/test_operations_gates.py::test_norm_projection_of_nonzero_subnormals",
+            "tests/integration/test_sparse_workflows.py::test_soft_example_regrowth_keeps_momentum_and_can_compact"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA",
+          "gaps": [
+            "不覆盖分片训练或论文精度复现"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.measurement.ModelComplexity",
+      "contracts": [
+        {
+          "behavior": "MACs独立公式、全参数去重、未计量操作报告；CPU/CUDA计时及编译、剪枝生命周期与状态隔离",
+          "tests": [
+            "tests/integration/test_measurement.py::test_complexity_linear_conv_and_frozen_shared_parameters",
+            "tests/integration/test_measurement.py::test_complexity_reports_unsupported_work"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA；Inductor 示例另作实际冒烟验收",
+          "gaps": [
+            "未穷举自定义算子、输入形状与编译后端组合"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.measurement.calculate_model_complexity",
+      "contracts": [
+        {
+          "behavior": "MACs独立公式、全参数去重、未计量操作报告；CPU/CUDA计时及编译、剪枝生命周期与状态隔离",
+          "tests": [
+            "tests/integration/test_measurement.py::test_complexity_linear_conv_and_frozen_shared_parameters",
+            "tests/integration/test_measurement.py::test_complexity_includes_attention_and_survives_pruning",
+            "tests/integration/test_measurement.py::test_complexity_reports_unsupported_work",
+            "tests/integration/test_measurement.py::test_measurement_restores_modes_buffers_inputs_rng_and_gc"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA；Inductor 示例另作实际冒烟验收",
+          "gaps": [
+            "未穷举自定义算子、输入形状与编译后端组合"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.measurement.measure_module_latency",
+      "contracts": [
+        {
+          "behavior": "MACs独立公式、全参数去重、未计量操作报告；CPU/CUDA计时及编译、剪枝生命周期与状态隔离",
+          "tests": [
+            "tests/integration/test_measurement.py::test_latency_statistics_exclude_compile_and_warmup",
+            "tests/integration/test_measurement.py::test_actual_compilation_and_remeasurement_after_pruning",
+            "tests/integration/test_measurement.py::test_measurement_restores_modes_buffers_inputs_rng_and_gc",
+            "tests/integration/test_measurement.py::test_latency_invalid_configuration"
+          ],
+          "conditions": "CPU；execution_device 用例另验 CUDA；Inductor 示例另作实际冒烟验收",
+          "gaps": [
+            "未穷举自定义算子、输入形状与编译后端组合"
+          ]
         }
       ]
     }

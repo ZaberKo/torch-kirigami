@@ -195,6 +195,8 @@ pyrightconfig.json
 # End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python
 
 /tmp
+/runs/
+/examples/workflows/runs/
 
 # Local chat reviews, research notes, and one-off implementation records
 /.local/chat-notes/

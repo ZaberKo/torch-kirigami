@@ -112,7 +112,7 @@ restored_plan = PruningPlan.from_dict(torch.load("plan.pt", weights_only=True))
 model, result = Pruner(make_original_model()).apply(restored_plan)
 ```
 
-编解码使用封闭的版本化数据类型，不动态导入 callback。反序列化及 apply 检查坐标范围、完整配方、共享绑定、结构前后条件和配置。输入文件中的静态决策仍以对应模型代码/config 为前提，不证明任意 Python 程序等价。
+编解码使用封闭的当前数据类型，不动态导入 callback。反序列化及 apply 检查坐标范围、完整配方、共享绑定、结构前后条件和配置。输入文件中的静态决策仍以对应模型代码/config 为前提，不证明任意 Python 程序等价。
 
 apply 不重新评分、追踪或调用 forward。先在 inference_mode(False)/no_grad 中分配全部张量，再集中提交；普通错误撤销绑定、属性和结构元数据。新参数是普通叶子，保留设备、dtype、requires_grad、共享关系和原顺序，受影响 .grad=None。
 
@@ -152,3 +152,15 @@ checkpoint 通过 `weights_only=True` 加载。extra_state 应使用 Tensor 和�
 保存 plan 用于复用删除决策；保存 checkpoint 用于恢复剪枝后的模型及训练权重。直接 torch.save(model) 继续使用 PyTorch 原生机制，不增加另一套库级封装。
 
 支持范围见 [算子覆盖矩阵](operator-coverage.md)，测试环境见 [testing.md](testing.md)。
+
+## 捕获、执行与静态数据的一致性
+
+- CallEffects 统一声明新存储和写入效果，捕获与执行共用；OutputContract 只保留布局。Linear/Conv、归一化等原生分配声明集中在 effects，不再分别维护两份。
+- 配置重捕获比较实际绑定事实和常量值，忽略 FX 自动名称；清理生成常量属性。symbolic tracing 中未被记录的 buffer 写入拒绝建图，隔离 BN 的元数据执行更新仍允许。
+- PlanningContext 对相同属性修改最多缓存 32 个验证结果，张量版本变化时失效；最终计划独立复验。缓存不保存新参数，也不改变策略尝试次数。
+- 静态 AnalysisSummary 保存完整张量目录。统一解析原图/portable 标签，区分未知引用和已知空影响；PruningResult 的坐标映射共用该规则。plan、checkpoint 和模型内结构记录均直接使用当前结构，不设置格式版本，不提供历史格式迁移或兼容分支。
+- F.linear 的向量权重与标量 bias 合法形式通过轴关系和广播关系复用处理；不承诺 PyTorch 本身不接受的组合。配置冻结/恢复保留 torch.Size，与 list/tuple 使用同一生命周期。
+
+## 稀疏训练组合接口
+
+`CandidateSpace` 统一候选发现、默认输入输出保护和预算域；`ParameterGroup` 提供带新鲜度检查的参数区域并集。`ChannelCount` 增加显式整数预算，与 `ChannelRatio` 共用规划验证。训练组件与累计比例调度位于 `torch_kirigami.sparsity`，依赖核心不反向导入它。详见[稀疏训练契约](sparse-training.md)。

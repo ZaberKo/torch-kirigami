@@ -6,16 +6,8 @@ import math
 
 import torch
 
+from ..regions import gather_region
 from .types import PlanningError
-
-
-def gather_region(tensor, region):
-    """Gather a Cartesian region without creating a full-tensor mask."""
-    for dim, indices in enumerate(region.axes):
-        if len(indices) != tensor.shape[dim]:
-            index = torch.tensor(tuple(indices), dtype=torch.long, device=tensor.device)
-            tensor = tensor.index_select(dim, index)
-    return tensor
 
 
 class Magnitude:

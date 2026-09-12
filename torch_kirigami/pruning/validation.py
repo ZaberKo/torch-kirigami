@@ -197,8 +197,12 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
             producer = next(
                 (p for p in operations if p.node.name == getattr(source, "name", None)), None
             )
-            contract = graph.operator_spec(producer).contract if producer is not None else None
-            fresh = contract is not None and contract.fresh_output
+            fresh = (
+                producer is not None
+                and graph.operator_rule(producer)
+                .effects(producer.node, producer.module)
+                .fresh_output
+            )
             if not fresh or len(source.users) != 1:
                 raise PlanningError(f"{op.node.name}: cannot prove in-place alias/consumer safety")
         try:

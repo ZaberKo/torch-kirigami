@@ -44,10 +44,9 @@ def test_container_buffer_isolation_success_and_failure(fail, execution_device):
 
     model = Model()
     before, container = model.counter, model.cached
-    if fail:
-        with pytest.raises(CaptureError):
-            DependencyGraph.build(model, args=(torch.ones(2),))
-    else:
+    # Both explicit failure and a successful trace with an invisible write must
+    # restore the original aliases. Invisible writes are not analyzable FX calls.
+    with pytest.raises(CaptureError):
         DependencyGraph.build(model, args=(torch.ones(2),))
     assert model.counter is before and before.item() == 0
     assert model.cached is container and model.alias is container and container[0] is before

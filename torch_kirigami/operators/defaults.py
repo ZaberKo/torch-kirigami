@@ -55,12 +55,10 @@ def register_defaults(registry):
                 return OperatorSpec(expression=expression, constraints=constraints)
             result = rule(ctx)
             if result.contract is None:
-                fresh = native_effects(ctx.node, ctx.module).fresh_output
                 dense = ctx.node.target == "contiguous"
                 result = replace(
                     result,
                     contract=OutputContract(
-                        fresh_output=fresh,
                         output_layout="contiguous" if dense else "unknown",
                     ),
                 )

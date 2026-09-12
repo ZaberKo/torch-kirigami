@@ -158,6 +158,7 @@ class DependencyGraph:
             by_object[identity] = by_object[id(original)]
         gm = captured.module
         self._fx_graph = gm.graph
+        self._capture_signature = captured.signature
         self._values = {}
         self._expressions = {}
         self._literal_values = {}
@@ -496,7 +497,9 @@ class DependencyGraph:
         leaf internals remain the responsibility of their declared operator rules.
         """
         self.validate()
-        _validate_attribute_changes(self._model, self._registry, self._fx_graph, tuple(updates))
+        _validate_attribute_changes(
+            self._model, self._registry, self._capture_signature, tuple(updates)
+        )
         self.validate()
 
     def validate(self, model: nn.Module | None = None) -> None:

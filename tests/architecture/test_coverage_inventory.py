@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 
 import torch_kirigami
+import torch_kirigami.measurement
 import torch_kirigami.pruning
+import torch_kirigami.sparsity
 from torch_kirigami import OperatorRegistry
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +21,12 @@ def test_every_export_and_internal_class_has_contract_test_links():
     assert len(names) == len(rows)
     exports = {
         f"{module.__name__}.{name}"
-        for module in (torch_kirigami, torch_kirigami.pruning)
+        for module in (
+            torch_kirigami,
+            torch_kirigami.pruning,
+            torch_kirigami.sparsity,
+            torch_kirigami.measurement,
+        )
         for name in module.__all__
     }
     assert not exports - names, f"Missing public contracts: {exports - names}"

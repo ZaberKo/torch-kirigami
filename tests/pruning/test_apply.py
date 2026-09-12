@@ -161,10 +161,10 @@ def test_final_accepted_compilation_is_revalidated(monkeypatch):
     original = planner.compile_recipes
     counts = {}
 
-    def counted(graph, operations, impact):
+    def counted(graph, operations, impact, **kwargs):
         key = tuple((s.tensor.id, s.regions) for s in impact.requested)
         counts[key] = counts.get(key, 0) + 1
-        return original(graph, operations, impact)
+        return original(graph, operations, impact, **kwargs)
 
     monkeypatch.setattr(planner, "compile_recipes", counted)
     plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0.25), metric=Magnitude())

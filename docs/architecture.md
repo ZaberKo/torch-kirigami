@@ -142,6 +142,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 参数不会整体复制。契约要求 `forward` 不修改参数、不产生外部 Python 副作用，也不要与同一模型的训练并发建图。已识别的不支持写入、安全复制失败、forward/pre-forward hooks（包括全局 hooks）会明确拒绝；这不是任意 Python 程序的副作用沙箱。
 
+symbolic tracing 中直接执行、未进入 FX 的 buffer 写入会使图缺少真实行为，因此建图拒绝；同时检查绑定、尺寸、版本和实际值，覆盖绕过版本计数的 `.data` 写入。值比较使用已有隔离副本与原 buffer，不再复制一份。注册槽位和 FX 临时添加的常量属性在成功、失败后均清理。BN 等已声明叶子在 ShapeProp 中更新隔离统计量仍受支持。
+
 当前还明确拒绝零元素样例或中间 Tensor：现有区域表示不能完整保留空张量上的轴变化意图，不能用一次空 batch 执行证明一般 batch 的结构关系。
 
 ## 5. 张量、坐标与共享身份
@@ -302,6 +304,8 @@ FX 的一条边只说明某个值被消费，不能说明输出第 3 个通道�
 
 `Requirement.arguments` 使用 `ArgumentRef(name, position, variadic=False)` 指明该要求会验证哪些调用参数的变化。许可按具体参数位置匹配；即使同一个 size 表达式同时用于 groups 和 stride，允许并验证 groups 变化也不豁免 stride。没有声明专门验证的尺寸来源参数必须保持原值。数据未裁剪、仅尺寸来源改变的消费者，同样激活它的全部执行要求；索引改变而 shape 相同不能通过剪枝规划。
 
+`CallEffects` 是分配新存储与原地写入的唯一声明，捕获保护和执行验证共同读取 `OperatorRule.effects`；`OutputContract` 只描述布局。自定义规则在同一处提供这些事实。未知分配、view 和可能返回原对象的操作不猜成新存储，原地消费者还需满足消费者关系检查。
+
 算子声明的结构整数常量必须有注册 parameter/buffer 来源，才能进入图有效性及静态计划的值 guard。普通属性、闭包和临时 Tensor 常量不具备这份持久化保证，相关剪枝明确拒绝；可将索引注册为 buffer。其他独立组件仍可分析和剪枝。
 
 已声明安全的原生规则可设置 `evaluate_on_meta=True` 复用 meta 调用；第三方规则默认依赖声明的结构事实。opaque 内部行为和自定义 lowering 的正确性由扩展作者保证，框架不会自动证明任意融合代码等价。下游 view 需要的输出 stride 只有在能证明时才应声明。
@@ -396,7 +400,7 @@ plan 决定**删什么、怎样保留、需要改哪些属性、什么结构可�
 | `selected` / `budget` / `notes` | 候选选择说明、冻结预算基线、实际删除量、限额和排除原因 |
 | `before` / `after` | `ModelStructure`：执行前提和预期结果结构 |
 
-plan 不保存模型、FX 图、活 Tensor、callback 或原图的运行期身份。其序列化是带格式版本的封闭数据编码，不通过保存算子代码恢复执行。
+plan 不保存模型、FX 图、活 Tensor、callback 或原图的运行期身份。其序列化是直接按当前结构校验的封闭数据编码，不通过保存算子代码恢复执行。
 
 它可以在兼容的原模型上重放，而不是严格的一次性 token。对已经被改变结构的同一模型重复 apply，通常因 `before` 不匹配失败；空 plan 可以再次使用。
 
@@ -410,9 +414,11 @@ plan 不保存模型、FX 图、活 Tensor、callback 或原图的运行期身�
 
 属性更新依据显式绑定计算；多个调用要求同一属性时必须一致。无法处理的修改要求导致 `PlanningError`，因此返回的 plan 已经过执行支持检查。
 
-旧 FX 图可能把 `self.layer.out_features` 折叠成常量，无法证明它没有其他消费者。配置重捕获因此核对整个图的节点、边、调用常量和输出：任一变化均拒绝相关请求，不靠整数相等猜测绑定。这样可以发现另一分支的 reshape、同形状索引、标量输出、配置条件和固定循环变化。该检查要求捕获结构在属性修改后保持一致；不透明算子内部继续依靠声明的规则，也不声称完整证明任意 Python 程序等价。
+旧 FX 图可能把 `self.layer.out_features` 折叠成常量，无法证明它没有其他消费者。配置重捕获因此核对整个图的节点、边、实际 get_attr 绑定、调用常量和输出：任一变化均拒绝相关请求，不靠整数相等猜测绑定。这样可以发现另一分支的 reshape、同形状索引、标量输出、配置条件和固定循环变化。该检查要求捕获结构在属性修改后保持一致；不透明算子内部继续依靠声明的规则，也不声称完整证明任意 Python 程序等价。
 
-属性配方保留 list/tuple 类型前提：列表冻结成既有 FrozenList 数据，提交与恢复时生成独立列表。合法的 nn.Unflatten 列表配置与元组配置均支持计划序列化和 checkpoint。
+比较 get_attr 时，注册张量使用来源别名与元数据，临时 Tensor 常量比较 dtype、shape、stride 和实际值；忽略 FX 自动生成的常量名称。原图签名在 ShapeProp 前保存，不保存整份参数权重。相同属性修改的验证结果在一个 PlanningContext 内最多缓存 32 项，包括拒绝结果；检测到参数或 buffer 版本变化后清空，最终计划使用独立上下文复验。
+
+属性配方保留 list、tuple、torch.Size 类型前提：列表冻结成 FrozenList，torch.Size 使用有类型标记的静态数据，提交与恢复时还原原容器类型。三种 nn.Unflatten 配置均支持计划序列化和 checkpoint。
 
 ### 10.4 apply 的提交过程
 
@@ -422,6 +428,8 @@ plan 不保存模型、FX 图、活 Tensor、callback 或原图的运行期身�
 4. 普通提交错误通过撤销记录恢复绑定及属性；成功后返回原模型与 `PruningResult`。
 
 同一 Parameter 只生成一个新对象，所有已支持的别名共同指向它。新 Parameter 是普通叶子，保留 dtype、device、requires_grad；受影响参数的 `.grad=None`。结果提供旧新 Parameter 映射和分段 `CoordinateSegment` 坐标映射，不生成逐元素映射表。
+
+静态计划保存完整张量引用目录。`plan.analysis.selection(ref)` 和 `result.coordinate_maps[ref]` 共用解析逻辑，可接受原图引用或 `ref.portable()`；已知未受影响的引用返回空选择，未知引用报 KeyError，形状/类别/别名不符报 ValueError。静态引用是结构标签，不证明活图归属；DependencyGraph 自身仍严格检查图身份。plan、checkpoint 和模型内结构记录均不设置格式版本，不提供历史格式迁移或兼容分支。
 
 事务不承诺恢复任意自定义 setter 或其他用户代码的外部副作用，也不要在 apply 期间并发训练。优化器持有的旧 Parameter 引用及状态不自动迁移，调用方需重建 optimizer。
 
@@ -539,3 +547,9 @@ replayed, report = Pruner(original).apply(saved_plan)
 | 有界贪心而非一般求解器 | 流程可控、可扩展、能报告欠达 | 可能错过其他合法组合或更优选择 |
 
 进一步阅读：[依赖核心细节](dependency-graph-design.md)、[剪枝与保存契约](pruning-design.md)、[算子覆盖](operator-coverage.md)、[融合扩展示例](../examples/fused_attention.py)。
+
+## 稀疏训练组件
+
+候选空间和参数组位于剪枝层，供规划与稀疏训练共同消费；张量区域访问放在共享下层。`torch_kirigami.sparsity` 提供标量正则、显式门控规则、参数操作和调度统计，不进入依赖分析或物理执行的职责。具体算法在 `examples/workflows/`，库不得导入示例。接口和生命周期见[稀疏训练契约](sparse-training.md)。
+
+测量工具位于独立的 `torch_kirigami.measurement`，复用下层推理隔离，不依赖剪枝策略或示例。MACs 使用原生 FLOP 公式与显式遗漏报告；计时单独运行，支持 CPU/CUDA 和 torch.compile。共享示例负责输入配置、前后比较和打印。详见[测量说明](measurement.md)。
