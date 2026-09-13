@@ -6,7 +6,7 @@ import torch
 
 from ..pruning.groups import ParameterGroup
 from ..selection import Selection, full_region
-from .values import group_values, stable_norm
+from .values import group_penalties, group_values, reduction_plan, stable_norm
 
 
 def coefficients_for(count, coefficients):
@@ -52,15 +52,22 @@ class GroupLasso:
                 unique.append(group)
                 unique_weights.append(weight)
         self.groups, self.coefficients = tuple(unique), tuple(unique_weights)
+        self._reduction_plan = reduction_plan(self.groups)
         with torch.no_grad():
             group_values(self.groups)
 
     def __call__(self):
         """Return a differentiable scalar using current parameter values."""
-        values = group_values(self.groups)
-        result = torch.stack(
-            [self.penalty(v) * a for v, a in zip(values, self.coefficients, strict=True)]
-        ).sum()
+        native = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}
+        if type(self) in native:
+            penalties = group_penalties(self.groups, native[type(self)], self._reduction_plan)
+            result = (penalties * penalties.new_tensor(self.coefficients)).sum()
+        else:
+            # Custom penalties still receive the original flattened union.
+            values = group_values(self.groups)
+            result = torch.stack(
+                [self.penalty(v) * a for v, a in zip(values, self.coefficients, strict=True)]
+            ).sum()
         if not torch.isfinite(result):
             raise ValueError("Sparse penalty is nonfinite")
         return result

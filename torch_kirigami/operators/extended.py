@@ -2,6 +2,7 @@
 
 import operator
 from dataclasses import replace
+from functools import partial
 
 import torch
 from torch import nn
@@ -176,23 +177,29 @@ def cast(ctx):
 
 def register_extended(registry, modules, functions, methods):
     """Register common exact public API spellings through the unified interface."""
-    modules([nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d], instance_norm)
-    functions([F.instance_norm], instance_norm)
-    modules([nn.RMSNorm], layer_norm)
-    functions([F.rms_norm], layer_norm)
-    modules([nn.PReLU], prelu)
-    functions([F.prelu], prelu)
-    functions([F.normalize], normalize)
+    modules([nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d], instance_norm, fresh=True)
+    functions([F.instance_norm], instance_norm, fresh=True)
+    modules([nn.RMSNorm], layer_norm, fresh=True)
+    functions([F.rms_norm], layer_norm, fresh=True)
+    modules([nn.PReLU], prelu, fresh=True)
+    functions([F.prelu], prelu, fresh=True)
+    functions([F.normalize], normalize, fresh=True)
     registry.register(
         nn.Embedding,
         OperatorRule(
-            embedding, preflight=embedding_preflight, evaluate_on_meta=True, effects=native_effects
+            embedding,
+            preflight=embedding_preflight,
+            evaluate_on_meta=True,
+            effects=partial(native_effects, fresh_output=True),
         ),
     )
     registry.register(
         F.embedding,
         OperatorRule(
-            embedding, preflight=embedding_preflight, evaluate_on_meta=True, effects=native_effects
+            embedding,
+            preflight=embedding_preflight,
+            evaluate_on_meta=True,
+            effects=partial(native_effects, fresh_output=True),
         ),
         opaque=False,
     )
@@ -216,6 +223,7 @@ def register_extended(registry, modules, functions, methods):
             nn.Upsample,
         ],
         channel_operator,
+        fresh=True,
     )
     modules(
         [
@@ -231,6 +239,7 @@ def register_extended(registry, modules, functions, methods):
             nn.ZeroPad2d,
         ],
         padding,
+        fresh=True,
     )
     functions(
         [
@@ -258,8 +267,9 @@ def register_extended(registry, modules, functions, methods):
             F.interpolate,
         ],
         channel_operator,
+        fresh=True,
     )
-    functions([F.pad], padding)
+    functions([F.pad], padding, fresh=True)
     unary = [
         "sin",
         "cos",
@@ -301,7 +311,7 @@ def register_extended(registry, modules, functions, methods):
         "clamp_min",
         "clamp_max",
     ]
-    functions([getattr(torch, name) for name in (*unary, *binary)], pointwise)
+    functions([getattr(torch, name) for name in (*unary, *binary)], pointwise, fresh=True)
     functions(
         [
             operator.pow,
@@ -312,16 +322,18 @@ def register_extended(registry, modules, functions, methods):
             operator.gt,
             operator.ge,
             operator.abs,
-            operator.pos,
             operator.and_,
             operator.or_,
             operator.xor,
         ],
         pointwise,
+        fresh=True,
     )
-    functions([F.dropout1d, F.dropout2d, F.dropout3d], pointwise)
-    methods([name for name in (*unary, *binary) if hasattr(torch.Tensor, name)], pointwise)
-    methods(["masked_fill"], pointwise)
+    functions([operator.pos, F.dropout1d, F.dropout2d, F.dropout3d], pointwise, fresh=False)
+    methods(
+        [name for name in (*unary, *binary) if hasattr(torch.Tensor, name)], pointwise, fresh=True
+    )
+    methods(["masked_fill"], pointwise, fresh=True)
     methods(
         [
             "to",
@@ -337,6 +349,7 @@ def register_extended(registry, modules, functions, methods):
             "cuda",
         ],
         cast,
+        fresh=False,
     )
     modules(
         [
@@ -354,6 +367,7 @@ def register_extended(registry, modules, functions, methods):
             nn.Threshold,
         ],
         pointwise,
+        fresh=True,
     )
     functions(
         [
@@ -371,6 +385,7 @@ def register_extended(registry, modules, functions, methods):
             F.threshold,
         ],
         pointwise,
+        fresh=True,
     )
-    functions([torch.amax, torch.amin, torch.prod, torch.logsumexp], reduction)
-    methods(["amax", "amin", "prod", "logsumexp"], reduction)
+    functions([torch.amax, torch.amin, torch.prod, torch.logsumexp], reduction, fresh=True)
+    methods(["amax", "amin", "prod", "logsumexp"], reduction, fresh=True)

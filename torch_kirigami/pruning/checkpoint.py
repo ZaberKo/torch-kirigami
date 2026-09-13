@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import copy
 from collections import OrderedDict
 
 import torch
 from torch import nn
 
-from ..bindings import final_state_edits
+from ..bindings import copy_module_state, final_state_edits, has_tensor_hooks, storage_key
 from ..configuration import thaw
 from .serialization import decode, encode
 from .state import (
@@ -51,6 +50,16 @@ def _check_nonoverlap(state):
 
 
 def _same_values(left, right):
+    if (
+        left.shape == right.shape
+        and left.stride() == right.stride()
+        and left.dtype == right.dtype
+        and left.storage_offset() == right.storage_offset()
+        and left.is_conj() == right.is_conj()
+        and left.is_neg() == right.is_neg()
+        and storage_key(left) == storage_key(right)
+    ):
+        return True
     if left.is_complex():
         return _same_values(left.real, right.real) and _same_values(left.imag, right.imag)
     if left.is_floating_point():
@@ -59,6 +68,65 @@ def _same_values(left, right):
             left.masked_fill(missing, 0), right.masked_fill(missing, 0)
         )
     return torch.equal(left, right)
+
+
+def _validate_extra_state(model, values):
+    """Accept only weights-only data without hidden registered storage references."""
+    registered = {storage_key(t) for t in (*model.parameters(), *model.buffers()) if t.numel()}
+    registered.update(
+        storage_key(t)
+        for name, t in values.items()
+        if not name.endswith("_extra_state") and isinstance(t, torch.Tensor) and t.numel()
+    )
+
+    def visit(value, active=(), *, allow_registered=False):
+        if len(active) > 50:
+            raise ExecutionError("Checkpoint extra state is too deeply nested")
+        if value is None or type(value) in (
+            bool,
+            int,
+            float,
+            str,
+            bytes,
+            torch.dtype,
+            torch.device,
+        ):
+            return
+        if type(value) in (torch.Tensor, nn.Parameter):
+            if vars(value) or has_tensor_hooks(value):
+                raise ExecutionError(
+                    "Checkpoint tensor payload has unsupported attributes or hooks"
+                )
+            if not allow_registered and value.numel() and storage_key(value) in registered:
+                raise ExecutionError(
+                    "Checkpoint extra state cannot contain registered tensor references"
+                )
+            return
+        if type(value) in (tuple, list, dict, OrderedDict, torch.Size):
+            if type(value) is OrderedDict and vars(value):
+                raise ExecutionError("Checkpoint extra state container has unsupported attributes")
+            if id(value) in active:
+                raise ExecutionError("Checkpoint extra state must be an acyclic data tree")
+            items = (
+                (v for pair in value.items() for v in pair) if isinstance(value, dict) else value
+            )
+            for item in items:
+                visit(item, (*active, id(value)))
+            return
+        raise ExecutionError(f"Unsupported checkpoint extra state type: {type(value).__name__}")
+
+    if type(values) not in (dict, OrderedDict) or (
+        type(values) is OrderedDict and set(vars(values)) - {"_metadata"}
+    ):
+        raise ExecutionError("Unsupported checkpoint state dictionary container")
+    visit(getattr(values, "_metadata", None))
+    for name, value in values.items():
+        if name.endswith("_extra_state"):
+            visit(value)
+        elif isinstance(value, torch.Tensor):
+            if type(value) not in (torch.Tensor, nn.Parameter):
+                raise ExecutionError("Checkpoint tensor payload has unsupported subclass")
+            visit(value, allow_registered=True)
 
 
 def _validate_payload(model, structure, values, buffers):
@@ -84,6 +152,7 @@ def _validate_payload(model, structure, values, buffers):
     }
     if set(values) != expected or set(buffers) != expected_buffers:
         raise ExecutionError("Checkpoint payload keys disagree with registered structure")
+    _validate_extra_state(model, values)
     for state in structure.tensors:
         entries = []
         for name, persistent in zip(state.paths, state.persistent, strict=True):
@@ -160,6 +229,10 @@ def load_checkpoint(model, path, *, map_location=None):
     transaction contract. Registered state_dict hooks are explicitly unsupported.
     """
     _check_state_hooks(model)
+    if any(has_tensor_hooks(t) for t in (*model.parameters(), *model.buffers())):
+        raise ExecutionError(
+            "Remove Tensor gradient hooks before loading; register them on restored tensors"
+        )
     data = torch.load(path, map_location=map_location, weights_only=True)
     if (
         not isinstance(data, dict)
@@ -225,6 +298,12 @@ def load_checkpoint(model, path, *, map_location=None):
         and type(m)._load_from_state_dict is nn.Module._load_from_state_dict
         for m in model.modules()
     )
+    custom_loader = any(
+        not getattr(method, "__module__", "").startswith("torch.nn.")
+        for m in model.modules()
+        for method in (type(m).load_state_dict, type(m)._load_from_state_dict)
+    )
+    pending_resize = {}
     with torch.inference_mode(False), torch.no_grad():
         for old, state in zip(original.tensors, structure.tensors, strict=True):
             _check_nonoverlap(state)
@@ -238,8 +317,20 @@ def load_checkpoint(model, path, *, map_location=None):
             tensor = torch.empty_strided(
                 state.shape, state.stride, dtype=entries[0].dtype, device=entries[0].device
             )
-            if not standard_load or not any(state.persistent):
-                tensor.copy_(entries[0])  # Other tensors are populated once by load_state_dict.
+            if custom_loader and any(state.persistent):
+                # A custom loader may use constructor values (e.g. delta encoding).
+                # Checkpoint payloads are input to the loader, never initial state.
+                initial = getattr(*attribute(model, old.paths[0]))
+                if old.shape != state.shape:
+                    # Keep constructor values until the native loader has run
+                    # custom decoding and reaches its ordinary slot-loading step.
+                    pending_resize[state.paths[0]] = tensor
+                    tensor = torch.empty_strided(
+                        old.shape, old.stride, dtype=tensor.dtype, device=tensor.device
+                    )
+                tensor.copy_(initial)
+            elif not standard_load or not any(state.persistent):
+                tensor.copy_(entries[0])
             new = (
                 nn.Parameter(tensor, requires_grad=state.requires_grad)
                 if state.kind == "parameter"
@@ -257,16 +348,7 @@ def load_checkpoint(model, path, *, map_location=None):
     memo.update((id(old), new) for _, old, new in replacements)
     for module in model.modules():
         shell = shells[id(module)]
-        shell.__dict__ = {
-            key: copy.deepcopy(value, memo)
-            for key, value in module.__dict__.items()
-            if key not in ("_modules", "_parameters", "_buffers")
-        }
-        shell._modules = {
-            k: shells[id(v)] if v is not None else None for k, v in module._modules.items()
-        }
-        shell._parameters = dict(module._parameters)
-        shell._buffers = dict(module._buffers)
+        copy_module_state(module, shell, memo)
     prepared = shells[id(model)]
     for state, _, tensor in replacements:
         for path_ in state.paths:
@@ -279,6 +361,20 @@ def load_checkpoint(model, path, *, map_location=None):
     # Allocation already applied map_location. Compare the final callback state
     # against these actual devices, rather than the source checkpoint devices.
     prepared_devices = tuple(s.device for s in snapshot(prepared).tensors)
+    handles = []
+    resize_by_owner = {}
+    for path, tensor in pending_resize.items():
+        owner, name = attribute(prepared, path)
+        resize_by_owner.setdefault(owner, []).append((name, tensor))
+
+    def install_targets(owner, *args):
+        # A public pre-hook runs inside Module._load_from_state_dict, after an
+        # override's decoding. set_ retains shared object/container identities.
+        for name, target in resize_by_owner[owner]:
+            getattr(owner, name).set_(target)
+
+    for owner in resize_by_owner:
+        handles.append(owner.register_load_state_dict_pre_hook(install_targets))
     try:
         payload = OrderedDict(values)
         if hasattr(values, "_metadata"):
@@ -287,6 +383,9 @@ def load_checkpoint(model, path, *, map_location=None):
             prepared.load_state_dict(payload, strict=True)
     except Exception as error:
         raise ExecutionError(f"State loading failed before commit: {error}") from error
+    finally:
+        for handle in handles:
+            handle.remove()
     try:
         final = snapshot(prepared)
     except Exception as error:
@@ -333,5 +432,5 @@ def load_checkpoint(model, path, *, map_location=None):
         for state, old, _ in replacements
     ]
     record = managed_record(prepared, final, tuple(AttributeRecipe(p, None, None) for p in managed))
-    commit(model, replacements, (*changes, *extra_changes), record)
+    commit(model, replacements, (*changes, *extra_changes), record, expected=final)
     return model

@@ -1,6 +1,7 @@
 """Shared immutable guards for recognizable Python module configuration."""
 
 from dataclasses import dataclass
+from types import MemberDescriptorType
 
 import torch
 from torch.nn.modules import module as module_runtime
@@ -21,8 +22,25 @@ class FrozenList:
     items: tuple
 
 
+@dataclass(frozen=True)
+class FrozenDict:
+    """Preserve insertion order and exact key/value types in static configuration."""
+
+    items: tuple
+
+
+def object_attributes(value):
+    """Read instance dictionary and initialized Python slots without properties."""
+    result = dict(vars(value))
+    for cls in reversed(type(value).__mro__):
+        for name, descriptor in vars(cls).items():
+            if isinstance(descriptor, MemberDescriptorType) and hasattr(value, name):
+                result[name] = getattr(value, name)
+    return result
+
+
 def freeze(value, *, _depth=0):
-    """Freeze scalars and nested list/tuple configuration, rejecting other objects."""
+    """Freeze scalars and nested list/tuple/dict configuration, rejecting other objects."""
     if _depth > 50:
         raise TypeError("Configuration is cyclic or too deeply nested")
     if value is None:
@@ -31,6 +49,13 @@ def freeze(value, *, _depth=0):
         return FrozenScalar(type(value).__name__, value.hex() if type(value) is float else value)
     if type(value) is torch.Size:
         return FrozenScalar("size", tuple(value))
+    if type(value) is dict:
+        return FrozenDict(
+            tuple(
+                (freeze(k, _depth=_depth + 1), freeze(v, _depth=_depth + 1))
+                for k, v in value.items()
+            )
+        )
     if type(value) in (tuple, list):
         items = tuple(freeze(v, _depth=_depth + 1) for v in value)
         return FrozenList(items) if type(value) is list else items
@@ -38,13 +63,15 @@ def freeze(value, *, _depth=0):
 
 
 def thaw(value):
-    """Restore independently owned list/tuple configuration from a frozen guard."""
+    """Restore independently owned list/tuple/dict configuration from a frozen guard."""
     if type(value) is torch.Size:
         return value
     if isinstance(value, FrozenScalar):
         if value.kind == "size":
             return torch.Size(value.value)
         return float.fromhex(value.value) if value.kind == "float" else value.value
+    if isinstance(value, FrozenDict):
+        return {thaw(k): thaw(v) for k, v in value.items}
     if isinstance(value, FrozenList):
         return [thaw(v) for v in value.items]
     if isinstance(value, tuple):
@@ -55,7 +82,7 @@ def thaw(value):
 def attributes(module):
     """Collect the same immutable configuration for graph and portable guards."""
     result = []
-    for name, value in sorted(vars(module).items()):
+    for name, value in sorted(object_attributes(module).items()):
         if name == "_kirigami_structure":
             continue
         try:

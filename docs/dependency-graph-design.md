@@ -318,7 +318,7 @@ The normalized call passed to `analyze()`: FX node, argument and result trees, o
 
 ### `CandidateAxis`
 
-A stable logical-domain `key`, `AxisRef`, and positive `block_size` for default contiguous removal candidates. The key is independent of an invocation's FX name. Declaring candidates supplies discovery information; it does not impose an algorithm or a budget. Relations map logical seeds into actual parameter regions.
+A stable logical-domain `key`, `AxisRef`, and positive `block_size` for default contiguous removal candidates. An optional registered tensor `binding` identifies the same logical coordinates across repeated calls when the seed axis belongs to an activation, as with transposed convolution. Matching keys must agree on that binding, width, and block size; equal widths alone do not establish identity. The key is independent of an invocation's FX name. Declaring candidates supplies discovery information; it does not impose an algorithm or a budget. Relations map logical seeds into actual parameter regions.
 
 ### `PartitionedLayout`
 
@@ -368,7 +368,11 @@ An exact scalar type/value guard for recognized configuration. It distinguishes 
 
 ### `FrozenList` — internal
 
-A tuple-backed representation that retains the fact that the original configuration container was a list. `freeze()` recursively freezes supported scalar/list/tuple values; `thaw()` creates independently owned containers. Unsupported objects are not a general-purpose serialization target.
+A tuple-backed representation that retains the fact that the original configuration container was a list. `freeze()` recursively freezes supported scalar/list/tuple/dict values; `thaw()` creates independently owned containers. Unsupported objects are not a general-purpose serialization target.
+
+### `FrozenDict` — internal
+
+An ordered tuple of frozen key/value pairs. Guards retain insertion order and exact scalar types, including nested configuration dictionaries. Configuration and ordinary references are read from both the instance dictionary and initialized Python `__slots__`. Custom object internals and arbitrary properties are outside this inspection contract.
 
 Binding helpers support registered tensors referenced directly or through plain lists, tuples, and dictionaries. Separate ordinary-attribute views into registered storage are rejected. Arbitrary custom objects must not hide tensor bindings: the fingerprint is not a complete audit of Python state.
 
@@ -419,3 +423,11 @@ When reviewing a dependency change, verify that it preserves these boundaries:
 - Public build/plan/apply tests validate executable consequences, beyond direct rule tests.
 
 The class inventory above covers `graph`, `capture`, `selection`, `relations`, `contracts`, `operation`, `registry`, `bindings`, `configuration`, `errors`, and the two classes in `operators/shapes.py`. The other operator modules are function-based rule families, described in [operator support and extension](operator-coverage.md). See [verification](testing-coverage.md) for the corresponding test layers.
+
+## Value and layout influence beyond selected coordinates
+
+Coordinate propagation answers which original positions must be removed together. Execution validation also follows downstream FX data edges: a slice may retain exactly the same positions while its stride changes, and a reduction may remove all selected axes while its scalar value still depends on the changed parameter. Every such downstream call must remain valid under its rule's declared semantics.
+
+Unknown calls form a barrier over their data ancestors, including reductions and casts. They may use values as indices or sizes, so a coordinate-neutral edge cannot prove independence. An unrelated branch remains usable. This conservative barrier does not infer a numerical implementation for an unknown operator.
+
+Registered integer buffers are structural constants only when their captured reads have no recognized writes or observed mutations. Restoring the original value later in the forward does not make an earlier read constant. Mutable indices require an explicit rule; their final observed values are not substituted into dependency relations.

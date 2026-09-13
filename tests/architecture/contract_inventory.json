@@ -409,6 +409,14 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "Repeated transposed-convolution calls share one declared logical budget domain",
+          "tests": [
+            "tests/integration/test_review_graph_boundaries.py::test_reused_transposed_convolution_has_one_budget_domain"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
         }
       ]
     },
@@ -476,6 +484,14 @@
             "tests/integration/test_effect_contracts.py::test_fresh_producers_support_inplace_consumers",
             "tests/integration/test_effect_contracts.py::test_functional_linear_vector_and_scalar_bias"
           ],
+          "gaps": []
+        },
+        {
+          "behavior": "Allocating function and method families support valid downstream writes",
+          "tests": [
+            "tests/integration/test_review_optimizations.py::test_allocating_registered_families_support_inplace_consumers"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
           "gaps": []
         }
       ]
@@ -563,6 +579,14 @@
             "tests/integration/test_capture_equivalence.py::test_generated_constants_are_compared_by_fact_and_do_not_leak",
             "tests/integration/test_capture_equivalence.py::test_trace_failure_restores_constants_buffers_inputs_and_rng"
           ],
+          "gaps": []
+        },
+        {
+          "behavior": "Value/layout influence and read-time integer constants across coordinate-neutral edges",
+          "tests": [
+            "tests/integration/test_review_graph_boundaries.py::test_layout_changes_reach_coordinate_neutral_consumers"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
           "gaps": []
         }
       ]
@@ -1194,6 +1218,14 @@
             "tests/integration/test_capture_equivalence.py::test_trace_failure_restores_constants_buffers_inputs_and_rng"
           ],
           "gaps": []
+        },
+        {
+          "behavior": "Temporarily mutated integer buffers never become static read-time indices",
+          "tests": [
+            "tests/integration/test_review_graph_boundaries.py::test_integer_read_requires_no_intervening_writes"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
         }
       ]
     },
@@ -1327,6 +1359,14 @@
           "gaps": [
             "不覆盖分片训练或论文精度复现"
           ]
+        },
+        {
+          "behavior": "Protected and zero-budget domains avoid channel-scale candidate construction",
+          "tests": [
+            "tests/integration/test_review_optimizations.py::test_zero_budget_keeps_unprotected_domain_without_building_candidates"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
         }
       ]
     },
@@ -1374,6 +1414,14 @@
           "gaps": [
             "不覆盖分片训练或论文精度复现"
           ]
+        },
+        {
+          "behavior": "Batched loss and gradients match independent formulas without per-channel weight gathers",
+          "tests": [
+            "tests/integration/test_review_optimizations.py::test_batched_regularizer_has_independent_loss_and_gradient_reference"
+          ],
+          "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
         }
       ]
     },
@@ -1702,6 +1750,19 @@
           "gaps": [
             "未穷举自定义算子、输入形状与编译后端组合"
           ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.configuration.FrozenDict",
+      "contracts": [
+        {
+          "behavior": "Preserve ordered nested dictionary configuration through guards and persistence",
+          "conditions": "CPU/CUDA; public build, plan, apply, checkpoint and backward",
+          "tests": [
+            "tests/integration/test_review_state_boundaries.py::test_dictionary_configuration_is_guarded_through_plan_and_checkpoint"
+          ],
+          "gaps": []
         }
       ]
     }

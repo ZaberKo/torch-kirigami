@@ -26,9 +26,9 @@ def expression_for(ctx):
         node.op == "call_function"
         and node.target is builtins.getattr
         and isinstance(x, TensorRef)
-        and ctx.args[1] == "shape"
+        and ctx.args[1] in ("shape", "ndim")
     ):
-        expression = ShapeExpr("shape", x)
+        expression = ShapeExpr("shape" if ctx.args[1] == "shape" else "dim", x)
     if node.op == "call_method" and isinstance(x, TensorRef):
         if node.target == "size":
             dim = ctx.argument("dim", 1)

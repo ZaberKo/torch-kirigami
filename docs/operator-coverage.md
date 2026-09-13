@@ -146,7 +146,7 @@ This rule applies specifically to `Half`. Reusing it for an arbitrary equal-shap
 
 For an affine custom module, relate input features to weight columns, output features to weight rows, and output features to bias positions. Add an attribute `Requirement` when the module stores its width in configuration. The built-in descriptor compiler can handle supported requirements without custom lowering.
 
-For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical budget axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
+For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical budget axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. If the seed is a call-specific activation, declare a registered `binding` only when repeated calls use the same original-coordinate domain. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
 
 If shared compilation cannot express a necessary edit, implement `OperatorRule.lower()` using the public recipe records from `torch_kirigami.pruning`. The callback returns declarative results and accounts for handled requirements; it must not mutate the model. See the complete [fused-attention example](../examples/fused_attention.py) and [extension integration tests](../tests/integration/test_extensions.py).
 
@@ -161,6 +161,8 @@ If shared compilation cannot express a necessary edit, implement `OperatorRule.l
 | Bindings | Parameters and buffers use registered references; structural integer constants have persistent value guards. |
 | Lowering | Every activated requirement is implemented or rejected; original Python call semantics remain valid. |
 | Persistence | A compatible original model factory plus the same extension definitions can restore the compact model. |
+
+Built-in registrations declare allocation (`fresh=True` or `False`) beside their semantic rule. There is no separate list of allocating operator names to keep synchronized. Operations such as dropout, casts, reshape, and contiguous can alias their input and cannot unconditionally declare fresh storage. In-place safety still requires the existing consumer and alias checks; it does not establish that an originally invalid autograd program becomes valid after pruning.
 
 Opaque modules do not exempt the author from these contracts. Their internal computation is not visible to FX, so the extension supplies the proof that ordinary tracing would otherwise expose.
 

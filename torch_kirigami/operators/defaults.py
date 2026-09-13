@@ -3,6 +3,7 @@
 import builtins
 import operator
 from dataclasses import replace
+from functools import partial
 
 import torch
 from torch import nn
@@ -39,7 +40,7 @@ from .shapes import CallArgumentConstraint, expression_for
 def register_defaults(registry):
     """Populate a local registry with exact built-in operation matches."""
 
-    def native(rule):
+    def native(rule, fresh):
         def analyze(ctx):
             expression = expression_for(ctx)
             if expression is not None and not ctx.outputs:
@@ -64,25 +65,27 @@ def register_defaults(registry):
                 )
             return result
 
-        return OperatorRule(analyze, evaluate_on_meta=True, effects=native_effects)
+        return OperatorRule(
+            analyze, evaluate_on_meta=True, effects=partial(native_effects, fresh_output=fresh)
+        )
 
-    def modules(types, rule):
+    def modules(types, rule, *, fresh):
         for target in types:
-            registry.register(target, native(rule))
+            registry.register(target, native(rule, fresh))
 
-    def functions(targets, rule):
+    def functions(targets, rule, *, fresh):
         for target in targets:
-            registry.register(target, native(rule), opaque=False)
+            registry.register(target, native(rule, fresh), opaque=False)
 
-    def methods(names, rule):
+    def methods(names, rule, *, fresh):
         for name in names:
-            registry.register_method(name, native(rule))
+            registry.register_method(name, native(rule, fresh))
 
-    modules([nn.Softmax, nn.LogSoftmax], softmax)
-    functions([F.softmax, F.log_softmax, torch.softmax, torch.log_softmax], softmax)
-    methods(["softmax", "log_softmax"], softmax)
-    modules([nn.Linear], linear)
-    functions([F.linear], linear)
+    modules([nn.Softmax, nn.LogSoftmax], softmax, fresh=True)
+    functions([F.softmax, F.log_softmax, torch.softmax, torch.log_softmax], softmax, fresh=True)
+    methods(["softmax", "log_softmax"], softmax, fresh=True)
+    modules([nn.Linear], linear, fresh=True)
+    functions([F.linear], linear, fresh=True)
     modules(
         [
             nn.Conv1d,
@@ -93,19 +96,24 @@ def register_defaults(registry):
             nn.ConvTranspose3d,
         ],
         convolution,
+        fresh=True,
     )
     functions(
         [F.conv1d, F.conv2d, F.conv3d, F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d],
         convolution,
+        fresh=True,
     )
-    modules([nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d], batch_norm)
-    functions([F.batch_norm], batch_norm)
-    modules([nn.LayerNorm], layer_norm)
-    functions([F.layer_norm], layer_norm)
-    modules([nn.GroupNorm], group_norm)
-    functions([F.group_norm], group_norm)
-    modules([nn.Identity], _identity)
-    modules([nn.Flatten, nn.Unflatten], reshape)
+    modules([nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d], batch_norm, fresh=True)
+    functions([F.batch_norm], batch_norm, fresh=True)
+    modules([nn.LayerNorm], layer_norm, fresh=True)
+    functions([F.layer_norm], layer_norm, fresh=True)
+    modules([nn.GroupNorm], group_norm, fresh=True)
+    functions([F.group_norm], group_norm, fresh=True)
+    modules([nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d], pointwise, fresh=False)
+    functions([F.dropout], pointwise, fresh=False)
+    methods(["detach", "contiguous"], pointwise, fresh=False)
+    modules([nn.Identity], _identity, fresh=False)
+    modules([nn.Flatten, nn.Unflatten], reshape, fresh=False)
     modules(
         [
             nn.ReLU,
@@ -114,12 +122,9 @@ def register_defaults(registry):
             nn.SiLU,
             nn.Sigmoid,
             nn.Tanh,
-            nn.Dropout,
-            nn.Dropout1d,
-            nn.Dropout2d,
-            nn.Dropout3d,
         ],
         pointwise,
+        fresh=True,
     )
     functions(
         [
@@ -141,9 +146,9 @@ def register_defaults(registry):
             F.relu6,
             F.gelu,
             F.silu,
-            F.dropout,
         ],
         pointwise,
+        fresh=True,
     )
     methods(
         [
@@ -156,32 +161,39 @@ def register_defaults(registry):
             "sigmoid",
             "tanh",
             "clone",
-            "detach",
-            "contiguous",
             "relu_",
             "add_",
             "mul_",
         ],
         pointwise,
+        fresh=True,
     )
-    functions([operator.matmul, torch.matmul, torch.mm, torch.bmm], matmul)
-    methods(["matmul", "mm", "bmm"], matmul)
-    functions([torch.permute, torch.transpose, torch.swapaxes, torch.swapdims, torch.t], permute)
-    methods(["permute", "transpose", "swapaxes", "swapdims", "t"], permute)
-    functions([torch.reshape, torch.flatten, torch.squeeze, torch.unsqueeze], reshape)
-    methods(["reshape", "view", "flatten", "squeeze", "unsqueeze"], reshape)
-    functions([torch.cat, torch.concat, torch.concatenate], concatenate)
-    functions([torch.split, torch.unbind], split)
-    methods(["split", "unbind"], split)
-    functions([operator.getitem], getitem)
+    functions([operator.matmul, torch.matmul, torch.mm, torch.bmm], matmul, fresh=True)
+    methods(["matmul", "mm", "bmm"], matmul, fresh=True)
+    functions(
+        [torch.permute, torch.transpose, torch.swapaxes, torch.swapdims, torch.t],
+        permute,
+        fresh=False,
+    )
+    methods(["permute", "transpose", "swapaxes", "swapdims", "t"], permute, fresh=False)
+    functions([torch.reshape, torch.flatten, torch.squeeze, torch.unsqueeze], reshape, fresh=False)
+    methods(["reshape", "view", "flatten", "squeeze", "unsqueeze"], reshape, fresh=False)
+    functions([torch.cat, torch.concat, torch.concatenate], concatenate, fresh=True)
+    functions([torch.split, torch.unbind], split, fresh=False)
+    methods(["split", "unbind"], split, fresh=False)
+    functions([operator.getitem], getitem, fresh=False)
     # The wrapper extracts proven scalar size expressions first. Tensor overloads
     # must retain pointwise dependencies instead of silently emitting an empty rule.
-    functions([operator.floordiv, operator.mod, torch.floor_divide, torch.remainder], pointwise)
-    methods(["floor_divide", "remainder"], pointwise)
-    functions([builtins.getattr], getattr_rule)
-    functions([torch.sum, torch.mean], reduction)
-    methods(["sum", "mean"], reduction)
-    methods(["size", "dim", "numel"], shape_only)
+    functions(
+        [operator.floordiv, operator.mod, torch.floor_divide, torch.remainder],
+        pointwise,
+        fresh=True,
+    )
+    methods(["floor_divide", "remainder"], pointwise, fresh=True)
+    functions([builtins.getattr], getattr_rule, fresh=False)
+    functions([torch.sum, torch.mean], reduction, fresh=True)
+    methods(["sum", "mean"], reduction, fresh=True)
+    methods(["size", "dim", "numel"], shape_only, fresh=False)
     register_extended(registry, modules, functions, methods)
     register_indexing(modules, functions, methods)
     register_attention(modules, functions, methods)

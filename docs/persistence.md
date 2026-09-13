@@ -71,7 +71,15 @@ sequenceDiagram
 
 Registered state is validated and prepared before commit. Supported custom extra-state behavior runs on isolated module shells; final configuration and references are checked before assigning the prepared state to the original model. Arbitrary external side effects from user callbacks are outside the transaction contract.
 
-Explicitly unsupported cases include registered `state_dict` hooks, custom parameter/tensor subclasses, distinct tensor objects sharing storage, and layouts whose non-overlap cannot be proved. Registered aliases of the same ordinary parameter or buffer are different from distinct storage-sharing tensors and are supported.
+The transaction preserves registration categories: an ordinary cached parameter reference remains an ordinary attribute, and a parent-module reference does not become a registered child. It copies initialized Python slots as well as instance dictionaries. Final structural validation runs inside the rollback boundary.
+
+Custom loaders receive constructor tensor values, rather than prefilled checkpoint payloads. For changed sizes, internal public load pre-hooks install the prepared target storage when native slot loading begins, preserving tensor object aliases. A custom decoder that cannot interpret its payload against the constructor state fails before commit. Custom callbacks that bypass native loading must themselves produce the declared final structure; arbitrary callback semantics cannot be inferred.
+
+Extra state and state-dictionary metadata must be bounded, acyclic trees of supported basic values, plain containers (including `OrderedDict`), and ordinary tensors suitable for `weights_only=True`. Hidden tensor/container attributes and tensor hooks are rejected in the payload. References or views into registered tensor storage, and arbitrary objects such as `datetime.date`, are rejected during save before writing the destination. Save a basic representation or an independent tensor clone instead, and reconstruct application objects explicitly in `set_extra_state`.
+
+Tensor gradient hooks are runtime bindings, not serialized model state. Loading rejects target parameters/buffers with gradient or post-accumulate hooks before replacing them; remove and register those hooks on the restored parameters explicitly. Physical pruning applies this restriction only to tensors it replaces, including hooks added after planning.
+
+Explicitly unsupported cases also include registered `state_dict` hooks, custom parameter/tensor subclasses, distinct tensor objects sharing storage, and layouts whose non-overlap cannot be proved. Registered aliases of the same ordinary parameter or buffer are different from distinct storage-sharing tensors and are supported.
 
 ## Training state is caller-owned
 

@@ -180,11 +180,14 @@ class CandidateAxis:
 
     The stable key names a structural domain, independently of FX call identity.
     Seeds use the logical axis; registered relations map them to parameter regions.
+    A binding declares that repeated keys represent the same logical coordinate
+    system across calls, even when the seed is a call-specific activation axis.
     """
 
     key: str
     axis: AxisRef
     block_size: int = 1
+    binding: TensorRef | None = None
 
     def __post_init__(self):
         if not isinstance(self.key, str) or not self.key or not isinstance(self.axis, AxisRef):
@@ -195,6 +198,11 @@ class CandidateAxis:
             or self.block_size <= 0
         ):
             raise ValueError("Candidate block size must be a positive integer")
+        if self.binding is not None and (
+            not isinstance(self.binding, TensorRef)
+            or self.binding.kind not in ("parameter", "buffer")
+        ):
+            raise ValueError("Shared candidate domains require a registered tensor binding")
 
 
 @dataclass(frozen=True)
@@ -319,9 +327,9 @@ class OperatorSpec:
 class CallEffects:
     """Effects available before capture for isolation and downstream alias safety.
 
-    Native rule assembly derives the default OutputContract freshness from the
-    same effects callback. An explicit output contract is a rule-author promise
-    about the analyzed call; it cannot replace pre-execution mutation checks.
+    Native registrations declare allocation alongside their semantic rule.
+    Capture and execution consume this same contract; OutputContract only
+    describes layout and cannot replace pre-execution mutation checks.
     """
 
     mutates_input: bool = False

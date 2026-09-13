@@ -25,7 +25,7 @@ print(f"Unsupported operations: {complexity.unsupported_ops}")
 print(f"Batch latency: {latency_ms:.3f} ms")
 ```
 
-Both functions accept a single input or a tuple/list of positional arguments, plus `input_kwargs` for keyword arguments. Nested tensor containers are supported. Input tensors are detached, moved to the chosen device, and isolated from forward writes. A list intended as one model argument must itself be wrapped in an outer positional-argument tuple.
+Both functions accept a single input or a tuple/list of positional arguments, plus `input_kwargs` for keyword arguments. Nested tensor containers are supported. Inputs are isolated jointly and moved to the chosen device while retaining repeated tensor and container identity across positional and keyword arguments. This preserves identity-sensitive paths such as `MultiheadAttention(x, x, x)`. Distinct storage-sharing views remain supported on the selected device; automatic cross-device transfer of those views is rejected because moving each tensor separately would break their relationship. Move their shared base and recreate the views on the target device before measurement. A list intended as one model argument must itself be wrapped in an outer positional-argument tuple.
 
 When `device` is omitted, the device is inferred from registered model tensors, falling back to CPU for a tensor-free model. All model parameters and buffers must already be on that one device. The functions do not move the model for the caller.
 
@@ -87,7 +87,7 @@ After physical pruning, call measurement again with the compact eager model. A p
 
 ## State preservation and boundaries
 
-Both functions restore per-module training flags, registered buffer bindings and values, isolated input state, and torch RNG state on success and failure. Latency also restores the garbage-collector enabled state. Existing supported isolation contracts apply; incompatible storage aliasing can be rejected.
+Both functions restore per-module training flags, complete registered buffer tables and values (including `None`, added/deleted entries, and persistence flags), isolated input state, and torch RNG state on success and failure. Latency also restores the garbage-collector enabled state. Existing supported isolation contracts apply; incompatible storage aliasing can be rejected.
 
 Forward execution must not modify parameter values. Arbitrary Python side effects are outside the isolation contract, and the same model must not be concurrently trained or mutated during measurement. Only CPU and CUDA devices are supported.
 

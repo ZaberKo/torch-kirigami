@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import torch
+from torch import nn
+
 from ..bindings import AttributeEdit, reference_edits, reference_signature, storage_key
 from ..configuration import attributes as configuration_attributes
 from ..configuration import forward_hook_paths, freeze, has_registration_hooks, thaw
@@ -168,7 +171,7 @@ def check_structure(model, expected):
         raise ExecutionError("Model structure/mode/configuration does not match plan preconditions")
 
 
-def commit(model, replacements, attributes, record):
+def commit(model, replacements, attributes, record, *, expected):
     """Commit prepared tensor bindings and attributes, restoring ordinary failures.
 
     Args:
@@ -176,6 +179,7 @@ def commit(model, replacements, attributes, record):
         replacements: Tuples of TensorState, original tensor, and prepared tensor.
         attributes: Validated AttributeRecipe objects.
         record: Pure structural metadata to attach only on successful application.
+        expected: Final structural postcondition, checked inside the transaction.
     """
     if has_registration_hooks():
         raise ExecutionError("Global registration hooks are unsupported during structural commit")
@@ -189,6 +193,16 @@ def commit(model, replacements, attributes, record):
         )
         edits[normalized.path] = normalized
     missing = object()
+    registrations = [
+        (
+            m,
+            dict(m._parameters),
+            dict(m._buffers),
+            dict(m._modules),
+            set(m._non_persistent_buffers_set),
+        )
+        for m in model.modules()
+    ]
     journal = []
     try:
         for state, old, new in replacements:
@@ -200,7 +214,10 @@ def commit(model, replacements, attributes, record):
             owner, name = attribute(model, edit.path)
             journal.append((owner, name, getattr(owner, name, missing), "attribute"))
             if edit.delete:
-                delattr(owner, name)
+                object.__delattr__(owner, name)
+            elif isinstance(edit.value, (torch.Tensor, nn.Module)):
+                # Ordinary references must never enter Module's auto-registration path.
+                object.__setattr__(owner, name, edit.value)
             else:
                 setattr(owner, name, edit.value)
         journal.append(
@@ -214,14 +231,35 @@ def commit(model, replacements, attributes, record):
                     raise ExecutionError(
                         "Committed tensor binding differs from the prepared object"
                     )
+        # Check tables before recursively traversing the final graph: a faulty
+        # setter could otherwise introduce a registration cycle.
+        for owner, parameters, buffers, modules, persistence in registrations:
+            if (
+                owner._parameters.keys() != parameters.keys()
+                or owner._buffers.keys() != buffers.keys()
+                or owner._modules != modules
+                or owner._non_persistent_buffers_set != persistence
+            ):
+                raise ExecutionError("Commit changed registration categories or module bindings")
+        check_structure(model, expected)
     except Exception as error:
+        for owner, parameters, buffers, modules, persistence in registrations:
+            owner._parameters.clear()
+            owner._parameters.update(parameters)
+            owner._buffers.clear()
+            owner._buffers.update(buffers)
+            owner._modules.clear()
+            owner._modules.update(modules)
+            owner._non_persistent_buffers_set.clear()
+            owner._non_persistent_buffers_set.update(persistence)
         for owner, name, old, kind in reversed(journal):
             if kind == "parameter":
                 owner._parameters[name] = old
             elif kind == "buffer":
                 owner._buffers[name] = old
             elif old is missing:
-                owner.__dict__.pop(name, None)
+                if hasattr(owner, name):
+                    object.__delattr__(owner, name)
             else:
                 object.__setattr__(owner, name, old)
         raise ExecutionError(

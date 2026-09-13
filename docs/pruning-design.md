@@ -59,7 +59,7 @@ By default, `preserve_io=True` protects every axis of external input and output 
 
 ## Candidate space and logical budgets
 
-`CandidateSpace(graph, *, candidates=None, axes=None, preserve_io=True, constraints=())` is shared by automatic planning and sparse-training components. Default candidates come from `CandidateAxis` declarations in operator specifications. There is no separate, inferred global grouping algorithm in the training layer.
+`CandidateSpace(graph, *, candidates=None, axes=None, preserve_io=True, constraints=())` is shared by automatic planning and sparse-training components. Default candidates come from `CandidateAxis` declarations in operator specifications. Discovery first deduplicates logical domains and follows exact axis-identity relations to prove input/output protection; only the remaining cases need per-candidate propagation. Candidate selections are materialized on demand, and a default zero-budget request keeps the frozen domain denominator without constructing channel candidates. There is no separate, inferred global grouping algorithm in the training layer.
 
 A `Candidate(key, remove, axis=None)` names one batch of original-coordinate removal seeds. Its associated `axis` describes a logical domain; the candidate itself does not create an indivisible structural constraint. Required coupling comes from dependency relations and constraints.
 

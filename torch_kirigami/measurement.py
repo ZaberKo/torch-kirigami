@@ -15,6 +15,7 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.flop_counter import FlopCounterMode
 
+from .bindings import storage_key
 from .capture import isolated_execution
 
 __all__ = ["ModelComplexity", "calculate_model_complexity", "measure_module_latency"]
@@ -175,17 +176,34 @@ class ModelComplexity:
     unsupported_ops: tuple[str, ...] = ()
 
 
-def _to_device(value, device):
+def _to_device(value, device, memo):
+    """Move one jointly isolated input tree, preserving repeated object identity."""
+    if id(value) in memo:
+        return memo[id(value)]
     if isinstance(value, torch.Tensor):
-        return value.detach().to(device)
-    if isinstance(value, tuple):
-        values = tuple(_to_device(v, device) for v in value)
-        return type(value)(*values) if hasattr(value, "_fields") else values
-    if isinstance(value, list):
-        return [_to_device(v, device) for v in value]
-    if isinstance(value, dict):
-        return {k: _to_device(v, device) for k, v in value.items()}
-    return value
+        if value.device != device and value.numel():
+            key = ("storage", storage_key(value))
+            if key in memo:
+                raise ValueError(
+                    "Move storage-sharing input views to the measurement device together"
+                )
+            memo[key] = True
+        result = value.to(device)
+    elif isinstance(value, list):
+        result = []
+        memo[id(value)] = result
+        result.extend(_to_device(v, device, memo) for v in value)
+    elif isinstance(value, dict):
+        result = {}
+        memo[id(value)] = result
+        result.update((k, _to_device(v, device, memo)) for k, v in value.items())
+    elif isinstance(value, tuple):
+        values = tuple(_to_device(v, device, memo) for v in value)
+        result = type(value)(*values) if hasattr(value, "_fields") else values
+    else:
+        return value
+    memo[id(value)] = result
+    return result
 
 
 @contextmanager
@@ -205,9 +223,10 @@ def _evaluation(target, input_args, input_kwargs, device) -> Iterator[tuple]:
     if any(t.device != device for t in tensors):
         raise ValueError("Move all model parameters and buffers to the measurement device first")
     args = tuple(input_args) if isinstance(input_args, (tuple, list)) else (input_args,)
-    args, kwargs = _to_device(args, device), _to_device(input_kwargs or {}, device)
+    kwargs = input_kwargs or {}
     context = torch.cuda.device(device) if device.type == "cuda" else nullcontext()
     with context, isolated_execution(target, args, kwargs) as (args, kwargs, _):
+        args, kwargs = _to_device((args, kwargs), device, {})
         target.eval()
         yield args, kwargs, device
 

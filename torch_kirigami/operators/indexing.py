@@ -326,20 +326,22 @@ def unfold_fold(ctx):
 
 def register_indexing(modules, functions, methods):
     """Register exact indexing-family API spellings."""
-    functions([torch.stack], stack)
-    functions([torch.chunk], chunk)
-    methods(["chunk"], chunk)
-    functions([torch.narrow], narrow)
-    methods(["narrow"], narrow)
-    functions([torch.index_select], index_select)
-    methods(["index_select"], index_select)
-    functions([torch.tile, torch.repeat_interleave, torch.broadcast_to], repeat)
-    methods(["repeat", "tile", "repeat_interleave", "expand", "expand_as"], repeat)
-    modules([nn.GLU], glu)
-    functions([F.glu], glu)
-    modules([nn.ChannelShuffle], channel_shuffle)
-    functions([torch.channel_shuffle], channel_shuffle)
-    modules([nn.PixelShuffle, nn.PixelUnshuffle], pixel_shuffle)
+    functions([torch.stack], stack, fresh=True)
+    functions([torch.chunk], chunk, fresh=False)
+    methods(["chunk"], chunk, fresh=False)
+    functions([torch.narrow], narrow, fresh=False)
+    methods(["narrow"], narrow, fresh=False)
+    functions([torch.index_select], index_select, fresh=True)
+    methods(["index_select"], index_select, fresh=True)
+    functions([torch.tile, torch.repeat_interleave], repeat, fresh=True)
+    functions([torch.broadcast_to], repeat, fresh=False)
+    methods(["repeat", "tile", "repeat_interleave"], repeat, fresh=True)
+    methods(["expand", "expand_as"], repeat, fresh=False)
+    modules([nn.GLU], glu, fresh=True)
+    functions([F.glu], glu, fresh=True)
+    modules([nn.ChannelShuffle], channel_shuffle, fresh=True)
+    functions([torch.channel_shuffle], channel_shuffle, fresh=True)
+    modules([nn.PixelShuffle, nn.PixelUnshuffle], pixel_shuffle, fresh=True)
     functions(
         list(
             dict.fromkeys(
@@ -347,6 +349,7 @@ def register_indexing(modules, functions, methods):
             )
         ),
         pixel_shuffle,
+        fresh=True,
     )
-    modules([nn.Unfold, nn.Fold], unfold_fold)
-    functions([F.unfold, F.fold], unfold_fold)
+    modules([nn.Unfold, nn.Fold], unfold_fold, fresh=False)
+    functions([F.unfold, F.fold], unfold_fold, fresh=False)

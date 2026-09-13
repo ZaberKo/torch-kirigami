@@ -7,6 +7,7 @@ from dataclasses import replace
 import torch
 from torch import nn
 
+from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
 from ..errors import CaptureError
 from ..operators.coordinates import retained_indices as _keep
@@ -112,6 +113,8 @@ def compile_recipes(graph, operations, impact, *, attribute_checks=None):
         raise PlanningError("; ".join(f"{d.code}: {d.message}" for d in impact.diagnostics))
     bindings = dict(graph.tensor_bindings())
     for selection in (*impact.parameters, *impact.buffers):
+        if has_tensor_hooks(bindings[selection.tensor]):
+            raise PlanningError("Remove Tensor gradient hooks before replacing their tensors")
         expected_type = nn.Parameter if selection.tensor.kind == "parameter" else torch.Tensor
         if type(bindings[selection.tensor]) is not expected_type:
             raise PlanningError("Physical replacement of custom tensor subclasses is unsupported")

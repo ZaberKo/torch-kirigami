@@ -3,7 +3,7 @@
 from dataclasses import fields, is_dataclass
 from types import MappingProxyType
 
-from ..configuration import FrozenList, FrozenScalar
+from ..configuration import FrozenDict, FrozenList, FrozenScalar
 from ..selection import AxisRef, IndexSet, Region, Selection, TensorRef
 from .types import (
     AnalysisSummary,
@@ -20,6 +20,7 @@ RECORD_TYPES = MappingProxyType(
     {
         t.__name__: t
         for t in (
+            FrozenDict,
             FrozenList,
             FrozenScalar,
             AxisRef,

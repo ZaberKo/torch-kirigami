@@ -223,7 +223,9 @@ def convolution(ctx):
     axis = y.axis(channel) if transposed else w.axis(0)
     key = f"{w.paths[0]}:{'output' if transposed else '0'}" if w.paths else ""
     candidates = (
-        () if ctx.module is None else (CandidateAxis(key, axis, cout // cin if depthwise else 1),)
+        ()
+        if ctx.module is None
+        else (CandidateAxis(key, axis, cout // cin if depthwise else 1, w if transposed else None),)
     )
     return OperatorSpec(
         tuple(relations),

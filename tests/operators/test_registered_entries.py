@@ -73,6 +73,33 @@ def native_context(kind, target, case):
     else:
         result = getattr(case.args[0], target)(*case.args[1:], **case.kwargs)
 
+    def tensor_leaves(value):
+        if isinstance(value, torch.Tensor):
+            yield value
+        elif isinstance(value, (tuple, list)):
+            for child in value:
+                yield from tensor_leaves(child)
+        elif isinstance(value, dict):
+            for child in value.values():
+                yield from tensor_leaves(child)
+
+    if REGISTRY.lookup(node, case.module).effects(node, case.module).fresh_output:
+        registered = (
+            (*case.module.parameters(), *case.module.buffers()) if case.module is not None else ()
+        )
+        storages = {
+            (str(t.device), t.untyped_storage().data_ptr())
+            for t in tensor_leaves((case.args, case.kwargs, registered))
+            if t.numel()
+        }
+        # Check the allocation promise against real PyTorch execution for every
+        # native spelling. Structural relation tests alone cannot establish it.
+        assert all(
+            (str(t.device), t.untyped_storage().data_ptr()) not in storages
+            for t in tensor_leaves(result)
+            if t.numel()
+        ), f"{kind}:{target} declares fresh output but aliases an input or registered tensor"
+
     def output_tree(value):
         if isinstance(value, torch.Tensor):
             ref = TensorRef(f"output:{len(metadata)}", tuple(value.shape))

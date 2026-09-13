@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 import torch
 
-from ..configuration import FrozenList, FrozenScalar, freeze, thaw
+from ..configuration import FrozenDict, FrozenList, FrozenScalar, freeze, thaw
 from ..contracts import Impact, Requirement
 from ..errors import KirigamiError
 from ..graph import DependencyGraph
@@ -22,6 +22,10 @@ def _static(value, depth=0):
         raise ValueError("Structural configuration nesting limit exceeded")
     if isinstance(value, (tuple, list)):
         return tuple(_static(item, depth + 1) for item in value)
+    if isinstance(value, FrozenDict):
+        return FrozenDict(
+            tuple((_static(k, depth + 1), _static(v, depth + 1)) for k, v in value.items)
+        )
     if isinstance(value, FrozenList):
         return FrozenList(tuple(_static(item, depth + 1) for item in value.items))
     if isinstance(value, FrozenScalar):
@@ -222,7 +226,7 @@ class AttributeRecipe:
 
     def __post_init__(self):
         def frozen(value):
-            if isinstance(value, (list, FrozenList, FrozenScalar, torch.Size)):
+            if isinstance(value, (dict, FrozenDict, list, FrozenList, FrozenScalar, torch.Size)):
                 return freeze(thaw(value))
             if isinstance(value, tuple):
                 return tuple(frozen(v) for v in value)

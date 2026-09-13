@@ -12,7 +12,7 @@ import torch
 from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
 
-from .bindings import reference_edits, reference_signature, storage_key
+from .bindings import copy_module_state, reference_edits, reference_signature, storage_key
 from .configuration import attributes, forward_hook_paths, has_registration_hooks
 from .errors import CaptureError
 from .operation import TensorFacts
@@ -101,6 +101,9 @@ def isolated_execution(model, args, kwargs):
     if has_registration_hooks():
         raise CaptureError("Module registration callbacks are unsupported during capture")
     reference_signature(model)
+    registrations = [
+        (m, dict(m._buffers), set(m._non_persistent_buffers_set)) for m in model.modules()
+    ]
     buffers = [
         (module, name, tensor)
         for module in model.modules()
@@ -144,9 +147,12 @@ def isolated_execution(model, args, kwargs):
     finally:
         for owner, name, original in reversed(restored):
             object.__setattr__(owner, name, original)
-        for module, name, original in buffers:
-            # Restore exact bindings without re-running registration callbacks.
-            module._buffers[name] = original
+        for module, table, persistence in registrations:
+            # Include None, additions, deletions and persistence changes on every exit.
+            module._buffers.clear()
+            module._buffers.update(table)
+            module._non_persistent_buffers_set.clear()
+            module._non_persistent_buffers_set.update(persistence)
         for module, mode in modes:
             object.__setattr__(module, "training", mode)
 
@@ -342,9 +348,7 @@ def validate_attribute_changes(model, registry, original_signature, updates):
             shells = {id(m): object.__new__(type(m)) for m in model.modules()}
             memo = {**shells, **{id(t): t for t in (*model.parameters(), *model.buffers())}}
             for module in model.modules():
-                object.__setattr__(
-                    shells[id(module)], "__dict__", copy.deepcopy(vars(module), memo)
-                )
+                copy_module_state(module, shells[id(module)], memo)
             prepared = shells[id(model)]
             for path, value in updates:
                 parent, _, name = path.rpartition(".")
@@ -365,6 +369,8 @@ def validate_attribute_changes(model, registry, original_signature, updates):
 def _reject_parameter_writes(gm, registry):
     """Reject recognized parameter-alias writes before metadata execution."""
     tainted = set()
+    aliases, written = {}, set()
+    buffers = {id(b) for b in gm.buffers()}
     params = {id(p) for p in gm.parameters()}
     for node in gm.graph.nodes:
         module = gm.get_submodule(str(node.target)) if node.op == "call_module" else None
@@ -377,6 +383,8 @@ def _reject_parameter_writes(gm, registry):
                 value = getattr(value, component)
             if id(value) in params:
                 tainted.add(node)
+            if id(value) in buffers:
+                aliases[node] = {id(value)}
         inputs = set(node.all_input_nodes)
         mutates = (
             (rule.effects(node, module).mutates_input if rule is not None else False)
@@ -385,6 +393,9 @@ def _reject_parameter_writes(gm, registry):
         )
         if node.op == "call_module":
             mutates = mutates or getattr(gm.get_submodule(str(node.target)), "inplace", False)
+        sources = set().union(*(aliases.get(n, set()) for n in inputs))
+        if mutates:
+            written.update(sources)
         if mutates and inputs & tainted:
             raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
         out = node.kwargs.get("out")
@@ -398,9 +409,12 @@ def _reject_parameter_writes(gm, registry):
         if out is not None:
             raise CaptureError(f"out= mutation is unsupported at {node.name}")
         fresh = rule.effects(node, module).fresh_output if rule is not None else False
+        if not fresh and sources:
+            aliases.setdefault(node, set()).update(sources)
         if inputs & tainted and not fresh:
             # Conservative over-approximation: no unsafe alias write is assumed harmless.
             tainted.add(node)
+    return written
 
 
 class _MetadataPropagator(ShapeProp):
@@ -452,12 +466,15 @@ class CaptureResult:
         facts: Result metadata indexed by FX nodes.
         buffer_aliases: Temporary buffer object IDs mapped to original tensors.
         signature: Captured computation and binding facts before metadata execution.
+        mutable_buffers: Buffer IDs with captured writes or observed mutation counters;
+            their final values cannot serve as read-time structural constants.
     """
 
     module: fx.GraphModule
     facts: dict[fx.Node, Any]
     buffer_aliases: dict[int, torch.Tensor]
     signature: tuple
+    mutable_buffers: frozenset[int]
 
 
 def capture(
@@ -490,10 +507,12 @@ def capture(
         try:
             gm = trace_module(model, registry, buffer_sources=aliases)
             captured_signature = capture_signature(gm, model)
-            _reject_parameter_writes(gm, registry)
+            written = _reject_parameter_writes(gm, registry)
+            versions = [(b, _tensor_version(b)) for b in gm.buffers()]
             bound = signature.bind(*safe_args, **safe_kwargs)
             metadata = _MetadataPropagator(gm, bound.arguments)
             metadata.propagate()
+            written.update(id(b) for b, version in versions if _tensor_version(b) != version)
         except CaptureError:
             raise
         except Exception as error:
@@ -501,4 +520,4 @@ def capture(
                 f"FX capture/metadata execution failed: {error}. "
                 "Tensor-dependent Python control flow is not specialized from examples."
             ) from error
-    return CaptureResult(gm, metadata.facts, aliases, captured_signature)
+    return CaptureResult(gm, metadata.facts, aliases, captured_signature, frozenset(written))

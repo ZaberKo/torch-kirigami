@@ -272,8 +272,8 @@ def multihead_attention(ctx):
 
 def register_attention(modules, functions, methods):
     """Register matrix and attention APIs without extending the executor registry."""
-    functions([torch.addmm, torch.baddbmm], addmm)
-    methods(["addmm", "baddbmm"], addmm)
-    functions([torch.einsum], einsum)
-    functions([F.scaled_dot_product_attention], sdpa)
-    modules([nn.MultiheadAttention], multihead_attention)
+    functions([torch.addmm, torch.baddbmm], addmm, fresh=True)
+    methods(["addmm", "baddbmm"], addmm, fresh=True)
+    functions([torch.einsum], einsum, fresh=True)
+    functions([F.scaled_dot_product_attention], sdpa, fresh=True)
+    modules([nn.MultiheadAttention], multihead_attention, fresh=True)

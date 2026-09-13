@@ -1,6 +1,7 @@
 """One candidate universe for planning, budget accounting and sparse training."""
 
 from ..contracts import Fixed
+from ..relations import AxisRelation, BlockMap
 from .groups import ParameterGroup, unique_groups
 from .types import Candidate, PlanningError
 
@@ -15,30 +16,65 @@ def interface_constraints(graph, preserve_io):
 
 
 def discover(graph, operations):
-    """Generate declared logical-axis candidates, deduplicating shared domains."""
-    result, domains, keys = [], {}, {}
+    """Collect logical domains before instantiating individual candidate requests."""
+    domains, keys = {}, {}
     for op in operations:
         for domain in graph.operator_spec(op).candidates:
             axis, block = domain.axis, domain.block_size
-            if domain.key in keys and keys[domain.key] != (axis, block):
-                raise PlanningError(f"Conflicting candidate domain key: {domain.key}")
-            keys[domain.key] = (axis, block)
+            identity = (
+                domain.binding if domain.binding is not None else axis,
+                block,
+                axis.tensor.shape[axis.dim],
+            )
+            if domain.key in keys:
+                if keys[domain.key] != identity:
+                    raise PlanningError(f"Conflicting candidate domain key: {domain.key}")
+                continue
+            keys[domain.key] = identity
             if axis in domains and domains[axis].block_size != block:
                 raise PlanningError("Conflicting block sizes for one candidate axis")
+            if axis.tensor.shape[axis.dim] % block:
+                raise PlanningError("Candidate block must divide the logical width")
             domains.setdefault(axis, domain)
-    for axis, domain in domains.items():
-        block, width = domain.block_size, axis.tensor.shape[axis.dim]
-        if width % block:
-            raise PlanningError("Candidate block must divide the logical width")
-        for start in range(0, width, block):
-            result.append(
-                Candidate(
-                    f"{domain.key}:{start:012d}",
-                    (axis.select(range(start, start + block)),),
-                    axis,
-                )
-            )
-    return tuple(result), tuple(domains)
+    return tuple(domains.values())
+
+
+def _candidates(domain):
+    axis, block = domain.axis, domain.block_size
+    for start in range(0, axis.tensor.shape[axis.dim], block):
+        yield Candidate(
+            f"{domain.key}:{start:012d}", (axis.select(range(start, start + block)),), axis
+        )
+
+
+def _protected_equal_axes(graph, defaults):
+    """Prove full IO protection through unscoped identity axis relationships.
+
+    Keep axes distinct: removing an entire tensor would accidentally couple its
+    otherwise independent row/column domains. Other maps use per-candidate proof.
+    """
+    protected = {c.axis for c in defaults}
+    edges = []
+    for relation in graph.relations:
+        if not isinstance(relation, AxisRelation):
+            continue
+        left, right = relation.left, relation.right
+        width = left.tensor.shape[left.axis.dim]
+        if (
+            left.scope is None
+            and right.scope is None
+            and right.tensor.shape[right.axis.dim] == width
+            and relation.maps == (BlockMap(0, 0, width),)
+        ):
+            edges.append((left.axis, right.axis))
+    changed = True
+    while changed:
+        changed = False
+        for left, right in edges:
+            if (left in protected or right in protected) and not {left, right} <= protected:
+                protected.update((left, right))
+                changed = True
+    return protected
 
 
 class CandidateSpace:
@@ -64,46 +100,54 @@ class CandidateSpace:
         self.constraints = (*defaults, *tuple(constraints))
         exclusions = []
         self.protected_axes = ()
+        self._candidates = None
+        self._domains = ()
         if candidates is None:
-            candidates, discovered = discover(graph, graph.operations())
+            domains = discover(graph, graph.operations())
             if axes is None:
-                protected = set()
+                protected = _protected_equal_axes(graph, defaults) if defaults else set()
                 if defaults:
-                    for axis in discovered:
-                        domain = [c for c in candidates if c.axis == axis]
-                        if domain and all(
+                    for domain in domains:
+                        if domain.axis not in protected and all(
                             any(
                                 d.code == "fixed_axis"
                                 for d in graph.propagate(
                                     remove=c.remove, constraints=defaults
                                 ).diagnostics
                             )
-                            for c in domain
+                            for c in _candidates(domain)
                         ):
-                            protected.add(axis)
-                    exclusions = [
-                        (
-                            f"domain:{a.tensor.paths[0] if a.tensor.paths else a.tensor.id.split(':', 1)[-1]}:{a.dim}",
-                            "All positions are protected by external interfaces",
-                        )
-                        for a in discovered
-                        if a in protected
-                    ]
-                axes = tuple(a for a in discovered if a not in protected)
-                self.protected_axes = tuple(a for a in discovered if a in protected)
-                candidates = tuple(c for c in candidates if c.axis not in protected)
-        elif axes is None:
-            raise ValueError("Custom candidates require explicit budget axes")
-        self.candidates = tuple(candidates)
+                            protected.add(domain.axis)
+                self.protected_axes = tuple(d.axis for d in domains if d.axis in protected)
+                exclusions = [
+                    (f"domain:{d.key}", "All positions are protected by external interfaces")
+                    for d in domains
+                    if d.axis in protected
+                ]
+                domains = tuple(d for d in domains if d.axis not in protected)
+                axes = tuple(d.axis for d in domains)
+            self._domains = domains
+        else:
+            if axes is None:
+                raise ValueError("Custom candidates require explicit budget axes")
+            self._candidates = tuple(candidates)
+            if len({c.key for c in self._candidates}) != len(self._candidates):
+                raise ValueError("Duplicate candidate keys")
+            for candidate in self._candidates:
+                for selection in candidate.remove:
+                    graph.metadata(selection.tensor)
         self.axes = tuple(dict.fromkeys(axes))
         self.exclusions = tuple(exclusions)
-        if len({c.key for c in self.candidates}) != len(self.candidates):
-            raise ValueError("Duplicate candidate keys")
         for axis in self.axes:
             graph.metadata(axis.tensor)
-        for candidate in self.candidates:
-            for selection in candidate.remove:
-                graph.metadata(selection.tensor)
+
+    @property
+    def candidates(self):
+        """Instantiate the fixed candidate universe only when it is requested."""
+        self.graph.validate()
+        if self._candidates is None:
+            self._candidates = tuple(c for domain in self._domains for c in _candidates(domain))
+        return self._candidates
 
     def impact(self, candidates):
         """Analyze a joint batch, including temporary combined candidates."""

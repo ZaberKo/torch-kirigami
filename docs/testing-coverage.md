@@ -33,6 +33,23 @@ Each level adds a different question. Coverage at one level does not imply cover
 | Measurement | [measurement integration](../tests/integration/test_measurement.py) | MAC conventions, unknown operations, modes/RNG restoration and timing boundaries |
 | Workflow integration | [pretrained examples](../tests/integration/test_pretrained_examples.py) | Requested official weights, local data/cache loading, stages, metrics and checkpoint output |
 
+## Boundary families from independent review
+
+Operator spelling coverage alone misses interactions between capture, dependency propagation, execution, and restoration. The following regression families combine successful alternatives with rejection and failure-state assertions:
+
+| Invariant | Public regression coverage |
+| --- | --- |
+| Coordinate-neutral edges still carry layout and value effects | [Graph boundaries](../tests/integration/test_review_graph_boundaries.py): slice → view/reshape/flatten, reduction → integer cast → unknown size consumer, independent branch pruning |
+| Structural constants reflect the value at their read | [Graph boundaries](../tests/integration/test_review_graph_boundaries.py): read-only versus temporarily mutated integer buffers, direct and view aliases, `dim`/`ndim` |
+| Shared calls have one declared budget domain | [Graph boundaries](../tests/integration/test_review_graph_boundaries.py): repeated ordinary/grouped ConvTranspose1d/2d/3d, independent compact numerical references |
+| Restored values retain ownership and runtime semantics | [State boundaries](../tests/integration/test_review_state_boundaries.py): nested/order-sensitive dictionaries, cached tensors, parent references, slots, hooks, custom decoding, rollback and backward |
+| Measurement executes the caller's input relationships | [Measurement boundaries](../tests/integration/test_review_measurement_boundaries.py): actual MHA native path, args/kwargs identity, shared views, full buffer registration restoration on success and failure |
+| Optimizations preserve objectives and reduce work | [Optimizations](../tests/integration/test_review_optimizations.py): allocating unary families followed by in-place activation, bounded protected-domain queries, lazy zero budgets, shared-state equality, batched and irregular loss/gradient references, extreme and mixed precision |
+
+Every registered native entry also checks any fresh-storage promise against the actual PyTorch output, including registered parameters and buffers among possible aliases.
+
+Performance regression assertions count expensive operations or autograd gather nodes instead of imposing noisy timing thresholds. Numerical loss references are independent formulas. Model tests check outputs and backward where applicable; shape-only success is insufficient. New cases should extend the relevant family across forms and lifecycle boundaries, rather than only reproduce one reported example.
+
 ## Operator support is conditional
 
 A registered operation can still reject a particular argument combination, axis, index pattern, layout or alias relationship. Read the [operator support guide](operator-coverage.md) before interpreting the native-entry matrix.

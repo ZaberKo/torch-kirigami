@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from .configuration import freeze
+from .configuration import freeze, object_attributes
 from .errors import CaptureError
 
 _MODULE_FIELDS = frozenset(vars(nn.Module())) | {"_kirigami_structure"}
@@ -29,6 +29,11 @@ def storage_key(tensor):
     return (str(tensor.device), tensor.untyped_storage().data_ptr()) if tensor.numel() else None
 
 
+def has_tensor_hooks(tensor):
+    """Report Tensor hooks that would be silently lost by physical replacement."""
+    return bool(tensor._backward_hooks or tensor._post_accumulate_grad_hooks)
+
+
 @dataclass(frozen=True)
 class AttributeEdit:
     """An internal object-state assignment or deletion, prepared before commit."""
@@ -40,7 +45,15 @@ class AttributeEdit:
 
 def ordinary_attributes(module):
     """Yield user-owned attributes, excluding PyTorch registration/hook tables."""
-    return ((k, v) for k, v in vars(module).items() if k not in _MODULE_FIELDS)
+    return ((k, v) for k, v in object_attributes(module).items() if k not in _MODULE_FIELDS)
+
+
+def copy_module_state(original, shell, memo):
+    """Copy dictionary and slot state into a preallocated, memoized module shell."""
+    object.__setattr__(shell, "__dict__", copy.deepcopy(vars(original), memo))
+    for name, value in object_attributes(original).items():
+        if name not in vars(original):
+            object.__setattr__(shell, name, copy.deepcopy(value, memo))
 
 
 def _leaves(value, path=(), seen=None):

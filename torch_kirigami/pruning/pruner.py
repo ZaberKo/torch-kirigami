@@ -7,6 +7,7 @@ from dataclasses import fields, is_dataclass
 import torch
 from torch import nn
 
+from ..bindings import has_tensor_hooks, storage_key
 from ..regions import gather_region
 from ..selection import TensorRef
 from .candidates import CandidateSpace, interface_constraints
@@ -28,6 +29,7 @@ from .types import (
     BudgetReport,
     ExecutionError,
     PlanningError,
+    channel_targets,
 )
 
 
@@ -126,8 +128,19 @@ class Pruner:
                 preserve_io=preserve_io,
                 constraints=user_constraints,
             )
-            candidates, axes = space.candidates, space.axes
+            axes = space.axes
+            zero_automatic = (
+                candidates is None
+                and budget.axes is None
+                and strategy is None
+                and not any(channel_targets(budget, tuple(a.tensor.shape[a.dim] for a in axes)))
+            )
+            candidates = () if zero_automatic else space.candidates
             protected_domains = space.exclusions
+            if zero_automatic:
+                protected_domains += tuple(
+                    (f"domain:{a.tensor.id}:{a.dim}", "Zero channel budget") for a in axes
+                )
             registered = {c.key: c for c in candidates}
             context = PlanningContext(
                 self.graph,
@@ -220,6 +233,10 @@ class Pruner:
             for recipe in plan.recipes:
                 owner, name = attribute(self.model, recipe.tensor.paths[0])
                 old = getattr(owner, name)
+                if has_tensor_hooks(old):
+                    raise ExecutionError(
+                        "Remove Tensor gradient hooks before replacing their tensors"
+                    )
                 parts = [gather_region(old.detach(), r) for r in recipe.segments]
                 data = parts[0] if len(parts) == 1 else torch.cat(parts, dim=recipe.concat_dim)
                 fmt = (
@@ -227,7 +244,13 @@ class Pruner:
                     if recipe.memory_format == "contiguous"
                     else getattr(torch, recipe.memory_format)
                 )
-                data = data.clone(memory_format=fmt)
+                # Gather/cat already owns storage. Only a no-op selection can
+                # still alias the source; layout conversion also allocates once.
+                if storage_key(data) == storage_key(old):
+                    data = data.clone(memory_format=fmt)
+                elif not data.is_contiguous(memory_format=fmt):
+                    data = data.contiguous(memory_format=fmt)
+                del parts
                 new = (
                     nn.Parameter(data, requires_grad=old.requires_grad)
                     if recipe.tensor.kind == "parameter"
@@ -236,7 +259,7 @@ class Pruner:
                 replacements.append((states[recipe.tensor.paths[0]], old, new))
         check_structure(self.model, plan.before)
         record = managed_record(self.model, plan.after, plan.attributes)
-        commit(self.model, replacements, plan.attributes, record)
+        commit(self.model, replacements, plan.attributes, record, expected=plan.after)
         if self.graph is not None and (plan.recipes or plan.attributes):
             self.graph.invalidate()
         parameter_map = {old: new for state, old, new in replacements if state.kind == "parameter"}

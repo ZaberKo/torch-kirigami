@@ -181,7 +181,7 @@ def test_shared_effect_detection_still_rejects_real_parameter_writes(target):
     model = nn.Module()
     model.weight = nn.Parameter(torch.ones(3))
     gm = torch.fx.GraphModule(model, graph)
-    assert native_effects(node, None).mutates_input
+    assert native_effects(node, None, fresh_output=False).mutates_input
     with pytest.raises(CaptureError, match="write"):
         _reject_parameter_writes(gm, OperatorRegistry.default())
     torch.testing.assert_close(model.weight, torch.ones(3))

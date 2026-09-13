@@ -53,6 +53,8 @@ All regularizers read the latest values on each call and preserve autograd conne
 
 Reductions use at least float32, retaining float64 if any selected parameter is float64. The L2 norm uses scaling for numerical stability and the zero subgradient at the origin. No smoothing term changes the mathematical formula. Nonfinite selected values or results raise an error.
 
+Built-in losses batch whole-axis sections by parameter and axis: each weight is reduced once and small axis vectors are combined across groups. This avoids a full-parameter gather backward for every channel group. Irregular multi-axis regions use the general region path; overlap and group coefficients retain the same objective. The cached reduction description stores coordinates only, never live weights or autograd graphs. Custom `penalty()` implementations continue to receive the flattened union of each group's selected regions.
+
 ### Ordinary training integration
 
 This minimal example demonstrates the API; use pretrained models and representative task data to evaluate pruning quality.

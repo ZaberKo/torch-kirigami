@@ -190,7 +190,8 @@ class DependencyGraph:
                 if id(value) in by_object:
                     self._values[node] = by_object[id(value)]
                     if (
-                        not value.is_floating_point()
+                        id(value) not in captured.mutable_buffers
+                        and not value.is_floating_point()
                         and not value.is_complex()
                         and value.numel() <= 4096
                     ):
@@ -264,9 +265,10 @@ class DependencyGraph:
                         (*ctx.inputs, *ctx.outputs, *bindings.values(), *dependencies(ctx))
                     )
                 )
-                # Scalar/shape producers can hide structural dependencies across reductions.
-                if not ctx.outputs or "provenance" in str(error):
-                    refs = tuple(dict.fromkeys((*refs, *self._ancestor_refs(node))))
+                # Unknown operations can use values to choose sizes/indices. A
+                # reduction preserves no deleted coordinates but still changes
+                # those values; the barrier therefore covers every data ancestor.
+                refs = tuple(dict.fromkeys((*refs, *self._ancestor_refs(node))))
                 barrier = Barrier(refs, str(error), node.name)
                 self._constraints.append(barrier)
                 self._diagnostics.append(
@@ -466,6 +468,7 @@ class DependencyGraph:
         refs = [ref for item in (*spec.relations, *spec.constraints) for ref in item.refs]
         refs.extend(ref for item in spec.requirements for ref in item.refs)
         refs.extend(item.axis.tensor for item in spec.candidates)
+        refs.extend(item.binding for item in spec.candidates if item.binding is not None)
         refs.extend(item.tensor for item in spec.layouts)
         refs.extend(spec.constants)
         if spec.expression is not None:
@@ -603,6 +606,10 @@ class DependencyGraph:
         """Find data and dimension consumers using one activation rule."""
         affected = set()
         for op in self._operations.values():
+            # Execution validation follows value/layout effects, including edges
+            # with unchanged shape and no removed coordinates (slice, reduction).
+            if any(n.name in affected for n in op.node.all_input_nodes):
+                affected.add(op.node.name)
             if any(r.id in selections for r in (*op.inputs, *op.outputs, *op.bindings.values())):
                 affected.add(op.node.name)
             for node in op.node.all_input_nodes:
