@@ -1,92 +1,232 @@
-# 稀疏训练组件
+# Sparse training and iterative pruning
 
-库提供可组合组件；算法的选组、强度、阶段切换和训练循环放在 `examples/workflows/`。所有稀疏正则统一返回标量 loss，经 autograd 求导，没有直接修改 `.grad` 的第二套入口。用户负责任务 loss、数据和 optimizer。
+`torch_kirigami.sparsity` provides composable penalties, activation gates, parameter operations, schedules, and cumulative channel accounting. It does not own a task loss, optimizer, training loop, or pruning algorithm. The [workflow examples](../examples/workflows/README.md) combine these components with pretrained models and ImageNet data.
 
-## 结构组与正则
+The differentiation contract is uniform: a sparse regularizer returns a scalar tensor, and ordinary autograd computes its gradient as part of the caller's total loss. There is no parallel API that injects the same regularizer into `.grad`.
+
+## Components and responsibilities
+
+```mermaid
+flowchart LR
+    Parameters["Parameters"] --> Sparse["Sparse loss"]
+    Sparse --> Total["Total loss"]
+    Task["Task loss"] --> Total
+    Total --> Optimizer["Optimizer"]
+```
+
+| Component | Library responsibility | Caller responsibility |
+| --- | --- | --- |
+| `CandidateSpace`, `ParameterGroup` | Discover logical candidates and expose complete parameter regions | Choose target domains and parameter filters |
+| `ScaleL1`, `GroupLasso`, `GroupSquaredL2` | Evaluate scalar penalties on current parameter values | Task loss, strength, training duration, and optimization |
+| `ChannelGate`, `GateBinding`, `GateMagnitude` | Explicit scales, structural linkage, and gate scoring | Gate placement and candidate policy |
+| `scale_groups_`, `zero_groups_`, `set_group_norms_` | Validated parameter-region updates | Timing, regrowth policy, momentum handling |
+| `CumulativeChannelBudget` | Frozen original denominators and observed deletion accounting | Round schedule and successful update sequence |
+| Schedules and `SelectionWindow` | Pure scalar interpolation and selection statistics | Step counters, thresholds, and stage transitions |
+
+## Live parameter groups
+
+`CandidateSpace.parameter_groups(candidates=None, *, parameter_filter=None)` propagates each candidate's dependency closure and extracts its affected parameters. `parameter_filter(ref, parameter)` can restrict the objective, for example to weights rather than biases. An incomplete influence range or an empty resulting group is rejected.
+
+`ParameterGroup(graph, selections, key="")` represents a union of selected regions, not necessarily a slice of a single parameter. Its `bindings()` method returns current `(Parameter, Selection)` pairs after graph validation.
+
+Within one group, regions and aliases of the same parameter are deduplicated. Fully equivalent groups on the same graph are canonicalized independently of their labels. Distinct groups may overlap: their regularizer contributions add as specified by the objective. Passing equivalent groups with different coefficients is an error.
+
+A complete parameter group describes structural influence. It does not establish that zeroing those parameters is numerically equivalent to deleting a dimension. Repairable balance/divisibility constraints may remain when groups are extracted; `plan()` must still verify the final joint physical request. Normalization domains and bias paths require particular care in equivalence tests.
+
+Groups remain usable after ordinary numerical optimizer updates. Structural changes, parameter replacement, or other snapshot-invalidating changes require rebuilding the graph and the binding. Selected parameters must be finite, dense, real floating-point tensors on one device, with all groups belonging to one graph. Distributed or sharded gathering is not provided.
+
+## Scalar regularizers
+
+Let `W_g` be the flattened region union of group `g`, and let `a_g` be an explicitly supplied coefficient.
+
+| API | Scalar objective |
+| --- | --- |
+| `ScaleL1(graph, parameters)` | Sum of absolute values of explicitly named one-dimensional scale parameters |
+| `GroupLasso(groups, *, coefficients=None)` | `sum_g a_g * ||W_g||_2` |
+| `GroupSquaredL2(groups, *, coefficients=None)` | `0.5 * sum_g a_g * ||W_g||_2^2` |
+
+Group coefficients default to one and must be finite, nonnegative Python numbers aligned with the supplied groups. They are fixed configuration, not trainable tensors. There is no implicit averaging or group-size normalization. Multiply the returned scalar by the overall strength in the training loop.
+
+`ScaleL1` accepts parameter paths or `TensorRef` objects. It validates one-dimensional shape and deduplicates aliases; it does not infer whether a parameter semantically represents a BN or gate scale. That choice is explicit.
+
+All regularizers read the latest values on each call and preserve autograd connectivity without retaining graphs across steps. They do not call `backward()`, change parameter values, modify gradients, or access optimizer state. Frozen parameters remain part of the objective, although autograd does not produce gradients for them.
+
+Reductions use at least float32, retaining float64 if any selected parameter is float64. The L2 norm uses scaling for numerical stability and the zero subgradient at the origin. No smoothing term changes the mathematical formula. Nonfinite selected values or results raise an error.
+
+### Ordinary training integration
+
+This minimal example demonstrates the API; use pretrained models and representative task data to evaluate pruning quality.
 
 ```python
+import torch
+from torch import nn
+
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import CandidateSpace
 from torch_kirigami.sparsity import GroupLasso
 
-graph = DependencyGraph.build(model, args=(example_input,))
+model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
+x, target = torch.randn(2, 8), torch.randn(2, 4)
+graph = DependencyGraph.build(model, args=(x,))
 space = CandidateSpace(graph)
 regularizer = GroupLasso(space.parameter_groups())
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 optimizer.zero_grad()
-task_loss = criterion(model(inputs), targets)
+task_loss = nn.functional.mse_loss(model(x), target)
 sparse_loss = regularizer()
-(task_loss + strength * sparse_loss).backward()
+loss = task_loss + 1e-4 * sparse_loss
+loss.backward()
 optimizer.step()
 ```
 
-`CandidateSpace(graph, candidates=None, axes=None, preserve_io=True, constraints=())` 与 Pruner 共用候选发现和默认输入输出保护。显式 candidates 必须配显式 axes；显式轴保留保护域的预算分母。`protected_axes` 记录自动发现时因 IO 保护而排除的域，显式轴模式下为空。`impact(candidates)` 查询联合闭包；`parameter_groups(candidates=None, parameter_filter=None)` 返回逐候选完整参数组。filter 接受 (TensorRef, Parameter)。
+The same contract works with SGD, AdamW, gradient accumulation, AMP, and clipping. The caller chooses the loss scaling: when averaging across `N` microbatches, scale the total loss consistently so the sparse term is not accidentally multiplied by `N`. Under AMP, combine the losses before applying the gradient scaler; unscale before clipping or reading Taylor statistics.
 
-同组区域与别名去重，完全等价的组规范化；不同重叠组仍分别贡献正则。过滤为空或影响不完整明确报错。可补全的计数约束仍由最终 plan 检查。也可用 `ParameterGroup(graph, selections, key="...")` 显式指定参数区域。
+For Taylor scoring, perform a separate task-only gradient collection pass. Decide the model mode explicitly; an evaluation-mode calibration pass can avoid changing BN running statistics. The [workflow utility](../examples/workflows/workflow_utils.py) restores the original module modes after collecting task-only gradients.
 
-| 模块 | 标量定义 |
-| --- | --- |
-| `ScaleL1(graph, parameters)` | 显式一维参数区域并集的绝对值之和 |
-| `GroupLasso(groups, coefficients=None)` | sum(a_g * norm(W_g, 2)) |
-| `GroupSquaredL2(groups, coefficients=None)` | 0.5 * sum(a_g * sum(W_g**2)) |
+## Explicit activation gates
 
-coefficients 是不求导的非负有限 Python 标量，默认一，无隐式组大小归一化。等价组系数冲突会拒绝。逐组系数改变时重新构造正则对象；总强度在外部乘入。ScaleL1 接受参数路径或 TensorRef，不自动选择 BN 或 gate。
+`ChannelGate(size, axis, trainable=True)` computes `y = x * broadcast(weight * mask)` along the chosen activation axis. It starts with a one-valued parameter and a one-valued buffer. Negative axes are supported. The input rank is preserved, and its gated width must equal `size`.
 
-每次调用读取最新权重，不保留跨步计算图，不修改参数、梯度、BN buffer 或 optimizer。低精度归约至少 float32，float64 保留；零点采用零次梯度，不以平滑改变公式。当前稀疏组件支持单图、单设备的稠密实数参数，不自动收集分布式或分片参数。非有限选中值和结果明确报错。
-
-结构组不是零不变组，不保证置零与物理删除等价。LayerNorm、GroupNorm 或 attention 归约域变化要按紧凑模型验证。
-
-## 训练生命周期
-
-梯度累积对整个组合 loss 按有效 batch 归一化，避免正则强度随微批次数增加。AMP 使用普通 GradScaler 流程，累积完成后去缩放、裁剪和 step，不额外添加正则梯度。WeightTaylor 的任务梯度另外采集，示例不将稀疏正则梯度混入评分。
-
-数值更新可以继续使用图；结构、绑定或建图模式等前提改变后，重新构造图和组。每次 apply 后重建 optimizer；普通微调关闭稀疏正则。库不迁移动量、scheduler 或梯度。
-
-## 整数与累计预算
-
-`ChannelCount(counts, axes, scope="local")` 的 local counts 是逐轴整数上限，global counts 是一个总整数上限。两种预算共用现有联合计量、约束补全、保护和欠达报告。
-
-```python
-from torch_kirigami.pruning import Magnitude, Pruner
-from torch_kirigami.sparsity import CumulativeChannelBudget
-
-accounting = CumulativeChannelBudget(space)
-budget = accounting.budget(space, 0.5)
-model, result = Pruner(model, graph=space.graph).prune(metric=Magnitude(), budget=budget)
-space = CandidateSpace(DependencyGraph.build(model, args=(example_input,)))
-accounting.update(result, space)
+```mermaid
+flowchart LR
+    Input["Input"] --> Gate["ChannelGate"]
+    Scale["weight × mask"] --> Gate
+    Gate --> Output["Output"]
 ```
 
-累计比例始终相对于首次绑定的逻辑域宽度：先 floor 原始目标，再扣除实际删除数量。global 使用原始总宽度，不附加 local 比例。budget() 不推进状态，update() 核对结果前后结构和重建图；未知变更、增宽、域声明改变会拒绝。
+Call `gate.set_mask(binary_values)` outside a live backward graph to change its fixed binary mask. A mask does not physically shrink the network. `trainable=False` freezes the gate weight while retaining the same module and checkpoint structure.
 
-最后一个通道或 head block 可能使某域变为整体 IO 保护。累计预算使用新图的路径与维度重新绑定这个初始域，保留分母和实际剩余宽度，即使它不再出现在自动候选轴中；手动丢弃域或声明变化仍会拒绝。恢复训练时同样保留这些已受保护的初始域。
+Place the gate explicitly in the model, then register its operator semantics before building the graph:
 
-`state_dict()` 保存初始/当前宽度、稳定域声明及结构前提；`load_state_dict(state, space)` 先验证，再绑定等价恢复模型。这里统计逻辑结构数量，不等于参数量、FLOPs 或延迟比例。
+```python
+from torch_kirigami import OperatorRegistry
+from torch_kirigami.pruning import ChannelCount, Pruner
+from torch_kirigami.sparsity import (
+    ChannelGate,
+    GateBinding,
+    GateMagnitude,
+    ScaleL1,
+    register_gate_operators,
+)
 
-## 调度与统计
+model = nn.Sequential(nn.Linear(8, 12), ChannelGate(12, axis=-1), nn.Linear(12, 4))
+operators = OperatorRegistry.default()
+register_gate_operators(operators)
+graph = DependencyGraph.build(model, args=(x,), operators=operators)
+space = CandidateSpace(graph)
+regularizer = ScaleL1(graph, ("1.weight",))
+binding = GateBinding(graph, "1")
+axis = graph.parameter("0.weight").axis(0)
+plan = Pruner(model, graph=graph).plan(
+    candidates=binding.candidates(space),
+    metric=GateMagnitude((binding,)),
+    budget=ChannelCount((3,), axes=(axis,)),
+)
+model, result = Pruner(model, graph=graph).apply(plan)
+```
 
-Constant、Linear、Polynomial 和 Piecewise 都接受显式非负 step，不维护内部进度。Polynomial 公式为 start + (end-start) * progress**power；区间外钳位，Linear 的 power=1。Piecewise 在 milestone 当步使用新值，首 milestone 为零。训练恢复保存构造配置和外部 step。
+`register_gate_operators(operators)` adds a leaf rule linking input/output axes to the gate weight and mask, with a requirement to update `size`. It adds no candidate budget domain, so the gate does not inflate the denominator. Its multiplication produces fresh storage; this fact supports checks for an immediately following in-place activation without relaxing other alias or multiple-consumer constraints.
 
-`selection_similarity(left, right)` 接受“域字符串 → 保留位置整数集合”的映射，计算逐域 Jaccard 后平均，空集对空集为一。SelectionWindow(size) 记录相邻比较，窗口未满返回 None；物理剪枝后须 reset，不能跨坐标阶段比较。阈值、截止时间和触发政策留在示例。窗口保存恢复先验证再提交。
+`GateBinding(graph, path).candidates(space)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings)` scores the sum of `abs(weight * mask)` over affected scales. It rejects ungated candidates. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
 
-## 门控与参数操作
+The library does not automatically insert gates or rewrite arbitrary networks. After physical pruning, retained gate values remain intact and need not equal one. Save and restore with a model factory containing the same gate placements; see [persistence](persistence.md).
 
-ChannelGate(size, axis, trainable=True) 沿激活轴逐位置缩放，weight/mask 初始为一。set_mask() 只接受匹配尺寸的二值 mask。创建 gate 后再创建 optimizer。
+## Parameter operations for soft pruning and projection
 
-先用 register_gate_operators(operators) 显式注册规则，再建图。GateBinding(graph, module_path).candidates(space) 找出联动到门控的候选；GateMagnitude(bindings) 对受影响的 abs(weight*mask) 并集评分。共享 weight 和 mask 的别名不重复计算；共享 weight、具有不同 mask 的门控分别贡献分数。无门控候选应显式排除，不能默认为零分。
+These functions deliberately modify parameter values under `no_grad`; they are separate from the scalar-regularizer API.
 
-Gate 不新增预算域，不用 forward hook。其乘法产生独立输出，规则显式声明该分配行为，因此后接单消费者的原地 ReLU 可以通过剪枝验证；多消费者的原地别名检查仍保留。物理剪枝同步收缩关联结构、gate 和 mask，保留剩余非一缩放。恢复工厂含相同 gate 定义。opaque 融合模块内部的门控必须由该模块规则声明，GQA 示例给出了完整做法。
+| Operation | Semantics |
+| --- | --- |
+| `scale_groups_(groups, factor)` | Multiply the union of selected regions once by a finite nonnegative factor |
+| `zero_groups_(groups)` | Set the union to zero once, without installing a persistent mask |
+| `set_group_norms_(groups, targets)` | Rescale each disjoint group to a finite nonnegative L2 target |
 
-scale_groups_(groups, factor) 和 zero_groups_(groups) 对区域并集只更新一次。set_group_norms_(groups, targets) 将组缩放到指定 L2 范数；等价组同目标去重，其他重叠拒绝；零向量到正范数拒绝。操作准备全部结果再提交，不改变梯度或 optimizer state。
+Execute operations outside a live forward/backward graph, usually after a successful optimizer step. Scaling and zeroing update overlapping regions once. Norm projection canonicalizes equivalent groups with equal targets, but rejects other overlaps, even if their requested norms happen to match. Equivalent groups with conflicting targets are also rejected.
 
-不同注册张量共享底层存储时，参数操作在提交前拒绝，即使其中某个别名没有被选中；同一 Parameter 的多个注册路径仍可去重使用。范数投影先稳定归一化再乘目标值，避免对极小非零参数计算溢出的缩放比例；最终值不能由目标参数 dtype 有限表示时仍会拒绝。
+A zero vector cannot be assigned a positive norm because it has no direction. Target zero is supported. Distinct tensor objects sharing storage are rejected, including unselected registered aliases that an update could affect.
 
-这些操作在完整 backward 后、没有待反传图时调用，示例放在成功 optimizer step 后。AMP 跳步时，调用方也应跳过相应操作和进度。置零不安装永久 mask，但不保证重新生长：完整组两端归零可能同时消除任务梯度。软剪枝示例显式建立并保留非零动量，安排不带投影的恢复步骤；永久约束和状态政策由算法定义。
+Validation and new values are prepared before committing any parameter change. Ordinary runtime/value failures during the commit restore original values. Gradients and optimizer state are untouched: momentum can regrow zeroed parameters on later steps. A method that requires persistent zeros must explicitly reapply its operation or use a mask; it must also specify any optimizer-state handling.
 
-## 示例、保存与边界
+## Cumulative budgets and rebinding
 
-参见[算法示例](../examples/workflows/README.md)。最终模型沿用 save_checkpoint/load_checkpoint；公共示例工具将模型与 optimizer、算法、调度及 RNG 状态分别保存。restore_training 先恢复紧凑模型、创建 optimizer，再加载训练状态；有状态组件用新图重新绑定。
+Applying `ChannelRatio(0.2)` repeatedly means 20% of each new snapshot's widths, with new rounding every round. `CumulativeChannelBudget` instead records the original logical widths and subtracts only observed, successfully applied removals.
 
-当前不提供期望 L0、完整 D-Gating/OTO 优化器、控制网络、FLOPs/延迟预算或自动网络改写。示例展示组件组合，不宣称论文精度复现。
+For an initial width `W`, current width `w`, and cumulative target ratio `r`, the next local cap is `max(0, floor(r * W) - (W - w))`. Global scope uses the sums of original and current widths. A shortfall is not counted as completed pruning.
 
-方法来源：[Network Slimming](https://arxiv.org/abs/1708.06519) 的 BN 缩放 L1、[Growing Regularization](https://arxiv.org/abs/2012.09243) 的递增惩罚、[DPM](https://arxiv.org/html/2406.03879v2) 的平滑收缩，以及 [OCSPruner](https://arxiv.org/html/2501.13439v2) 的组选择稳定性。示例使用本库的依赖区域分组和普通优化器；范数衰减作用于选中区域并集，不实现 DPM 的梯度纠错，稳定性阈值和阶段切换也采用示例自己的配方。
+```mermaid
+sequenceDiagram
+    participant Algorithm
+    participant Budget
+    participant Pruner
+    Algorithm->>Budget: budget()
+    Budget-->>Algorithm: ChannelCount
+    Algorithm->>Pruner: plan() / apply()
+    Pruner-->>Algorithm: PruningResult
+    Algorithm->>Algorithm: Rebuild bindings
+    Algorithm->>Budget: update()
+```
+
+```python
+from torch_kirigami.pruning import Magnitude
+from torch_kirigami.sparsity import CumulativeChannelBudget
+
+# Start a new accounting baseline at the model's current structure.
+graph = DependencyGraph.build(model, args=(x,), operators=operators)
+space = CandidateSpace(graph)
+account = CumulativeChannelBudget(space, scope="local")
+for ratio in (0.1, 0.2, 0.3):
+    pruner = Pruner(model, graph=space.graph)
+    plan = pruner.plan(
+        metric=Magnitude(),
+        candidates=space.candidates,
+        budget=account.budget(space, ratio),
+    )
+    model, result = pruner.apply(plan)
+    graph = DependencyGraph.build(model, args=(x,), operators=operators)
+    space = CandidateSpace(graph)
+    account.update(result, space)
+    optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+```
+
+This loop continues the gated example above. For custom candidate definitions, recreate the same logical domains on the new graph instead of using old `AxisRef` objects. An ordinary ungated model can use the default registry.
+
+Cumulative accounting requires named parameter axes. It validates domain paths, dimensions, declarations, widths, and model structure at each transition. Unrecorded external structure changes and incompatible domains are errors. A domain that becomes wholly IO-protected can retain its original denominator when the new space proves that protection.
+
+`state_dict()` returns portable accounting data. `load_state_dict(state, space)` validates compatibility against a fresh restored space before changing state. The component does not store scores, stage triggers, or a training loop.
+
+## Schedules and selection stability
+
+Schedules are stateless callables: the caller supplies a nonnegative integer step and saves its own progress counter.
+
+| API | Behavior |
+| --- | --- |
+| `Constant(value)` | Fixed finite value |
+| `Linear(start, end, finish, *, begin=0)` | Linear interpolation, clamped before `begin` and after `finish` |
+| `Polynomial(start, end, finish, begin=0, power=1.0)` | `start + (end-start) * progress**power`, clamped at endpoints |
+| `Piecewise(points)` | Value at the latest milestone; first milestone must be zero |
+
+`selection_similarity(left, right)` computes the mean per-domain Jaccard similarity of retained integer identities. Inputs map stable domain strings to retained positions. Empty/empty is one, and changed domain keys are rejected. This is an average over domains, not a pooled Jaccard weighted by domain width.
+
+`SelectionWindow(size)` averages the most recent `size` adjacent comparisons. `update(selection)` returns `None` until that many comparisons exist, so a size-two window requires three observations. `reset()` starts a new coordinate universe. `state_dict()` and `load_state_dict()` preserve history with compatibility validation.
+
+Similarity thresholds, delayed regularization, progressive strengths, reselection, and stage transitions belong to the algorithm. After physical pruning, reset stability statistics unless the caller explicitly maintains a valid original-identity mapping.
+
+## What the workflows demonstrate
+
+The standalone [workflow scripts](../examples/workflows/README.md) show magnitude/Taylor pruning, iterative budgets, BN scale L1, group Lasso and increasing squared L2, soft zeroing/norm decay, gate training, and stability-driven stage switching. Method-specific schedules and policies live in those scripts. They are component demonstrations, not complete reproductions of published training recipes or accuracy claims.
+
+Final model checkpoints and training recovery state have different responsibilities. Save the compact model with the library checkpoint functions; save optimizer, progress, algorithm state, and RNG separately in the training application. See [persistence](persistence.md#training-state-is-caller-owned).
+
+## Method background and deliberate simplifications
+
+These references explain the ideas behind the example compositions. The library components implement their documented mathematical contracts; the examples do not claim full paper reproduction.
+
+| Reference | Connection to the examples | Scope of this implementation |
+| --- | --- | --- |
+| [Network Slimming](https://arxiv.org/abs/1708.06519) | Channel sparsity through learned scaling factors | The BN workflow applies `ScaleL1` to explicitly selected ResNet BN scales, then ranks and physically prunes those channels |
+| [Neural Pruning via Growing Regularization](https://arxiv.org/abs/2012.09243) | Gradually increasing regularization strength | The squared-L2 workflow reselects target groups and applies a simple linear strength schedule; it does not reproduce every importance-estimation or training variant |
+| [Decay Pruning Method](https://arxiv.org/html/2406.03879v2) | Gradual target-norm decay during optimization | The decay workflow projects one union of selected dependency regions and reselects between two cycles; it does not implement the paper's gradient-driven self-rectification criteria or separate per-structure norm trajectories |
+| [One-Cycle Structured Pruning](https://arxiv.org/html/2501.13439v2) | Selection stability based on layer-wise Jaccard similarity | The stability workflow uses a two-comparison adjacent-selection window and a fixed trigger; it does not reproduce the paper's full delayed-start and one-cycle training policy |
+
+The soft-zeroing mode retains SGD momentum and includes an unprojected recovery interval so regions can regrow. The gate workflow demonstrates explicit activation scaling and L1 selection without introducing expected-L0 objectives, a control network, or a specialized optimizer.

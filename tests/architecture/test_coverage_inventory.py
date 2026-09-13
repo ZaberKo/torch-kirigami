@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_every_export_and_internal_class_has_contract_test_links():
-    inventory = json.loads((ROOT / "docs/testing-coverage.json").read_text())
+    inventory = json.loads((ROOT / "tests/architecture/contract_inventory.json").read_text())
     rows = inventory["objects"]
     names = {row["object"] for row in rows}
     assert len(names) == len(rows)
@@ -61,7 +61,7 @@ def test_every_export_and_internal_class_has_contract_test_links():
 
 
 def test_registered_entry_inventory_has_no_missing_or_obsolete_targets():
-    inventory = json.loads((ROOT / "docs/testing-coverage.json").read_text())
+    inventory = json.loads((ROOT / "tests/architecture/contract_inventory.json").read_text())
     registry = OperatorRegistry.default()
     expected = {
         f"{kind}:{target if isinstance(target, str) else target.__module__ + '.' + target.__name__}"

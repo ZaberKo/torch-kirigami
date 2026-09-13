@@ -1,52 +1,108 @@
-# 模型复杂度与推理延迟
+# Complexity and latency measurement
 
-`torch_kirigami.measurement` 提供独立于剪枝和训练策略的 CPU/CUDA 测量工具，只有现有的 PyTorch 依赖。没有 NAS、elastic_num_params 或 NPU 逻辑。
+`torch_kirigami.measurement` measures an eager PyTorch model independently of dependency analysis and pruning policy. It reports parameter elements, matrix/convolution multiply-accumulates (MACs), and inference latency on CPU or CUDA. Latency can use `torch.compile`.
+
+## Basic use
+
+Pass the original eager module to both functions, with its parameters and buffers already on the selected device. `compile=True` requests compilation inside the latency function.
 
 ```python
-from torch_kirigami.measurement import calculate_model_complexity, measure_module_latency
+import torch
+from torch import nn
 
-# 模型须已在目标设备；测量不会永久迁移模型或改变参数绑定。
-model = model.to("cuda")
-complexity = calculate_model_complexity(model, (inputs,), device="cuda")
+from torch_kirigami.measurement import (
+    calculate_model_complexity,
+    measure_module_latency,
+)
+
+model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4)).eval()
+x = torch.randn(2, 8)
+complexity = calculate_model_complexity(model, (x,))
+latency_ms = measure_module_latency(model, (x,), compile=True, warmup=5, repetitions=20)
+print(f"#Params: {complexity.params}")
+print(f"#MACs: {complexity.macs}")
+print(f"Unsupported operations: {complexity.unsupported_ops}")
+print(f"Batch latency: {latency_ms:.3f} ms")
+```
+
+Both functions accept a single input or a tuple/list of positional arguments, plus `input_kwargs` for keyword arguments. Nested tensor containers are supported. Input tensors are detached, moved to the chosen device, and isolated from forward writes. A list intended as one model argument must itself be wrapped in an outer positional-argument tuple.
+
+When `device` is omitted, the device is inferred from registered model tensors, falling back to CPU for a tensor-free model. All model parameters and buffers must already be on that one device. The functions do not move the model for the caller.
+
+## Two independent execution paths
+
+```mermaid
+flowchart LR
+    Model["Model"] --> Count["MAC counter"]
+    Count --> Complexity["Complexity"]
+    Model --> Prepare["Compile / warm up"]
+    Prepare --> Time["Time inference"]
+    Time --> Latency["Latency"]
+```
+
+Counting and timing are separate forwards. Instrumentation and the math attention backend used for counting do not affect the timed path. The measurement functions do not require a dependency graph and do not select a pruning budget.
+
+## Parameter and MAC definitions
+
+`calculate_model_complexity(target, input_args, device=None, input_kwargs=None)` returns the immutable `ModelComplexity` record:
+
+| Field | Meaning |
+| --- | --- |
+| `params: int` | Number of elements in unique registered parameters, including frozen parameters; buffers are excluded |
+| `macs: int` | MACs for the entire supplied input batch and executed path |
+| `unsupported_ops: tuple[str, ...]` | Observed operations outside the explicitly supported counting convention |
+
+One MAC is one multiply-accumulate, equivalent to two FLOPs in the counting convention. Matrix products and convolutions contribute, including the matrix products in attention. Bias addition, activation, normalization, and other elementwise work are excluded. Parameter sharing is deduplicated by `Parameter` identity, not by comparing numerical values.
+
+The implementation uses PyTorch's native `FlopCounterMode` formulas divided by two and profiles executed operations to identify unsupported coverage. It temporarily selects the SDPA math backend so fused attention does not silently bypass matrix-operation counting. Counting uses `no_grad` outside inference mode.
+
+A nonempty `unsupported_ops` means the MAC result is a partial count. The result is neither a complete count of all floating-point operations nor a prediction of compiler-generated instructions. Coverage describes the observed execution path; it cannot establish the cost of arbitrary opaque Python or native code. Pass an eager module, not a previously compiled wrapper.
+
+## Latency definition
+
+```python
 latency_ms = measure_module_latency(
     model,
-    (inputs,),
-    device="cuda",
-    compile=True,
-    warmup=5,
+    (x,),
+    device="cpu",
     repetitions=20,
+    warmup=5,
+    compile=True,
+    compile_kwargs={"mode": "default"},
 )
-print(complexity.macs, complexity.params, complexity.unsupported_ops, latency_ms)
 ```
 
-两个函数接受 nn.Module、单个输入或位置参数 tuple/list，以及 input_kwargs。输入可嵌套 tuple/list/dict；模型所有参数和 buffer 应在同一 CPU/CUDA 设备，输入会移至该设备。省略 device 时从模型参数/buffer 推断，无参数模型默认为 CPU。
+`measure_module_latency` returns the median duration of one forward for the entire supplied batch, in milliseconds. `repetitions` must be positive and `warmup` nonnegative.
 
-## MACs 与参数量
+| Device | Timing mechanism |
+| --- | --- |
+| CPU | `time.perf_counter()` around each uninstrumented forward |
+| CUDA | Preinitialized events on the selected device's current stream, with synchronization before and after measurement |
 
-`calculate_model_complexity` 返回 `ModelComplexity(macs, params, unsupported_ops)`。macs 对应整个输入 batch；一个乘加记为一个 MAC，等于两个 FLOPs。统计矩阵乘、卷积及 attention 的 QK/AV 矩阵乘；不统计 bias 加法、激活、归一化和其他逐元素运算。params 统计全部唯一注册 Parameter 的元素数，包括冻结参数，共享 Parameter 去重，不含 buffer。
+Input transfer, state isolation, compilation, the initial compiled invocation, and warmup are outside the timed region. Timing uses inference mode and the normal attention backend. It measures model execution, not data loading or end-to-end application latency.
 
-实现使用 [PyTorch FlopCounterMode](https://docs.pytorch.org/docs/2.14/generated/torch.utils.flop_counter.FlopCounterMode.html) 的公式和算子 profiler。在 eager 模型上关闭 inference_mode、使用 no_grad，并临时选择 SDPA 数学后端以避免 CPU 融合 attention 绕过计数。延迟测量不使用这个后端限制。MACs 是理论形状计量，不能解释为编译后实际指令数，也不是全部浮点操作总量。
+`compile_kwargs` forwards native options such as `backend` and `mode` to `torch.compile`; it requires `compile=True`. Compilation errors propagate instead of silently switching execution mode. A callable wrapper retains module call semantics without permanently adding compilation bookkeeping to the original model. Each measurement call creates its own wrapper, while PyTorch manages any underlying compiler caches.
 
-显式支持范围之外的操作通过 unsupported_ops 报告；非空时 MACs 只能视为部分统计，示例不计算 MAC 减少比例。该检查针对实际执行路径，不能证明任意自定义 Python/C++ 代码的运算量。请将 eager 原模型传给复杂度函数；不要传入编译包装器。
+After physical pruning, call measurement again with the compact eager model. A previously compiled callable is not the artifact to compare against the newly changed structure.
 
-## 延迟
+## State preservation and boundaries
 
-`measure_module_latency` 返回整个 batch 单次推理的延迟中位数，单位 ms。CPU 使用 perf_counter；CUDA 在指定设备当前 stream 上使用预先初始化的 events，并在计时前后同步。输入复制/传输、编译、预热和测量状态隔离不计入延迟。
+Both functions restore per-module training flags, registered buffer bindings and values, isolated input state, and torch RNG state on success and failure. Latency also restores the garbage-collector enabled state. Existing supported isolation contracts apply; incompatible storage aliasing can be rejected.
 
-默认 eager；compile=True 时先调用 torch.compile，再执行一次不计时的前向和 warmup 次预热。可通过 compile_kwargs 传入 backend、mode 等原生配置。编译失败会直接报错，不静默退回 eager。每次调用单独建立包装器，剪枝后须再次测量；原生编译缓存仍由 PyTorch 管理。
+Forward execution must not modify parameter values. Arbitrary Python side effects are outside the isolation contract, and the same model must not be concurrently trained or mutated during measurement. Only CPU and CUDA devices are supported.
 
-测量临时使用 eval；成功或异常退出后恢复原来的逐模块训练模式、buffer 原始绑定和值、输入和 torch RNG。延迟函数也恢复 GC 开关状态。函数不隔离任意 Python 副作用或参数写入，模型的推理 forward 应保持参数只读；不要并发训练同一个模型。现有 inference 隔离限制仍适用，例如输入/buffer 与参数共享存储会拒绝。
+## Interpreting before/after results
 
-## Workflow 输出
+Use identical input shapes, batch size, dtype, device, thread count, compilation options, warmup, and repetitions for the baseline and compact model. MACs and latency are batch-level quantities; report batch size alongside them. Lower parameter count or theoretical MACs does not guarantee lower latency because kernel choices, shape alignment, launch overhead, and hardware utilization also change.
 
-七类 workflow 默认测量原始模型及最终紧凑模型，打印 #Params、#MACs、latency_ms、输入 shape、dtype、设备、编译状态和计时配置，随后输出参数/MAC 减少比例及延迟加速比。默认推理 batch 为 1，与 ImageNet 训练 batch 独立；CPU 线程数由 --threads 指定。相同配置用于剪枝前后比较。
+The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. Their benchmark batch is independent of the training/evaluation batch. They suppress MAC reduction claims when counts have unsupported coverage.
 
-按 [workflow 说明](../examples/workflows/README.md) 安装环境后，在该目录执行：
+From `examples/workflows`, after installing its requirements and downloading the required data:
 
 ```bash
-python prune_finetune.py --metric taylor
-python gate_pruning.py --model vit_b_16 \
-  --device cuda --compile --benchmark-batch-size 1 --warmup 10 --repetitions 50
+python prune_finetune.py --model resnet18 --device cpu --threads 4
+python gate_pruning.py --model vit_b_16 --device cuda --compile \
+  --benchmark-batch-size 1 --warmup 10 --repetitions 50
 ```
 
-不支持算子会明确列出；减少参数或理论 MACs 不保证降低延迟。短采样延迟会受系统负载影响，不用于宣称论文实验或性能优势。
+These commands also perform the workflow's task-specific evaluation or training; they are not isolated benchmark-only commands. See the workflow README for required ImageNet splits and training controls.

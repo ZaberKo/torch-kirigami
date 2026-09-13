@@ -1,34 +1,175 @@
-# 算子覆盖与剪枝边界
+# Operator support and extension
 
-支持指当前 FX 图、样例元数据和规则声明下的能力，不代表该算子的任意参数、轴或存储形式都可剪枝。模块、函数和方法仅对实际登记的公开拼写匹配，不按名称猜测未知函数。
+Operator support is a contract for a captured call, its arguments, the selected axes, and the resulting compact execution. A registered name alone does not imply that every parameter combination or removal request is supported.
 
-| 家族 | 结构分析与物理执行 | 默认自动候选 | 主要边界 |
-| --- | --- | --- | --- |
-| Linear / functional linear | 输入输出特征、权重行列和 bias | 模块输出特征 | 不继承自定义子类语义 |
-| Conv / ConvTranspose 1d–3d | 普通、分组和深度卷积通道；按原分区切片拼接 | 输出通道，深度卷积默认整组 | 空间/卷积核轴固定；functional 尺寸参数须无需改写 |
-| BN / LN / GN / InstanceNorm / RMSNorm / PReLU / normalize | 仿射参数、统计 buffer 和声明属性联动 | 无 | GN 固定组数与平衡；归一化在紧凑域重算 |
-| Embedding | 特征轴、后续消费者 | 特征宽度 | 词表轴固定；max_norm 在执行样例前拒绝 |
-| Max/Avg/AdaptivePool、MaxUnpool、interpolate/Upsample | 通道与 batch 对应；池化值/索引共同约束 | 无 | 空间变化固定 |
-| pad / padding 模块 | 按实际 padding 参数识别轴；未变换轴保持坐标对应 | 无 | 发生 padding/crop 的轴两端固定，即使 (-1, 1) 保持 shape 不变；其他轴和独立分支仍可剪 |
-| 常用逐元素数学、激活、比较、where、masked_fill、Tensor // 和 % | 广播对应与多输入联动 | 无 | 标量尺寸表达式另行保留来源；未登记函数仍为未知；复杂写入/别名不推断 |
-| to/type_as、常用 dtype/device 方法、clone/detach/contiguous | 数据坐标保持，转换参考的 shape 不构成广播依赖 | 无 | view/copy 切换的写入安全仍需证明 |
-| matmul/mm/bmm、addmm/baddbmm、einsum | 收缩轴、自由轴和广播 batch | 无 | einsum 要求显式输出方程；不支持操作数内重复标签/对角语义 |
-| cat、stack、split、chunk、unbind | 分段与端口对应 | 无 | stack/unbind 端口固定；split/chunk 原写法须保持保留坐标与端口 |
-| 基础切片、narrow、index_select | 原坐标映射及执行后坐标检查；合法标量 index_select 保持零维 | 无 | 正步长基础索引；index_select 的整数向量须注册为 parameter/buffer，以持久化值 guard；普通属性、闭包或临时 Tensor 常量阻断相关剪枝；不自动重写索引 buffer |
-| transpose/permute、reshape/view、flatten、squeeze/unsqueeze | 轴变换和有来源的尺寸计算 | 无 | 硬编码尺寸、rank 变化或不可证明 view stride 拒绝相关请求 |
-| repeat/tile、repeat_interleave、expand | 重复和广播映射 | 无 | 静态正重复因子；repeat_interleave 需标量次数和显式 dim |
-| expand_as | 数据源广播关系，以及模板 Tensor 到输出的尺寸对应 | 无 | 模板决定 shape，与仅提供 dtype/device 的 type_as 参考不同 |
-| GLU、ChannelShuffle、PixelShuffle/Unshuffle | 成对 gate、通道置换和完整通道块 | 无 | Shuffle 保守要求对应组的局部保留模式一致；pixel 空间轴固定 |
-| Unfold/Fold | 通道与 im2col 通道块 | 无 | batched 2D 形式；空间和 kernel 位置固定 |
-| sum/mean/prod、amax/amin、logsumexp、softmax/log_softmax | 区分归约轴，保留轴联动 | 无 | 按原生语义解释合法的空 dim 序列和标量轴；不支持返回位置索引的归约；变化后重新计算紧凑域 |
-| scaled_dot_product_attention | Q/K 特征、K/V 序列、V 输出、batch/head 和 mask | 无 | GQA 整 KV 组或合法 multiplier 收缩；is_causal=True 固定 Q/K token 轴以避免隐式三角 mask 改变原坐标语义；不负责 KV cache 更新 |
-| MultiheadAttention | 打包/分离投影、自/交叉注意力、固定 head 数的平衡宽度收缩 | 宽度 | batch/token/mask 位置固定；不实现保持外部宽度的内部删 head |
-| 第三方融合模块 | 一个 OperatorRule 声明关系、候选、布局/属性及必要 lowering | 规则可声明 | opaque 内部语义由扩展保证；保存不需要另写算子规则 |
+The [dependency design](dependency-graph-design.md) explains the shared records. The [pruning design](pruning-design.md) explains how those records become executable plans.
 
-默认候选使用逻辑轴宽度计量。Embedding 使用 weight 的轴 1；分组 ConvTranspose 使用完整输出通道轴，不能把每组局部 weight 列数作为总宽度。
+## Support is checked in stages
 
-未知算子或不支持的轴只阻断涉及它的影响分析。手工联合请求整体拒绝，自动策略可在其他独立结构路径选择候选；预算欠达会报告原因。
+A call can execute successfully during capture and still lack a structural rule. A rule can propagate a request correctly while its constraints require additional balancing choices. A resolved dependency result can still require an unsupported edit to the original `forward`. Each stage reports its own failure instead of treating successful forward execution as sufficient proof.
 
-尚不提供动态 Python 控制流捕获、数据相关索引重映射、稀疏/量化存储重写、RNN/PackedSequence、MoE 路由、KV cache 重建、optimizer state 迁移或原 Python forward 改写。
+Registrations match exact module classes, function objects, and Tensor method names. A custom `nn.Linear` subclass does not automatically receive `nn.Linear` semantics. Opaque registrations preserve a callable boundary where FX supports it; the rule author then owns that boundary's semantics.
 
-数值验收使用独立保留域公式或手工构造的紧凑模型；能完成 forward 不是充分验收。测试范围见 [testing.md](testing.md)。
+## Built-in families
+
+The table summarizes supported structural domains and their principal restrictions. Exact registered spellings are defined by [defaults.py](../torch_kirigami/operators/defaults.py), [extended.py](../torch_kirigami/operators/extended.py), [indexing.py](../torch_kirigami/operators/indexing.py), and [attention.py](../torch_kirigami/operators/attention.py).
+
+| Family | Structural behavior | Main boundary |
+| --- | --- | --- |
+| `Linear`, functional linear | Input/output features, weight columns/rows, bias. | Exact registered types and spellings; original functional arguments must remain valid. |
+| `Conv` / `ConvTranspose`, 1D–3D | Ordinary, grouped, and depthwise channels; original partitions are compacted and concatenated. | Spatial/kernel positions are fixed. Functional group arguments must already express a valid compact call. |
+| BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, PReLU, `normalize` | Related affine parameters, statistics buffers, and dimension attributes. | GroupNorm preserves its group count and balances retained channels. Normalization is recomputed on the compact domain. |
+| Embedding | Embedding feature width and downstream consumers. | Vocabulary positions are fixed. `max_norm` parameter mutation is rejected before metadata execution. |
+| Pooling, adaptive pooling, unpooling, interpolation, Upsample | Batch/channel correspondence, including paired pooling values and indices. | Spatial positions remain fixed. |
+| Padding modules and `pad` | Coordinates on axes unaffected by padding/cropping. | Transformed axes remain fixed even when cropping and padding happen to preserve the original shape. |
+| Elementwise arithmetic, activations, comparisons, `where`, `masked_fill` | Broadcasting and joint dependencies across operands. | Only registered spellings; mutation and alias safety must still be established. |
+| Tensor casts and device moves, `clone`, `detach`, `contiguous` | Data-coordinate correspondence. | Dtype/device reference tensors are not broadcast operands. View/copy changes cannot bypass alias checks. |
+| `matmul`, `mm`, `bmm`, `addmm`, `baddbmm` | Free dimensions, contracted dimensions, and broadcast batch axes. | Original ranks and call semantics must remain valid. |
+| `einsum` | Explicit free/contracted labels and supported ellipsis broadcasting. | Requires an explicit string output equation; repeated labels within an operand and diagonal semantics are unsupported. |
+| `cat`, `stack`, `split`, `chunk`, `unbind` | Segment offsets and original output ports. | Existing call spelling must preserve retained coordinates and output ports; stack/unbind port counts stay fixed. |
+| Basic slicing, `narrow`, `index_select` | Static original-to-output coordinate maps. | Positive-step basic slices. `index_select` needs a captured registered integer index vector and does not rewrite that vector. |
+| Permutation, transpose, reshape/view, flatten, squeeze/unsqueeze | Coordinate remapping and supported dimension provenance. | Hard-coded incompatible sizes, changed rank, and unproved view strides reject affected requests. |
+| `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, `broadcast_to` | Repetition blocks and broadcast fibers. | Positive static repeat factors; `repeat_interleave` requires scalar repeats and an explicit dimension. `expand_as` also depends on its template's shape. |
+| GLU, ChannelShuffle, PixelShuffle/Unshuffle | Paired gate positions, channel permutation, and complete channel blocks. | Shuffle requires compatible retained local patterns; pixel spatial axes stay fixed. |
+| Unfold/Fold | Channels mapped to im2col channel blocks. | Batched 2D forms with static kernels; spatial/kernel positions stay fixed. |
+| Sum, mean, product, extrema, logsumexp, softmax/log_softmax | Reduced dimensions distinguished from retained dimensions. | Compact reductions are recomputed; reductions returning position indices are not generally covered. |
+| Scaled dot-product attention | Q/K feature agreement, K/V sequence agreement, output-value width, batch/head broadcasting, and masks. | Explicit head dimensions; legal GQA group/multiplier changes only. Causal Q/K token axes are fixed. |
+| `MultiheadAttention` | Packed/separate projections and balanced embedding-width changes for self/cross attention. | Head count stays fixed; batch, token, mask, and attention-weight positions stay fixed. |
+| `ChannelGate` through explicit registration | Activation axis, trainable scale, and fixed mask shrink together. | Register with `register_gate_operators()`; gates add no default budget domain. |
+
+Default candidate declarations cover module linear output features, convolution output channels, embedding width, and native MHA embedding width. Depthwise convolution defaults to whole logical groups. Functional operations and most coordinate/normalization operators provide dependencies without independent default candidate domains. A custom rule may declare additional domains with `CandidateAxis`.
+
+Grouped ConvTranspose illustrates why logical domains matter: the complete output-channel width is the budget domain, while a physical weight dimension may store only a per-group width. Counting that local dimension as the whole network domain would produce an incorrect budget.
+
+## Grouped and partitioned storage
+
+Logical positions and storage coordinates need not have a one-to-one axis representation.
+
+```mermaid
+flowchart LR
+    P0["Partition 0"] --> R0["Retained slice 0"]
+    P1["Partition 1"] --> R1["Retained slice 1"]
+    R0 --> Compact["Compact tensor"]
+    R1 --> Compact
+```
+
+`PartitionedLayout` is shared by dependency checking and physical lowering. `LayoutConstraint` checks every consumer separately. This is necessary for shared tensors: one consumer's legal packing must not accidentally authorize a layout that another consumer cannot interpret.
+
+Balancing is a planner decision. A dependency query can know all affected coordinates and still report that retained group counts differ. The planner may add candidates within the budget; it must report a shortfall when no legal completion fits.
+
+## Attention has distinct pruning domains
+
+Do not treat native MHA width pruning and explicit-head attention pruning as interchangeable.
+
+Native MHA ties output-projection axes to query/output width and to its packed or separate projections. It preserves the number of heads and requires balanced retained feature counts in the original head partitions. It does not implement internal whole-head deletion while keeping the external embedding width unchanged.
+
+An explicit SDPA graph exposes head axes. Relations can then describe complete KV-group removal or valid changes to the query-head multiplier. With `is_causal=True`, Q/K token positions remain fixed because removing arbitrary tokens would change the meaning of the implicit triangular mask. KV-cache maintenance is outside the library.
+
+The pretrained [workflows](../examples/workflows/README.md) currently demonstrate ViT **FFN intermediate-width pruning**, which leaves the attention and external embedding widths unchanged.
+
+## Structural validity and numerical references
+
+For a linear hidden channel followed by a compatible elementwise operation, a dense model with that channel masked can provide an independent reference for physical deletion. The mask must be placed where all removed contributions are represented.
+
+Normalization, softmax, reductions, and attention can recompute statistics or probabilities over a smaller domain. A dense masked output is generally not an equivalent reference for those operations. Use an independently constructed compact model or a formula evaluated on retained coordinates.
+
+Unknown operators and unsupported axes block requests that reach them. They do not automatically invalidate every independent branch in the model. Tensor-dependent Python control flow, data-dependent index remapping, quantized/sparse storage compaction, RNN/PackedSequence, MoE routing, and optimizer-state migration are not general built-in capabilities.
+
+## Implementing an operator rule
+
+Prefer a small declarative `OperatorSpec` composed from existing relations, constraints, requirements, candidates, and layouts. Keep the definition outside the dependency core if it depends on a third-party package.
+
+```mermaid
+sequenceDiagram
+    participant Graph
+    participant Rule
+    participant Pruner
+    Graph->>Rule: analyze(context)
+    Rule-->>Graph: OperatorSpec
+    Pruner->>Rule: lower(context)
+    Rule-->>Pruner: Recipes or None
+```
+
+### A minimal allocating, shape-preserving module
+
+The following complete example registers a module that multiplies every input coordinate by a fixed scalar. The relation preserves coordinates; the effects callback truthfully declares fresh output storage. No attributes or parameters inside the custom module require lowering.
+
+```python
+import torch
+from torch import nn
+from torch_kirigami import (
+    CallEffects,
+    DependencyGraph,
+    OperatorRegistry,
+    OperatorRule,
+    OperatorSpec,
+    ReshapeRelation,
+)
+from torch_kirigami.pruning import Pruner
+
+
+class Half(nn.Module):
+    def forward(self, input):
+        return input * 0.5
+
+
+def analyze_half(context):
+    return OperatorSpec(
+        relations=(
+            ReshapeRelation(
+                context.inputs[0], context.outputs[0], reason="same element coordinates"
+            ),
+        ),
+    )
+
+
+def half_effects(node, module):
+    return CallEffects(fresh_output=True)
+
+
+registry = OperatorRegistry.default()
+registry.register(Half, OperatorRule(analyze_half, effects=half_effects))
+
+model = nn.Sequential(nn.Linear(4, 8), Half(), nn.Linear(8, 2)).eval()
+x = torch.randn(2, 4)
+graph = DependencyGraph.build(model, args=(x,), operators=registry)
+pruner = Pruner(model, graph=graph)
+plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1, 5])])
+pruner.apply(plan)
+assert model[0].out_features == model[2].in_features == 6
+assert model(x).shape == (2, 2)
+```
+
+This rule applies specifically to `Half`. Reusing it for an arbitrary equal-shaped operation would be incorrect: equal input/output shapes do not prove coordinate independence, alias behavior, or reduction semantics.
+
+### Describing a parameterized operator
+
+For an affine custom module, relate input features to weight columns, output features to weight rows, and output features to bias positions. Add an attribute `Requirement` when the module stores its width in configuration. The built-in descriptor compiler can handle supported requirements without custom lowering.
+
+For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical budget axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
+
+If shared compilation cannot express a necessary edit, implement `OperatorRule.lower()` using the public recipe records from `torch_kirigami.pruning`. The callback returns declarative results and accounts for handled requirements; it must not mutate the model. See the complete [fused-attention example](../examples/fused_attention.py) and [extension integration tests](../tests/integration/test_extensions.py).
+
+### What rule authors must prove
+
+| Area | Required reasoning |
+| --- | --- |
+| Coordinates | Relations map original positions correctly in both directions, including broadcast fibers and complete blocks. |
+| Constraints | Unsupported axes and required balance/nonempty conditions are explicit. |
+| Effects | Recognized parameter writes are rejected before execution; allocation declarations match actual storage behavior. |
+| Shape provenance | Permitted shape-argument changes are declared by argument location; semantic parameters remain unchanged. |
+| Bindings | Parameters and buffers use registered references; structural integer constants have persistent value guards. |
+| Lowering | Every activated requirement is implemented or rejected; original Python call semantics remain valid. |
+| Persistence | A compatible original model factory plus the same extension definitions can restore the compact model. |
+
+Opaque modules do not exempt the author from these contracts. Their internal computation is not visible to FX, so the extension supplies the proof that ordinary tracing would otherwise expose.
+
+## Validation for a new rule
+
+Use three complementary test layers. The [verification guide](testing-coverage.md) explains the repository-wide commands and inventory.
+
+1. Add an independent expected-coordinate case to [operator_cases.py](../tests/support/operator_cases.py) when adding a built-in registration. The [registered-entry test](../tests/operators/test_registered_entries.py) checks that every registration has a matching case. These are direct rule tests, not proof of capture or execution support.
+2. Add family tests for valid alternatives and meaningful boundaries: keyword spellings, negative axes, shape provenance, partition balance, and storage layout as applicable. Keep numerical references independent of the implementation.
+3. Add public `DependencyGraph.build()` → `Pruner.plan()` → `Pruner.apply()` coverage with post-pruning forward/backward, and save/load when introducing persistent structure. Rejected requests must leave parameter values, identities, module attributes, and relevant state unchanged.
+
+Useful family suites include [convolution](../tests/operators/test_convolution.py), [normalization](../tests/operators/test_normalization.py), [shapes](../tests/operators/test_shapes.py), [indexing](../tests/operators/test_indexing.py), [attention](../tests/operators/test_attention.py), and [cross-layer extensions](../tests/integration/test_extensions.py). The machine-readable [contract inventory](../tests/architecture/contract_inventory.json) records the distinction between rule-level checks and public execution tests.

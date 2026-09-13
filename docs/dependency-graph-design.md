@@ -1,114 +1,421 @@
-# 依赖图：固定 FX 流程与独立结构语义
+# Dependency graph design
 
-当前实现采用自审修订方案。依赖模块独立于评分、候选选择和模型修改；内部明确使用 FX，不设置前端适配器、不建立第二套计算 IR。
+The dependency graph answers one question: **if these original tensor positions are removed, which other positions and structural properties must change?** It captures a model once, records operator semantics, and computes the closure of a joint removal request. Scoring candidates, choosing a budget, and replacing model parameters belong to the [pruning layer](pruning-design.md).
 
-## 1. 从模型到结构关系
+This document explains construction, propagation, lifecycle rules, and every class defined in the dependency core. Start with the [architecture overview](architecture.md) for the complete library, or [operator support and extension](operator-coverage.md) when implementing a rule.
 
-1. 在 tracing 前收集原模型参数、buffer、模块对象和全部注册路径。同一个参数对象对应一个实体；同一模块的不同调用对应不同调用节点。
-2. 使用官方 FX Tracer，扩展只通过公开叶子钩子和 autowrap 配置接入。根模块需要作为叶子时，用公开 Graph API 构造一个 call_module。
-3. 根据原 forward 签名绑定 args/kwargs 和默认值，ShapeProp 通过 placeholder 获取绑定后的值；支持普通 tuple/list/dict 容器和已捕获的变长参数。
-4. 保留形状、stride、dtype、device 与有限的尺寸表达式，不保留中间激活。FX 图是计算事实来源；结构关系作为独立注解保存。
-5. 按明确的算子身份调用局部语义规则。捕获失败抛出 CaptureError；捕获成功但缺少规则时保留图，相关传播结果为 unresolved。
+## 1. The representation
 
-样例执行只用于元数据。它不会替 symbolic tracing 决定数据分支，也不能证明其他样例 shape、配置或路径的有效性。没有自研具体执行 tracer，没有 autograd/export/JIT 降级。FX 公开接口及其兼容性边界参考 [PyTorch 2.6 文档](https://docs.pytorch.org/docs/2.6/fx.html)。
+An FX node identifies an invocation. A `TensorRef` identifies a tensor entity. A `Selection` identifies removed coordinates of that entity. These identities differ: one module can be invoked repeatedly, and several registered paths can reference the same parameter object.
 
-## 2. 选择与关系
+All selections use the coordinates of the captured model. A channel at original position 7 remains position 7 throughout a query, even if positions 1 and 3 are also selected. Compact coordinates appear only when the execution layer constructs the retained tensors.
 
-TensorRef 表示参数、buffer 或 FX 值；AxisRef 表示物理轴。IndexSet 使用规范化的半开区间，Selection 使用 Cartesian Region 的并集。所有位置均采用建图时的原始坐标，保留顺序固定为原始顺序。
+### A concrete query
 
-轴选择是删除整条轴截面的便利接口。一般参数变化需要多个区域，例如 Conv2d(6,4,groups=2) 删除输入通道 0、4：
-
-| 输出行 | 每行删除的局部输入列 |
-| --- | --- |
-| 0、1 | 0 |
-| 2、3 | 1 |
-
-这两个区域不能合并成对整个权重统一删除输入列 0、1。AxisRelation 的 AxisPort 可限定张量分区；BlockMap 表达偏移、重复对应，并明确区分触及块与完整移除块的传播条件。相同表达支持普通 Conv、grouped Conv 和 depthwise multiplier，没有特殊剪枝 callback。
-
-其他关系包括静态 SliceRelation、PermuteRelation 和基于原逻辑元素顺序的 ReshapeRelation。只物化必要的索引区间，不为激活建立标签张量；超过 4096 个区间/区域的复杂映射明确报 analysis_limit，不近似成 identity。
-
-区域并集先去重并保持互不重叠。传播使用增量工作队列，节点收到新增选择后重新传播，直至闭包。Selection 的等价性按选中位置判断，不依赖矩形分解方式。Provenance 记录源选择、实际新增目标区域与关系原因，避免同一位置被多条路径重复统计。
-
-约束与映射分离：
-
-- NonEmpty：当前操作要求保留非空结构。
-- Balanced：多个分区保留数量相同，不要求每组删除相同局部索引。
-- BlockBalance：剩余逻辑组具有相同的成员数；允许整组消失或均衡减少每组成员。
-- Divisible：保留尺寸需要整除指定因子。
-- Fixed：调用方额外保护某个轴。
-- LayoutConstraint：选择必须能构成受支持的紧凑或分区布局。
-- Barrier/AxisBarrier：相关操作或轴缺少可证明的语义。
-
-Balanced、BlockBalance 和 Divisible 不替策略选择补充位置；结果保留未满足的约束。Depthwise 删除输入通道会删除其全部输出；只删除部分输出时，可以继续均衡降低 multiplier，也可以补全整组删除，分析器不会代选。
-
-同一权重被多个操作使用时，每次调用分别检查布局，不能把不同调用允许的布局取并集。对分区参数自身物理轴的额外 Fixed/Divisible/Balanced 约束，无法证明时返回 partitioned_constraint；可以改为约束其对应的逻辑输入/输出轴。
-
-## 3. 查询契约
+This small model illustrates the dependency API; it is not a pruning-quality experiment.
 
 ```python
-graph = DependencyGraph.build(model, args=(x,), kwargs={})
-weight = graph.parameter("encoder.conv.weight")
-impact = graph.propagate(remove=[weight.axis(0).select([2, 5])])
+import torch
+from torch import nn
+from torch_kirigami import DependencyGraph, Fixed
+
+model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2)).eval()
+graph = DependencyGraph.build(model, args=(torch.randn(1, 4),))
+
+hidden = graph.parameter("0.weight").axis(0)
+impact = graph.propagate(
+    remove=[hidden.select([1, 5])],
+    constraints=[Fixed(graph.parameter("2.weight").axis(0))],
+)
+assert impact.status == "resolved"
+assert impact.complete
+print(graph.explain(impact))
 ```
 
-- parameter(path)、buffer(path)：按原模型路径查询；别名返回同一个对象。
-- calls(path)：返回该模块对象的所有调用。FX 可能把多个别名归一到同一个 target，不能据此声称恢复了每次调用原本使用的 Python 属性名。
-- CallRef.input()/output()：按展平后的 Tensor 端口顺序查询；容器结构仍保留在 FX 图及 OperationContext 中。
-- values()、metadata(ref)、relations、constraints、shape_expressions：检查分析依据。context 记录 PyTorch 版本、梯度/推理模式、模块模式与规则快照身份。
-- fx_graph：只用于检查的副本，修改它不会改变当前依赖结果。
-- propagate(remove=[...], constraints=[...])：联合处理多个删除请求，不修改模型。
-- explain(impact)：解释受影响区域、传播原因、阻碍和修改要求。
+The closure includes rows 1 and 5 of the first weight, the matching first-layer bias and activation positions, and columns 1 and 5 of the second weight. The classifier's output width remains fixed. No parameter changes during this query.
 
-Impact 包含 requested、selections、parameters、buffers、interfaces、diagnostics、requirements、provenance 和参与检查的 constraints。complete 单独标记影响范围是否完整，不能把尚未满足的平衡约束与未知影响混为一谈。
+```mermaid
+flowchart LR
+    Rows["Weight rows"] <--> Hidden["Hidden features"]
+    Bias["Bias entries"] <--> Hidden
+    Hidden <--> Relu["ReLU outputs"]
+    Relu <--> Columns["Consumer columns"]
+```
 
-| 状态 | 含义 |
+## 2. Construction pipeline
+
+`DependencyGraph.build(model, args=..., kwargs=..., operators=...)` uses a fixed public FX capture path. Example arguments provide actual tensor metadata. They do not specialize tensor-dependent Python branches.
+
+```mermaid
+flowchart LR
+    Model["Model"] --> Capture["Capture"]
+    Registry["Registry"] --> Capture
+    Capture --> Analyze["Rule analysis"]
+    Registry --> Analyze
+    Analyze --> Graph["DependencyGraph"]
+```
+
+Construction proceeds in this order:
+
+1. Registered parameters and buffers are deduplicated by object identity. All original aliases remain on the resulting reference. Distinct tensors that share storage receive a conservative storage-alias barrier.
+2. Capture temporarily binds copied buffers and copied example inputs. It records the traced computation and configuration before metadata execution.
+3. Metadata execution records shape, stride, dtype, and device without retaining activation tensors in the final graph.
+4. Each call receives an `OperationContext`. The exact registered `OperatorRule` emits an `OperatorSpec`. Every referenced tensor is checked for ownership by this graph.
+5. Missing semantics become barriers. Used tensors receive nonempty-axis checks; unused tensors receive an unbound-tensor barrier. Layout restrictions and relation adjacency are finalized.
+6. A final fingerprint check rejects detectable structural changes during construction.
+
+Capture restores buffer bindings, module training flags, and CPU/initialized-CUDA RNG state on success and failure. Parameters are not copied: `forward` must not mutate them. Forward hooks, unsupported registration callbacks, and recognized unsafe writes are rejected. Arbitrary external side effects and concurrent use of the same model are outside the isolation contract.
+
+## 3. Graph and capture classes
+
+Sources: [graph.py](../torch_kirigami/graph.py), [capture.py](../torch_kirigami/capture.py).
+
+### `DependencyGraph`
+
+The public analysis snapshot owns the original model, copied registry tables, captured references, operator contexts, relations, constraints, requirements, and structural guards. Its main interfaces are:
+
+| Interface | Purpose |
 | --- | --- |
-| resolved | 当前图和规则前提下，确定联动及约束已解决 |
-| unresolved | 尚需补充选择、语义规则或更强的布局分析 |
-| conflict | 请求违反明确约束，例如删空固定分组或改变保护轴 |
+| `build()` | Capture and analyze a model. |
+| `parameter(path)`, `buffer(path)` | Resolve original registered aliases. |
+| `calls(module_path=None)` | Inspect invocations, including repeated calls to shared modules. |
+| `values()`, `metadata(ref)`, `interfaces()` | Inspect tensor references, metadata, and external input/output tensors. |
+| `operations()`, `operator_spec()`, `operator_rule()` | Inspect captured operation semantics. Returned FX nodes and argument containers are copies; module bindings still reference the source model. |
+| `tensor(ref)`, `tensor_bindings()`, `bindings(ref)` | Access live registered tensors or their unique owner/attribute slots after freshness checks. |
+| `constants()`, `constant_guards()` | Distinguish lifted FX constants from registered integer tensors whose values are structural assumptions. |
+| `propagate()` | Compute a joint removal closure and check constraints. |
+| `explain(impact)` | Format selected regions, reasons, diagnostics, and requirements. |
+| `validate()`, `invalidate()` | Check or explicitly end snapshot validity. |
+| `validate_attribute_changes()` | Re-trace proposed configuration edits in isolation to verify captured computation remains compatible. |
 
-这些状态不表示具有执行能力，也不证明模型精度或与原模型的数值等价。没有自动评分、自动补选或权重 surgery。
+`fx_graph` returns an inspection copy. `relations`, `constraints`, `diagnostics`, and `shape_expressions` expose recorded analysis facts. `validate_impact()` checks result ownership; it does not replace a fresh propagation or prove that a forged result is executable.
 
-## 4. 一个语义扩展接口
+### `CallRef`
 
-OperatorRegistry.default() 提供内置规则；用户注册明确的模块类型或函数对象。Tensor 方法通过 register_method 注册。重复注册直接报错，每次建图复制注册表，不使用全局规则状态。注册对象是 OperatorRule，不另设执行注册表。
+A frozen public record of one operation invocation: its FX `name`, original `module_paths`, and flattened `inputs`/`outputs`. `input(i)` and `output(i)` select tensor ports. The same module can produce several `CallRef` objects; aliases describe module identity, not the exact Python attribute spelling used at each invocation.
 
-OperationContext 提供规范化参数、TensorRef、张量 metadata、模块及参数/buffer 绑定、FX 节点和尺寸表达式。OperatorRule.analyze 返回 OperatorSpec，包含关系、约束、Requirement、共享分区描述和可选候选轴。扩展应该是确定、无副作用的语义分析函数；内置规则与用户规则调用路径相同。
+### `_LeafTracer` — private
 
-opaque=True 的模块/函数通过官方 FX 扩展机制保持为叶子，内部结构由规则负责。自定义子类不会自动继承基类规则。根叶子与嵌套叶子均受支持；根叶子的变长签名目前明确拒绝。任意 Python callable 的包装仍受官方 FX autowrap 能力限制。
+An `fx.Tracer` subclass that adds exact registered opaque module types and function autowrap registrations to FX's leaf policy. It does not implement a second tracing backend. A root model that is itself a leaf is represented by a small wrapper FX graph containing one `call_module`.
 
-[可运行的外部模块规则](../examples/custom_rule.py) 展示不修改核心、不实现执行器即可加入结构语义。
+### `_MetadataPropagator` — private
 
-## 5. 尺寸与后续执行层
+A `ShapeProp` subclass that resolves placeholders from the bound original `forward` signature and records metadata trees for each node. Tensor results become `TensorFacts`; supported scalar leaves remain scalar values. It rejects zero-element tensor examples and unsupported metadata value types. Intermediate activations are needed during execution but are not the stored analysis representation.
 
-ShapeExpr 记录常量、输入维度读取、numel 和受支持的整数运算、reshape 的 -1。来源无法证明时不能只根据最终 shape 猜测。尺寸表达式单独调度其消费者；即使该调用的张量没有删除位置，尺寸变化也必须触发语义参数检查。
+### `CaptureResult` — internal
 
-Requirement 保存目标、关联张量及结构化数据，包括属性轴绑定、图中尺寸表达式、旧分区大小和布局要求。对应的保留索引可从 Impact 获取；各项要求仍须后续执行器检查和具体化。
+Transfers the temporary `GraphModule`, node-indexed metadata, cloned-buffer-to-original aliases, and capture signature from `capture()` to `DependencyGraph.build()`. It is an implementation handoff, not a user-facing alternative to `DependencyGraph`.
 
-例如 LayerNorm 的 normalized_shape、Linear 的 in_features/out_features、Unflatten 的 unflattened_size 具有规则明确建立的绑定。Squeeze 遇到新产生的单例轴时会要求保持捕获时的输出 rank，必要时需用明确 reshape 替换；普通 Python 闭包和硬编码整数没有自动属性来源。图操作数可以需要修改，但不能因此保证原 Python forward 可自动修复。
+## 4. Coordinates and selection classes
 
-结构关系按保留当前操作及已声明布局要求分析，不自动引入任意 gather、重排或删除整段程序。输出接口受影响会被报告，是否保护由消费者提供 Fixed 约束。
+Source: [selection.py](../torch_kirigami/selection.py).
 
-torch.nn.utils.prune 可以在后续用于 mask 训练/验证；它不会物理缩小 Parameter，因此不作为依赖求解器或物理执行器。
+```mermaid
+classDiagram
+    TensorRef <-- AxisRef : refers to
+    TensorRef <-- Selection : refers to
+    AxisRef --> Selection : creates
+    Selection *-- Region : regions
+    Region *-- IndexSet : axes
+```
 
-## 6. 状态、有效期与当前边界
+### `IndexSet`
 
-建图隔离 args/kwargs 和注册 buffer，尽可能通过共同 deepcopy 保留输入及 buffer 的共享关系；恢复原 buffer 绑定、模块模式和 CPU/已初始化 CUDA RNG。普通属性及 plain list/tuple/dict 中对注册 Tensor 的引用也通过共享绑定工具临时重定向到 clone，成功和失败均恢复原容器及绑定。参数不整体复制，forward 必须不写参数、不修改外部 Python 状态。同一 OperatorRule 的 preflight/effects 入口在 ShapeProp 前检查写入，包含 Embedding max_norm 和已识别的参数/别名写操作；这不是任意 Python 代码的副作用沙箱。
+An immutable normalized union of nonnegative half-open integer intervals. Overlapping and adjacent intervals merge; `of()` removes duplicate individual indices and `span()` creates a contiguous range. Union, intersection, subtraction, and shifting operate symbolically without dense masks. Invalid bounds and excessive interval fragmentation are rejected.
 
-同一绑定描述记录普通容器里的注册 Tensor/Module 引用和相邻标量配置，供 graph、静态 plan、apply 和 checkpoint 共用。不同 Tensor 对象即使共享注册 storage，也不能当作可直接重绑定的对象别名；容器中这类视图在执行前拒绝。任意自定义对象、闭包、外部全局容器中隐藏的 Tensor 引用不在扫描范围内，调用方不得通过它们绕过注册绑定；不承诺通用 Python 对象迁移。
+### `Region`
 
-非叶 Tensor 样例等无法 deepcopy 的输入明确失败；输入或 buffer 共享参数 storage 也拒绝。不同 Parameter 对象共享 storage 不合并，涉及它们的重写返回 unresolved。不要对同一模型并发建图或训练。
+A Cartesian product of one `IndexSet` per tensor dimension. For example, selected rows of a weight matrix combine selected row indices with the complete column range. `Region(())` represents the scalar coordinate. Intersections remain Cartesian; subtraction can return several disjoint regions.
 
-当前区域表示不能保留零元素张量的独立轴删除意图，因此样例或中间执行结果含零元素张量时明确拒绝建图。原模型注册的 forward/pre-forward hooks（包括根模块、被 FX 展开的父模块及 PyTorch 全局 hooks）也在执行前拒绝；它们的任意代码不属于当前算子描述。建图后增加这类 hook 会使图过期，静态 plan 的 apply 也重新检查。PyTorch 无公开的全局 hook 查询接口，对其稳定注册表的读取集中在一个辅助函数内，并在最低/开发版本测试。
+### `TensorRef`
 
-快照记录注册结构、对象身份、形状、dtype/device/stride、模块模式与可识别的标量及嵌套 list/tuple 配置。依赖图和静态计划共用配置冻结逻辑，区分 list/tuple 且不保留可变列表引用。普通权重数值更新不使图过期；结构、对象替换、模式、已记录配置改变会抛出 StaleGraphError。任意外部状态变化不能由此得到完整检测，修改结构后必须重新建图。
+A frozen snapshot-qualified identity with original `shape`, `kind`, and registered alias `paths`. Parameters and buffers retain bindings; inputs and intermediate values are metadata entities. `axis()` constructs an `AxisRef`, and `select()` constructs a region selection. `portable()` removes the graph UUID for saved-plan lookup; portable labels do not establish ownership in another live graph.
 
-标量 guard 保留精确类型，True、1、1.0 不等同；浮点数使用稳定表示，NaN 配置在结构 guard 中可匹配。tensor_bindings() 提供经过一次完整校验的批量注册绑定读取；用户回调或模型可能变化后必须再次验证，不把返回值当作锁。
+### `AxisRef`
 
-grad/inference 上下文记录仅用于说明捕获前提，不是完整的 Python 路径 guard。forward 若依赖 torch.is_grad_enabled()、is_inference_mode_enabled() 或外部全局状态选择不同结构，切换后必须重新建图；跨这些上下文复用结构分支不属于支持契约。普通模型可在 no_grad 中查询或 inference_mode 中 apply，不因上下文本身不同而一律拒绝。
+A frozen pair of a `TensorRef` and canonical nonnegative dimension. Negative dimensions are normalized at construction. `select(indices)` selects complete cross-sections across all other dimensions. It rejects out-of-range indices rather than clipping a request.
 
-当前覆盖卷积及转置卷积、常用归一化/池化/Embedding、矩阵与轴操作、SDPA/GQA/MHA 等已声明形式；每类可剪轴、自动候选和执行边界见[覆盖矩阵](operator-coverage.md)。小型静态整数索引记录值 guard，修改这些值必须重新建图。
+### `Selection`
 
-明确边界包括：数据相关索引、未知融合算子、卷积空间/卷积核裁剪、不能保持紧凑布局的 reshape，以及删掉 unbind 输出端口。未登记算子不会按名称或同 shape 猜测为逐元素操作。CPU 及 RTX 5070 Ti 上的 PyTorch 2.14 CUDA 已完成测试，覆盖算子、独立数值参考和状态恢复，详见[测试与兼容性](testing.md)。这些结果不代表其他设备或自定义 kernel 已验证。
+An immutable, normalized union of disjoint regions on one tensor. Equality compares selected coordinates, not the particular rectangle decomposition. Set operations require matching tensor references.
 
-早期的 export/JIT 实验只作为调研记录保留，不参与当前实现。
+`fully_selected_indices(dim, scope=None)` returns positions whose entire cross-section is selected. Partial weight-row coverage is therefore not enough to delete an output channel. `compact_shape()` returns the dimensions left by ordinary whole-axis deletion, or `None` when the regions need partition-specific packing. `None` does not itself establish an invalid request: a declared `PartitionedLayout` may support it.
+
+### `TensorRefMap` — internal shared record
+
+An immutable mapping used by portable structural records. It accepts compatible live or portable tensor labels and checks shape, kind, and aliases when resolving them. Unknown labels raise `KeyError`; known labels with incompatible metadata raise `ValueError`. It does not make graph-local references reusable after pruning.
+
+The shared [regions.py](../torch_kirigami/regions.py) module defines no classes. Its `gather_region()` function reads a Cartesian tensor region for scoring and training consumers, keeping tensor access below both layers.
+
+## 5. Relation classes
+
+Source: [relations.py](../torch_kirigami/relations.py).
+
+Relations express forced coordinate correspondence. They cannot score channels, modify the model, or choose a completion to satisfy a budget.
+
+### `Relation` — protocol
+
+Requires endpoint `refs`, a human-readable `reason`, and `propagate(source) -> tuple[Selection, ...]`. Implementations must be deterministic, monotone, and side-effect free. The graph schedules a relation whenever an endpoint selection grows. A relation may need the complete accumulated selection to recognize a newly completed block.
+
+### `AxisPort`
+
+Exposes an `AxisRef` within an optional `Region` scope. Without a scope it covers the full tensor. With a scope it can describe one group of a grouped-convolution weight or one packed projection partition. `select()` intersects positions with that scope; `fully_selected_indices()` requires complete scoped cross-sections.
+
+### `BlockMap`
+
+Maps corresponding contiguous blocks using source/target starts, block count, and source/target block widths. Its two completion flags control whether touching part of a source block is enough to propagate or whether the whole block must be selected. Reverse mapping swaps endpoints and uses the target completion policy. A one-to-one channel mapping uses block widths of one.
+
+### `AxisRelation`
+
+Connects two `AxisPort` objects through one or more `BlockMap` records, in both directions. `equal(left, right)` is the common identity mapping between equally sized axes. Maps must fit endpoint bounds; port scopes then restrict the selected regions. Only complete scoped cross-sections propagate.
+
+### `BroadcastRelation`
+
+Connects a broadcastable smaller tensor to its expanded output. Forward propagation repeats selected regions. Reverse propagation selects an original coordinate only when **all** of its broadcast copies are selected. This avoids treating removal of one batch copy as removal of a shared bias parameter.
+
+### `ReshapeRelation`
+
+Maps equal-element-count tensors through logical row-major offsets after a rule proves the reshape valid. It preserves matching leading dimensions symbolically to avoid multiplying interval counts across batch and token dimensions. It does not independently prove `view` stride compatibility; operation validation supplies that check.
+
+### `PermuteRelation`
+
+Maps regions through an explicit axis permutation and its inverse. Construction checks that each original axis appears exactly once and that the declared output shape matches that permutation.
+
+### `SliceRelation`
+
+Maps normalized basic integer indexing and positive-step slices between original and sliced coordinates. Integers remove axes; slices retain them. Rule code expands ellipses before construction and handles inserted axes separately. Advanced indexing and mutable/data-derived index semantics are outside this relation.
+
+## 6. Propagation and result classes
+
+Source: [contracts.py](../torch_kirigami/contracts.py); algorithm: [graph.py](../torch_kirigami/graph.py).
+
+```mermaid
+flowchart TD
+    Seeds["Selections"] --> Queue["Worklist"]
+    Queue --> Relations["Relations"]
+    Relations -->|New regions| Queue
+    Queue -->|Empty| Constraints["Constraints"]
+    Constraints --> Result["Impact"]
+```
+
+The queue processes accumulated selections, not isolated deltas. Two paths may jointly complete a broadcast fiber or a logical block; propagating only the most recent delta would miss that implication. Provenance records only newly discovered target coordinates.
+
+A relation that exceeds the exact representation budget is disabled for that query and contributes an incomplete diagnostic. Constraints are checked after the fixed point; they do not add removals. Choosing balancing channels belongs to the planner.
+
+### `Diagnostic`
+
+A frozen explanation with `code`, `message`, optional FX `node`, involved tensor IDs, `severity`, and `complete`. Severity is `unresolved` when a condition needs proof or additional choices, and `conflict` when a required condition is violated. `complete=False` means the influence range is not fully known.
+
+### `Provenance` — internal result record
+
+Records a `source` selection, newly added `target` regions, and the relation's `reason`. It is exposed through `Impact.provenance` for explanation; callers normally consume it rather than construct it.
+
+### `Impact`
+
+The immutable result of a dependency query: graph identity, original requests, closure selections, diagnostics, requirements, provenance, affected interfaces, checked constraints, and known tensor references. `selection(ref)` returns an empty selection for a known unaffected tensor. `parameters` and `buffers` expose affected registered selections; shared parameter objects appear once.
+
+| Result property | Meaning |
+| --- | --- |
+| `status == "resolved"` | No checked condition produced a diagnostic. |
+| `status == "unresolved"` | At least one condition needs further proof or choices, with no conflict diagnostic. |
+| `status == "conflict"` | At least one required condition is violated. |
+| `complete` | Every diagnostic says the influence range is known; independent of validity. |
+
+An unbalanced grouped request can be complete but unresolved. A protected-axis violation can be complete but conflicting. Reaching an unknown operator can make the result incomplete. A resolved impact still requires executable lowering and does not imply numerical equivalence between dense and compact models.
+
+## 7. Constraint classes
+
+Constraints inspect the accumulated closure. The distinction between **propagating required effects** and **checking admissibility** prevents the analysis layer from silently making pruning-policy choices.
+
+### `Constraint` — protocol
+
+Requires `refs` and `check(selections) -> Diagnostic | None`. The mapping is keyed by graph-local tensor IDs and must be treated as read-only. A constraint checks its own declared references; it must not execute the model or select more channels.
+
+### `NonEmpty`
+
+Requires at least one retained position on an axis. Selecting the whole axis produces an `empty_axis` conflict. Graph construction adds these checks to structurally used tensors.
+
+### `Fixed`
+
+Protects complete positions on one axis. A selected full position is a `fixed_axis` conflict. If partitioned packing prevents proof that the physical axis remains unchanged, the result is unresolved; protecting the corresponding logical axis is preferable.
+
+### `Balanced`
+
+Requires equal retained counts across fixed, nonempty, disjoint original partitions of an axis. The partitions may cover only part of the axis. By default each partition must remain nonempty. Unequal counts are unresolved and require a planner choice; an emptied required partition is a conflict.
+
+### `BlockBalance`
+
+Checks member counts for surviving logical groups. A `groups` axis represents groups, a `members` axis contains equal contiguous blocks, and `block_size` connects their original sizes. Entire groups may disappear; surviving groups must retain equal positive member counts. This differs from `Balanced`, whose partition structure stays fixed.
+
+### `Divisible`
+
+Requires the retained axis size to be divisible by a positive integer factor. A remainder produces an unresolved diagnostic rather than choosing channels to remove. Partitioned layouts must be checked on a suitable logical axis.
+
+### `Barrier`
+
+Marks tensors whose structural influence is unproved. It activates only when a query affects one of its references and then produces `complete=False`. Unknown operators, unsupported storage aliases, and structurally unbound tensors use this mechanism. An unrelated branch can remain analyzable.
+
+### `AxisBarrier`
+
+Limits unsupported behavior to full positions of one physical axis. It is useful when channel changes are supported but token, spatial, or mask positions must remain fixed. Activated barriers mark the influence incomplete.
+
+### `LayoutConstraint`
+
+Checks whether selected regions fit ordinary axis compaction or the allowed scoped axis ports of a tensor use. Each shared-tensor use must satisfy its own layout restriction; merging incompatible consumers into one permissive set would lose information. Unsupported packing is unresolved.
+
+### `CallArgumentConstraint` — internal, `operators/shapes.py`
+
+Stores immutable pairs of `ShapeExpr` and observed integer argument values, plus relevant `PartitionedLayout` descriptors. During a query it reevaluates shape-derived arguments on compact shapes. Arguments explicitly validated by a requirement are excluded by argument location, not expression identity; the same `size()` expression can feed both a permitted width and a semantic stride that must remain unchanged.
+
+### `_PendingLayout` — private, `operators/shapes.py`
+
+An internal exception used when reevaluating a compact shape still requires balanced partition counts or a proved layout. `CallArgumentConstraint` converts it into an unresolved layout diagnostic. It is not an exception callers should use to control pruning.
+
+## 8. Shape provenance and execution requirements
+
+Source: [contracts.py](../torch_kirigami/contracts.py).
+
+```mermaid
+flowchart LR
+    Expr["ShapeExpr"] --> Arg["Call argument"]
+    Arg --> Allowed{"Change allowed?"}
+    Allowed -->|Yes| Validate["Validate"]
+    Allowed -->|No| Fixed["Keep unchanged"]
+```
+
+### `ShapeExpr`
+
+A small immutable provenance tree for integer shape calculations. It supports constants, inferred `-1`, unknown provenance, tensor dimension/shape/rank/element-count reads, tuples, and integer addition, subtraction, multiplication, floor division, and modulo. `refs` lists its source tensors. This is intentionally smaller than a general computation IR: observing one integer value is insufficient to infer arbitrary Python semantics.
+
+### `ArgumentRef`
+
+Identifies a canonical call parameter by name, positional slot, and whether it occupies the remaining positional arguments. Native aliases are resolved consistently, including the Tensor receiver in method positions. It lets requirements describe precisely which argument changes they validate.
+
+### `Requirement`
+
+A declarative future edit or execution obligation: `kind`, `target`, determining `tensors`, explanatory `detail`, immutable named `data`, and permitted `arguments`. Examples include changing a module's feature count, deriving a shape attribute, retaining a partition order, or recomputing normalization over a compact domain.
+
+Payloads accept documented scalar and structural records, and nested sequences are frozen. Opaque mutable objects are rejected. `refs` includes sources embedded in payloads for graph-ownership checks. Kind names are extensible, but an executor must explicitly implement or reject each requirement; recording one never performs the edit.
+
+## 9. Operator and registry classes
+
+Sources: [operation.py](../torch_kirigami/operation.py), [registry.py](../torch_kirigami/registry.py).
+
+```mermaid
+classDiagram
+    OperatorRegistry o-- OperatorRule : registers
+    OperatorRule --> OperationContext : reads
+    OperatorRule --> OperatorSpec : produces
+```
+
+### `TensorFacts`
+
+A frozen shape, stride, dtype, and device record detached from activation storage. These are observed properties of the example execution, not symbolic ranges of all possible inputs.
+
+### `OperationContext`
+
+The normalized call passed to `analyze()`: FX node, argument and result trees, optional called module and original path, module-local registered tensor bindings, shape-expression table, metadata, captured small integer constants, and graph identity. Tensor leaves are `TensorRef` objects. `inputs` and `outputs` flatten the trees; `argument()` resolves normalized arguments, `raw_argument()` preserves FX operands, and `binding()` looks up a module-local parameter or buffer.
+
+### `CandidateAxis`
+
+A stable logical-domain `key`, `AxisRef`, and positive `block_size` for default contiguous removal candidates. The key is independent of an invocation's FX name. Declaring candidates supplies discovery information; it does not impose an algorithm or a budget. Relations map logical seeds into actual parameter regions.
+
+### `PartitionedLayout`
+
+Describes a tensor as disjoint original-coordinate partitions, compacted separately and concatenated in declared order along `concat_dim`. `retained_regions(selection)` computes remaining regions without allocating tensors. Dependency constraints and pruning lowering consume the same descriptor so their interpretation of grouped storage agrees.
+
+### `OutputContract`
+
+Declares output layout knowledge used by original-call validation: `unknown`, `contiguous`, `convolution`, `cast`, or `backend_dependent`. Shape compatibility alone cannot prove backend strides. Output layout information also does not grant permission to change semantic scalar arguments; requirements provide those permissions separately.
+
+### `OperatorSpec`
+
+The frozen output of analysis. It combines relations, constraints, requirements, optional candidates and partitioned layouts, optional output contract and shape expression, and registered integer `constants` whose values must remain unchanged. Constructor checks validate descriptor types; graph construction checks tensor ownership. It contains no surgery callbacks.
+
+### `CallEffects`
+
+Pre-execution effects with `mutates_input` and `fresh_output` flags. Capture uses write information before metadata execution; downstream alias validation uses allocation information. Declaring fresh output is a rule-author promise that the operation creates independent output storage. For example, an allocating gate can safely precede some in-place consumers, while multiple-consumer alias conflicts still require rejection.
+
+### `OperatorRule`
+
+The unified extension object with four distinct responsibilities:
+
+| Callback or option | Contract |
+| --- | --- |
+| `preflight(node, module)` | Reject recognized unsafe calls before metadata execution. |
+| `effects(node, module)` | Describe writes and allocation before output metadata exists. |
+| `analyze(context)` | Return pure structural facts as an `OperatorSpec`. |
+| `lower(context)` | Optionally return declarative rewrite recipes for the pruning layer; `None` uses shared compilation. |
+| `evaluate_on_meta` | Opt into native meta execution for compact-call validation; third-party rules default to declared output facts. |
+
+The core defines this interface but does not import a pruning executor. Extension code that needs custom recipes can import them from the pruning package; built-in declarative descriptors usually suffice.
+
+### `OperatorRegistry`
+
+A local collection of exact module-type, function-object, and Tensor-method-name registrations, plus opaque leaf sets. `default()` creates a fresh built-in registry. `copy()` duplicates tables and sets while retaining rule callables. Duplicate registration raises an error; custom subclasses do not automatically inherit a registered module's semantics. Builds copy the registry so later table edits do not alter an existing snapshot, but shared rule callables must remain deterministic and immutable in behavior.
+
+## 10. Binding and configuration classes
+
+Sources: [bindings.py](../torch_kirigami/bindings.py), [configuration.py](../torch_kirigami/configuration.py).
+
+### `AttributeEdit` — internal
+
+A prepared ordinary-object-state assignment or deletion with `path`, `value`, and `delete`. Capture uses these records to temporarily rebind copied buffers inside ordinary containers; execution and restoration use them to preserve supported references when replacing registered tensors. Shared containers use a common copy memo so their alias relationships are retained.
+
+### `FrozenScalar` — internal
+
+An exact scalar type/value guard for recognized configuration. It distinguishes values with different scalar types and gives floating-point NaNs stable equality through frozen representations. It also carries `torch.Size` configuration without retaining mutable state.
+
+### `FrozenList` — internal
+
+A tuple-backed representation that retains the fact that the original configuration container was a list. `freeze()` recursively freezes supported scalar/list/tuple values; `thaw()` creates independently owned containers. Unsupported objects are not a general-purpose serialization target.
+
+Binding helpers support registered tensors referenced directly or through plain lists, tuples, and dictionaries. Separate ordinary-attribute views into registered storage are rejected. Arbitrary custom objects must not hide tensor bindings: the fingerprint is not a complete audit of Python state.
+
+## 11. Freshness and error classes
+
+Source: [errors.py](../torch_kirigami/errors.py).
+
+```mermaid
+stateDiagram-v2
+    [*] --> Fresh
+    Fresh --> Fresh: Weight updates
+    Fresh --> Stale: Structure or mode change
+    Stale --> Fresh: Rebuild
+```
+
+The fingerprint tracks detectable tensor identities, shapes, strides, dtype/device/storage, module identities and recognized configuration, modes, hooks, and supported ordinary bindings. Declared structural integer constants also have value guards. Numeric optimizer updates to floating-point parameters do not alone make a graph stale. Replacing parameters, switching relevant configuration or module modes, or changing guarded integer values can do so.
+
+### `KirigamiError`
+
+Base class for the library's capture, analysis-limit, and freshness exceptions.
+
+### `CaptureError`
+
+The model could not be safely traced or executed for metadata. Examples include invalid example arguments, tensor-dependent Python branching, recognized parameter writes, unsupported hooks, or inputs that cannot be safely isolated.
+
+### `AnalysisLimitError`
+
+The exact symbolic representation exceeded its bounded complexity. Constructing an excessively fragmented selection can raise it immediately. Propagation catches limits encountered while following relations or checking constraints and reports an incomplete diagnostic rather than fabricating an approximate closure.
+
+### `StaleGraphError`
+
+The source model no longer satisfies the captured structural assumptions, or the graph was explicitly invalidated. Rebuild the graph and recreate references before another structural operation.
+
+### `UnsupportedOperation`
+
+An exception raised by rule analysis when the captured arguments have no proven semantics. It derives directly from `Exception`, separately from `KirigamiError`, because graph construction normally converts it to a barrier and diagnostic. An unexpected programming error in an extension is not silently converted into unsupported behavior.
+
+## 12. Review checklist and source map
+
+When reviewing a dependency change, verify that it preserves these boundaries:
+
+- Relations propagate only forced original-coordinate implications, using accumulated selections.
+- Constraints report conditions without making candidate-selection decisions.
+- Requirements describe edits without executing them.
+- Shared tensors satisfy every consumer's contract and retain their aliases.
+- Unsupported behavior is explicit and scoped to affected dependencies.
+- Capture does not leak supported buffer, mode, or RNG changes.
+- Public build/plan/apply tests validate executable consequences, beyond direct rule tests.
+
+The class inventory above covers `graph`, `capture`, `selection`, `relations`, `contracts`, `operation`, `registry`, `bindings`, `configuration`, `errors`, and the two classes in `operators/shapes.py`. The other operator modules are function-based rule families, described in [operator support and extension](operator-coverage.md). See [verification](testing-coverage.md) for the corresponding test layers.
