@@ -76,13 +76,3 @@ known-first-party = ["torch_kirigami"]
 
 [tool.ruff.format]
 docstring-code-format = true
-
-# This index applies to the repository's uv development environment.
-# Built distributions retain the ordinary torch>=2.6 runtime dependency.
-[tool.uv.sources]
-torch = { index = "pytorch-cpu" }
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
