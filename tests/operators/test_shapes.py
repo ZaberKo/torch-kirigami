@@ -137,7 +137,7 @@ def test_channels_last_conv_view_keeps_layout(execution_device):
 
         def forward(self, x):
             y = self.conv(x)
-            return y.permute(0, 2, 3, 1).view(-1, y.size(1))
+            return y.permute(0, 2, 3, 1).contiguous().view(-1, y.size(1))
 
     model = Model()
     x = torch.randn(2, 3, 4, 5).contiguous(memory_format=torch.channels_last)
@@ -234,7 +234,7 @@ def test_channels_last_weight_layout_is_validated_before_execution(execution_dev
 
         def forward(self, x):
             y = self.conv(x)
-            return y.permute(0, 2, 3, 1).view(-1, y.size(1))
+            return y.permute(0, 2, 3, 1).contiguous().view(-1, y.size(1))
 
     model = Model()
     x = torch.randn(2, 3, 6, 6)

@@ -66,6 +66,12 @@ Construction proceeds in this order:
 
 Capture restores buffer bindings, module training flags, and CPU/initialized-CUDA RNG state on success and failure. Parameters are not copied: `forward` must not mutate them. Forward hooks, unsupported registration callbacks, and recognized unsafe writes are rejected. Arbitrary external side effects and concurrent use of the same model are outside the isolation contract.
 
+### Unsupported Python decisions that FX may not detect
+
+Tensor identity/type tests and decisions based on Tensor runtime state are outside the capture contract. In particular, `x.grad is None` or `self.layer.weight.grad is None` can test a lazy FX attribute proxy, silently choose a different branch from the original Tensor, and leave no usable trace of the test. `isinstance(x, torch.Tensor)` and Tensor identity tests have related limitations.
+
+The eager TorchFunctionMode guard cannot observe these Python operations on proxies. Therefore this library cannot promise a capture error for every unsupported branch: successful `build()` is not proof that an arbitrary Python forward was captured correctly. Do not prune models containing these decisions under the current contract. Move the choice into explicit, guarded Python configuration or give an opaque module an appropriate declared contract. The library retains the original no-custom-Proxy/no-concrete-tracer boundary; it does not conceal this gap with an unused-node heuristic.
+
 ## 3. Graph and capture classes
 
 Sources: [graph.py](../torch_kirigami/graph.py), [capture.py](../torch_kirigami/capture.py).
@@ -326,7 +332,7 @@ Describes a tensor as disjoint original-coordinate partitions, compacted separat
 
 ### `OutputContract`
 
-Declares output layout knowledge used by original-call validation: `unknown`, `contiguous`, `convolution`, `cast`, or `backend_dependent`. Shape compatibility alone cannot prove backend strides. Output layout information also does not grant permission to change semantic scalar arguments; requirements provide those permissions separately.
+Declares output layout knowledge used by original-call validation: `unknown`, `contiguous`, `cast`, or `backend_dependent`. Shape compatibility alone cannot prove backend strides. Output layout information also does not grant permission to change semantic scalar arguments; requirements provide those permissions separately.
 
 ### `OperatorSpec`
 
@@ -431,3 +437,15 @@ Coordinate propagation answers which original positions must be removed together
 Unknown calls form a barrier over their data ancestors, including reductions and casts. They may use values as indices or sizes, so a coordinate-neutral edge cannot prove independence. An unrelated branch remains usable. This conservative barrier does not infer a numerical implementation for an unknown operator.
 
 Registered integer buffers are structural constants only when their captured reads have no recognized writes or observed mutations. Restoring the original value later in the forward does not make an earlier read constant. Mutable indices require an explicit rule; their final observed values are not substituted into dependency relations.
+
+### Eager Tensor decisions and ordinary constants
+
+`_TraceDataGuard` uses public `TorchFunctionMode` during symbolic tracing to reject eager Tensor data extraction that FX would omit, such as buffer `.item()`, `bool`, `tolist`, `torch.equal`, or metadata read from a computed Tensor. This guard does not trace another branch or implement a second tracer. Calls involving FX proxies remain subject to normal graph effect checks. Unrecorded derived tensors lifted into FX constants are rejected, as are eager runtime-state reads such as `.grad` and writes to unisolated ordinary constants.
+
+Metadata reads from registered tensors preserve the observed value, not every axis. A read of `size(dim)` or `len(tensor)` constrains that dimension; `numel()` constrains the element count. Reading `shape` or `size()` constrains the complete tuple, even if Python subsequently indexes it: that indexing is outside FX. Rank, dtype, device and type predicates remain unchanged by compaction and are covered by structural preconditions. Eager `stride(dim)`, `stride()` and `is_contiguous()` reads are checked against the final tensor recipe, so unrelated axis changes remain legal when the observed result is preserved. All checks stay local to the affected tensor. Storage-position reads such as `storage_offset()` are unsupported because portable plans do not track storage positions.
+
+Direct Tensor attributes and tensors in plain lists, tuples and dictionaries carry portable shape, stride, dtype, device and tensor-flag premises, in addition to registered-reference aliases. Their numerical values are constructor-owned unless registered or saved through extra state. Arbitrary custom objects must not hide untracked tensor state or Python side effects; FX does not prove a complete Python program.
+
+Dictionary keys must be supported immutable configuration values, even when their values contain no tensors. Tensor/Module keys, including tensors nested in tuple keys, are rejected because they can hide live bindings used by the original forward.
+
+Native `torch.dtype`, `torch.device`, `torch.layout`, and `torch.memory_format` configuration values are frozen explicitly, including inside supported containers.

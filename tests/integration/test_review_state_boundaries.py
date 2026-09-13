@@ -201,7 +201,7 @@ def test_loading_refuses_gradient_hooks_before_replacement(hook, execution_devic
     handle.remove()
 
 
-def test_custom_loader_receives_constructor_values(execution_device):
+def test_raw_checkpoint_bypasses_constructor_dependent_state_codecs(execution_device):
     class Delta(nn.Module):
         def __init__(self):
             super().__init__()
@@ -224,10 +224,14 @@ def test_custom_loader_receives_constructor_values(execution_device):
     with torch.no_grad():
         source.weight.fill_(3)
     native.load_state_dict(source.state_dict())
+    torch.testing.assert_close(native.weight, source.weight)
     stream = io.BytesIO()
     save_checkpoint(source, stream)
     stream.seek(0)
-    load_checkpoint(target, stream)
+    payload = torch.load(stream, weights_only=True)
+    torch.testing.assert_close(payload["state_dict"]["weight"], torch.full((2,), 3.0))
+    stream.seek(0)
+    assert load_checkpoint(target, stream) is target
     torch.testing.assert_close(target.weight, native.weight)
     target(torch.ones(2)).sum().backward()
     torch.testing.assert_close(target.weight.grad, torch.ones(2))
@@ -286,9 +290,12 @@ def test_pruning_never_discards_hooks_on_replaced_parameters(when, execution_dev
     handle.remove()
 
 
-@pytest.mark.parametrize("decoding", ["replace", "add"])
-def test_custom_loader_resizing_uses_constructor_state_before_native_load(
-    decoding, execution_device
+@pytest.mark.parametrize(
+    "method", ["state_dict", "load_state_dict", "_save_to_state_dict", "_load_from_state_dict"]
+)
+@pytest.mark.parametrize("placement", ["class", "instance", "spoofed_callable"])
+def test_custom_state_codecs_are_not_executed_for_raw_checkpoints(
+    method, placement, monkeypatch, execution_device
 ):
     class Model(nn.Module):
         def __init__(self):
@@ -298,13 +305,6 @@ def test_custom_loader_resizing_uses_constructor_state_before_native_load(
 
         def forward(self, x):
             return self.cached * x
-
-        def _load_from_state_dict(self, state, prefix, *args, **kwargs):
-            assert self.weight.shape == (4,) and torch.equal(self.weight, torch.ones(4))
-            if decoding == "add":
-                state = dict(state)
-                state[prefix + "weight"] = state[prefix + "weight"] + self.weight
-            return super()._load_from_state_dict(state, prefix, *args, **kwargs)
 
     source, target = Model(), Model()
     with torch.no_grad():
@@ -316,17 +316,46 @@ def test_custom_loader_resizing_uses_constructor_state_before_native_load(
     stream = io.BytesIO()
     save_checkpoint(source, stream)
     stream.seek(0)
-    old = target.weight
-    if decoding == "add":
-        with pytest.raises(ExecutionError, match="State loading failed before commit"):
-            load_checkpoint(target, stream)
-        assert target.weight is old and target.cached is old
+    restored = load_checkpoint(Model(), stream)
+    assert restored.cached is restored.weight and not restored._load_state_dict_pre_hooks
+    torch.testing.assert_close(restored(torch.ones(3)), torch.tensor([0.0, 2.0, 3.0]))
+    restored(torch.ones(3)).sum().backward()
+    torch.testing.assert_close(restored.weight.grad, torch.ones(3))
+
+    calls = []
+
+    def custom(self, *args, **kwargs):
+        calls.append(self)
+        raise AssertionError("Unsupported user codec must not run")
+
+    # The format never dispatches codecs, regardless of their claimed provenance.
+    custom.__module__ = "torch.nn.modules.module"
+    if placement == "class":
+        monkeypatch.setattr(Model, method, custom)
+    elif placement == "instance":
+        monkeypatch.setattr(target, method, custom.__get__(target, Model))
     else:
-        load_checkpoint(target, stream)
-        assert target.cached is target.weight and not target._load_state_dict_pre_hooks
-        torch.testing.assert_close(target(torch.ones(3)), torch.tensor([0.0, 2.0, 3.0]))
-        target(torch.ones(3)).sum().backward()
-        torch.testing.assert_close(target.weight.grad, torch.ones(3))
+
+        class Spoofed:
+            def __init__(self):
+                self.__self__ = target
+                self.__func__ = getattr(nn.Module, method)
+
+            def __call__(self, *args, **kwargs):
+                return custom(target, *args, **kwargs)
+
+        monkeypatch.setattr(target, method, Spoofed())
+    stream.seek(0)
+    assert load_checkpoint(target, stream) is target
+    assert target.cached is target.weight and target.weight.shape == (3,)
+    torch.testing.assert_close(target(torch.ones(3)), torch.tensor([0.0, 2.0, 3.0]))
+    destination = io.BytesIO()
+    save_checkpoint(target, destination)
+    destination.seek(0)
+    payload = torch.load(destination, weights_only=True)
+    assert set(payload["state_dict"]) == {"weight"}
+    torch.testing.assert_close(payload["state_dict"]["weight"], torch.tensor([0.0, 2.0, 3.0]))
+    assert calls == [] and not target._load_state_dict_pre_hooks
 
 
 @pytest.mark.parametrize("payload", ["tensor_attribute", "metadata", "cycle", "deep", "clone"])
@@ -340,12 +369,6 @@ def test_checkpoint_data_tree_is_closed_before_save(payload, execution_device):
         def forward(self, x):
             return x * self.weight
 
-        def state_dict(self, *args, **kwargs):
-            state = super().state_dict(*args, **kwargs)
-            if payload == "metadata":
-                state._metadata[""]["extra"] = date(2026, 1, 1)
-            return state
-
         def get_extra_state(self):
             return self.extra
 
@@ -353,6 +376,8 @@ def test_checkpoint_data_tree_is_closed_before_save(payload, execution_device):
             self.extra = state
 
     model = Model()
+    if payload == "metadata":
+        model._version = date(2026, 1, 1)
     if payload in ("tensor_attribute", "clone"):
         model.extra = model.weight.detach().clone()
         if payload == "tensor_attribute":
@@ -363,7 +388,7 @@ def test_checkpoint_data_tree_is_closed_before_save(payload, execution_device):
         for _ in range(60):
             model.extra = [model.extra]
     stream = io.BytesIO(b"unchanged")
-    if payload != "clone":
+    if payload not in ("clone", "metadata"):
         with pytest.raises(ExecutionError, match=r"extra state|tensor payload"):
             save_checkpoint(model, stream)
         assert stream.getvalue() == b"unchanged"

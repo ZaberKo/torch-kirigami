@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from torch_kirigami import DependencyGraph
+from torch_kirigami import CaptureError, DependencyGraph
 from torch_kirigami.pruning import ChannelRatio, Magnitude, PlanningError, Pruner
 
 
@@ -97,6 +97,14 @@ def test_integer_read_requires_no_intervening_writes(mutates, alias, execution_d
     model = Model()
     before = model.weight
     x = torch.zeros(1)
+    if mutates and alias:
+        # The eager buffer view would become an unguarded FX constant. Capture
+        # rejects this earlier than graph-time mutation validation.
+        with pytest.raises(CaptureError, match="folded"):
+            DependencyGraph.build(model, args=(x,))
+        torch.testing.assert_close(model.idx, torch.tensor([0]))
+        assert model.weight is before
+        return
     graph = DependencyGraph.build(model, args=(x,))
     request = [graph.parameter("weight").axis(0).select([1])]
     if mutates:

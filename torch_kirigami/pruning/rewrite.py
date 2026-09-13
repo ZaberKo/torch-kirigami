@@ -14,7 +14,7 @@ from ..operators.coordinates import retained_indices as _keep
 from ..operators.shapes import evaluate
 from ..operators.shapes import reevaluate as _reevaluate
 from ..selection import IndexSet, Region
-from .recipes import memory_format, same_mapping, validate_recipe
+from .recipes import compact_stride, memory_format, same_mapping, validate_recipe
 from .types import AttributeRecipe, PlanningError, RewriteContext, RewriteResult, TensorRecipe
 from .validation import check_forward
 
@@ -110,7 +110,7 @@ def lower_spec(ctx):
 def compile_recipes(graph, operations, impact, *, attribute_checks=None):
     """Prove all affected requirements and combine per-use recipes without weights."""
     if impact.status != "resolved":
-        raise PlanningError("; ".join(f"{d.code}: {d.message}" for d in impact.diagnostics))
+        raise PlanningError("; ".join(map(str, impact.diagnostics)))
     bindings = dict(graph.tensor_bindings())
     for selection in (*impact.parameters, *impact.buffers):
         if has_tensor_hooks(bindings[selection.tensor]):
@@ -133,13 +133,16 @@ def compile_recipes(graph, operations, impact, *, attribute_checks=None):
         reqs = tuple(
             r
             for r in impact.requirements
-            if r.target == op.node.name
-            or (
-                op.module is not None
-                and r.kind == "attribute"
-                and (
-                    r.target.rpartition(".")[0] == (op.module_path or "")
-                    or r.target.startswith(f"{op.module_path}." if op.module_path else "")
+            if r.kind != "metadata_layout"
+            and (
+                r.target == op.node.name
+                or (
+                    op.module is not None
+                    and r.kind == "attribute"
+                    and (
+                        r.target.rpartition(".")[0] == (op.module_path or "")
+                        or r.target.startswith(f"{op.module_path}." if op.module_path else "")
+                    )
                 )
             )
         )
@@ -189,8 +192,6 @@ def compile_recipes(graph, operations, impact, *, attribute_checks=None):
             attribute_bindings[identity] = attr
             attributes[attr.path] = attr
         active.append((ctx, rule.evaluate_on_meta))
-    if any(id(r) not in handled for r in impact.requirements):
-        raise PlanningError("Impact contains an unhandled execution requirement")
     for selection in (*impact.parameters, *impact.buffers):
         if selection.tensor.id not in recipes:
             recipe = ordinary_recipe(selection)
@@ -201,6 +202,30 @@ def compile_recipes(graph, operations, impact, *, attribute_checks=None):
         key: replace(recipe, memory_format=memory_format(bindings[recipe.tensor]))
         for key, recipe in recipes.items()
     }
+    for req in impact.requirements:
+        if req.kind != "metadata_layout":
+            continue
+        ref = req.tensors[0]
+        recipe = recipes[ref.id]
+        proposed = torch.empty_strided(
+            recipe.shape,
+            compact_stride(recipe.shape, recipe.memory_format),
+            device="meta",
+            dtype=graph.metadata(ref).dtype,
+        )
+        data = dict(req.data)
+        value = (
+            (proposed.stride() if data["argument"] is None else proposed.stride(data["argument"]))
+            if data["kind"] == "stride"
+            else proposed.is_contiguous(
+                memory_format=getattr(torch, data["argument"].removeprefix("torch."))
+            )
+        )
+        if value != data["observed"]:
+            raise PlanningError(f"Compaction changes metadata {req.target}.{data['kind']}")
+        handled.add(id(req))
+    if any(id(r) not in handled for r in impact.requirements):
+        raise PlanningError("Impact contains an unhandled execution requirement")
     check_forward(graph, operations, active, impact, recipes, attributes, strides)
     # Attribute validation depends on configuration, not which same-width channels
     # were selected. The context owns/invalidate this bounded cache; manual and final

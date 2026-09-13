@@ -129,24 +129,34 @@ class BlockMap:
             Complete corresponding blocks. With a full-block policy, partial blocks
             do not propagate; otherwise, touching a block selects its counterpart.
         """
-        a, b, sa, sb = self.source_start, self.target_start, self.source_block, self.target_block
+        source_start, target_start = self.source_start, self.target_start
+        source_block, target_block = self.source_block, self.target_block
         if reverse:
-            a, b, sa, sb = b, a, sb, sa
-        inside = indices.intersect(IndexSet.span(a, a + self.count * sa))
+            source_start, target_start = target_start, source_start
+            source_block, target_block = target_block, source_block
+        inside = indices.intersect(
+            IndexSet.span(source_start, source_start + self.count * source_block)
+        )
         require_full = self.require_full_target if reverse else self.require_full_source
-        if require_full:
-            blocks = IndexSet(
-                tuple(
-                    ((lo - a + sa - 1) // sa, (hi - a) // sa)
-                    for lo, hi in inside.intervals
-                    if (lo - a + sa - 1) // sa < (hi - a) // sa
-                )
+        block_intervals = []
+        for start, stop in inside.intervals:
+            if require_full:
+                # Round inward: only completely selected source blocks propagate.
+                first_block = (start - source_start + source_block - 1) // source_block
+                stop_block = (stop - source_start) // source_block
+            else:
+                # Round outward: touching any source position selects its block.
+                first_block = (start - source_start) // source_block
+                stop_block = (stop - 1 - source_start) // source_block + 1
+            if first_block < stop_block:
+                block_intervals.append((first_block, stop_block))
+        blocks = IndexSet(tuple(block_intervals))
+        return IndexSet(
+            tuple(
+                (target_start + start * target_block, target_start + stop * target_block)
+                for start, stop in blocks.intervals
             )
-        else:
-            blocks = IndexSet(
-                tuple(((lo - a) // sa, (hi - 1 - a) // sa + 1) for lo, hi in inside.intervals)
-            )
-        return IndexSet(tuple((b + lo * sb, b + hi * sb) for lo, hi in blocks.intervals))
+        )
 
 
 @dataclass(frozen=True)
@@ -215,10 +225,14 @@ class AxisRelation:
             if source.tensor != origin.tensor:
                 continue
             indices = origin.fully_selected_indices(source)
-            mapped = IndexSet()
+            intervals = []
             for relation in self.maps:
-                mapped = mapped.union(relation.map(indices, reverse))
-            selected = target.select(mapped)
+                intervals.extend(relation.map(indices, reverse).intervals)
+                # Bound temporary storage while amortizing normalization across
+                # blocks instead of repeatedly sorting the entire prefix.
+                if len(intervals) > MAX_PARTS:
+                    intervals = list(IndexSet(tuple(intervals)).intervals)
+            selected = target.select(IndexSet(tuple(intervals)))
             if selected:
                 result.append(selected)
         return tuple(result)

@@ -22,6 +22,7 @@ from .contracts import (
     NonEmpty,
     Provenance,
     Requirement,
+    ShapeExpr,
 )
 from .errors import AnalysisLimitError, StaleGraphError, UnsupportedOperation
 from .operation import OperationContext, OperatorSpec, TensorFacts, tensors
@@ -95,6 +96,9 @@ class DependencyGraph:
             Examples provide metadata; they do not specialize dynamic Python branches.
             Inputs and registered buffers are isolated, but forward must not mutate
             parameters or external state.
+            Tensor identity/type tests and runtime-state Python decisions (e.g.
+            x.grad is None) are outside the capture contract. FX can silently omit
+            them; successful construction does not prove their absence or correctness.
         """
         if not isinstance(model, nn.Module):
             raise TypeError("model must be an nn.Module")
@@ -163,6 +167,32 @@ class DependencyGraph:
         self._expressions = {}
         self._literal_values = {}
         self._relations, self._constraints, self._requirements = [], [], []
+        for path, kind, argument, observed in gm.meta.get("kirigami_static_metadata", ()):
+            ref = self._parameters.get(path, self._buffers.get(path))
+            label = f"metadata {path}.{kind}"
+            if kind in ("shape", "dimension", "numel"):
+                expression = ShapeExpr(kind, (ref, argument) if kind == "dimension" else ref)
+                hint = (
+                    "If only one dimension is needed, read tensor.size(dim) instead of "
+                    "the whole shape, then rebuild the dependency graph."
+                    if kind == "shape"
+                    else ""
+                )
+                self._constraints.append(
+                    CallArgumentConstraint(label, ((expression, observed),), hint=hint)
+                )
+            elif kind in ("stride", "contiguous"):
+                # Logical dependencies do not decide how parameters are allocated.
+                # The execution layer checks this read against the final recipe.
+                self._requirements.append(
+                    Requirement(
+                        "metadata_layout",
+                        path,
+                        (ref,),
+                        "Preserve metadata read by unrecorded Python code",
+                        (("kind", kind), ("argument", argument), ("observed", observed)),
+                    )
+                )
         self._diagnostics = []
         self._calls = []
         self._operations = {}
@@ -241,68 +271,88 @@ class DependencyGraph:
                 MappingProxyType(self._literal_values),
                 self.id,
             )
-            self._calls.append(CallRef(node.name, paths, ctx.inputs, ctx.outputs))
-            self._operations[node.name] = ctx
-            rule = self._registry.lookup(node, module)
-            try:
-                if rule is None:
-                    raise UnsupportedOperation(f"No semantics registered for {node.target}")
-                result = rule.analyze(ctx)
-                if not isinstance(result, OperatorSpec):
-                    raise TypeError("OperatorRule.analyze must return OperatorSpec")
-                self._validate_spec(result)
-                if any(not ref.paths for ref in result.constants):
-                    raise UnsupportedOperation(
-                        "Structural constants require registered parameter/buffer value guards; "
-                        "register integer index tensors as buffers"
-                    )
-                self._specs[node.name] = result
-                if result.expression is not None:
-                    self._expressions[node] = result.expression
-            except UnsupportedOperation as error:
-                refs = tuple(
-                    dict.fromkeys(
-                        (*ctx.inputs, *ctx.outputs, *bindings.values(), *dependencies(ctx))
-                    )
+            self._analyze_operation(ctx, paths)
+        self._finalize_analysis()
+        self._check_fresh()
+        # FX nodes are sufficient after analysis. Keeping the owning GraphModule
+        # also retains its isolated get_attr buffers for the graph's whole lifetime.
+        self._fx_graph.owning_module = None
+        return self
+
+    def _analyze_operation(self, ctx, paths):
+        """Validate one call's semantics and collect its structural facts.
+
+        Unsupported calls become barriers on their data dependencies. Other calls
+        remain analyzable, and their declared shape expressions feed later nodes.
+        """
+        node = ctx.node
+        self._calls.append(CallRef(node.name, paths, ctx.inputs, ctx.outputs))
+        self._operations[node.name] = ctx
+        rule = self._registry.lookup(node, ctx.module)
+        try:
+            if rule is None:
+                raise UnsupportedOperation(f"No semantics registered for {node.target}")
+            result = rule.analyze(ctx)
+            if not isinstance(result, OperatorSpec):
+                raise TypeError("OperatorRule.analyze must return OperatorSpec")
+            self._validate_spec(result)
+            if any(not ref.paths for ref in result.constants):
+                raise UnsupportedOperation(
+                    "Structural constants require registered parameter/buffer value guards; "
+                    "register integer index tensors as buffers"
                 )
-                # Unknown operations can use values to choose sizes/indices. A
-                # reduction preserves no deleted coordinates but still changes
-                # those values; the barrier therefore covers every data ancestor.
-                refs = tuple(dict.fromkeys((*refs, *self._ancestor_refs(node))))
-                barrier = Barrier(refs, str(error), node.name)
-                self._constraints.append(barrier)
-                self._diagnostics.append(
-                    Diagnostic(
-                        "unsupported", str(error), node=node.name, tensors=tuple(r.id for r in refs)
-                    )
+            self._specs[node.name] = result
+            if result.expression is not None:
+                self._expressions[node] = result.expression
+        except UnsupportedOperation as error:
+            refs = tuple(
+                dict.fromkeys(
+                    (*ctx.inputs, *ctx.outputs, *ctx.bindings.values(), *dependencies(ctx))
                 )
-                self._unused.difference_update(r.id for r in refs)
-                continue
-            self._relations.extend(result.relations)
-            self._constraints.extend(result.constraints)
-            self._requirements.extend(result.requirements)
-            self._requirements.extend(
-                Requirement(
-                    "partitioned_compaction",
-                    node.name,
-                    (descriptor.tensor,),
-                    "Retain declared physical partitions and concatenate in original order",
-                )
-                for descriptor in result.layouts
             )
-            if result.expression is None and dependencies(ctx):
-                self._constraints.append(
-                    CallArgumentConstraint.from_operation(
-                        ctx,
-                        checked_arguments=tuple(
-                            a for r in result.requirements for a in r.arguments
-                        ),
-                    )
+            # Unknown operations can use values to choose sizes/indices. A
+            # reduction preserves no deleted coordinates but still changes
+            # those values; the barrier therefore covers every data ancestor.
+            refs = tuple(dict.fromkeys((*refs, *self._ancestor_refs(node))))
+            barrier = Barrier(refs, str(error), node.name)
+            self._constraints.append(barrier)
+            self._diagnostics.append(
+                Diagnostic(
+                    "unsupported", str(error), node=node.name, tensors=tuple(r.id for r in refs)
                 )
-            for relation in result.relations:
-                self._unused.difference_update(r.id for r in relation.refs)
-            for constraint in result.constraints:
-                self._unused.difference_update(r.id for r in constraint.refs)
+            )
+            self._unused.difference_update(r.id for r in refs)
+            return
+        self._relations.extend(result.relations)
+        self._constraints.extend(result.constraints)
+        self._requirements.extend(result.requirements)
+        self._requirements.extend(
+            Requirement(
+                "partitioned_compaction",
+                node.name,
+                (descriptor.tensor,),
+                "Retain declared physical partitions and concatenate in original order",
+            )
+            for descriptor in result.layouts
+        )
+        if result.expression is None and dependencies(ctx):
+            self._constraints.append(
+                CallArgumentConstraint.from_operation(
+                    ctx,
+                    checked_arguments=tuple(a for r in result.requirements for a in r.arguments),
+                )
+            )
+        for relation in result.relations:
+            self._unused.difference_update(r.id for r in relation.refs)
+        for constraint in result.constraints:
+            self._unused.difference_update(r.id for r in constraint.refs)
+
+    def _finalize_analysis(self):
+        """Complete cross-call constraints and freeze the records used by queries.
+
+        All calls must be analyzed before deriving tensor layout restrictions,
+        relation adjacency, and the layouts needed to check shape expressions.
+        """
         ports = defaultdict(list)
         for relation in self._relations:
             if isinstance(relation, AxisRelation):
@@ -340,11 +390,6 @@ class DependencyGraph:
         self._constant_refs = tuple(
             dict.fromkeys(ref for spec in self._specs.values() for ref in spec.constants)
         )
-        self._check_fresh()
-        # FX nodes are sufficient after analysis. Keeping the owning GraphModule
-        # also retains its isolated get_attr buffers for the graph's whole lifetime.
-        self._fx_graph.owning_module = None
-        return self
 
     def _make_values(self, node, facts):
         """Replace tensor facts with references while preserving the result tree."""
@@ -776,6 +821,6 @@ class DependencyGraph:
             )
         for step in impact.provenance:
             lines.append(f"  via {step.reason}: {step.source.tensor.id} -> {step.target.tensor.id}")
-        lines.extend(f"- {d.code}: {d.message}" for d in impact.diagnostics)
+        lines.extend(f"- {d}" for d in impact.diagnostics)
         lines.extend(f"- requires {r.kind}: {r.target}: {r.detail}" for r in impact.requirements)
         return "\n".join(lines)

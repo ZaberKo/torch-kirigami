@@ -7,4 +7,5 @@
 - Keep module imports explicit and acyclic. Put shared records/contracts below their consumers; do not hide reverse dependencies with `TYPE_CHECKING` or local imports.
 - Run `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, and relevant `uv run --locked pytest` tests. Refresh `uv.lock` when dependencies change.
 - This project is in initial development: update APIs and persisted schemas directly; do not add format versions, migration layers, or backward-compatibility shims.
+- Prefer straightforward control flow and one definition per invariant. Optimize measured bottlenecks without adding general frameworks or weakening correctness checks.
 - Keep changes focused, update affected examples/docs, and leave reference repositories under `tmp/` untouched.

@@ -1,7 +1,9 @@
 """One candidate universe for planning, budget accounting and sparse training."""
 
+from collections import defaultdict, deque
+
 from ..contracts import Fixed
-from ..relations import AxisRelation, BlockMap
+from ..relations import AxisRelation, BlockMap, BroadcastRelation, ReshapeRelation
 from .groups import ParameterGroup, unique_groups
 from .types import Candidate, PlanningError
 
@@ -56,6 +58,11 @@ def _protected_equal_axes(graph, defaults):
     protected = {c.axis for c in defaults}
     edges = []
     for relation in graph.relations:
+        if isinstance(relation, (ReshapeRelation, BroadcastRelation)):
+            left, right = relation.refs
+            if left.shape == right.shape:
+                edges.extend((left.axis(d), right.axis(d)) for d in range(len(left.shape)))
+            continue
         if not isinstance(relation, AxisRelation):
             continue
         left, right = relation.left, relation.right
@@ -67,13 +74,15 @@ def _protected_equal_axes(graph, defaults):
             and relation.maps == (BlockMap(0, 0, width),)
         ):
             edges.append((left.axis, right.axis))
-    changed = True
-    while changed:
-        changed = False
-        for left, right in edges:
-            if (left in protected or right in protected) and not {left, right} <= protected:
-                protected.update((left, right))
-                changed = True
+    adjacent = defaultdict(set)
+    for left, right in edges:
+        adjacent[left].add(right)
+        adjacent[right].add(left)
+    pending = deque(protected)
+    while pending:
+        for axis in adjacent[pending.popleft()] - protected:
+            protected.add(axis)
+            pending.append(axis)
     return protected
 
 

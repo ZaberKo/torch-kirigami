@@ -83,3 +83,39 @@ These tests do not establish ImageNet top-1/top-5 accuracy or fine-tuning recove
 For a new feature, trace the chain from the stated invariant to an independent assertion, then to a public lifecycle test if multiple layers interact. Include a failure that checks preserved state and a valid alternative where applicable.
 
 See [Development and testing](testing.md) for commands, device handling and CI scope.
+
+## Execution-context and numeric-boundary families
+
+[Execution contexts](../tests/integration/test_execution_contexts.py), [constant guards](../tests/integration/test_constant_guards.py), and [backend layouts](../tests/integration/test_backend_layouts.py) exercise public capture, portable planning, application and checkpoint loading. Cases span autocast joins, inference-mode copies, singleton channels-last strides, ordinary Tensor containers and names resembling extra-state keys. Valid metadata/configuration alternatives and explicit layout operations accompany rejection tests.
+
+[Sparse regularizers](../tests/sparsity/test_regularizers.py) include subnormal float32/float64 gradients with independent normalized integer directions, including overlapping and irregular regions. [Group scaling](../tests/integration/test_group_scaling.py) checks geometric deduplication collisions and operation counts instead of timing-sensitive performance thresholds. These are family-level regressions, not a claim of exhaustive model coverage.
+
+Further regression families exercise pruning-induced metadata branch changes, native torch configuration, device/dictionary extra-state relocation, backend-independent layout uncertainty for convolution/normalization and internal/explicit padding modes, all `Tensor.to(copy=...)` overloads, and externally scaled norm gradients. Metadata tests distinguish preserved dimension/type/layout observations from changed ones, including Tensor keyword aliases and portable-plan preconditions. Unknown-layout views have positive tests for axis splitting and singleton changes, followed by downstream views that still require known strides. Later views are checked after these operations, so layout errors cannot hide behind successful local shape checks.
+
+Container tests also reject Tensor/Module dictionary keys and verify the supported value-binding alternative. Complex NaN buffers cover conjugate and ordinary storage; weighted-loss references use wider independent arithmetic, and nonzero groups with zero rows compare first derivatives against the direct mathematical objective. Built-in L2 double backward is explicitly rejected.
+
+Known capture limitation: FX can silently omit Proxy identity/type/runtime-state decisions, including `x.grad is None`. These programs are excluded by the [capture contract](dependency-graph-design.md#unsupported-python-decisions-that-fx-may-not-detect); passing tests or successful build does not establish their correctness. Eager guard regressions do not claim to cover this unobservable Proxy path.
+
+The numerical boundary tests also cover final scalar aggregation across many tiny
+squared contributions and groups, with Decimal references, and first derivatives with extreme coefficients and upstream gradients. Measurement tests
+exercise ordinary-attribute input aliases, shared views, cached native MHA paths,
+exception restoration and rejected alias-breaking device transfer.
+
+Range tests also sample reproducible combinations of parameter magnitudes, group
+coefficients and upstream gradients against Decimal objectives and derivatives;
+they cover finite results as well as explicit rejection of unrepresentable losses.
+Shuffle regressions pair unsafe view rejection with independently checked reshape
+and contiguous alternatives. Extra-state tests cross empty/nonempty tensors with
+parameter/buffer bindings and registered aliases versus independent copies.
+
+
+## Maintainability regressions
+
+The [maintainability review](maintainability-review.md) records the refactors and
+optimization tradeoffs. Public regressions check one effect query per captured
+call, conflicting shared-attribute edits (including no-ops) before mutation, and
+mixed regular/irregular/scalar parameter groups without duplicate contributions
+or repeated binding scans. Regularizer references cover ordinary and extreme
+values, updates between calls, and failure-state preservation. Existing lifecycle
+and operator tests exercise the shared region-shape calculation and the split
+build/validation responsibilities.

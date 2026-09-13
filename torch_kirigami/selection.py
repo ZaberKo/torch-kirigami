@@ -378,6 +378,21 @@ class AxisRef:
         return Selection(self.tensor, (Region(tuple(axes)),))
 
 
+def _intersection_count(left: IndexSet, right: IndexSet) -> int:
+    """Count common indices without constructing a potentially fragmented set."""
+    if left == right:
+        return len(left)
+    i = j = count = 0
+    while i < len(left.intervals) and j < len(right.intervals):
+        a, b = left.intervals[i], right.intervals[j]
+        count += max(0, min(a[1], b[1]) - max(a[0], b[0]))
+        if a[1] <= b[1]:
+            i += 1
+        if b[1] <= a[1]:
+            j += 1
+    return count
+
+
 @dataclass(frozen=True, eq=False)
 class Selection:
     """An immutable union of selected tensor regions in original coordinates.
@@ -411,9 +426,26 @@ class Selection:
             return NotImplemented
         if self.tensor != other.tensor:
             return False
-        return self.regions == other.regions or (
-            not self.subtract(other) and not other.subtract(self)
-        )
+        if self.regions == other.regions:
+            return True
+        count = self.count
+        if count != other.count:
+            return False
+        # Each side's regions are disjoint, so pairwise intersection volumes
+        # count every common coordinate exactly once. Equality must not fail
+        # because a hypothetical difference exceeds the representation budget.
+        covered = 0
+        for left in self.regions:
+            for right in other.regions:
+                volume = 1
+                for a, b in zip(left.axes, right.axes, strict=True):
+                    volume *= _intersection_count(a, b)
+                    if not volume:
+                        break
+                covered += volume
+                if covered == count:
+                    return True
+        return False
 
     def __bool__(self):
         return bool(self.regions)
@@ -454,9 +486,10 @@ class Selection:
         """
         dim = self.tensor.axis(dim).dim
         scope = scope or full_region(self.tensor.shape)
-        remaining = Selection(self.tensor, (scope,)).subtract(self)
+        scoped = Selection(self.tensor, (scope,))
         if not self:
             return IndexSet()
+        remaining = scoped.subtract(self)
         uncovered = IndexSet()
         for region in remaining.regions:
             uncovered = uncovered.union(region.axes[dim])

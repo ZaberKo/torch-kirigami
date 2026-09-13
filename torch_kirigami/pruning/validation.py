@@ -8,15 +8,16 @@ import torch
 
 from ..configuration import thaw
 from ..operation import argument
-from ..operators.coordinates import narrow_index
-from ..operators.coordinates import retained_indices as _keep
-from ..operators.shapes import evaluate as _expression
-from ..operators.shapes import reevaluate as _reevaluate
+from ..operators.coordinates import narrow_index, retained_indices
+from ..operators.shapes import evaluate, reevaluate
 from ..selection import TensorRef
+from .layouts import view_preserves_stride_boundaries
+from .recipes import compact_stride
 from .types import PlanningError, require_compact_shape
 
 
-def _slice_coordinates(ctx, new_index):
+def _check_slice_coordinates(ctx, new_index):
+    """Reject slices that select different original coordinates after compaction."""
     op, impact = ctx.operation, ctx.impact
     x, y = op.inputs[0], op.outputs[0]
     expanded = dict(next(r for r in ctx.requirements if r.kind == "slice_arguments").data)["index"]
@@ -30,14 +31,14 @@ def _slice_coordinates(ctx, new_index):
     out_dim = 0
     for dim, (item, new_item) in enumerate(zip(expanded, new_expanded, strict=True)):
         old = list(range(x.shape[dim]))
-        kept = list(_keep(impact, x.axis(dim)))
+        kept = list(retained_indices(impact, x.axis(dim)))
         if isinstance(item, int):
             if not -len(kept) <= new_item < len(kept) or kept[new_item] != old[item]:
                 raise PlanningError(
                     f"{op.node.name}: integer slice selects a different original coordinate"
                 )
         else:
-            expected = [old[item][i] for i in _keep(impact, y.axis(out_dim))]
+            expected = [old[item][i] for i in retained_indices(impact, y.axis(out_dim))]
             if kept[new_item] != expected:
                 raise PlanningError(
                     f"{op.node.name}: slice has incorrect original-coordinate correspondence"
@@ -45,9 +46,39 @@ def _slice_coordinates(ctx, new_index):
             out_dim += 1
 
 
+def _meta_module(operation, attributes, tensor):
+    """Copy a built-in module structure with compact meta bindings and attributes.
+
+    Parameters and buffers are resolved from analysis metadata, never copied from
+    live weights. Registered containers are copied before changing any binding.
+    """
+
+    def clone(original, prefix=""):
+        result = copy.copy(original)
+        for field in ("_parameters", "_buffers"):
+            bindings = {}
+            for name, value in getattr(original, field).items():
+                ref = operation.bindings.get(prefix + name)
+                bindings[name] = tensor(ref) if ref is not None else value
+            setattr(result, field, bindings)
+        result._modules = {
+            name: clone(child, prefix + name + ".") if child is not None else None
+            for name, child in original._modules.items()
+        }
+        owner_path = ".".join(part for part in (operation.module_path, prefix.rstrip(".")) if part)
+        for edit in attributes.values():
+            parent, _, name = edit.path.rpartition(".")
+            if parent == owner_path:
+                object.__setattr__(result, name, thaw(edit.new))
+        return result
+
+    return clone(operation.module)
+
+
 def check_forward(graph, operations, active, impact, recipes, attributes, strides):
     """Verify declared call contracts using compact metadata and original coordinates."""
     active_by_name = {ctx.operation.node.name: (ctx, builtin) for ctx, builtin in active}
+    operations_by_name = {op.node.name: op for op in operations}
     values, uncertain = {}, set()
 
     def shape(ref):
@@ -58,10 +89,11 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
             facts = graph.metadata(ref)
             size = shape(ref)
             if ref.id in recipes:
-                values[ref.id] = torch.empty(size, dtype=facts.dtype, device="meta").contiguous(
-                    memory_format=torch.contiguous_format
-                    if recipes[ref.id].memory_format == "contiguous"
-                    else getattr(torch, recipes[ref.id].memory_format)
+                values[ref.id] = torch.empty_strided(
+                    size,
+                    compact_stride(size, recipes[ref.id].memory_format),
+                    dtype=facts.dtype,
+                    device="meta",
                 )
             elif size == ref.shape:
                 values[ref.id] = torch.empty_strided(
@@ -83,21 +115,30 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
             return {k: tree(v) for k, v in value.items()}
         return value
 
-    def record(refs, output):
+    def record(refs, output, shape_hint):
         if isinstance(refs, TensorRef):
             if not isinstance(output, torch.Tensor) or tuple(output.shape) != shape(refs):
                 raise PlanningError(
-                    f"Original forward produces the wrong compact shape at {refs.id}"
+                    f"Original forward produces the wrong compact shape at {refs.id}{shape_hint}"
                 )
-            values[refs.id] = output
+            # Meta has no CPU/CUDA autocast dispatch. Keep the captured execution
+            # dtype at every port so affected and unaffected branches agree.
+            # Tensor.to can compact a strided view: rebuilding metadata preserves
+            # the stride proof rather than silently strengthening it during a cast.
+            dtype = graph.metadata(refs).dtype
+            values[refs.id] = (
+                output
+                if output.dtype == dtype
+                else torch.empty_strided(output.shape, output.stride(), dtype=dtype, device="meta")
+            )
         elif isinstance(refs, (tuple, list)):
             if len(refs) != len(output):
                 raise PlanningError("Original forward changes output port count")
             for r, v in zip(refs, output, strict=True):
-                record(r, v)
+                record(r, v, shape_hint)
         elif isinstance(refs, dict):
             for key, r in refs.items():
-                record(r, output[key])
+                record(r, output[key], shape_hint)
 
     for op in operations:
         entry = active_by_name.get(op.node.name)
@@ -116,18 +157,17 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                     tensor(ref)
                     uncertain.add(ref.id)
             continue
-        normalized_args = _reevaluate(op.node.args, op.args, op.expressions, shape)
-        normalized_kwargs = _reevaluate(op.node.kwargs, op.kwargs, op.expressions, shape)
+        normalized_args = reevaluate(op.node.args, op.args, op.expressions, shape)
+        normalized_kwargs = reevaluate(op.node.kwargs, op.kwargs, op.expressions, shape)
         for req in ctx.requirements:
+            data = dict(req.data)
             if req.kind == "index_arguments":
-                data = dict(req.data)
-                kept = list(_keep(impact, data["axis"]))
+                kept = list(retained_indices(impact, data["axis"]))
                 if any(i >= len(kept) or kept[i] != i for i in data["indices"]):
                     raise PlanningError(
                         f"{op.node.name}: static indices change original coordinates"
                     )
             if req.kind == "slice_arguments":
-                data = dict(req.data)
                 if "narrow_dim" in data:
                     dim = argument(
                         normalized_args, normalized_kwargs, "dim", 1, target=op.node.target
@@ -146,15 +186,15 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                         raise PlanningError(f"{op.node.name}: {error}") from error
                 else:
                     index = normalized_args[1]
-                _slice_coordinates(ctx, tuple(index) if isinstance(index, list) else index)
+                _check_slice_coordinates(ctx, tuple(index) if isinstance(index, list) else index)
             if req.kind == "partition_arguments":
-                axis = dict(req.data)["axis"]
+                axis = data["axis"]
                 # AxisPort identity is unchanged only if the original static split
                 # boundaries still match each retained old partition in order.
-                kept = list(_keep(impact, axis))
-                if not dict(req.data)["unbound"]:
-                    if "chunks" in dict(req.data):
-                        chunks = dict(req.data)["chunks"]
+                kept = list(retained_indices(impact, axis))
+                if not data["unbound"]:
+                    if "chunks" in data:
+                        chunks = data["chunks"]
                         sections = (len(kept) + chunks - 1) // chunks
                     else:
                         binding = req.arguments[0]
@@ -176,27 +216,48 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                             f"{op.node.name}: static split needs original-forward editing"
                         )
         args, kwargs = tree(normalized_args), tree(normalized_kwargs)
+        shape_hint = ""
         for req in ctx.requirements:
+            data = dict(req.data)
             if req.kind == "shape_arguments":
-                dimensions = _expression(dict(req.data)["expression"], shape)
+                dimensions = evaluate(data["expression"], shape)
                 while (
                     isinstance(dimensions, tuple)
                     and len(dimensions) == 1
                     and isinstance(dimensions[0], tuple)
                 ):
                     dimensions = dimensions[0]
-                if dict(req.data)["requires_view"] and any(r.id in uncertain for r in op.inputs):
-                    raise PlanningError(f"{op.node.name}: input stride cannot be proved")
-                if not dict(req.data)["unpack_shape"]:
+                expected = shape(op.outputs[0])
+                if len(dimensions) != len(expected) or any(
+                    requested != -1 and requested != size
+                    for requested, size in zip(dimensions, expected, strict=False)
+                ):
+                    shape_hint = (
+                        " If a fixed number was intended to follow a tensor dimension, "
+                        "replace it with tensor.size(dim) or a valid -1 inference, then "
+                        "rebuild the dependency graph. Keep algorithmic constants fixed."
+                    )
+                if (
+                    data["requires_view"]
+                    and any(r.id in uncertain for r in op.inputs)
+                    and not view_preserves_stride_boundaries(
+                        shape(op.inputs[0]), shape(op.outputs[0])
+                    )
+                ):
+                    raise PlanningError(
+                        f"{op.node.name}: input stride cannot be proved for view after pruning. "
+                        "If a copy is acceptable, use reshape(...) or contiguous().view(...) "
+                        "in forward and rebuild the dependency graph; shape and index "
+                        "constraints still apply."
+                    )
+                if not data["unpack_shape"]:
                     args, kwargs = (tensor(op.inputs[0]), dimensions), {}
                 else:
                     args, kwargs = (tensor(op.inputs[0]), *dimensions), {}
         inplace = graph.operator_rule(op).effects(op.node, op.module).mutates_input
         if inplace:
             source = op.raw_argument("input", 0)
-            producer = next(
-                (p for p in operations if p.node.name == getattr(source, "name", None)), None
-            )
+            producer = operations_by_name.get(getattr(source, "name", None))
             fresh = (
                 producer is not None
                 and graph.operator_rule(producer)
@@ -204,76 +265,38 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                 .fresh_output
             )
             if not fresh or len(source.users) != 1:
-                raise PlanningError(f"{op.node.name}: cannot prove in-place alias/consumer safety")
+                raise PlanningError(
+                    f"{op.node.name}: cannot prove in-place alias/consumer safety. "
+                    "If no consumer relies on modifying the original tensor, use an "
+                    "out-of-place operation and rebuild the dependency graph."
+                )
+        contract = ctx.spec.contract
         try:
-            if ctx.spec.contract is not None and ctx.spec.contract.output_layout == "cast":
+            if contract is not None and contract.output_layout == "cast":
                 output = tensor(op.inputs[0]).to(
                     device="meta",
                     dtype=graph.metadata(op.outputs[0]).dtype,
                     memory_format=op.kwargs.get("memory_format", torch.preserve_format),
+                    copy=contract.copy_output
+                    or graph.metadata(op.inputs[0]).device != graph.metadata(op.outputs[0]).device,
                 )
             elif op.module is not None:
-
-                def shell(original, prefix="", operation=op):
-                    result = copy.copy(original)
-                    for field in ("_parameters", "_buffers"):
-                        setattr(
-                            result,
-                            field,
-                            {
-                                n: tree(operation.bindings[prefix + n])
-                                if prefix + n in operation.bindings
-                                else v
-                                for n, v in getattr(original, field).items()
-                            },
-                        )
-                    result._modules = {
-                        n: shell(child, prefix + n + ".") if child is not None else None
-                        for n, child in original._modules.items()
-                    }
-                    owner_path = ".".join(
-                        p for p in (operation.module_path, prefix.rstrip(".")) if p
-                    )
-                    for attr in attributes.values():
-                        if attr.path.rpartition(".")[0] == owner_path:
-                            object.__setattr__(result, attr.path.rpartition(".")[2], thaw(attr.new))
-                    return result
-
-                module = shell(op.module)
+                module = _meta_module(op, attributes, tensor)
                 output = module.forward(*args, **kwargs)  # Exact built-in types only; bypass hooks.
             elif op.node.op == "call_method":
                 output = getattr(args[0], str(op.node.target))(*args[1:], **kwargs)
             else:
                 output = op.node.target(*args, **kwargs)
-            contract = ctx.spec.contract
-            if contract is not None and contract.output_layout == "convolution":
-                rank = len(op.outputs[0].shape)
-                fmt = (
-                    torch.channels_last
-                    if rank == 4
-                    else torch.channels_last_3d
-                    if rank == 5
-                    else None
-                )
-                if fmt is not None and any(
-                    tensor(r).ndim == rank
-                    and tensor(r).is_contiguous(memory_format=fmt)
-                    and not tensor(r).is_contiguous()
-                    for r in (*op.inputs, *op.bindings.values())
-                ):
-                    output = output.contiguous(memory_format=fmt)
-            record(op.output, output)
+            record(op.output, output, shape_hint)
         except (RuntimeError, ValueError, TypeError, IndexError, NotImplementedError) as error:
             raise PlanningError(
-                f"{op.node.name}: original forward is not proved executable: {error}"
+                f"{op.node.name}: original forward is not proved executable: {error}{shape_hint}"
             ) from error
         # Shape metadata alone does not establish actual strides when an input
         # layout was unspecified. Linear and explicit contiguous establish a
         # known output layout; otherwise preserve that uncertainty downstream.
-        establishes_layout = (
-            ctx.spec.contract is not None and ctx.spec.contract.output_layout == "contiguous"
-        )
+        establishes_layout = contract is not None and contract.output_layout == "contiguous"
         if not establishes_layout and any(r.id in uncertain for r in op.inputs):
             uncertain.update(r.id for r in op.outputs)
-        if ctx.spec.contract is not None and ctx.spec.contract.output_layout == "backend_dependent":
+        if contract is not None and contract.output_layout == "backend_dependent":
             uncertain.update(r.id for r in op.outputs)

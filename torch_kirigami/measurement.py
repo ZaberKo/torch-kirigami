@@ -15,8 +15,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from torch.profiler import ProfilerActivity, profile
 from torch.utils.flop_counter import FlopCounterMode
 
-from .bindings import storage_key
-from .capture import isolated_execution
+from .bindings import ordinary_tensors, storage_key
+from .capture import isolated_execution, tensor_leaves
 
 __all__ = ["ModelComplexity", "calculate_model_complexity", "measure_module_latency"]
 
@@ -214,6 +214,8 @@ def _evaluation(target, input_args, input_kwargs, device) -> Iterator[tuple]:
     device = torch.device(device if device is not None else tensors[0].device if tensors else "cpu")
     if device.type not in ("cpu", "cuda"):
         raise ValueError("Measurement supports CPU and CUDA only")
+    if device.type == "cpu":
+        device = torch.device("cpu")
     if device.type == "cuda":
         if not torch.cuda.is_available():
             raise ValueError("CUDA is unavailable")
@@ -224,9 +226,18 @@ def _evaluation(target, input_args, input_kwargs, device) -> Iterator[tuple]:
         raise ValueError("Move all model parameters and buffers to the measurement device first")
     args = tuple(input_args) if isinstance(input_args, (tuple, list)) else (input_args,)
     kwargs = input_kwargs or {}
+    constants = tuple(ordinary_tensors(target))
+    identities = {id(t) for t in constants}
+    storages = {storage_key(t) for t in constants if t.numel()}
+    if any(
+        t.device != device and (id(t) in identities or (t.numel() and storage_key(t) in storages))
+        for t in tensor_leaves((args, kwargs))
+    ):
+        raise ValueError("Move model-shared inputs and ordinary attributes to the device together")
     context = torch.cuda.device(device) if device.type == "cuda" else nullcontext()
     with context, isolated_execution(target, args, kwargs) as (args, kwargs, _):
-        args, kwargs = _to_device((args, kwargs), device, {})
+        if any(t.device != device for t in tensor_leaves((args, kwargs))):
+            args, kwargs = _to_device((args, kwargs), device, {})
         target.eval()
         yield args, kwargs, device
 

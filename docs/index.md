@@ -6,6 +6,7 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 
 | Goal | Start here | Continue with |
 | --- | --- | --- |
+| Check whether a model can be pruned | [Model support contract](model-support.md) | [Operator support](operator-coverage.md) |
 | Run a first pruning operation | [Getting started](getting-started.md) | [Pruning design](pruning-design.md) |
 | Understand the whole system | [Architecture overview](architecture.md) | [Dependency graph design](dependency-graph-design.md) |
 | Review dependency analysis | [Dependency graph design](dependency-graph-design.md) | [Operator support](operator-coverage.md) |

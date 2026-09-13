@@ -5,8 +5,8 @@ import math
 import torch
 
 from ..bindings import storage_key
-from ..pruning.groups import ParameterGroup, unique_groups
-from .values import group_values
+from ..pruning.groups import ParameterGroup, group_equivalence_classes
+from .values import group_bindings, group_values, scaled_product
 
 
 def _write(tensor, region, values):
@@ -79,7 +79,7 @@ def scale_groups_(groups, factor):
     ):
         raise ValueError("factor must be finite and nonnegative")
     groups = tuple(groups)
-    group_values(groups)
+    group_bindings(groups)
     union = ParameterGroup(groups[0].graph, tuple(s for g in groups for s in g.selections))
     values = group_values((union,))[0]
     _commit_values((union,), (values.to(torch.float64) * factor,))
@@ -104,10 +104,11 @@ def set_group_norms_(groups, targets):
         for t in targets
     ):
         raise ValueError("Expected one finite nonnegative target per group")
-    unique = unique_groups(groups)
+    classes = group_equivalence_classes(groups)
+    unique = tuple(groups[indices[0]] for indices in classes)
     unique_targets = []
-    for group in unique:
-        values = [t for g, t in zip(groups, targets, strict=True) if g.equivalent(group)]
+    for indices in classes:
+        values = [targets[i] for i in indices]
         if len(set(values)) != 1:
             raise ValueError("Equivalent groups have conflicting targets")
         unique_targets.append(values[0])
@@ -130,5 +131,11 @@ def set_group_norms_(groups, targets):
             projected.append(torch.zeros_like(vector))
         else:
             direction = vector / scale
-            projected.append(direction / torch.linalg.vector_norm(direction) * target)
+            projected.append(
+                scaled_product(
+                    vector,
+                    vector.new_tensor(target),
+                    divide=(scale, torch.linalg.vector_norm(direction)),
+                )
+            )
     _commit_values(unique, projected)

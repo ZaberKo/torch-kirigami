@@ -2,6 +2,7 @@
 
 import torch
 
+from ..regions import concatenated_shape
 from ..selection import IndexSet, Region, Selection, full_region
 from .types import CoordinateSegment, PlanningError
 
@@ -53,16 +54,10 @@ def validate_recipe(recipe, impact):
     full = Selection(ref, (full_region(ref.shape),))
     if kept != full.subtract(impact.selection(ref)):
         raise PlanningError("Recipe retained coordinates disagree with the joint Impact")
-    shapes = [tuple(map(len, r.axes)) for r in recipe.segments]
-    if any(
-        any(
-            a != b
-            for d, (a, b) in enumerate(zip(shapes[0], shape, strict=True))
-            if d != recipe.concat_dim
-        )
-        for shape in shapes[1:]
-    ):
-        raise PlanningError("Recipe segments cannot concatenate")
+    try:
+        concatenated_shape(recipe.segments, recipe.concat_dim)
+    except ValueError as error:
+        raise PlanningError("Recipe segments cannot concatenate") from error
 
 
 def coordinate_mapping(recipe):

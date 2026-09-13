@@ -11,11 +11,20 @@ from typing import Any
 import torch
 from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
+from torch.overrides import TorchFunctionMode
 
-from .bindings import copy_module_state, reference_edits, reference_signature, storage_key
+from .bindings import (
+    copy_module_state,
+    ordinary_tensors,
+    reference_edits,
+    reference_nodes,
+    reference_signature,
+    storage_key,
+)
 from .configuration import attributes, forward_hook_paths, has_registration_hooks
 from .errors import CaptureError
-from .operation import TensorFacts
+from .operation import CallEffects, TensorFacts
+from .operation import argument as call_argument
 from .operators.effects import named_inplace
 from .registry import OperatorRegistry
 
@@ -58,6 +67,9 @@ def fingerprint(model):
             str(t.dtype),
             str(t.device),
             storage_key(t),
+            t.requires_grad,
+            t.is_conj(),
+            t.is_neg(),
         )
         for kind, entries in (
             ("parameter", model.named_parameters(remove_duplicate=False)),
@@ -117,21 +129,35 @@ def isolated_execution(model, args, kwargs):
         raise CaptureError(
             "Inputs or buffers alias parameter storage; safe isolation is unsupported"
         )
+    isolated = tensor_leaves((args, kwargs, [b[2] for b in buffers]))
+    identities = {id(t) for t in isolated}
+    storages = {storage_key(t) for t in isolated if t.numel()}
+    related = tuple(
+        t
+        for t in ordinary_tensors(model)
+        if id(t) in identities or (t.numel() and storage_key(t) in storages)
+    )
     try:
         # Normal clones retain mutation counters even when capture is requested
         # inside inference mode. Execution itself preserves the caller's mode.
         with torch.inference_mode(False):
-            copied_args, copied_kwargs, copies = copy.deepcopy(
-                (args, kwargs, [b[2] for b in buffers])
+            memo = {}
+            copied_args, copied_kwargs, copies, related_copies = copy.deepcopy(
+                (args, kwargs, [b[2] for b in buffers], related), memo
             )
     except Exception as error:
         raise CaptureError("Cannot safely copy example inputs and registered buffers") from error
     aliases = {
         id(clone): original for (_, _, original), clone in zip(buffers, copies, strict=False)
     }
-    edits = reference_edits(
-        model, {id(old): new for (_, _, old), new in zip(buffers, copies, strict=True)}
+    replacements = {id(old): new for (_, _, old), new in zip(buffers, copies, strict=True)}
+    replacements.update((id(old), new) for old, new in zip(related, related_copies, strict=True))
+    replacements.update(
+        (id(node), memo.get(id(node), node))
+        for node in reference_nodes((args, kwargs))
+        if not isinstance(node, torch.Tensor)
     )
+    edits = reference_edits(model, replacements)
     restored = []
     devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
     try:
@@ -155,6 +181,126 @@ def isolated_execution(model, args, kwargs):
             module._non_persistent_buffers_set.update(persistence)
         for module, mode in modes:
             object.__setattr__(module, "training", mode)
+
+
+def _metadata_fact(func, args, kwargs, result):
+    """Normalize an eager metadata observation into immutable read-specific facts.
+
+    Size and stride dimensions remain explicit. Reading a complete shape cannot
+    reveal which tuple item Python later uses, so the whole result is guarded.
+    """
+    name = getattr(func, "__name__", "")
+    if name == "__get__":
+        name = func.__self__.__name__
+    # These are known native Tensor methods. Their descriptors can lack a
+    # __module__, so use the method name to reuse FX's dim/axis normalization.
+    dimension = call_argument(args, kwargs, "dim", 1, target=name)
+    if name in ("size", "shape"):
+        kind, argument = ("shape", None) if dimension is None else ("dimension", dimension)
+    elif name == "__len__":
+        kind, argument = "dimension", 0
+    elif name in ("numel", "nelement"):
+        kind, argument = "numel", None
+    elif name == "stride":
+        kind, argument = "stride", dimension
+    elif name == "is_contiguous":
+        kind, argument = "contiguous", str(kwargs.get("memory_format", torch.contiguous_format))
+    else:
+        # Rank, dtype, device, requires_grad, layout and derived type predicates
+        # are preserved by compaction and checked by graph/plan preconditions.
+        kind, argument = "invariant", name
+    value = tuple(result) if isinstance(result, (tuple, list)) else result
+    if type(value) not in (bool, int, tuple):
+        value = str(value)
+    return kind, argument, value
+
+
+class _TraceDataGuard(TorchFunctionMode):
+    """Reject eager tensor-data decisions that FX would omit from its graph.
+
+    Shape/type queries on original tensors have structural fingerprint guards.
+    Data extraction, and metadata read from eager tensor computations, lack an
+    FX provenance and cannot silently select Python control flow.
+    """
+
+    def __init__(self, registered):
+        super().__init__()
+        self.computed = {}
+        self.registered = registered
+        self.metadata_reads = set()
+
+    def __torch_function__(self, func, types, args=(), kwargs=None):
+        leaves = []
+        tree_map(leaves.append, (args, kwargs or {}))
+        if any(isinstance(value, fx.Proxy) for value in leaves):
+            # FX records this call; normal graph effect validation owns it.
+            return func(*args, **(kwargs or {}))
+        inputs = tensor_leaves((args, kwargs or {}))
+        name = getattr(func, "__name__", "")
+        if (
+            inputs
+            and name == "__get__"
+            and getattr(func.__self__, "__name__", "")
+            not in {
+                "shape",
+                "ndim",
+                "dtype",
+                "device",
+                "layout",
+                "requires_grad",
+                "data",
+                "T",
+                "mT",
+                "H",
+                "mH",
+                "real",
+                "imag",
+            }
+        ):
+            raise CaptureError("Unrecorded Tensor runtime-state read during symbolic tracing")
+        if inputs and (
+            (name.endswith("_") and not name.endswith("__"))
+            or name in ("__setitem__", "__set__")
+            or (kwargs or {}).get("out") is not None
+        ):
+            raise CaptureError(
+                f"Unrecorded Tensor/buffer write/out= during symbolic tracing: {name}"
+            )
+        result = func(*args, **(kwargs or {}))
+        outputs = tensor_leaves(result)
+        if inputs and not outputs and not isinstance(result, fx.Proxy):
+            metadata = getattr(func, "__name__", "") in {
+                "size",
+                "dim",
+                "ndimension",
+                "numel",
+                "nelement",
+                "stride",
+                "is_contiguous",
+                "is_floating_point",
+                "is_complex",
+                "element_size",
+                "get_device",
+                "__len__",
+                "__get__",
+            }
+            if not metadata or any(id(t) in self.computed for t in inputs):
+                raise CaptureError(
+                    "Unrecorded Tensor data/derived-metadata read during symbolic tracing: "
+                    f"{getattr(func, '__name__', func)}. Use explicit Python configuration "
+                    "or a declared opaque operator instead of tensor-controlled Python decisions."
+                )
+            for tensor in inputs:
+                if id(tensor) in self.registered:
+                    self.metadata_reads.add(
+                        (
+                            self.registered[id(tensor)],
+                            *_metadata_fact(func, args, kwargs or {}, result),
+                        )
+                    )
+        if inputs:
+            self.computed.update((id(t), t) for t in outputs)
+        return result
 
 
 class _LeafTracer(fx.Tracer):
@@ -203,7 +349,9 @@ def _same_tensor_values(left, right):
     if torch.equal(left, right):
         return True
     if left.is_complex():
-        return _same_tensor_values(torch.view_as_real(left), torch.view_as_real(right))
+        return _same_tensor_values(left.real, right.real) and _same_tensor_values(
+            left.imag, right.imag
+        )
     return left.is_floating_point() and bool(
         ((left == right) | (torch.isnan(left) & torch.isnan(right))).all()
     )
@@ -236,7 +384,9 @@ def trace_module(model, registry, *, buffer_sources):
         if t is not None
     ]
     try:
-        graph = tracer.trace(model)
+        registered = {id(t): p for p, t in (*model.named_parameters(), *model.named_buffers())}
+        with _TraceDataGuard(registered) as guard:
+            graph = tracer.trace(model)
         for m, _, buffers, _ in state:
             if m._buffers.keys() != buffers.keys() or any(
                 m._buffers[name] is not tensor for name, tensor in buffers.items()
@@ -256,7 +406,19 @@ def trace_module(model, registry, *, buffer_sources):
             if node.op == "placeholder":
                 node.args = ()
         # GraphModule must copy constant bindings before source cleanup.
-        return fx.GraphModule(model, graph)
+        result = fx.GraphModule(model, graph)
+        for node in graph.nodes:
+            if node.op == "get_attr":
+                value = result
+                for component in str(node.target).split("."):
+                    value = getattr(value, component)
+                if id(value) in guard.computed:
+                    raise CaptureError(
+                        "Unrecorded Tensor computation was folded into an FX constant; "
+                        "use a captured operation or a declared opaque module"
+                    )
+        result.meta["kirigami_static_metadata"] = tuple(sorted(guard.metadata_reads, key=repr))
+        return result
     finally:
         for m, names, buffers, nonpersistent in state:
             for name in set(vars(m)) - names:
@@ -307,7 +469,7 @@ def capture_signature(gm, model):
             for component in str(node.target).split("."):
                 target = getattr(target, component)
         result.append((node.op, encode(target), encode(node.args), encode(node.kwargs)))
-    return tuple(result)
+    return (*result, ("static_metadata", gm.meta.get("kirigami_static_metadata", ())))
 
 
 def validate_attribute_changes(model, registry, original_signature, updates):
@@ -366,8 +528,8 @@ def validate_attribute_changes(model, registry, original_signature, updates):
         ) from error
 
 
-def _reject_parameter_writes(gm, registry):
-    """Reject recognized parameter-alias writes before metadata execution."""
+def _reject_parameter_writes(gm, registry, isolated_buffers):
+    """Reject parameter or unisolated constant writes before metadata execution."""
     tainted = set()
     aliases, written = {}, set()
     buffers = {id(b) for b in gm.buffers()}
@@ -377,6 +539,7 @@ def _reject_parameter_writes(gm, registry):
         rule = registry.lookup(node, module)
         if rule is not None:
             rule.preflight(node, module)
+        effects = rule.effects(node, module) if rule is not None else CallEffects()
         if node.op == "get_attr":
             value = gm
             for component in str(node.target).split("."):
@@ -386,16 +549,14 @@ def _reject_parameter_writes(gm, registry):
             if id(value) in buffers:
                 aliases[node] = {id(value)}
         inputs = set(node.all_input_nodes)
-        mutates = (
-            (rule.effects(node, module).mutates_input if rule is not None else False)
-            or named_inplace(node)
-            or node.kwargs.get("inplace") is True
-        )
+        mutates = effects.mutates_input or named_inplace(node) or node.kwargs.get("inplace") is True
         if node.op == "call_module":
-            mutates = mutates or getattr(gm.get_submodule(str(node.target)), "inplace", False)
+            mutates = mutates or getattr(module, "inplace", False)
         sources = set().union(*(aliases.get(n, set()) for n in inputs))
         if mutates:
             written.update(sources)
+            if sources - isolated_buffers:
+                raise CaptureError(f"Unisolated Tensor constant write at {node.name}")
         if mutates and inputs & tainted:
             raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
         out = node.kwargs.get("out")
@@ -408,10 +569,9 @@ def _reject_parameter_writes(gm, registry):
                 out = bound.arguments.get("out", out)
         if out is not None:
             raise CaptureError(f"out= mutation is unsupported at {node.name}")
-        fresh = rule.effects(node, module).fresh_output if rule is not None else False
-        if not fresh and sources:
+        if not effects.fresh_output and sources:
             aliases.setdefault(node, set()).update(sources)
-        if inputs & tainted and not fresh:
+        if inputs & tainted and not effects.fresh_output:
             # Conservative over-approximation: no unsafe alias write is assumed harmless.
             tainted.add(node)
     return written
@@ -507,7 +667,7 @@ def capture(
         try:
             gm = trace_module(model, registry, buffer_sources=aliases)
             captured_signature = capture_signature(gm, model)
-            written = _reject_parameter_writes(gm, registry)
+            written = _reject_parameter_writes(gm, registry, set(aliases))
             versions = [(b, _tensor_version(b)) for b in gm.buffers()]
             bound = signature.bind(*safe_args, **safe_kwargs)
             metadata = _MetadataPropagator(gm, bound.arguments)

@@ -10,11 +10,28 @@ from torch import fx
 from ..contracts import Diagnostic, ShapeExpr
 from ..errors import UnsupportedOperation
 from ..operation import PartitionedLayout, argument_locations
+from ..regions import concatenated_shape
 from ..selection import TensorRef
 
 
 class _PendingLayout(Exception):
     """Known structure whose partition counts still need a legal completion."""
+
+
+def shape_expression(ctx, value):
+    """Resolve dimension provenance without guessing from numeric equality."""
+    if isinstance(value, fx.Node):
+        return ctx.expressions.get(value, ShapeExpr("unknown", value.name))
+    if isinstance(value, (tuple, list)):
+        return ShapeExpr("tuple", args=tuple(shape_expression(ctx, v) for v in value))
+    if isinstance(value, int):
+        return ShapeExpr("infer" if value == -1 else "constant", value)
+    return ShapeExpr("unknown", repr(value))
+
+
+def has_known_provenance(expr):
+    """Check whether every leaf of a shape expression has known provenance."""
+    return expr.kind != "unknown" and all(has_known_provenance(arg) for arg in expr.args)
 
 
 def expression_for(ctx):
@@ -131,13 +148,15 @@ def dependencies(ctx):
 class CallArgumentConstraint:
     """Check immutable scalar provenance independently of removal propagation.
 
-    Only expression/value pairs are retained; no FX node, model, or mutable
-    OperationContext escapes through graph and impact constraint inspection.
+    Expressions, observed values, layouts, and an optional conditional hint are
+    retained. No FX node, model, or mutable OperationContext escapes through graph
+    and impact constraint inspection. The hint is displayed only on a violation.
     """
 
     node: str
     arguments: tuple[tuple[ShapeExpr, int | tuple[int, ...]], ...]
     layouts: tuple[PartitionedLayout, ...] = ()
+    hint: str = ""
 
     def __post_init__(self):
         arguments = tuple(
@@ -150,6 +169,8 @@ class CallArgumentConstraint:
                 or (isinstance(value, tuple) and all(isinstance(item, int) for item in value))
             ):
                 raise TypeError("Call argument checks require shape expressions and integer values")
+        if not isinstance(self.hint, str):
+            raise TypeError("Call argument hint must be text")
         object.__setattr__(self, "arguments", arguments)
         object.__setattr__(self, "layouts", tuple(self.layouts))
 
@@ -214,17 +235,10 @@ class CallArgumentConstraint:
                 if layout.tensor != ref:
                     continue
                 segments = layout.retained_regions(selection)
-                sizes = [tuple(len(a) for a in r.axes) for r in segments]
-                if not sizes or any(
-                    a != b
-                    for size in sizes[1:]
-                    for d, (a, b) in enumerate(zip(sizes[0], size, strict=True))
-                    if d != layout.concat_dim
-                ):
-                    raise _PendingLayout("Partitioned shape needs further balancing")
-                result = list(sizes[0])
-                result[layout.concat_dim] = sum(s[layout.concat_dim] for s in sizes)
-                shapes.append(tuple(result))
+                try:
+                    shapes.append(concatenated_shape(segments, layout.concat_dim))
+                except ValueError as error:
+                    raise _PendingLayout("Partitioned shape needs further balancing") from error
             if shapes and all(s == shapes[0] for s in shapes):
                 return shapes[0]
             raise _PendingLayout("Compact layout has not been established")
@@ -247,7 +261,8 @@ class CallArgumentConstraint:
         if changed:
             return Diagnostic(
                 "changed_arguments",
-                "Compaction changes a semantic argument in the original forward",
+                "Compaction changes a semantic argument in the original forward"
+                + (f". {self.hint}" if self.hint else ""),
                 "conflict",
                 self.node,
             )

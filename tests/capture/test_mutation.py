@@ -9,6 +9,7 @@ from torch.nn.modules.module import register_module_buffer_registration_hook
 
 from tests.support.pruning import build
 from torch_kirigami import (
+    CallEffects,
     CaptureError,
     DependencyGraph,
     OperatorRegistry,
@@ -183,5 +184,44 @@ def test_shared_effect_detection_still_rejects_real_parameter_writes(target):
     gm = torch.fx.GraphModule(model, graph)
     assert native_effects(node, None, fresh_output=False).mutates_input
     with pytest.raises(CaptureError, match="write"):
-        _reject_parameter_writes(gm, OperatorRegistry.default())
+        _reject_parameter_writes(gm, OperatorRegistry.default(), set())
     torch.testing.assert_close(model.weight, torch.ones(3))
+
+
+@pytest.mark.parametrize("fresh_output", [False, True])
+def test_capture_queries_each_call_effect_once(fresh_output, execution_device):
+    class Copy(nn.Module):
+        def forward(self, x):
+            return x.clone()
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.arange(16.0).reshape(4, 4) - 8)
+            self.copy = Copy()
+
+        def forward(self, x):
+            return x @ self.copy(self.weight).relu_()
+
+    calls = []
+
+    def effects(node, module):
+        calls.append((node.name, module))
+        return CallEffects(fresh_output=fresh_output)
+
+    registry = OperatorRegistry.default().register(
+        Copy, OperatorRule(lambda ctx: OperatorSpec(), effects=effects)
+    )
+    model = Model()
+    original = model.weight.detach().clone()
+    sample = torch.ones(2, 4)
+    if fresh_output:
+        graph = DependencyGraph.build(model, args=(sample,), operators=registry)
+        assert calls == [(graph.calls("copy")[0].name, model.copy)]
+        torch.testing.assert_close(model(sample), sample @ original.clamp_min(0))
+    else:
+        with pytest.raises(CaptureError, match="Parameter/alias write"):
+            DependencyGraph.build(model, args=(sample,), operators=registry)
+        assert len(calls) == 1 and calls[0][1] is model.copy
+    torch.testing.assert_close(model.weight, original)
+    assert model.weight.grad is None

@@ -50,12 +50,48 @@ class ParameterGroup:
         return tuple((bindings[s.tensor], s) for s in self.selections)
 
 
-def unique_groups(groups):
-    """Canonicalize equivalent groups without merging partially overlapping groups."""
-    result = []
-    for group in groups:
+def group_equivalence_classes(groups):
+    """Return original indices partitioned by geometric group equality.
+
+    Element counts and axis bounds are decomposition-independent bucket keys,
+    not equality proofs. Bounds avoid materializing a potentially fragmented
+    projection that could exceed the coordinate budget of otherwise valid regions.
+    Exact comparison still resolves bucket collisions.
+    """
+    groups = tuple(groups)
+    buckets, classes = {}, []
+    for index, group in enumerate(groups):
         if not isinstance(group, ParameterGroup):
             raise TypeError("Expected ParameterGroup")
-        if not any(group.equivalent(old) for old in result):
-            result.append(group)
-    return tuple(result)
+        signature = (
+            id(group.graph),
+            tuple(
+                (
+                    selection.tensor,
+                    selection.count,
+                    tuple(
+                        (
+                            min(r.axes[d].intervals[0][0] for r in selection.regions),
+                            max(r.axes[d].intervals[-1][1] for r in selection.regions),
+                        )
+                        for d in range(len(selection.tensor.shape))
+                    ),
+                )
+                for selection in group.selections
+            ),
+        )
+        bucket = buckets.setdefault(signature, [])
+        for number in bucket:
+            if group.equivalent(groups[classes[number][0]]):
+                classes[number].append(index)
+                break
+        else:
+            bucket.append(len(classes))
+            classes.append([index])
+    return tuple(tuple(indices) for indices in classes)
+
+
+def unique_groups(groups):
+    """Canonicalize equivalent groups without merging partially overlapping groups."""
+    groups = tuple(groups)
+    return tuple(groups[indices[0]] for indices in group_equivalence_classes(groups))

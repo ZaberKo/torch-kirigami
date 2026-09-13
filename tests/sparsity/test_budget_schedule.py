@@ -189,3 +189,17 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     resumed.load_state_dict(accounting.state_dict(), fresh)
     assert resumed.state_dict() == accounting.state_dict()
     assert resumed.budget(fresh, 0.99).counts == (0 if scope == "global" else (0,))
+
+
+@pytest.mark.parametrize(
+    "start,end", [(1e308, -1e308), (-1e308, 1e308), (1.7e308, 1.6e308), (-1.7e308, -1.6e308)]
+)
+@pytest.mark.parametrize("power", [1, 2, 0.5])
+def test_finite_extreme_schedule_endpoints_do_not_overflow(start, end, power):
+    schedule = Polynomial(start, end, 12, begin=2, power=power)
+    assert schedule(0) == schedule(2) == start
+    assert schedule(12) == schedule(13) == end
+    # Scale endpoints into a safe independent reference domain before interpolation.
+    fraction = 0.5**power
+    expected = ((1 - fraction) * (start / 1e308) + fraction * (end / 1e308)) * 1e308
+    assert schedule(7) == pytest.approx(expected)

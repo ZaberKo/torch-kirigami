@@ -49,6 +49,10 @@ def freeze(value, *, _depth=0):
         return FrozenScalar(type(value).__name__, value.hex() if type(value) is float else value)
     if type(value) is torch.Size:
         return FrozenScalar("size", tuple(value))
+    if type(value) is torch.device:
+        return FrozenScalar("device", str(value))
+    if type(value) in (torch.dtype, torch.layout, torch.memory_format):
+        return FrozenScalar(type(value).__name__, str(value).removeprefix("torch."))
     if type(value) is dict:
         return FrozenDict(
             tuple(
@@ -69,6 +73,13 @@ def thaw(value):
     if isinstance(value, FrozenScalar):
         if value.kind == "size":
             return torch.Size(value.value)
+        if value.kind == "device":
+            return torch.device(value.value)
+        if value.kind in ("dtype", "layout", "memory_format"):
+            result = getattr(torch, value.value, None)
+            if type(result).__name__ != value.kind:
+                raise ValueError("Invalid PyTorch configuration constant")
+            return result
         return float.fromhex(value.value) if value.kind == "float" else value.value
     if isinstance(value, FrozenDict):
         return {thaw(k): thaw(v) for k, v in value.items}

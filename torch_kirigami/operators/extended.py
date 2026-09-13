@@ -12,6 +12,7 @@ from ..contracts import AxisBarrier, Requirement
 from ..errors import CaptureError, UnsupportedOperation
 from ..operation import CandidateAxis, OperatorRule, OperatorSpec, OutputContract
 from ..relations import ReshapeRelation
+from ..selection import TensorRef
 from .effects import native_effects
 from .native import (
     affine_layouts,
@@ -54,7 +55,13 @@ def channel_operator(ctx):
             )
             for d in range(channel + 1, len(tensor.shape))
         )
-    return OperatorSpec(tuple(relations), tuple(constraints), contract=OutputContract())
+    # Pooling/interpolation can select different layouts by backend and grad
+    # path. Meta remains useful for shape checks, not for a compact stride proof.
+    return OperatorSpec(
+        tuple(relations),
+        tuple(constraints),
+        contract=OutputContract(output_layout="backend_dependent"),
+    )
 
 
 def padding(ctx):
@@ -76,7 +83,7 @@ def padding(ctx):
             for t in (x, y)
             for d in sorted(changed)
         ),
-        contract=OutputContract(),
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
@@ -170,8 +177,17 @@ def normalize(ctx):
 def cast(ctx):
     """Preserve input coordinates; a dtype/device reference contributes no axes."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
+    copy_output = False
+    if ctx.node.target == "to":
+        position = (
+            3 if len(ctx.args) > 1 and isinstance(ctx.args[1], (torch.dtype, TensorRef)) else 4
+        )
+        copy_output = ctx.argument("copy", position, False)
+        if type(copy_output) is not bool:
+            raise UnsupportedOperation("Tensor.to copy must be a static boolean")
     return OperatorSpec(
-        (ReshapeRelation(x, y, ctx.node.name),), contract=OutputContract(output_layout="cast")
+        (ReshapeRelation(x, y, ctx.node.name),),
+        contract=OutputContract(output_layout="cast", copy_output=copy_output),
     )
 
 

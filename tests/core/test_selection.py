@@ -84,6 +84,12 @@ def test_region_algebra_against_independent_sets():
     for _ in range(80):
         a, b = sample(), sample()
         sa, sb = coordinates(a), coordinates(b)
+        assert (a == b) == (sa == sb)
+        assert (b == a) == (sb == sa)
+        pointwise = Selection(
+            ref, tuple(Region(tuple(IndexSet.of([i]) for i in point)) for point in sorted(sa))
+        )
+        assert a == pointwise and pointwise == a
         assert coordinates(a.union(b)) == sa | sb
         assert coordinates(a.subtract(b)) == sa - sb
         assert a.count == len(sa)

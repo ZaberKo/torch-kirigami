@@ -13,7 +13,7 @@ from ..selection import TensorRef
 from .candidates import CandidateSpace, interface_constraints
 from .plan import PruningPlan, PruningResult
 from .planner import Greedy, PlanningContext
-from .recipes import coordinate_mapping
+from .recipes import compact_stride, coordinate_mapping
 from .rewrite import compile_recipes
 from .state import (
     attribute,
@@ -239,17 +239,15 @@ class Pruner:
                     )
                 parts = [gather_region(old.detach(), r) for r in recipe.segments]
                 data = parts[0] if len(parts) == 1 else torch.cat(parts, dim=recipe.concat_dim)
-                fmt = (
-                    torch.contiguous_format
-                    if recipe.memory_format == "contiguous"
-                    else getattr(torch, recipe.memory_format)
-                )
-                # Gather/cat already owns storage. Only a no-op selection can
-                # still alias the source; layout conversion also allocates once.
-                if storage_key(data) == storage_key(old):
-                    data = data.clone(memory_format=fmt)
-                elif not data.is_contiguous(memory_format=fmt):
-                    data = data.contiguous(memory_format=fmt)
+                stride = compact_stride(recipe.shape, recipe.memory_format)
+                # A singleton dimension can satisfy multiple memory formats with
+                # different strides. Allocate the exact contract, not just a format.
+                if storage_key(data) == storage_key(old) or data.stride() != stride:
+                    packed = torch.empty_strided(
+                        recipe.shape, stride, dtype=data.dtype, device=data.device
+                    )
+                    packed.copy_(data)
+                    data = packed
                 del parts
                 new = (
                     nn.Parameter(data, requires_grad=old.requires_grad)
@@ -258,7 +256,7 @@ class Pruner:
                 )
                 replacements.append((states[recipe.tensor.paths[0]], old, new))
         check_structure(self.model, plan.before)
-        record = managed_record(self.model, plan.after, plan.attributes)
+        record = managed_record(self.model, plan.after, (a.path for a in plan.attributes))
         commit(self.model, replacements, plan.attributes, record, expected=plan.after)
         if self.graph is not None and (plan.recipes or plan.attributes):
             self.graph.invalidate()

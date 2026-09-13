@@ -105,19 +105,22 @@ def transformed(before, recipes, attributes):
     consumed = set()
     for state in before.modules:
         attrs = dict(state.attributes)
+        assigned = {}
         for path in state.paths:
-            for name in tuple(attrs):
+            for name, old in attrs.items():
                 key = f"{path}.{name}".lstrip(".")
-                if key in edits:
-                    edit = edits[key]
-                    if dict(state.attributes)[name] != freeze(thaw(edit.old)):
-                        raise ValueError(f"Attribute precondition mismatch: {key}")
-                    if name in {k for k, v in state.attributes if v != attrs[k]} and attrs[
-                        name
-                    ] != freeze(thaw(edit.new)):
-                        raise ValueError("Shared attribute edits disagree")
-                    attrs[name] = freeze(thaw(edit.new))
-                    consumed.add(key)
+                if key not in edits:
+                    continue
+                edit = edits[key]
+                if old != freeze(thaw(edit.old)):
+                    raise ValueError(f"Attribute precondition mismatch: {key}")
+                new = freeze(thaw(edit.new))
+                # All aliases describe one final assignment, including a no-op.
+                if name in assigned and assigned[name] != new:
+                    raise ValueError("Shared attribute edits disagree")
+                assigned[name] = new
+                consumed.add(key)
+        attrs.update(assigned)
         modules.append(replace(state, attributes=tuple(sorted(attrs.items()))))
     if consumed != set(edits):
         raise ValueError("Attribute recipe has no portable original binding")
@@ -267,10 +270,10 @@ def commit(model, replacements, attributes, record, *, expected):
         ) from error
 
 
-def managed_record(model, structure, attributes=()):
+def managed_record(model, structure, attribute_paths=()):
     """Track managed structure without retaining weights, runtime graphs, or history."""
     previous = getattr(model, STRUCTURE_ATTRIBUTE, {})
-    paths = set(previous.get("attributes", ())) | {a.path for a in attributes}
+    paths = set(previous.get("attributes", ())) | set(attribute_paths)
     values = []
     for path in sorted(paths):
         parent, _, name = path.rpartition(".")

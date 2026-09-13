@@ -106,3 +106,9 @@ python gate_pruning.py --model vit_b_16 --device cuda --compile \
 ```
 
 These commands also perform the workflow's task-specific evaluation or training; they are not isolated benchmark-only commands. See the workflow README for required ImageNet splits and training controls.
+
+Inputs sharing identity or storage with Tensor leaves of ordinary model attributes
+are isolated together and temporarily rebound, including nested containers. Shared input/container identity is retained as well, including empty containers; same-device measurement does not rebuild that tree.
+Bindings are restored on both success and failure. Moving only the input to another
+device would break this relationship and is rejected; move the model-owned state
+and its shared input together before measuring.

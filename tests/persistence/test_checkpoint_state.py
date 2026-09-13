@@ -29,8 +29,6 @@ class ParentState(nn.Module):
 
     def set_extra_state(self, state):
         self.child.state = state
-        self.drop = nn.Dropout(1)
-        self.layers = [self.drop]
 
 
 @pytest.mark.parametrize("copy_behavior", ["self", "raise"])
@@ -54,11 +52,13 @@ def test_checkpoint_shells_bypass_copy_and_preserve_failure_state(
         def forward(self, x):
             return self.alias(x * self.weight + self.offset)
 
-        def _load_from_state_dict(self, *args, **kwargs):
+        def get_extra_state(self):
+            return None
+
+        def set_extra_state(self, state):
             if reject_load:
                 self.weight.fill_(99)
                 raise RuntimeError("Rejected on the isolated shell")
-            return super()._load_from_state_dict(*args, **kwargs)
 
     source, target = CustomCopy(), CustomCopy()
     with torch.no_grad():
@@ -132,7 +132,7 @@ def test_native_extra_state_roundtrip_and_failure_isolation():
     assert restored.state == model.state
 
 
-def test_parent_extra_state_commits_entire_final_module_graph(execution_device):
+def test_parent_extra_state_restores_child_data_without_replacing_modules(execution_device):
     source = ParentState()
     source.child.state = {"scale": 3}
     stream = io.BytesIO()
@@ -256,3 +256,76 @@ def test_checkpoint_extra_state_transaction_restores_deleted_attributes(monkeypa
         load_checkpoint(target, stream)
     assert target.cache is old_cache and target.layers is old_layers
     assert target.layers[0] is target.drop
+
+
+def test_parent_data_setter_observes_initialized_final_child_values(execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.child = nn.Linear(2, 2)
+            self.scale = torch.zeros(2)
+
+        def forward(self, x):
+            return self.child(x) + self.scale
+
+        def get_extra_state(self):
+            return {"scale": self.scale - self.child.weight.detach().sum(dim=1)}
+
+        def set_extra_state(self, state):
+            self.scale = state["scale"] + self.child.weight.detach().sum(dim=1)
+
+    source, target = Model(), Model()
+    with torch.no_grad():
+        source.child.weight.fill_(3)
+        source.child.bias.fill_(1)
+        target.child.weight.fill_(19)
+        source.scale.fill_(2)
+    stream = io.BytesIO()
+    save_checkpoint(source, stream)
+    stream.seek(0)
+    load_checkpoint(target, stream)
+    x = torch.ones(1, 2, requires_grad=True)
+    torch.testing.assert_close(target(x), torch.full((1, 2), 9.0))
+    target(x).sum().backward()
+    torch.testing.assert_close(x.grad, torch.full((1, 2), 6.0))
+
+
+def test_shared_module_extra_state_is_restored_once(execution_device):
+    calls = {"get": 0, "set": 0}
+
+    class Child(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.ones(2))
+            self.scale = 1
+
+        def forward(self, x):
+            return x * self.weight * self.scale
+
+        def get_extra_state(self):
+            calls["get"] += 1
+            return {"scale": self.scale}
+
+        def set_extra_state(self, state):
+            calls["set"] += 1
+            self.scale = state["scale"]
+
+    child = Child()
+    child.scale = 3
+    source = nn.ModuleDict({"left": child, "right": child})
+    stream = io.BytesIO()
+    save_checkpoint(source, stream)
+    assert calls == {"get": 1, "set": 0}
+    stream.seek(0)
+    payload = torch.load(stream, weights_only=True)
+    assert set(payload["state_dict"]) == {"left.weight", "right.weight", "left._extra_state"}
+    other = Child()
+    target = nn.ModuleDict({"left": other, "right": other})
+    stream.seek(0)
+    load_checkpoint(target, stream)
+    assert calls == {"get": 1, "set": 1}
+    assert target["left"] is target["right"] is other
+    x = torch.ones(2)
+    torch.testing.assert_close(target["right"](x), torch.full((2,), 3.0))
+    target["right"](x).sum().backward()
+    torch.testing.assert_close(other.weight.grad, torch.full((2,), 3.0))

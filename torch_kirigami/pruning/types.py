@@ -13,6 +13,7 @@ from ..contracts import Impact, Requirement
 from ..errors import KirigamiError
 from ..graph import DependencyGraph
 from ..operation import OperationContext, OperatorSpec
+from ..regions import concatenated_shape
 from ..selection import AxisRef, Region, Selection, TensorRef, resolve_reference
 
 
@@ -193,27 +194,16 @@ class TensorRecipe:
             if not isinstance(region, Region) or region.empty:
                 raise ValueError("Recipe segments must be nonempty regions")
             Selection(self.tensor, (region,))
-        shapes = [tuple(map(len, r.axes)) for r in segments]
-        if any(
-            a != b
-            for size in shapes[1:]
-            for dim, (a, b) in enumerate(zip(shapes[0], size, strict=True))
-            if dim != self.concat_dim
-        ):
-            raise ValueError("Recipe segments cannot concatenate")
-        if rank == 0 and len(segments) != 1:
-            raise ValueError("Scalar recipe must have exactly one segment")
+        try:
+            concatenated_shape(segments, self.concat_dim)
+        except ValueError as error:
+            raise ValueError("Recipe segments cannot concatenate") from error
         object.__setattr__(self, "segments", segments)
 
     @property
     def shape(self):
         """Return the resulting tensor shape without allocating tensor data."""
-        shapes = [tuple(len(a) for a in r.axes) for r in self.segments]
-        if len(shapes) == 1:
-            return shapes[0]
-        result = list(shapes[0])
-        result[self.concat_dim] = sum(s[self.concat_dim] for s in shapes)
-        return tuple(result)
+        return concatenated_shape(self.segments, self.concat_dim)
 
 
 @dataclass(frozen=True)

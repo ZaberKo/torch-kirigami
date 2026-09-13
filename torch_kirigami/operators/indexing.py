@@ -9,7 +9,7 @@ from torch.nn import functional as F
 
 from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
 from ..errors import UnsupportedOperation
-from ..operation import OperatorSpec
+from ..operation import OperatorSpec, OutputContract
 from ..relations import (
     AxisPort,
     AxisRelation,
@@ -256,6 +256,7 @@ def channel_shuffle(ctx):
                 x.axis(1), tuple(IndexSet.span(g * width, (g + 1) * width) for g in range(groups))
             ),
         ),
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
@@ -286,7 +287,11 @@ def pixel_shuffle(ctx):
         for t in (x, y)
         for d in range(channel + 1, len(x.shape))
     )
-    return OperatorSpec(tuple(relations), constraints)
+    return OperatorSpec(
+        tuple(relations),
+        constraints,
+        contract=OutputContract(output_layout="backend_dependent"),
+    )
 
 
 def unfold_fold(ctx):

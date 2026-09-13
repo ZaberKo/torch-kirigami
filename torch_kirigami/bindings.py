@@ -56,30 +56,42 @@ def copy_module_state(original, shell, memo):
             object.__setattr__(shell, name, copy.deepcopy(value, memo))
 
 
-def _leaves(value, path=(), seen=None):
+def _reference_nodes(value, seen=None, *, include_containers=False):
+    """Yield supported objects, stopping cycles within each container path."""
     if isinstance(value, torch.Tensor):
-        yield path, value
+        yield value
     elif type(value) in (tuple, list, dict):
         seen = set() if seen is None else seen
         if id(value) in seen:
             return
         seen = seen | {id(value)}
+        if include_containers:
+            yield value
         entries = value.items() if type(value) is dict else enumerate(value)
         for key, item in entries:
-            children = tuple(_leaves(item, (), seen))
-            if not children:
-                continue
-            # Only immutable keys can become portable reference paths.
+            # Validate keys even when values contain no tensors: a Tensor or
+            # Module key can itself hide a binding used by the original forward.
             try:
-                token = freeze(key)
+                freeze(key)
             except TypeError as error:
                 raise CaptureError("Unsupported key in ordinary model container") from error
-            for suffix, tensor in children:
-                yield (*path, (type(value).__name__, token), *suffix), tensor
+            yield from _reference_nodes(item, seen, include_containers=include_containers)
+
+
+def reference_nodes(value):
+    """Return supported Tensor and container objects, including empty containers."""
+    return tuple(_reference_nodes(value, include_containers=True))
+
+
+def ordinary_tensors(model):
+    """Yield Tensor leaves of supported ordinary model attributes."""
+    for module in model.modules():
+        for _, value in ordinary_attributes(module):
+            yield from _reference_nodes(value)
 
 
 def reference_signature(model):
-    """Record container paths to registered tensors; reject separate storage views.
+    """Record tensor aliases and ordinary-constant premises; reject storage views.
 
     Plain lists, tuples, dictionaries, and direct Tensor attributes are supported.
     Arbitrary custom objects are not traversed and must not hide tensor bindings.
@@ -98,6 +110,20 @@ def reference_signature(model):
             return ("tensor", registered[id(value)][0]), True
         if id(value) in modules:
             return ("module", modules[id(value)]), True
+        if isinstance(value, torch.Tensor):
+            # Ordinary constants need portable structural guards too. Their
+            # numerical values remain constructor-owned unless saved as extra state.
+            return (
+                "constant_tensor",
+                f"{type(value).__module__}.{type(value).__qualname__}",
+                tuple(value.shape),
+                tuple(value.stride()),
+                str(value.dtype),
+                str(value.device),
+                value.requires_grad,
+                value.is_conj(),
+                value.is_neg(),
+            ), True
         if type(value) in (tuple, list, dict):
             if id(value) in active:
                 return ("cycle", active.index(id(value))), False
@@ -118,7 +144,7 @@ def reference_signature(model):
 
     for path, module in model.named_modules():
         for name, value in ordinary_attributes(module):
-            for _, tensor in _leaves(value):
+            for tensor in _reference_nodes(value):
                 binding = registered.get(id(tensor))
                 if binding is None and (
                     tensor.layout == torch.strided
@@ -142,21 +168,25 @@ def reference_edits(model, replacements):
     edits = []
     for path, module in model.named_modules():
         for name, value in ordinary_attributes(module):
-            leaves = tuple(_leaves(value))
-            if not any(id(t) in replacements for _, t in leaves):
+            nodes = reference_nodes(value)
+            if not any(id(t) in replacements for t in nodes):
                 continue
             # Unrelated constant tensors must retain identity/storage too.
-            memo.update((id(t), t) for _, t in leaves if id(t) not in replacements)
+            memo.update(
+                (id(t), t)
+                for t in nodes
+                if isinstance(t, torch.Tensor) and id(t) not in replacements
+            )
             edits.append(AttributeEdit(f"{path}.{name}".lstrip("."), copy.deepcopy(value, memo)))
     return tuple(edits)
 
 
 def final_state_edits(model, prepared):
-    """Transfer ordinary state from the final prepared graph, remapping modules.
+    """Transfer ordinary data from validated shells without replacing modules.
 
-    A parent's extra-state setter may update or replace a child. The validated
-    final graph, rather than the original shell graph or setter ownership,
-    determines the object mapping and all assignments/deletions.
+    Checkpoint preparation has already verified that every registered module and
+    tensor keeps its prepared identity. Remap shell references to original modules
+    while preserving restored tensor aliases and shared ordinary containers.
     """
     memo = {id(prepared.get_submodule(path)): module for path, module in model.named_modules()}
     memo.update((id(t), t) for t in (*prepared.parameters(), *prepared.buffers()))
@@ -173,3 +203,20 @@ def final_state_edits(model, prepared):
             for name, value in new.items()
         )
     return tuple(edits)
+
+
+def reference_devices_match(expected, actual, devices):
+    """Compare ordinary references under a deterministic source/device mapping."""
+    if isinstance(expected, tuple) and isinstance(actual, tuple):
+        if len(expected) != len(actual):
+            return False
+        if len(expected) == 9 and expected[0] == actual[0] == "constant_tensor":
+            return (
+                actual[5] == devices.get(expected[5], expected[5])
+                and expected[:5] == actual[:5]
+                and expected[6:] == actual[6:]
+            )
+        return all(
+            reference_devices_match(a, b, devices) for a, b in zip(expected, actual, strict=True)
+        )
+    return expected == actual

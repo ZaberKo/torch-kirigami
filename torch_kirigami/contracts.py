@@ -31,6 +31,11 @@ class Diagnostic:
     tensors: tuple[str, ...] = ()
     complete: bool = True
 
+    def __str__(self):
+        """Render the category, available operation location, and actionable message."""
+        location = f" at {self.node}" if self.node else ""
+        return f"{self.code}{location}: {self.message}"
+
     def __post_init__(self):
         if self.severity not in ("unresolved", "conflict"):
             raise ValueError("Invalid diagnostic severity")

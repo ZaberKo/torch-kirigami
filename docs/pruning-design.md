@@ -152,6 +152,24 @@ flowchart TD
 
 `BudgetReport` records `axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`, `limit_reached`, and `exclusions`. Its `shortfall` is the unfilled target. A nonzero shortfall can result from coupling, protected dimensions, unsupported execution, or bounded search. `limit_reached=True` is not proof that no better solution exists.
 
+Greedy reports the latest failed joint attempt for each excluded candidate, including
+constraint codes and available operation locations, actual exceeded budget caps,
+and execution errors with conditional rewrite advice. A completion failure names
+its remaining constraint and the last blocking addition, when one was tested.
+Only one failure per candidate is retained; this is not an exhaustive search trace.
+A failure from before the accepted selection changed is explicitly labeled as an
+earlier, untried-again result when the trial limit stops search. Selected candidates
+and requests already covered by the joint selection have no stale exclusion.
+Failures before any valid request is found retain the empty-request diagnostic.
+
+Rewrite advice is emitted by the check that knows the cause. Layout-sensitive views
+may suggest reshape/contiguous when copying is acceptable; whole-shape reads may
+suggest size(dim) when only one dimension is needed; fixed reshape sizes and
+in-place writes have their own conditional advice. These suggestions never edit
+forward automatically or bypass coordinate, shape, or alias validation. The same
+messages are retained in manual errors, automatic exclusions, and serialized plans.
+
+
 ## Recipe compilation and extension points
 
 Analysis completeness is necessary but insufficient for physical execution. The compiler also checks layouts, shape-derived arguments, attribute updates, alias safety, and every activated execution requirement.
@@ -191,3 +209,29 @@ After a nonempty application, rebuild the dependency graph and all graph-bound g
 - Are plan serialization and apply independent of live graph identities and scoring callbacks?
 - Does a failure leave ordinary registered state unchanged wherever a transaction is promised?
 - Are numerical tests based on an independently constructed compact reference? Zeroing a group alone does not prove equivalence when normalization, bias, or other cross-coordinate behavior is involved.
+
+### Execution dtype and backend layout
+
+Compact metadata validation retains each port's captured dtype, including autocast outputs, while preserving its inferred strides. It does not execute the model or allocate real compact weights during planning. The captured execution context remains a premise; changing autocast settings is not automatically proved equivalent.
+
+Convolution (including transposed convolution), BatchNorm, GroupNorm and padding
+always retain unknown output strides. The validator does not infer layouts from
+CPU/CUDA, dtype, batch size, cuDNN versions or backend settings, and does not use
+captured output strides as proof of compact output strides. This uncertainty alone
+does not prevent channel pruning: it matters when an affected consumer needs a
+stride guarantee. A merging `view` is rejected with a conditional suggestion to use
+`reshape(...)` or `contiguous().view(...)` if copying is acceptable. These changes
+preserve tensor values/order for a valid target shape, but may change storage
+sharing; they do not repair hardcoded dimensions or index constraints.
+
+Cast rules normalize `Tensor.to` overloads into an explicit copy fact; device
+transfers also force a copy. No layout decision depends on native backend selection.
+Pooling, unpooling, interpolation and channel/pixel shuffle likewise retain unknown
+output strides. A generic shape proof still permits views that preserve the shape,
+insert/remove singleton axes, or split individual axes into consecutive factors.
+These transformations work for any legal input stride; they do not establish known
+strides for later consumers. A view merging separate non-singleton input axes still
+needs a layout proof and is conservatively rejected when none is available, even
+if a particular backend would execute it. Reshape or an explicit contiguous
+conversion remain alternatives. Shape-argument and original-coordinate checks
+apply in all cases; meta output strides alone are not an execution guarantee.

@@ -53,8 +53,16 @@ class Polynomial:
     def __call__(self, step):
         """Evaluate at an explicit step."""
         _step(step)
-        progress = min(1.0, max(0.0, (step - self.begin) / (self.finish - self.begin)))
-        return self.start + (self.end - self.start) * progress**self.power
+        if step <= self.begin:
+            return float(self.start)
+        if step >= self.finish:
+            return float(self.end)
+        progress = ((step - self.begin) / (self.finish - self.begin)) ** self.power
+        # Opposite signs can overflow end-start despite a finite convex result.
+        # Same-sign subtraction is bounded and avoids summing rounded endpoints.
+        if (self.start < 0) != (self.end < 0):
+            return (1 - progress) * self.start + progress * self.end
+        return self.start + (self.end - self.start) * progress
 
 
 def Linear(start, end, finish, *, begin=0):

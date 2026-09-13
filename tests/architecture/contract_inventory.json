@@ -317,6 +317,18 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "具体位置与有条件改写提示经手工异常、自动排除和静态计划往返保留；补选重试不留下过期失败",
+          "tests": [
+            "tests/integration/test_planning_diagnostics.py::test_manual_and_automatic_rewrite_diagnostics_survive_plan_roundtrip",
+            "tests/integration/test_planning_diagnostics.py::test_retry_replaces_old_failure_and_distinguishes_unfinished_search",
+            "tests/integration/test_planning_diagnostics.py::test_suggested_rewrites_preserve_original_values_and_allow_compaction"
+          ],
+          "conditions": "CPU/CUDA；覆盖列示的改写与搜索失败类别",
+          "gaps": [
+            "不自动证明任意用户代码改写等价；只给出已识别问题的有条件建议"
+          ]
         }
       ]
     },
@@ -446,6 +458,18 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "后端布局不按设备或cuDNN推断；允许单轴拆分并向后传递未知布局，显式contiguous恢复布局证明",
+          "tests": [
+            "tests/integration/test_backend_layouts.py::test_cudnn_settings_do_not_establish_layout",
+            "tests/integration/test_backend_layouts.py::test_padded_convolution_with_explicit_layout",
+            "tests/integration/test_backend_layouts.py::test_batchnorm_spatial_transpose_layout_is_unknown",
+            "tests/integration/test_view_guards.py::test_unknown_layout_views_use_shape_proofs_and_retain_uncertainty",
+            "tests/integration/test_view_guards.py::test_convolution_unknown_layout_allows_axis_split_only"
+          ],
+          "conditions": "CPU/CUDA，Conv/ConvTranspose 1D/2D/3D，BN/GN/padding，手工计划保存恢复和数值参考",
+          "gaps": []
         }
       ]
     },
@@ -492,6 +516,14 @@
             "tests/integration/test_review_optimizations.py::test_allocating_registered_families_support_inplace_consumers"
           ],
           "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
+        },
+        {
+          "behavior": "捕获对每次调用只求值一次效果事实；显式新存储允许后续写入，潜在参数别名仍拒绝",
+          "tests": [
+            "tests/capture/test_mutation.py::test_capture_queries_each_call_effect_once"
+          ],
+          "conditions": "CPU/CUDA；公共生命周期与失败状态检查",
           "gaps": []
         }
       ]
@@ -697,6 +729,18 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "具体位置与有条件改写提示经手工异常、自动排除和静态计划往返保留；补选重试不留下过期失败",
+          "tests": [
+            "tests/integration/test_planning_diagnostics.py::test_manual_and_automatic_rewrite_diagnostics_survive_plan_roundtrip",
+            "tests/integration/test_planning_diagnostics.py::test_retry_replaces_old_failure_and_distinguishes_unfinished_search",
+            "tests/integration/test_planning_diagnostics.py::test_suggested_rewrites_preserve_original_values_and_allow_compaction"
+          ],
+          "conditions": "CPU/CUDA；覆盖列示的改写与搜索失败类别",
+          "gaps": [
+            "不自动证明任意用户代码改写等价；只给出已识别问题的有条件建议"
+          ]
         }
       ]
     },
@@ -911,6 +955,14 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "共享属性的无变化与修改请求也必须一致，顺序无关且在提交前拒绝冲突",
+          "tests": [
+            "tests/integration/test_persistence.py::test_shared_attribute_recipes_require_one_final_value"
+          ],
+          "conditions": "CPU/CUDA；公共生命周期与失败状态检查",
+          "gaps": []
         }
       ]
     },
@@ -971,7 +1023,7 @@
           "tests": [
             "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process",
             "tests/persistence/test_checkpoint_validation.py::test_checkpoint_rejects_corrupt_alias_values_before_mutation",
-            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_commits_entire_final_module_graph",
+            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_restores_child_data_without_replacing_modules",
             "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
             "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings",
             "tests/persistence/test_checkpoint_state.py::test_checkpoint_shells_bypass_copy_and_preserve_failure_state"
@@ -989,7 +1041,7 @@
           "tests": [
             "tests/persistence/test_process.py::test_checkpoint_and_plan_load_in_fresh_process",
             "tests/persistence/test_checkpoint_validation.py::test_checkpoint_rejects_corrupt_alias_values_before_mutation",
-            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_commits_entire_final_module_graph",
+            "tests/persistence/test_checkpoint_state.py::test_parent_extra_state_restores_child_data_without_replacing_modules",
             "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
             "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings"
           ],
@@ -1285,6 +1337,18 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "具体位置与有条件改写提示经手工异常、自动排除和静态计划往返保留；补选重试不留下过期失败",
+          "tests": [
+            "tests/integration/test_planning_diagnostics.py::test_manual_and_automatic_rewrite_diagnostics_survive_plan_roundtrip",
+            "tests/integration/test_planning_diagnostics.py::test_retry_replaces_old_failure_and_distinguishes_unfinished_search",
+            "tests/integration/test_planning_diagnostics.py::test_suggested_rewrites_preserve_original_values_and_allow_compaction"
+          ],
+          "conditions": "CPU/CUDA；覆盖列示的改写与搜索失败类别",
+          "gaps": [
+            "不自动证明任意用户代码改写等价；只给出已识别问题的有条件建议"
+          ]
         }
       ]
     },
@@ -1421,6 +1485,14 @@
             "tests/integration/test_review_optimizations.py::test_batched_regularizer_has_independent_loss_and_gradient_reference"
           ],
           "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
+        },
+        {
+          "behavior": "混合规则、非规则和标量组只读取一次绑定；回退不重复计分且读取训练后新值",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_mixed_group_reductions_share_bindings_and_count_each_region_once"
+          ],
+          "conditions": "CPU/CUDA；公共生命周期与失败状态检查",
           "gaps": []
         }
       ]
@@ -1762,6 +1834,72 @@
           "tests": [
             "tests/integration/test_review_state_boundaries.py::test_dictionary_configuration_is_guarded_through_plan_and_checkpoint"
           ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.capture._TraceDataGuard",
+      "contracts": [
+        {
+          "behavior": "未记录的 Tensor 数据决策拒绝；元数据配置允许；捕获失败保持状态",
+          "tests": [
+            "tests/integration/test_constant_guards.py::test_eager_data_decisions_fail_before_a_partial_graph",
+            "tests/integration/test_constant_guards.py::test_guarded_metadata_and_python_configuration_allow_pruning"
+          ],
+          "conditions": "CPU/CUDA，PyTorch 2.6+；float32/float64（数值测试）",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.values._StableNorm",
+      "contracts": [
+        {
+          "behavior": "非零 subnormal 的归一化方向梯度；重叠及不规则参数区域",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_subnormal_group_gradient_matches_normalized_integer_reference"
+          ],
+          "conditions": "CPU/CUDA，PyTorch 2.6+；float32/float64（数值测试）",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.values._SegmentNorm",
+      "contracts": [
+        {
+          "behavior": "分组范数归约在外部strength下仍保持正确方向梯度",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_scaled_normal_group_penalties_have_stable_direction_gradients"
+          ],
+          "conditions": "CPU/CUDA，normal与subnormal边界",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.values._HalfSquared",
+      "contracts": [
+        {
+          "behavior": "半平方范数避免中间溢出和半梯度下溢",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_half_squared_loss_avoids_unnecessary_intermediate_range_loss"
+          ],
+          "conditions": "CPU/CUDA，float32极大和subnormal值",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.values._SquaredNorm",
+      "contracts": [
+        {
+          "behavior": "先归约组幅值再平方；独立Decimal损失与解析一二阶导参考",
+          "tests": [
+            "tests/sparsity/test_regularizers.py::test_squared_group_reduces_before_tiny_squares_are_rounded"
+          ],
+          "conditions": "CPU/CUDA，float32/64；subnormal损失和全零组",
           "gaps": []
         }
       ]

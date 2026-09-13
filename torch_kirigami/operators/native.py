@@ -5,7 +5,7 @@ from __future__ import annotations
 from math import prod
 
 import torch
-from torch import fx, nn
+from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import (
@@ -16,7 +16,6 @@ from ..contracts import (
     LayoutConstraint,
     NonEmpty,
     Requirement,
-    ShapeExpr,
 )
 from ..errors import UnsupportedOperation
 from ..operation import CandidateAxis, OperatorSpec, OutputContract, PartitionedLayout, tensors
@@ -30,6 +29,7 @@ from ..relations import (
     SliceRelation,
 )
 from ..selection import IndexSet, Region, TensorRef, full_region
+from .shapes import has_known_provenance, shape_expression
 
 
 def one(value):
@@ -233,7 +233,7 @@ def convolution(ctx):
         tuple(requirements),
         candidates=candidates,
         layouts=(PartitionedLayout(w, tuple(partitions)),),
-        contract=OutputContract(output_layout="convolution"),
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
@@ -247,7 +247,12 @@ def batch_norm(ctx):
         if value is not None:
             relations.append(equal(x, 1, one(value), 0, ctx.node.name))
     reqs = (requirement(ctx, "num_features", x, 1),) if ctx.module is not None else ()
-    return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), reqs)
+    return OperatorSpec(
+        tuple(relations),
+        (*affine_layouts(ctx), layout(ctx, y)),
+        reqs,
+        contract=OutputContract(output_layout="backend_dependent"),
+    )
 
 
 def layer_norm(ctx):
@@ -310,7 +315,10 @@ def group_norm(ctx):
     )
     reqs = (requirement(ctx, "num_channels", x, 1),) if ctx.module is not None else ()
     return OperatorSpec(
-        tuple(relations), (*constraints, *affine_layouts(ctx), layout(ctx, y)), reqs
+        tuple(relations),
+        (*constraints, *affine_layouts(ctx), layout(ctx, y)),
+        reqs,
+        contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
@@ -372,22 +380,6 @@ def permute(ctx):
     return OperatorSpec((PermuteRelation(x, y, dims, ctx.node.name),))
 
 
-def _expr(ctx, value):
-    """Resolve dimension provenance without guessing from numeric equality."""
-    if isinstance(value, fx.Node):
-        return ctx.expressions.get(value, ShapeExpr("unknown", value.name))
-    if isinstance(value, (tuple, list)):
-        return ShapeExpr("tuple", args=tuple(_expr(ctx, v) for v in value))
-    if isinstance(value, int):
-        return ShapeExpr("infer" if value == -1 else "constant", value)
-    return ShapeExpr("unknown", repr(value))
-
-
-def _known(expr):
-    """Check whether every leaf of a shape expression has known provenance."""
-    return expr.kind != "unknown" and all(_known(arg) for arg in expr.args)
-
-
 def reshape(ctx):
     """Map reshape coordinates and record dimension-source update requirements."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
@@ -412,9 +404,13 @@ def reshape(ctx):
     target = ctx.node.target
     if target in ("reshape", "view", torch.reshape):
         raw = ctx.raw_argument("shape", 1, variadic=True)
-        expression = _expr(ctx, raw)
-        if not _known(expression):
-            raise UnsupportedOperation("Cannot prove reshape size argument provenance")
+        expression = shape_expression(ctx, raw)
+        if not has_known_provenance(expression):
+            raise UnsupportedOperation(
+                "Cannot prove reshape size argument provenance. Express dimensions using "
+                "tensor.size(dim), supported integer arithmetic, or -1 where appropriate, "
+                "then rebuild the dependency graph. Keep algorithmic constants fixed."
+            )
         requirement_ = Requirement(
             "shape_arguments",
             ctx.node.name,
@@ -520,6 +516,12 @@ def getitem(ctx):
         )
     if not isinstance(index, tuple):
         index = (index,)
+    if any(item is None for item in index):
+        raise UnsupportedOperation(
+            "New-axis indexing is unsupported; use unsqueeze(dim) to insert singleton "
+            "dimensions separately from indexing, then rebuild the dependency graph. "
+            "Other indexing restrictions still apply."
+        )
     if sum(item is Ellipsis for item in index) > 1:
         raise UnsupportedOperation("Multiple ellipses")
     expanded = []
@@ -530,7 +532,7 @@ def getitem(ctx):
             expanded.append(item)
     expanded.extend([slice(None)] * (len(source.shape) - len(expanded)))
     if len(expanded) != len(source.shape):
-        raise UnsupportedOperation("New-axis/advanced indexing is unsupported; use unsqueeze")
+        raise UnsupportedOperation("Advanced indexing has no supported coordinate rule")
     normalized = []
     for size, item in zip(source.shape, expanded, strict=False):
         if isinstance(item, bool):

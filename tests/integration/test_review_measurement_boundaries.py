@@ -114,3 +114,138 @@ def test_measurement_refuses_alias_breaking_device_transfer(execution_device):
         measure_module_latency(model, (x, x.view(4)), device="cuda", warmup=0, repetitions=1)
     assert not model.called and model.training
     torch.testing.assert_close(x, torch.ones(4, device="cpu"))
+
+
+@pytest.mark.parametrize("latency", [False, True])
+@pytest.mark.parametrize("view", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_measurement_preserves_input_aliases_in_ordinary_attributes(
+    latency, view, fail, execution_device
+):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cached = torch.zeros(1, 4)
+            self.refs = {"cached": [self.cached.view(1, 4) if view else self.cached]}
+            self.small = nn.Linear(4, 2, bias=False)
+            self.large = nn.Linear(4, 10, bias=False)
+
+        def forward(self, x):
+            assert x is self.cached
+            if view:
+                assert x is not self.refs["cached"][0]
+            else:
+                assert x is self.refs["cached"][0]
+            x.add_(1)
+            torch.testing.assert_close(self.refs["cached"][0], x)
+            if fail:
+                raise RuntimeError("alias failure")
+            return self.small(x) if x is self.cached else self.large(x)
+
+    model = Model()
+    original, refs = model.cached, model.refs
+    before = original.clone()
+
+    def measure():
+        if latency:
+            return measure_module_latency(model, original, repetitions=1, warmup=0)
+        return calculate_model_complexity(model, original)
+
+    if fail:
+        with pytest.raises(RuntimeError, match="alias failure"):
+            measure()
+    else:
+        result = measure()
+        if not latency:
+            assert result.macs == 8
+    assert model.cached is original and model.refs is refs and model.training
+    torch.testing.assert_close(original, before)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_latency_preserves_cached_mha_identity(device):
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA required")
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cached = torch.randn(2, 8, 16, device=device)
+            self.attn = nn.MultiheadAttention(16, 4, batch_first=True, device=device)
+
+        def forward(self, x):
+            return self.attn(x, self.cached, self.cached)
+
+    model = Model().eval()
+    with torch.inference_mode(), profile(activities=[ProfilerActivity.CPU]) as direct:
+        model(model.cached)
+    with profile(activities=[ProfilerActivity.CPU]) as measured:
+        measure_module_latency(model, model.cached, repetitions=1, warmup=0)
+    name = "aten::_native_multi_head_attention"
+    assert any(e.name == name for e in direct.events())
+    assert any(e.name == name for e in measured.events())
+
+
+def test_measurement_rejects_moving_model_shared_inputs_independently(execution_device):
+    if execution_device != "cuda":
+        return
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.cached = torch.zeros(2, device="cpu")
+
+        def forward(self, x):
+            raise AssertionError("Must reject before execution")
+
+    model = Model()
+    original = model.cached
+    with pytest.raises(ValueError, match="model-shared inputs"):
+        measure_module_latency(model, original, device="cuda", repetitions=1, warmup=0)
+    assert model.cached is original and model.training
+
+
+@pytest.mark.parametrize("kind", ["list", "tuple", "dict", "empty"])
+@pytest.mark.parametrize("latency", [False, True])
+@pytest.mark.parametrize("fail", [False, True])
+def test_measurement_preserves_model_owned_input_containers(kind, latency, fail, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            x = torch.ones(1, 4)
+            self.cached = (
+                [x]
+                if kind == "list"
+                else (x,)
+                if kind == "tuple"
+                else {"x": x}
+                if kind == "dict"
+                else []
+            )
+            self.refs = {"alias": self.cached}
+            self.small = nn.Linear(4, 2, bias=False)
+            self.large = nn.Linear(4, 10, bias=False)
+
+        def forward(self, x):
+            assert x is self.cached is self.refs["alias"]
+            if fail:
+                raise RuntimeError("container failure")
+            data = torch.ones(1, 4) if kind == "empty" else x["x"] if kind == "dict" else x[0]
+            return self.small(data) if x is self.cached else self.large(data)
+
+    model = Model()
+    original, refs = model.cached, model.refs
+
+    def measure():
+        if latency:
+            return measure_module_latency(model, (original,), repetitions=1, warmup=0)
+        return calculate_model_complexity(model, (original,))
+
+    if fail:
+        with pytest.raises(RuntimeError, match="container failure"):
+            measure()
+    else:
+        result = measure()
+        if not latency:
+            assert result.macs == 8
+    assert model.cached is original and model.refs is refs

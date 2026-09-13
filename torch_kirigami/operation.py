@@ -252,17 +252,30 @@ class OutputContract:
 
     Native meta execution can check shapes but cannot prove backend strides.
     Shape argument permissions are described separately by requirements.
+
+    Attributes:
+        output_layout: ``backend_dependent`` always leaves output strides unknown;
+            ``unknown`` propagates input uncertainty through meta execution.
+            ``contiguous`` establishes layout independently of input strides;
+            ``cast`` additionally normalizes conversion arguments.
+        copy_output: A cast explicitly requests a new tensor even without a dtype
+            change. Conversion rules normalize the public overloads into this fact.
     """
 
-    output_layout: Literal["unknown", "contiguous", "convolution", "cast", "backend_dependent"] = (
-        "unknown"
-    )
+    output_layout: Literal[
+        "unknown",
+        "contiguous",
+        "cast",
+        "backend_dependent",
+    ] = "unknown"
+    copy_output: bool = False
 
     def __post_init__(self):
+        if type(self.copy_output) is not bool:
+            raise TypeError("Output copy contract must be boolean")
         if self.output_layout not in (
             "unknown",
             "contiguous",
-            "convolution",
             "cast",
             "backend_dependent",
         ):

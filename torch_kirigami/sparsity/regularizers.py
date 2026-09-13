@@ -4,9 +4,9 @@ import math
 
 import torch
 
-from ..pruning.groups import ParameterGroup
+from ..pruning.groups import ParameterGroup, group_equivalence_classes
 from ..selection import Selection, full_region
-from .values import group_penalties, group_values, reduction_plan, stable_norm
+from .values import group_penalty, group_values, reduction_plan, squared_norm, stable_norm
 
 
 def coefficients_for(count, coefficients):
@@ -34,23 +34,20 @@ class GroupLasso:
 
     Rebuild after structural changes. Calls do not mutate training state or
     retain graphs. Multiply the returned loss by an external overall strength.
-    Frozen parameters remain part of the mathematical objective.
+    Frozen parameters remain part of the mathematical objective. Built-in L2
+    penalties support first-order autograd only; double backward is unsupported.
     """
 
     def __init__(self, groups, *, coefficients=None):
         groups = tuple(groups)
         weights = coefficients_for(len(groups), coefficients)
         unique, unique_weights = [], []
-        for group, weight in zip(groups, weights, strict=True):
-            if not isinstance(group, ParameterGroup):
-                raise TypeError("Expected ParameterGroup")
-            matches = [i for i, old in enumerate(unique) if group.equivalent(old)]
-            if matches:
-                if unique_weights[matches[0]] != weight:
-                    raise ValueError("Equivalent groups have conflicting coefficients")
-            else:
-                unique.append(group)
-                unique_weights.append(weight)
+        for indices in group_equivalence_classes(groups):
+            weight = weights[indices[0]]
+            if any(weights[i] != weight for i in indices):
+                raise ValueError("Equivalent groups have conflicting coefficients")
+            unique.append(groups[indices[0]])
+            unique_weights.append(weight)
         self.groups, self.coefficients = tuple(unique), tuple(unique_weights)
         self._reduction_plan = reduction_plan(self.groups)
         with torch.no_grad():
@@ -59,9 +56,27 @@ class GroupLasso:
     def __call__(self):
         """Return a differentiable scalar using current parameter values."""
         native = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}
+        # Exact types keep the optimized path from bypassing a subclass penalty().
         if type(self) in native:
-            penalties = group_penalties(self.groups, native[type(self)], self._reduction_plan)
-            result = (penalties * penalties.new_tensor(self.coefficients)).sum()
+            kind = native[type(self)]
+            if all(a == 1 for a in self.coefficients):
+                result = group_penalty(self.groups, kind, self._reduction_plan)
+            else:
+                # Apply weights before the nonlinear reduction. Computing an
+                # unweighted square first can lose a representable weighted
+                # result. FP64 also keeps finite Python coefficients from being
+                # rounded to zero/infinity when parameters are FP32 or lower.
+                values = group_values(self.groups)
+                if kind == "squared_l2":
+                    result = squared_norm(*values, coefficients=self.coefficients)
+                else:
+                    terms = [
+                        stable_norm(value.double(), coefficient=coefficient)
+                        if kind == "l2"
+                        else (value.double() * coefficient).abs().sum()
+                        for value, coefficient in zip(values, self.coefficients, strict=True)
+                    ]
+                    result = torch.stack(terms).sum().to(values[0].dtype)
         else:
             # Custom penalties still receive the original flattened union.
             values = group_values(self.groups)
@@ -82,7 +97,7 @@ class GroupSquaredL2(GroupLasso):
 
     def penalty(self, values):
         """Return half the squared norm, whose gradient is the group itself."""
-        return values.square().sum() * 0.5
+        return squared_norm(values)
 
 
 class ScaleL1(GroupLasso):

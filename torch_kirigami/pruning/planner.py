@@ -102,10 +102,7 @@ class PlanningContext:
         """Reject incomplete influence ranges while allowing repairable constraints."""
         incomplete = [d for d in impact.diagnostics if not d.complete]
         if incomplete:
-            raise PlanningError(
-                "Incomplete scoring influence: "
-                + "; ".join(f"{d.code}: {d.message}" for d in incomplete)
-            )
+            raise PlanningError("Incomplete scoring influence: " + "; ".join(map(str, incomplete)))
 
     def score(self, candidate_batch):
         """Call the metric on a batch, including temporary combined candidates."""
@@ -191,6 +188,23 @@ class PlanningContext:
         )
 
 
+def _budget_reason(context, impact):
+    """Describe the exceeded cap using actual joint removals, not seed counts."""
+    counts = context.counts(impact)
+    if context.budget.scope == "global":
+        return (
+            f"Joint request exceeds the global channel budget: "
+            f"{sum(counts)} removals > {context.targets[0]} allowed"
+        )
+    details = (
+        f"{axis.tensor.paths[0] if axis.tensor.paths else axis.tensor.id} "
+        f"axis {axis.dim}: {count} removals > {cap} allowed"
+        for axis, count, cap in zip(context.axes, counts, context.targets, strict=True)
+        if count > cap
+    )
+    return "Joint request exceeds the local channel budget: " + "; ".join(details)
+
+
 class Greedy:
     """Static score order with bounded balance/divisibility completion and no backtracking.
 
@@ -208,15 +222,23 @@ class Greedy:
         """Return only a fully verified set, with an explicit underfill report."""
         committed = []
         committed_impact = context.impact(())
+        empty_error = ""
+        # Keep only the latest attempt per candidate. A revision identifies the
+        # accepted selection against which that attempt was tested; a later
+        # commitment can make an old failure obsolete without changing its seed.
+        failures, revision = {}, 0
         try:
             context.compile(committed_impact)
             valid = context.within_budget(committed_impact)
-        except PlanningError:
+        except PlanningError as error:
             valid = False
+            empty_error = str(error)
         if self.max_trials == 0:
             context.limit_reached = bool(context.candidates)
             if not valid:
-                raise PlanningError("The empty request is invalid and the strategy limit is zero")
+                raise PlanningError(
+                    "The empty request is invalid and the strategy limit is zero: " + empty_error
+                )
             context.exclusions.extend((c.key, "Strategy limit is zero") for c in context.candidates)
             return ()
         # A zero budget proves no choice is possible only when each candidate
@@ -285,16 +307,21 @@ class Greedy:
                     for s in impact.selections.values()
                 ):
                     continue
-                while context.within_budget(impact):
+                while True:
+                    if not context.within_budget(impact):
+                        failures[seed.key] = (revision, _budget_reason(context, impact))
+                        break
                     if impact.status == "resolved":
                         try:
                             context.compile(impact)
                         except PlanningError as error:
-                            context.exclusions.append((seed.key, str(error)))
+                            failures[seed.key] = (revision, str(error))
                         else:
                             committed, committed_impact, valid, progress = trial, impact, True, True
+                            revision += 1
                         break
                     if impact.status == "conflict":
+                        failures[seed.key] = (revision, "; ".join(map(str, impact.diagnostics)))
                         break
                     repair = next(
                         (
@@ -306,6 +333,11 @@ class Greedy:
                         None,
                     )
                     if repair is None:
+                        failures[seed.key] = (
+                            revision,
+                            "No supported greedy completion for this joint request: "
+                            + "; ".join(map(str, impact.diagnostics)),
+                        )
                         break
                     axis = repair.axis
                     before = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
@@ -317,7 +349,7 @@ class Greedy:
                             for p, n in zip(repair.partitions, counts, strict=True)
                             if n > min(counts)
                         )
-                    added = False
+                    added, last_blocker = False, ""
                     for extra in ranked:
                         if extra in trial:
                             continue
@@ -333,26 +365,68 @@ class Greedy:
                             partitions and not any(delta.intersect(p) for p in partitions)
                         ):
                             continue
-                        if not context.within_budget(new) or new.status == "conflict":
+                        if not context.within_budget(new):
+                            last_blocker = _budget_reason(context, new)
+                            continue
+                        if new.status == "conflict":
+                            last_blocker = "; ".join(map(str, new.diagnostics))
                             continue
                         trial, impact, added = [*trial, extra], new, True
                         break
                     if not added:
+                        stop = (
+                            "Strategy trial limit reached during completion"
+                            if context.limit_reached
+                            else "Greedy completion found no acceptable addition from the provided candidates"
+                        )
+                        failures[seed.key] = (
+                            revision,
+                            stop
+                            + ": "
+                            + "; ".join(map(str, impact.diagnostics))
+                            + (
+                                f". Last attempted addition: {last_blocker}" if last_blocker else ""
+                            ),
+                        )
                         break
                 if context.limit_reached:
                     break
             if not progress or context.limit_reached:
                 break
         if not valid:
+            detail = f". Empty request: {empty_error}"
+            if failures:
+                key = next(reversed(failures))
+                detail += f". Candidate attempt ({key}): {failures[key][1]}"
+            if context.limit_reached:
+                detail += ". Strategy trial limit reached"
             raise PlanningError(
-                "No valid request found within the budget and strategy limit; even the empty request is invalid"
+                "No valid request found within the budget and strategy limit; "
+                "even the empty request is invalid" + detail
             )
         chosen = {c.key for c in committed}
-        rejected = {k for k, _ in context.exclusions}
-        context.exclusions.extend(
-            (c.key, "Budget, constraints, or bounded completion prevented selection")
-            for c in ranked
-            if c.key not in chosen and c.key not in rejected
-        )
-        context.exclusions = [(k, v) for k, v in context.exclusions if k not in chosen]
+        covered = {
+            c.key
+            for c in context.candidates
+            if all(not s.subtract(committed_impact.selection(s.tensor)) for s in c.remove)
+        }
+        for candidate in ranked:
+            if candidate.key in chosen or candidate.key in covered:
+                continue
+            previous = failures.get(candidate.key)
+            if previous is None:
+                reason = "Strategy trial limit reached before this candidate could be tested"
+            else:
+                attempted_revision, reason = previous
+                if attempted_revision != revision:
+                    reason = (
+                        "Earlier attempt: "
+                        + reason
+                        + ". Not retried after the accepted selection changed"
+                        + ("; strategy trial limit reached" if context.limit_reached else "")
+                    )
+            context.exclusions.append((candidate.key, reason))
+        context.exclusions = [
+            (k, v) for k, v in context.exclusions if k not in chosen and k not in covered
+        ]
         return tuple(c.key for c in committed)

@@ -4,6 +4,8 @@ Operator support is a contract for a captured call, its arguments, the selected 
 
 The [dependency design](dependency-graph-design.md) explains the shared records. The [pruning design](pruning-design.md) explains how those records become executable plans.
 
+The [Model support contract](model-support.md) defines capture admission, required adaptations, rejection scope, and known verification limits.
+
 ## Support is checked in stages
 
 A call can execute successfully during capture and still lack a structural rule. A rule can propagate a request correctly while its constraints require additional balancing choices. A resolved dependency result can still require an unsupported edit to the original `forward`. Each stage reports its own failure instead of treating successful forward execution as sufficient proof.
