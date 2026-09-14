@@ -34,7 +34,47 @@ uv pip install --torch-backend=auto -e .
 
 The [ImageNet workflow guide](examples/workflows/README.md) installs the additional dependencies needed by the pretrained-model examples.
 
-## A complete pruning round
+## One-shot automatic pruning
+
+Build the dependency graph, discover candidates, and call `prune()` to select and
+physically remove channels in one round. This example requires CUDA; set `device`
+to `"cpu"` for a CPU run. It needs no dataset or training loop.
+
+```python
+import torch
+from torch import nn
+
+from torch_kirigami import DependencyGraph
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, Pruner
+
+device = "cuda"
+model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3)).to(device).eval()
+x = torch.randn(2, 4, device=device)
+
+graph = DependencyGraph.build(model, args=(x,))
+pruner = Pruner(model, graph=graph)
+space = pruner.discover_candidates()
+model, result = pruner.prune(
+    space,
+    budget=ChannelRatio(0.25),
+    strategy=Greedy(Magnitude(p=2)),
+)
+
+assert model[0].out_features == model[2].in_features == 6
+assert model(x).shape == (2, 3)
+print(result.plan.explain())
+```
+
+`prune()` combines `plan()` and `apply()` and modifies the original model in place.
+External input/output dimensions are protected by default. Here the 25% channel
+budget removes two of eight hidden features; it is not a parameter-count ratio.
+For another pruning round, rebuild the graph. Create a new optimizer if training
+afterward, because physical pruning replaces parameters.
+
+For a pretrained ResNet one-shot command without fine-tuning, see the
+[workflow guide](examples/workflows/README.md#1-magnitude-or-taylor-pruning-and-fine-tuning).
+
+## Inspect a manual pruning plan
 
 This small model illustrates the API. For accuracy experiments, use the pretrained ImageNet workflows below.
 
@@ -85,7 +125,7 @@ Use a `Pruner` bound to the current graph. An automatic budget may be underfille
 
 ## Pretrained ImageNet workflows
 
-The [workflow guide](examples/workflows/README.md) provides seven standalone scripts using torchvision's pretrained **ResNet-18** or **ViT-B/16**, with ImageNet training and validation kept separate:
+The [workflow guide](examples/workflows/README.md) provides seven standalone scripts using torchvision's pretrained **ResNet-18/34/50** or **ViT-B/16/32**, with ImageNet training and validation kept separate. Each script considers supported pruning positions across the whole model. The documented commands use full-data defaults with separate training and validation batches of 256, and enable compiled inference for latency measurement:
 
 | Workflow | Purpose |
 | --- | --- |

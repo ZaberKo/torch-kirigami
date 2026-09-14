@@ -151,9 +151,25 @@ Factors are positive integers, excluding booleans. Mappings are copied and read-
 
 A setting applies to every logical candidate axis declared by the matched module's operator rule. No weight-layout inference is added. Subclasses require their own registered semantics and type override. Multi-axis custom modules can use explicit axis-level constraints for different factors.
 
+`CandidateAxis.alignment_axis` optionally identifies the corresponding logical
+width when the candidate's seed tensor can require partitioned packing. Without
+it, alignment uses the seed axis. Convolution rules explicitly bind alignment to
+the output activation's channel axis while preserving parameter-based candidate
+keys and budget axes. Thus deleting different local input columns in grouped
+kernels does not invalidate an unchanged output width. This declaration belongs
+to the operator rule; `Granularity` does not infer module-specific layouts or
+weaken `Divisible` checks on explicitly constrained physical axes. Both declared
+axes must have the same original width, and the rule must relate their positions.
+
 Original aliases are resolved before deduplication. A path override configures the shared module object; contradictory explicit overrides on its aliases raise an error. Separate modules sharing a Parameter retain all their requirements. A factor of one adds no requirement and cannot cancel another module's or operator's constraints.
 
 Alignment is a final-structure requirement, including unchanged and protected axes. Width 10 with factor 4 requires at least two removals; a budget allowing only one cannot produce a valid plan. Width 64 with factor 8 and a 20% deletion cap permits eight removals, leaving a shortfall of four. Manual requests and custom strategies cannot bypass these checks. Configuration resolution appears in plan notes; plans retain static recipes, not the configuration object.
+
+The default strategy uses these constraints before submitting a joint pruning
+request. Candidate discovery retains independently selectable positions or
+operator-declared blocks; the strategy combines them into count-feasible batches.
+Alignment does not permanently bind adjacent channels or change the budget's
+original-width denominator.
 
 ## Scoring and strategy contracts
 
@@ -190,11 +206,66 @@ Callbacks must not mutate model state or structural premises. Planning checks gr
 
 ## Default greedy search
 
-`Greedy(metric, max_trials=10_000)` computes a deterministic score order, breaking ties by candidate key. It maintains a verified committed selection, tries additions, and can add further candidates to satisfy `Balanced` or `Divisible` constraints. Rejected candidates may become feasible after another commitment. The search does not backtrack or prove global optimality.
+`Greedy(metric, max_trials=10_000)` computes static candidate scores, breaking ties
+by candidate key. It constructs count-feasible batches before joint verification
+and retains only verified, executable commitments. Previously rejected candidates
+may become feasible after another commitment. Committed choices are never
+retracted; the policy does not prove global optimality or infeasibility.
+
+The selection pipeline is:
+
+1. Analyze eligible individual candidates and score them. Retain compact axis
+   index sets from these existing analyses; the full-impact cache remains bounded.
+   Custom metrics still receive the full eligible batch. Scores of combined
+   requests are not assumed additive. Greedy reuses its eligibility check when
+   invoking the metric, avoiding a second full propagation scan. Public
+   `PlanningContext.score()` still checks arbitrary temporary candidates; both
+   paths validate model state and the returned score batch.
+2. Starting from the next ranked candidate and the committed selection, combine
+   known index effects until every projected `Balanced` and `Divisible` condition
+   is satisfied. Reuse each constraint's `check()` implementation on projected
+   axis selections; do not duplicate its legality rules in a granularity solver.
+   Width 64 with factor 8 normally submits eight removals together. Width 66 with
+   factor 8 first requires two. Multiple factors on an axis participate together.
+3. For balancing completion, prefer additions that minimize estimated further
+   balancing work across all fixed partitions, then use the static score order.
+   This heuristic sums each balance condition's deficit from its smallest retained
+   partition; overlapping conditions may double-count work. The estimate only
+   orders candidates and never determines the budget or certifies feasibility.
+4. Propagate the complete batch and check actual counts, all constraints, and
+   execution support. If joint effects reveal additional requirements, attempt
+   completion using the actual closure. Candidates with no individual axis effect
+   remain available here because a combination can complete a structural block.
+5. If the batch fails, retry its initial seed through joint analysis within the
+   same trial limit, allowing other partners to be considered. If the summaries
+   cannot construct a complete batch, use that path directly. A failed projected
+   construction is not grounds to freeze a domain or declare it infeasible.
+
+Only exact built-in `Balanced` and `Divisible` instances use projected checks.
+Subclasses and arbitrary custom constraints can inspect other tensors in the
+closure, so they continue to receive actual joint selections. This is an internal
+optimization of the existing strategy, with no additional public candidate-space
+or constraint-solving interface.
+
+Monotone propagation also makes the union of current and individual axis removals
+a lower bound on joint removals. A proven budget excess can therefore be rejected
+without a joint query; overlapping positions count once. Already-covered seeds
+are skipped. All remaining trials still undergo joint propagation, actual budget
+checks, and execution validation before commitment.
+
+The trial counter measures tentative joint queries, including cache hits and
+fallback attempts. Initial scoring queries, projected count checks, and proven
+skips do not count. A count-feasible batch uses one trial when its joint check
+succeeds. Count construction terminates because each addition contributes new
+positions and uses a previously unused candidate. The limit bounds joint search
+queries, not total runtime, channel count, or training steps. Reaching it discards
+unfinished completion and returns the last verified selection with a shortfall
+report.
 
 ```mermaid
 flowchart TD
-    Next["Next candidate"] --> Trial["Joint trial"]
+    Next["Next candidate"] --> Batch["Construct batch using count constraints"]
+    Batch --> Trial["Joint analysis and execution checks"]
     Trial --> Valid{"Feasible?"}
     Valid -->|Yes| Accept["Accept"]
     Accept --> Next
@@ -204,7 +275,8 @@ flowchart TD
 
 `SelectionReport`, exposed as `plan.selection_report`, records `channel_axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`, `limit_reached`, and `exclusions`. Its `shortfall` is the unfilled target. A nonzero shortfall can result from coupling, protected dimensions, unsupported execution, or bounded search. `limit_reached=True` is not proof that no better solution exists.
 
-Greedy reports the latest failed joint attempt for each excluded candidate, including
+Greedy reports the latest rejection for each excluded candidate, whether from a
+joint attempt or a proven budget excess. Diagnostics include
 constraint codes and available operation locations, actual exceeded budget caps,
 and execution errors with conditional rewrite advice. A completion failure names
 its remaining constraint and the last blocking addition, when one was tested.

@@ -86,7 +86,7 @@ def alignment_constraints(graph, config):
             source = "default"
         for domain in dict.fromkeys(declarations[identity]):
             if factor != 1:
-                constraints.append(Divisible(domain.axis, factor))
+                constraints.append(Divisible(domain.alignment_axis or domain.axis, factor))
             if factor != 1 or explicit or module_type in config.by_type:
                 notes.append(
                     f"Granularity {domain.key}: multiple of {factor} ({source}; module {paths[0]!r})"

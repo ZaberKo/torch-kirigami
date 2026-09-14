@@ -257,6 +257,63 @@ def test_depthwise_blocks_are_not_redefined_by_alignment():
     assert not plan.recipes and plan.selection_report.shortfall == 6
 
 
+@pytest.mark.parametrize("dimension", [1, 2, 3])
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("shrink_output", [False, True])
+def test_grouped_consumer_alignment_uses_logical_width_after_partitioned_input_removal(
+    dimension, automatic, shrink_output, execution_device
+):
+    conv = (nn.Conv1d, nn.Conv2d, nn.Conv3d)[dimension - 1]
+    function = (F.conv1d, F.conv2d, F.conv3d)[dimension - 1]
+    model = nn.Sequential(conv(4, 6, 1), conv(6, 8, 1, groups=2), conv(8, 2, 1)).double()
+    original = copy.deepcopy(model)
+    x = torch.randn(2, 4, *((3,) * dimension), dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    axes = (graph.parameter("0.weight").axis(0), graph.parameter("1.weight").axis(0))
+    pruner = Pruner(model, graph=graph, granularity=Granularity(by_path={"1": 4}))
+    remove = [axes[0].select([0, 4])]
+    if shrink_output:
+        remove.append(axes[1].select([0, 2, 5, 7]))
+    bindings = tuple(model.parameters())
+    # Neither unbalanced input removal nor a balanced but unaligned output is legal.
+    for invalid in ([axes[0].select([0])], [axes[1].select([0, 4])]):
+        with pytest.raises(PlanningError):
+            pruner.plan_remove(invalid)
+    # Keep the physical-layout guard: changing its interpretation would hide
+    # ambiguous packing in other operators and explicit user constraints.
+    physical = Pruner(model, graph=graph, constraints=[Divisible(axes[1], 4)])
+    with pytest.raises(PlanningError, match="partitioned_constraint"):
+        physical.plan_remove(remove)
+    if automatic:
+        space = CandidateSpace([Candidate("pair", remove)], axes)
+        plan = pruner.plan(
+            space,
+            budget=ChannelCount((2, 4 if shrink_output else 0), axes),
+            strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+        )
+        assert plan.selected == ("pair",) and plan.selection_report.shortfall == 0
+    else:
+        plan = pruner.plan_remove(remove)
+    assert all(a is b for a, b in zip(bindings, model.parameters(), strict=True))
+    for before, current in zip(original.parameters(), model.parameters(), strict=True):
+        torch.testing.assert_close(before, current)
+    compact, _ = Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
+    input_keep = [1, 2, 3, 5]
+    output_keep = [1, 3, 4, 6] if shrink_output else list(range(8))
+    packed = torch.cat((original[1].weight[:4, 1:], original[1].weight[4:, [0, 2]]))
+    actual_input = x.clone().requires_grad_()
+    reference_input = x.clone().requires_grad_()
+    hidden = function(reference_input, original[0].weight[input_keep], original[0].bias[input_keep])
+    middle = function(hidden, packed[output_keep], original[1].bias[output_keep], groups=2)
+    expected = function(middle, original[2].weight[:, output_keep], original[2].bias)
+    actual = compact(actual_input)
+    torch.testing.assert_close(actual, expected)
+    actual.sum().backward()
+    expected.sum().backward()
+    torch.testing.assert_close(actual_input.grad, reference_input.grad)
+    assert compact[1].in_channels == 4 and compact[1].out_channels == len(output_keep)
+
+
 def test_input_axis_constraints_combine_with_output_granularity():
     model = nn.Linear(4, 8)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
@@ -292,7 +349,7 @@ def test_fused_module_alignment_applies_to_all_declared_axes(execution_device):
         domains, relations, constraints = [], [], []
         for name, output in zip(("a", "b"), ctx.output, strict=True):
             weight = ctx.binding(name)
-            domains.append(CandidateAxis(name, weight.axis(0)))
+            domains.append(CandidateAxis(name, weight.axis(0), alignment_axis=output.axis(1)))
             relations.extend(
                 (
                     AxisRelation.equal(ctx.inputs[0].axis(1), weight.axis(1)),

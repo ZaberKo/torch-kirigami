@@ -303,7 +303,7 @@ def test_invalid_empty_request_preserves_reason_and_failure_state():
 
 
 @pytest.mark.parametrize("limit", [0, 1])
-def test_completion_limit_retains_constraint_without_claiming_infeasibility(limit):
+def test_count_feasible_batch_uses_one_trial_and_zero_limit_still_skips_search(limit):
     model = nn.Linear(3, 4)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
     plan = Pruner(
@@ -321,12 +321,11 @@ def test_completion_limit_retains_constraint_without_claiming_infeasibility(limi
         budget=ChannelRatio(0.5),
         strategy=Greedy(Magnitude(), max_trials=limit),
     )
-    assert not plan.recipes and plan.selection_report.limit_reached
     if limit:
-        assert any(
-            "during completion" in reason and "divisible" in reason
-            for _, reason in plan.selection_report.exclusions
-        )
+        assert plan.selection_report.removed == (2,)
+        assert plan.selection_report.trials == 1 and not plan.selection_report.limit_reached
+        assert plan.analysis.status == "resolved"
     else:
+        assert not plan.recipes and plan.selection_report.limit_reached
         assert all("limit is zero" in reason for _, reason in plan.selection_report.exclusions)
-    assert "no claim of infeasibility" in plan.explain()
+        assert "no claim of infeasibility" in plan.explain()

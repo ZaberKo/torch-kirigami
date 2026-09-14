@@ -165,6 +165,13 @@ For an affine custom module, relate input features to weight columns, output fea
 
 For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical channel axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. If the seed is a call-specific activation, declare a registered `binding` only when repeated calls use the same original-coordinate domain. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
 
+If a candidate's physical parameter axis can participate in partitioned packing,
+declare `CandidateAxis.alignment_axis` on the corresponding logical activation
+axis. Both axes must belong to the graph and have the same original width; the
+operator's relations must couple them. This keeps retained-width alignment
+independent of the physical packing recipe without adding pruning-specific
+operator dispatch.
+
 If shared compilation cannot express a necessary edit, implement `OperatorRule.lower()` using the public recipe records from `torch_kirigami.pruning`. The callback returns declarative results and accounts for handled requirements; it must not mutate the model. See the complete [fused-attention example](../examples/fused_attention.py) and [extension integration tests](../tests/integration/test_extensions.py).
 
 ### What rule authors must prove

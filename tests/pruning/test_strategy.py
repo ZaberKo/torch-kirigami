@@ -65,6 +65,7 @@ def test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly():
     batch_sizes = []
 
     def metric(context, batch):
+        assert isinstance(batch, tuple)
         batch_sizes.append(len(batch))
         return [len(batch)] * len(batch)
 

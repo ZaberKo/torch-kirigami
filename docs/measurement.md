@@ -95,17 +95,18 @@ Forward execution must not modify parameter values. Arbitrary Python side effect
 
 Use identical input shapes, batch size, dtype, device, thread count, compilation options, warmup, and repetitions for the baseline and compact model. MACs and latency are batch-level quantities; report batch size alongside them. Lower parameter count or theoretical MACs does not guarantee lower latency because kernel choices, shape alignment, launch overhead, and hardware utilization also change.
 
-The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. Their benchmark batch is independent of the training/evaluation batch. They suppress MAC reduction claims when counts have unsupported coverage.
+The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. `--val_batch_size` sets both the accuracy loader batch and the fixed synthetic inference batch used for MACs and latency. `--train_batch_size` controls training separately. Inspect unsupported operations before interpreting MAC reduction.
 
 From `examples/workflows`, after installing its requirements and downloading the required data:
 
 ```bash
-python prune_finetune.py --model resnet18 --device cpu --threads 4
-python gate_pruning.py --model vit_b_16 --device cuda --compile \
-  --benchmark-batch-size 1 --warmup 10 --repetitions 50
+python prune_finetune.py --model resnet18 --device cuda --compile_latency \
+  --finetune_epochs 0
+python gate_pruning.py --model resnet18 --device cuda --compile_latency \
+  --sparse_epochs 1 --finetune_epochs 0
 ```
 
-These commands also perform the workflow's task-specific evaluation or training; they are not isolated benchmark-only commands. See the workflow README for required ImageNet splits and training controls.
+These commands also perform the workflow's task-specific evaluation or training; they are not isolated benchmark-only commands. `--compile_latency` compiles only the latency-measurement forward, excluding compilation time from the timing; training and accuracy evaluation remain eager. See the workflow README for required ImageNet splits and training controls.
 
 Inputs sharing identity or storage with Tensor leaves of ordinary model attributes
 are isolated together and temporarily rebound, including nested containers. Shared input/container identity is retained as well, including empty containers; same-device measurement does not rebuild that tree.

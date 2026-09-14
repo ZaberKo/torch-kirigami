@@ -2,11 +2,25 @@
 
 import torch
 from torch import nn
-from torchvision.models import ResNet18_Weights, ViT_B_16_Weights, resnet18, vit_b_16
+from torchvision.models import (
+    ResNet18_Weights,
+    ResNet34_Weights,
+    ResNet50_Weights,
+    ViT_B_16_Weights,
+    ViT_B_32_Weights,
+    resnet18,
+    resnet34,
+    resnet50,
+    vit_b_16,
+    vit_b_32,
+)
 
 MODELS = {
     "resnet18": (resnet18, ResNet18_Weights.IMAGENET1K_V1),
+    "resnet34": (resnet34, ResNet34_Weights.IMAGENET1K_V1),
+    "resnet50": (resnet50, ResNet50_Weights.IMAGENET1K_V2),
     "vit_b_16": (vit_b_16, ViT_B_16_Weights.IMAGENET1K_V1),
+    "vit_b_32": (vit_b_32, ViT_B_32_Weights.IMAGENET1K_V1),
 }
 
 
@@ -46,4 +60,4 @@ def make_model(name, *, pretrained=True):
     """
     builder, weights = MODELS[name]
     official = builder(weights=weights if pretrained else None)
-    return TraceableViT(official) if name == "vit_b_16" else official
+    return TraceableViT(official) if name.startswith("vit_") else official

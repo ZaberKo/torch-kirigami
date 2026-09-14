@@ -513,6 +513,11 @@ class DependencyGraph:
         refs = [ref for item in (*spec.relations, *spec.constraints) for ref in item.refs]
         refs.extend(ref for item in spec.requirements for ref in item.refs)
         refs.extend(item.axis.tensor for item in spec.candidates)
+        refs.extend(
+            item.alignment_axis.tensor
+            for item in spec.candidates
+            if item.alignment_axis is not None
+        )
         refs.extend(item.binding for item in spec.candidates if item.binding is not None)
         refs.extend(item.tensor for item in spec.layouts)
         refs.extend(spec.constants)

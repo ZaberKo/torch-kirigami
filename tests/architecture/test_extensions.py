@@ -84,6 +84,7 @@ def test_custom_torch_prefix_does_not_enable_native_aliases(namespace, monkeypat
         "constraints",
         "requirements",
         "candidates",
+        "alignment_axis",
         "layouts",
         "constants",
         "expression",
@@ -100,6 +101,7 @@ def test_extension_spec_rejects_foreign_references(field):
             "constraints": (Fixed(foreign.axis(0)),),
             "requirements": (Requirement("custom", ctx.node.name, (foreign,), ""),),
             "candidates": (CandidateAxis("foreign", foreign.axis(0)),),
+            "alignment_axis": (CandidateAxis("axis", x.axis(1), alignment_axis=foreign.axis(0)),),
             "layouts": (PartitionedLayout(foreign, (Region((IndexSet.span(0, 4),) * 2),)),),
             "constants": (foreign,),
             "expression": ShapeExpr("dimension", (foreign, 0)),
@@ -107,7 +109,8 @@ def test_extension_spec_rejects_foreign_references(field):
                 Requirement("custom", ctx.node.name, (x,), "", (("axis", foreign.axis(0)),)),
             ),
         }
-        return OperatorSpec(**{"requirements" if field == "payload" else field: values[field]})
+        name = {"payload": "requirements", "alignment_axis": "candidates"}.get(field, field)
+        return OperatorSpec(**{name: values[field]})
 
     registry = OperatorRegistry().register(nn.Linear, OperatorRule(analyze))
     with pytest.raises(ValueError, match="another graph"):

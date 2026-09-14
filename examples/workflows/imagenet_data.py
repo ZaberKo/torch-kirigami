@@ -8,6 +8,7 @@ from huggingface_hub import snapshot_download
 from pyarrow.parquet import read_metadata
 from torch.nn import functional as F
 from torch.utils.data import Dataset, IterableDataset
+from tqdm.auto import tqdm
 
 
 def label_mapping(names, categories):
@@ -42,7 +43,7 @@ class Images(Dataset):
 
 
 class TrainingImages(IterableDataset):
-    """Stream a fixed shuffled subset without materializing the training split."""
+    """Stream the full shuffled split or an explicitly limited subset."""
 
     def __init__(self, rows, transform, mapping, size):
         self.rows, self.transform, self.mapping, self.size = rows, transform, mapping, size
@@ -56,7 +57,7 @@ class TrainingImages(IterableDataset):
 
 
 def load_images(
-    weights, data_dir=None, *, need_train=False, train_samples=512, val_samples=0, seed=7
+    weights, data_dir=None, *, need_train=False, train_samples=0, val_samples=0, seed=7
 ):
     """Read local HF ImageNet shards; never download data during an experiment."""
     if train_samples < 0 or val_samples < 0:
@@ -110,22 +111,29 @@ def load_images(
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, *, progress_every=0):
-    """Measure sample-weighted CE/top-1/top-5 and restore every module's mode."""
+def evaluate(model, loader, device, *, description="Evaluation"):
+    """Measure sample-weighted CE/top-1/top-5 with batch progress and restore modes."""
     modes = [(module, module.training) for module in model.modules()]
     loss, top1, top5, count = 0.0, 0, 0, 0
     try:
         model.eval()
-        for batch, (images, labels) in enumerate(loader, start=1):
-            images, labels = images.to(device), labels.to(device)
-            logits = model(images)
-            loss += F.cross_entropy(logits, labels, reduction="sum").item()
-            matches = logits.topk(min(5, logits.shape[1]), dim=1).indices.eq(labels[:, None])
-            top1 += matches[:, 0].sum().item()
-            top5 += matches.any(dim=1).sum().item()
-            count += labels.numel()
-            if progress_every and batch % progress_every == 0:
-                print(f"Evaluated {count} images; top1={100 * top1 / count:.3f}%", flush=True)
+        with tqdm(
+            loader, desc=f"{description} ({device})", unit="batch", dynamic_ncols=True
+        ) as progress:
+            for images, labels in progress:
+                images, labels = images.to(device), labels.to(device)
+                logits = model(images)
+                loss += F.cross_entropy(logits, labels, reduction="sum").item()
+                matches = logits.topk(min(5, logits.shape[1]), dim=1).indices.eq(labels[:, None])
+                top1 += matches[:, 0].sum().item()
+                top5 += matches.any(dim=1).sum().item()
+                count += labels.numel()
+                progress.set_postfix(
+                    images=count,
+                    loss=f"{loss / count:.4f}",
+                    top1=f"{100 * top1 / count:.3f}%",
+                    refresh=False,
+                )
     finally:
         for module, training in modes:
             module.training = training

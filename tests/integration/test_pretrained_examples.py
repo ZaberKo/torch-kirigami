@@ -1,9 +1,13 @@
 import copy
 import json
+import re
+import shlex
 import shutil
 import subprocess
 import sys
+from inspect import signature
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -12,7 +16,14 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
-from torch_kirigami.pruning import Pruner, load_checkpoint, save_checkpoint
+from torch_kirigami.pruning import (
+    Candidate,
+    CandidateSpace,
+    ChannelRatio,
+    Pruner,
+    load_checkpoint,
+    save_checkpoint,
+)
 from torch_kirigami.sparsity import ChannelGate, register_gate_operators
 
 pytest.importorskip("torchvision", reason="Install examples/workflows/requirements-examples.txt")
@@ -22,12 +33,14 @@ import importlib
 
 import imagenet_data as imagenet
 import imagenet_models
+import model_metrics
 import prune_finetune
 from datasets import ClassLabel, Dataset, Features, Image
 from huggingface_hub import HfApi, constants
 from huggingface_hub.errors import LocalEntryNotFoundError
 from PIL import Image as PILImage
-from torchvision.models import ResNet18_Weights, resnet18
+from torchvision.models import ResNet18_Weights, resnet18, resnet34, resnet50
+from torchvision.models.resnet import BasicBlock
 from torchvision.models.vision_transformer import VisionTransformer
 
 WORKFLOWS = (
@@ -39,6 +52,72 @@ WORKFLOWS = (
     "gate_pruning",
     "stability_pruning",
 )
+
+
+@pytest.fixture(autouse=True)
+def bounded_cpu_threads():
+    previous = torch.get_num_threads()
+    torch.set_num_threads(1)
+    yield
+    torch.set_num_threads(previous)
+
+
+def workflow_resnet():
+    # Keep torchvision's real residual forward and a nonuniform block layout.
+    # Narrow channels make whole-model workflow tests affordable; the separate
+    # numerical tests below exercise full-sized official architectures.
+    model = resnet18(weights=None)
+    model.conv1 = nn.Conv2d(3, 32, 7, stride=2, padding=3, bias=False)
+    model.bn1 = nn.BatchNorm2d(32)
+    for stage, count in enumerate((2, 1, 1, 1), start=1):
+        setattr(model, f"layer{stage}", nn.Sequential(*(BasicBlock(32, 32) for _ in range(count))))
+    model.fc = nn.Linear(32, 1000)
+    return model
+
+
+@pytest.mark.parametrize(
+    ("entry", "metric"),
+    [
+        ("prune_finetune", "magnitude"),
+        ("prune_finetune", "taylor"),
+        ("iterative_pruning", "magnitude"),
+        ("group_sparsity", "magnitude"),
+        ("soft_pruning", "magnitude"),
+        ("stability_pruning", "magnitude"),
+    ],
+)
+def test_workflow_producer_scores_transfer_together(entry, metric, execution_device, monkeypatch):
+    model = nn.Sequential(nn.Linear(3, 6, bias=False), nn.Linear(6, 2))
+    with torch.no_grad():
+        model[0].weight.copy_(torch.arange(-9, 9).reshape(6, 3))
+    model[0].weight.grad = torch.linspace(-1, 2, 18).reshape(6, 3)
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
+    pruner = Pruner(model, graph=graph)
+    axis = graph.parameter("0.weight").axis(0)
+    space = CandidateSpace(
+        [
+            Candidate("single", [axis.select([1])], axis),
+            Candidate("pair", [axis.select([0, 3])], axis),
+        ],
+        [axis],
+    )
+
+    def inspect_scores(space, *, budget, strategy):
+        return strategy.metric(None, space.candidates)
+
+    # Isolate score preparation from graph analysis. The workflow integration
+    # tests separately run the real plan/apply/train/save/load pipeline.
+    monkeypatch.setattr(pruner, "plan", inspect_scores)
+    module = importlib.import_module(entry)
+    args = ("taylor" if metric == "taylor" else "magnitude",) if entry == "prune_finetune" else ()
+    budget = ChannelRatio(0.5) if entry == "iterative_pruning" else 0.5
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
+        scores = module.make_plan(pruner, space, budget, *args)
+    assert not any(event.key == "aten::item" for event in profile.key_averages())
+    weight, grad = model[0].weight.detach().cpu(), model[0].weight.grad.cpu()
+    rows = (weight * grad).abs().sum(1) if metric == "taylor" else weight.square().sum(1)
+    expected = [float(rows[1]), float(rows[0]) + float(rows[3])]
+    assert scores == expected
 
 
 def test_imagenet_label_order_and_synonyms():
@@ -95,6 +174,11 @@ def test_data_loading_requests_only_needed_splits(tmp_path, monkeypatch, need_tr
         assert len(samples) == len(train) == 2
         assert {label for _, label in samples}.isdisjoint({validation[i][1] for i in range(3)})
         assert set(metadata["files"]) == {"validation", "train"}
+        full_train, full_validation, full_metadata = imagenet.load_images(
+            weights, data_dir, need_train=True
+        )
+        assert len(list(full_train)) == len(full_train) == 4
+        assert len(full_validation) == full_metadata["train"]["samples"] == 4
     else:
         assert train is None and set(metadata["files"]) == {"validation"}
         with pytest.raises(FileNotFoundError, match="train"):
@@ -137,14 +221,52 @@ def test_accuracy_uses_all_logits_weights_partial_batches_and_restores_modes():
     assert [m.training for m in model.modules()] == modes
 
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_evaluation_progress_counts_partial_batches_and_closes_on_error(
+    fail, execution_device, monkeypatch, capsys
+):
+    model = nn.Sequential(nn.Linear(4, 6), nn.Dropout()).train()
+    model[0].eval()
+    modes = [m.training for m in model.modules()]
+    bars = []
+    original_tqdm = imagenet.tqdm
+
+    def tracked(*args, **kwargs):
+        bar = original_tqdm(*args, **kwargs)
+        bars.append(bar)
+        return bar
+
+    monkeypatch.setattr(imagenet, "tqdm", tracked)
+    if fail:
+        loader = [
+            (torch.randn(2, 4), torch.zeros(2, dtype=torch.long)),
+            (torch.randn(1, 5), torch.zeros(1, dtype=torch.long)),
+        ]
+        with pytest.raises(RuntimeError):
+            imagenet.evaluate(model, loader, execution_device, description="Broken evaluation")
+    else:
+        x, labels = torch.randn(5, 4), torch.tensor([0, 1, 2, 3, 4])
+        loader = DataLoader(TensorDataset(x, labels), batch_size=2)
+        result = imagenet.evaluate(
+            model, loader, execution_device, description="Partial evaluation"
+        )
+        assert result["samples"] == 5
+        assert bars[0].n == bars[0].total == 3
+        output = capsys.readouterr().err
+        assert "100%" in output and "3/3" in output and "images=5" in output
+    assert len(bars) == 1 and bars[0].disable  # close() disables further rendering.
+    assert [m.training for m in model.modules()] == modes
+
+
+@pytest.mark.parametrize("builder", [resnet18, resnet34, resnet50])
 def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
-    tmp_path, execution_device
+    tmp_path, execution_device, builder
 ):
     torch.set_num_threads(1)
     torch.manual_seed(11)
     # Compare structural mathematics in float64: changing convolution widths can
     # change cuDNN's TF32 algorithm, which is not an exact FP32 numerical reference.
-    model = resnet18(weights=None).to(device=execution_device, dtype=torch.float64).eval()
+    model = builder(weights=None).to(device=execution_device, dtype=torch.float64).eval()
     reference = copy.deepcopy(model)
     x = torch.randn(2, 3, 64, 64, device=execution_device, dtype=torch.float64)
     removed = [0, 2, 7]
@@ -166,7 +288,7 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
     assert model.layer1[0].conv1.weight.grad is not None
     save_checkpoint(model, tmp_path / "model.pt")
     restored = load_checkpoint(
-        resnet18(weights=None), tmp_path / "model.pt", map_location=execution_device
+        builder(weights=None), tmp_path / "model.pt", map_location=execution_device
     ).eval()
     torch.testing.assert_close(restored(x), model(x))
 
@@ -183,13 +305,15 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
         ("group_sparsity", ["--penalty", "squared"]),
         ("soft_pruning", ["--operation", "zero"]),
         ("soft_pruning", ["--operation", "decay"]),
-        ("soft_pruning", ["--operation", "decay", "--cycles", "1", "--projection-epochs", "2"]),
+        ("soft_pruning", ["--operation", "decay", "--cycles", "1", "--projection_epochs", "2"]),
         ("gate_pruning", []),
         ("stability_pruning", []),
-        ("stability_pruning", ["--search-steps", "1", "--window", "2", "--threshold", "1"]),
+        ("stability_pruning", ["--search_steps", "1", "--window", "2", "--threshold", "1"]),
     ],
 )
-def test_pretrained_workflow(monkeypatch, tmp_path, model_name, recipe, extra, execution_device):
+def test_pretrained_workflow(
+    monkeypatch, tmp_path, model_name, recipe, extra, execution_device, capsys
+):
     # Only test fixtures use random weights/data. Every executable entry must
     # request an official pretrained weight enum; there is no random-model CLI.
     requested = []
@@ -199,11 +323,11 @@ def test_pretrained_workflow(monkeypatch, tmp_path, model_name, recipe, extra, e
     def factory(*, weights):
         requested.append(weights)
         if model_name == "resnet18":
-            return resnet18(weights=None)
+            return workflow_resnet()
         model = VisionTransformer(
             image_size=224,
             patch_size=16,
-            num_layers=1,
+            num_layers=2,
             num_heads=2,
             hidden_dim=16,
             mlp_dim=32,
@@ -237,15 +361,15 @@ def test_pretrained_workflow(monkeypatch, tmp_path, model_name, recipe, extra, e
             execution_device,
             "--ratio",
             "0.5",
-            "--batch-size",
+            "--train_batch_size",
             "2",
-            "--threads",
+            "--val_batch_size",
             "1",
-            "--finetune-epochs",
+            "--finetune_epochs",
             "1",
-            "--warmup",
+            "--latency_warmup",
             "0",
-            "--repetitions",
+            "--latency_repetitions",
             "1",
             "--output",
             str(tmp_path),
@@ -261,19 +385,36 @@ def test_pretrained_workflow(monkeypatch, tmp_path, model_name, recipe, extra, e
     # Match the CLI: CPU data loading, followed by explicit model/input transfer.
     with torch.device("cpu"):
         module.main()
-    results = json.loads((tmp_path / "metrics.json").read_text())["stages"]
+    progress_output = capsys.readouterr().err.lower()
+    assert "evaluation" in progress_output and "fine-tuning" in progress_output
+    assert "100%" in progress_output and "2/2" in progress_output
+    if recipe == "prune_finetune" and "taylor" in extra:
+        assert "taylor calibration" in progress_output
+    saved = json.loads((tmp_path / "metrics.json").read_text())
+    results = saved["stages"]
+    expected_layers = (
+        ["layer1.0", "layer1.1", "layer2.0", "layer3.0", "layer4.0"]
+        if model_name == "resnet18"
+        else ["encoder.layers.encoder_layer_0", "encoder.layers.encoder_layer_1"]
+    )
+    assert saved["config"]["layers"] == expected_layers
+    assert saved["config"]["train_batch_size"] == 2
+    assert saved["config"]["val_batch_size"] == 1
     assert requested == [weights, None]
     baseline = results[0]
     assert baseline["stage"] == "pretrained"
     assert all(r["samples"] == 2 for r in results)
     assert all(r["top1_delta_pp"] == pytest.approx(r["top1"] - baseline["top1"]) for r in results)
     pruned = [r for r in results if r["stage"].endswith("pruned")]
+    assert pruned[-1]["removed"] == [8 if recipe == "iterative_pruning" else 16] * len(
+        expected_layers
+    )
     assert pruned[-1]["actual_ratio"] == 0.5
     assert pruned[-1]["#Params"] < baseline["#Params"]
     assert pruned[-1]["#MACs"] < baseline["#MACs"]
     if recipe == "iterative_pruning":
         assert [row["actual_ratio"] for row in pruned] == [0.25, 0.5]
-    if recipe == "stability_pruning" and "--search-steps" in extra:
+    if recipe == "stability_pruning" and "--search_steps" in extra:
         search = next(row for row in results if row["stage"] == "search_completed")
         assert search["selection_checks"] == 1
         assert search["training_epochs"] == 0
@@ -291,10 +432,10 @@ def test_pretrained_workflow(monkeypatch, tmp_path, model_name, recipe, extra, e
     [
         ("prune_finetune", []),
         ("iterative_pruning", ["--rounds", "1"]),
-        ("bn_sparsity", ["--sparse-epochs", "0"]),
-        ("group_sparsity", ["--sparse-epochs", "0"]),
-        ("gate_pruning", ["--sparse-epochs", "0"]),
-        ("stability_pruning", ["--search-steps", "1"]),
+        ("bn_sparsity", ["--sparse_epochs", "0"]),
+        ("group_sparsity", ["--sparse_epochs", "0"]),
+        ("gate_pruning", ["--sparse_epochs", "0"]),
+        ("stability_pruning", ["--search_steps", "1"]),
     ],
 )
 def test_evaluation_only_workflows_do_not_request_training(
@@ -302,9 +443,7 @@ def test_evaluation_only_workflows_do_not_request_training(
 ):
     module = importlib.import_module(recipe)
     weights = module.MODELS["resnet18"][1]
-    monkeypatch.setitem(
-        module.MODELS, "resnet18", (lambda *, weights: resnet18(weights=None), weights)
-    )
+    monkeypatch.setitem(module.MODELS, "resnet18", (lambda *, weights: workflow_resnet(), weights))
 
     def data(weights, data_dir, *, need_train, **kwargs):
         assert not need_train
@@ -322,11 +461,11 @@ def test_evaluation_only_workflows_do_not_request_training(
         [
             recipe + ".py",
             *device_args,
-            "--threads",
+            "--val_batch_size",
             "1",
-            "--warmup",
+            "--latency_warmup",
             "0",
-            "--repetitions",
+            "--latency_repetitions",
             "1",
             "--output",
             str(tmp_path),
@@ -345,14 +484,17 @@ def test_evaluation_only_workflows_do_not_request_training(
 
 
 @pytest.mark.parametrize("gated", [False, True])
-def test_vit_adapter_gate_identity_and_ffn_compaction(gated, tmp_path, execution_device):
+@pytest.mark.parametrize("patch_size", [16, 32])
+def test_vit_adapter_gate_identity_and_ffn_compaction(
+    gated, tmp_path, execution_device, patch_size
+):
     torch.set_num_threads(1)
     # torchvision architecture with smaller dimensions keeps numerical regression
     # independent and cheap; full pretrained ViT is also checked manually.
     official = (
         VisionTransformer(
             image_size=32,
-            patch_size=16,
+            patch_size=patch_size,
             num_layers=2,
             num_heads=2,
             hidden_dim=16,
@@ -457,15 +599,15 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
     [
         ("prune_finetune", "--rounds"),
         ("prune_finetune", "--strength"),
-        ("iterative_pruning", "--sparse-epochs"),
+        ("iterative_pruning", "--sparse_epochs"),
         ("iterative_pruning", "--metric"),
-        ("bn_sparsity", "--model"),
+        ("bn_sparsity", "--metric"),
         ("bn_sparsity", "--rounds"),
         ("group_sparsity", "--metric"),
         ("gate_pruning", "--penalty"),
         ("soft_pruning", "--strength"),
-        ("soft_pruning", "--sparse-epochs"),
-        ("stability_pruning", "--sparse-epochs"),
+        ("soft_pruning", "--sparse_epochs"),
+        ("stability_pruning", "--sparse_epochs"),
         ("stability_pruning", "--operation"),
     ],
 )
@@ -475,3 +617,157 @@ def test_workflow_rejects_unrelated_task_options(monkeypatch, capsys, recipe, fl
         importlib.import_module(recipe).parse_args()
     assert error.value.code == 2
     assert "unrecognized arguments" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("recipe", WORKFLOWS)
+def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe):
+    module = importlib.import_module(recipe)
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu"])
+    options = module.parse_args()
+    assert options.train_samples == options.val_samples == 0
+    assert options.train_batch_size == options.val_batch_size == 256
+    latency_defaults = signature(model_metrics.measure_module_latency).parameters
+    assert options.latency_warmup == latency_defaults["warmup"].default
+    assert options.latency_repetitions == latency_defaults["repetitions"].default
+    assert not options.compile_latency
+    assert not hasattr(options, "layers") and not hasattr(options, "threads")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            recipe,
+            "--device",
+            "cpu",
+            "--train_batch_size",
+            "16",
+            "--val_batch_size",
+            "128",
+            "--compile_latency",
+            "--latency_warmup",
+            "0",
+            "--latency_repetitions",
+            "1",
+        ],
+    )
+    options = module.parse_args()
+    assert (options.train_batch_size, options.val_batch_size) == (16, 128)
+    assert options.compile_latency
+    for removed in ("--layers", "--threads", "--compile", "--batch-size", "--train-samples"):
+        monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", removed])
+        with pytest.raises(SystemExit) as error:
+            module.parse_args()
+        assert error.value.code == 2
+
+
+def test_readme_workflow_commands_match_the_cli(monkeypatch):
+    readme = Path(__file__).resolve().parents[2] / "examples/workflows/README.md"
+    commands = re.findall(r"^python (\w+\.py) ((?:[^\n]*\\\n)*[^\n]*)", readme.read_text(), re.M)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    seen = set()
+    for filename, arguments in commands:
+        name = filename.removesuffix(".py")
+        module = importlib.import_module(name)
+        monkeypatch.setattr(sys, "argv", [filename, *shlex.split(arguments.replace("\\\n", " "))])
+        options = module.parse_args()
+        assert options.device == "cuda"
+        assert options.compile_latency
+        assert options.train_samples == options.val_samples == 0
+        assert options.val_batch_size == options.train_batch_size == 256
+        assert options.val_workers == 0 and options.seed == 7
+        latency_defaults = signature(model_metrics.measure_module_latency).parameters
+        assert options.latency_warmup == latency_defaults["warmup"].default
+        assert options.latency_repetitions == latency_defaults["repetitions"].default
+        assert options.output.name != name  # Verify the full multiline command was parsed.
+        seen.add(name)
+    assert seen == set(WORKFLOWS)
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_measurement_uses_validation_batch_and_compiles_only_latency(monkeypatch, compiled):
+    model = nn.Sequential(nn.Flatten(), nn.Linear(12, 6))
+    options = SimpleNamespace(
+        val_batch_size=7,
+        train_batch_size=3,
+        device="cpu",
+        compile_latency=compiled,
+        latency_warmup=2,
+        latency_repetitions=4,
+    )
+    observed = []
+
+    def complexity(target, inputs, *, device):
+        assert target is model and inputs.shape == (7, 3, 2, 2)
+        observed.append("complexity")
+        return SimpleNamespace(params=78, macs=504, unsupported_ops=())
+
+    def latency(target, inputs, **kwargs):
+        assert target is model and inputs.shape == (7, 3, 2, 2)
+        assert kwargs == {"device": "cpu", "compile": compiled, "warmup": 2, "repetitions": 4}
+        observed.append("latency")
+        return 1.25
+
+    def no_compile(*args, **kwargs):
+        pytest.fail("Accuracy evaluation and metric setup must not compile the model")
+
+    monkeypatch.setattr(torch, "compile", no_compile)
+    monkeypatch.setattr(model_metrics, "calculate_model_complexity", complexity)
+    monkeypatch.setattr(model_metrics, "measure_module_latency", latency)
+    example = torch.randn(1, 3, 2, 2)
+    report = model_metrics.measure_model(model, example, options)
+    accuracy = imagenet.evaluate(model, [(example, torch.tensor([0]))], "cpu")
+    assert observed == ["complexity", "latency"]
+    assert report["input_shape"][0] == 7 and report["compiled"] is compiled
+    assert accuracy["samples"] == 1
+
+
+@pytest.mark.parametrize("name", tuple(imagenet_models.MODELS))
+def test_supported_pretrained_models_use_explicit_official_weights(monkeypatch, name):
+    _, weights = imagenet_models.MODELS[name]
+    seen = []
+
+    def build(*, weights):
+        seen.append(weights)
+        if name.startswith("resnet"):
+            return workflow_resnet()
+        return VisionTransformer(
+            image_size=224,
+            patch_size=32 if name.endswith("32") else 16,
+            num_layers=2,
+            num_heads=2,
+            hidden_dim=16,
+            mlp_dim=32,
+        )
+
+    monkeypatch.setitem(imagenet_models.MODELS, name, (build, weights))
+    model = imagenet_models.make_model(name).eval()
+    skeleton = imagenet_models.make_model(name, pretrained=False).eval()
+    assert seen == [weights, None]
+    assert weights.transforms().crop_size == [224]
+    assert isinstance(model, imagenet_models.TraceableViT) == name.startswith("vit_")
+    assert type(model) is type(skeleton)
+
+
+def test_workflow_reports_strategy_limit_without_claiming_target_completion(monkeypatch, tmp_path):
+    module = prune_finetune
+    strategy = module.Greedy
+    weights = module.MODELS["resnet18"][1]
+    monkeypatch.setitem(module.MODELS, "resnet18", (lambda *, weights: workflow_resnet(), weights))
+    monkeypatch.setattr(module, "Greedy", lambda metric: strategy(metric, max_trials=0))
+    monkeypatch.setattr(module, "measure_model", lambda *args: {})
+    monkeypatch.setattr(
+        module,
+        "load_images",
+        lambda *args, **kwargs: (
+            None,
+            TensorDataset(torch.randn(2, 3, 32, 32), torch.tensor([0, 1])),
+            {},
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["workflow", "--device", "cpu", "--output", str(tmp_path)])
+    module.main()
+    saved = json.loads((tmp_path / "metrics.json").read_text())
+    pruned = next(stage for stage in saved["stages"] if stage["stage"] == "pruned")
+    assert len(saved["config"]["layers"]) == 5
+    assert pruned["planning_trials"] == 0 and pruned["planning_limit_reached"]
+    assert pruned["removed"] == [0] * 5
+    assert pruned["actual_ratio"] == 0 and pruned["shortfall"] == 40

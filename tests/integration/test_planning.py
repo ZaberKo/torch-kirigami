@@ -2,6 +2,7 @@
 
 import copy
 
+import pytest
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -9,7 +10,14 @@ from torch.nn import functional as F
 from tests.support.numerics import _assert_value_and_input_gradient, _initialize
 from tests.support.pruning import build
 from torch_kirigami import Balanced, Divisible, IndexSet
-from torch_kirigami.pruning import Candidate, CandidateSpace, ChannelRatio, Greedy, Pruner
+from torch_kirigami.pruning import (
+    Candidate,
+    CandidateSpace,
+    ChannelRatio,
+    Greedy,
+    PlanningError,
+    Pruner,
+)
 
 
 class Branches(nn.Module):
@@ -42,6 +50,15 @@ def test_shared_budget_constraint_completion_preserves_opaque_branch_and_io(exec
 
     def metric(context, batch):
         batches.append(tuple(candidate.key for candidate in batch))
+
+        # Reusing Greedy's eligibility checks must not let a metric bypass
+        # completeness when it explicitly scores a different temporary request.
+        def forbidden(context, batch):
+            pytest.fail("An incomplete temporary candidate must not reach the metric")
+
+        temporary = Candidate("temporary", [axes["bad"].select([0])])
+        with pytest.raises(PlanningError, match="Incomplete scoring"):
+            context.score(forbidden, [temporary])
         return [0.0] * len(batch)
 
     constraints = [

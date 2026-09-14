@@ -225,7 +225,15 @@ def convolution(ctx):
     candidates = (
         ()
         if ctx.module is None
-        else (CandidateAxis(key, axis, cout // cin if depthwise else 1, w if transposed else None),)
+        else (
+            CandidateAxis(
+                key,
+                axis,
+                cout // cin if depthwise else 1,
+                w if transposed else None,
+                alignment_axis=y.axis(channel),
+            ),
+        )
     )
     return OperatorSpec(
         tuple(relations),

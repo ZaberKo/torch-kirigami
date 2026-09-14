@@ -182,12 +182,17 @@ class CandidateAxis:
     Seeds use the logical axis; registered relations map them to parameter regions.
     A binding declares that repeated keys represent the same logical coordinate
     system across calls, even when the seed is a call-specific activation axis.
+    An optional alignment_axis declares the corresponding logical width for
+    Granularity. It must have the same original width as axis. Use it when the
+    seed tensor can require partitioned packing: its physical layout cannot by
+    itself establish the retained logical width. Relations must couple both axes.
     """
 
     key: str
     axis: AxisRef
     block_size: int = 1
     binding: TensorRef | None = None
+    alignment_axis: AxisRef | None = None
 
     def __post_init__(self):
         if not isinstance(self.key, str) or not self.key or not isinstance(self.axis, AxisRef):
@@ -203,6 +208,12 @@ class CandidateAxis:
             or self.binding.kind not in ("parameter", "buffer")
         ):
             raise ValueError("Shared candidate domains require a registered tensor binding")
+        if self.alignment_axis is not None and (
+            not isinstance(self.alignment_axis, AxisRef)
+            or self.alignment_axis.tensor.shape[self.alignment_axis.dim]
+            != self.axis.tensor.shape[self.axis.dim]
+        ):
+            raise ValueError("Alignment axis must be an AxisRef with the same original width")
 
 
 @dataclass(frozen=True)

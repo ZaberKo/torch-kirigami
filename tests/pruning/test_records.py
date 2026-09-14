@@ -36,6 +36,8 @@ def test_candidates_freeze_seeds_and_reject_invalid_domains():
         lambda: CandidateAxis("channels", "axis"),
         lambda: CandidateAxis("channels", axis, True),
         lambda: CandidateAxis("channels", axis, 0),
+        lambda: CandidateAxis("channels", axis, alignment_axis="channels"),
+        lambda: CandidateAxis("channels", axis, alignment_axis=TensorRef("other", (3,)).axis(0)),
         lambda: ChannelRatio(float("nan")),
         lambda: ChannelRatio(1),
         lambda: ChannelRatio(-0.1),

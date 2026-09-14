@@ -328,6 +328,13 @@ The normalized call passed to `analyze()`: FX node, argument and result trees, o
 
 A stable logical-domain `key`, `AxisRef`, and positive `block_size` for default contiguous removal candidates. An optional registered tensor `binding` identifies the same logical coordinates across repeated calls when the seed axis belongs to an activation, as with transposed convolution. Matching keys must agree on that binding, width, and block size; equal widths alone do not establish identity. The key is independent of an invocation's FX name. Declaring candidates supplies discovery information; it does not impose an algorithm or a budget. Relations map logical seeds into actual parameter regions.
 
+An optional `alignment_axis` identifies the corresponding logical width used by
+retained-width constraints. It defaults to the seed axis and must have the same
+original width. Grouped convolution uses its output activation axis because
+partitioned input-column removals can prevent its physical weight tensor from
+having a single Cartesian compact shape. The rule declares the correspondence;
+the pruning layer does not infer it from shapes or module types.
+
 ### `PartitionedLayout`
 
 Describes a tensor as disjoint original-coordinate partitions, compacted separately and concatenated in declared order along `concat_dim`. `retained_regions(selection)` computes remaining regions without allocating tensors. Dependency constraints and pruning lowering consume the same descriptor so their interpretation of grouped storage agrees.
