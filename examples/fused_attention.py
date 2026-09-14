@@ -18,7 +18,14 @@ from torch_kirigami import (
     Requirement,
     ShapeExpr,
 )
-from torch_kirigami.pruning import ChannelRatio, Magnitude, Pruner, load_checkpoint, save_checkpoint
+from torch_kirigami.pruning import (
+    ChannelRatio,
+    Greedy,
+    Magnitude,
+    Pruner,
+    load_checkpoint,
+    save_checkpoint,
+)
 
 
 class FusedGQA(nn.Module):
@@ -105,7 +112,9 @@ def main():
     x = torch.randn(2, 3, 8)
     operators = OperatorRegistry.default().register(FusedGQA, OperatorRule(fused_gqa))
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
-    model, result = Pruner(model, graph=graph).prune(metric=Magnitude(), budget=ChannelRatio(0.5))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    model, result = pruner.prune(space, budget=ChannelRatio(0.5), strategy=Greedy(Magnitude()))
     assert (model.q_heads, model.kv_heads) == (2, 1)
     stream = io.BytesIO()
     save_checkpoint(model, stream)

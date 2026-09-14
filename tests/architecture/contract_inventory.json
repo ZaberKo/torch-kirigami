@@ -676,7 +676,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.pruning.BudgetReport",
+      "object": "torch_kirigami.pruning.SelectionReport",
       "contracts": [
         {
           "behavior": "冻结/字段校验、候选域去重、分母保持、local/global、shortfall",
@@ -1410,6 +1410,23 @@
       ]
     },
     {
+      "object": "torch_kirigami.pruning.Granularity",
+      "contracts": [
+        {
+          "behavior": "Immutable exact module alignment lowers to ordinary constraints",
+          "conditions": "Public discovery/plan/apply and plan roundtrip on CPU/CUDA; alias and budget failure checks",
+          "tests": [
+            "tests/pruning/test_granularity.py::test_nonadjacent_alignment_roundtrip_and_independent_compact_reference",
+            "tests/pruning/test_granularity.py::test_aliases_and_shared_weights_have_distinct_configuration_rules",
+            "tests/pruning/test_granularity.py::test_exact_type_path_precedence_root_and_unused_type_notes",
+            "tests/pruning/test_granularity.py::test_alignment_cannot_exceed_budget_or_be_bypassed_by_manual_or_custom_strategy",
+            "tests/pruning/test_granularity.py::test_configuration_is_a_snapshot_and_exact_paths_have_no_glob_semantics"
+          ],
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.CandidateSpace",
       "contracts": [
         {
@@ -1425,9 +1442,9 @@
           ]
         },
         {
-          "behavior": "Protected and zero-budget domains avoid channel-scale candidate construction",
+          "behavior": "Explicit zero-budget planning avoids rediscovery and scoring",
           "tests": [
-            "tests/integration/test_review_optimizations.py::test_zero_budget_keeps_unprotected_domain_without_building_candidates"
+            "tests/integration/test_review_optimizations.py::test_zero_budget_uses_explicit_space_without_rediscovery_or_scoring"
           ],
           "conditions": "Public integration on CPU and CUDA through execution_device",
           "gaps": []

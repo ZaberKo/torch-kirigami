@@ -27,7 +27,9 @@ def test_block_families_share_coordinate_relations(operation, remove, keep_out, 
     old = copy.deepcopy(model)
     x = torch.randn(2, 3, 3, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("0.weight").axis(0).select(remove)], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("0.weight").axis(0).select(remove)]
+        )
     )
     torch.testing.assert_close(model(x), old(x)[:, keep_out])

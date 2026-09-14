@@ -10,7 +10,7 @@ class CaptureError(KirigamiError):
 
 
 class AnalysisLimitError(KirigamiError):
-    """An exact symbolic selection exceeded the supported complexity budget."""
+    """An exact symbolic selection exceeded the supported complexity limit."""
 
 
 class StaleGraphError(KirigamiError):

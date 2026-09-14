@@ -40,7 +40,9 @@ def test_unused_empty_buffer_does_not_block_hidden_pruning(execution_device):
     empty = model.unused
     graph = DependencyGraph.build(model, args=(torch.ones(1, 4),))
     assert graph.propagate(remove=[]).status == "resolved"
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("0.weight").axis(0).select([1])])
+    )
     assert model.unused is empty and model[0].out_features == 5
 
 
@@ -59,8 +61,10 @@ def test_unbound_index_guard_only_blocks_its_dependency_component():
     x = torch.randn(2, 4)
     expected = model(x)[0]
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("independent.0.weight").axis(0).select([5])]
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("independent.0.weight").axis(0).select([5])]
+        )
     )
     torch.testing.assert_close(model(x)[0], expected)
     assert model.independent[0].out_features == 5
@@ -74,6 +78,8 @@ def test_padding_barrier_preserves_independent_branch(execution_device):
     model = Model()
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
+    )
     assert model.b.in_features == 3
     torch.testing.assert_close(model(x)[1], F.pad(x, (-1, 1)))

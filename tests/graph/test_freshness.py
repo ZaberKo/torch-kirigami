@@ -56,7 +56,7 @@ def test_training_mode_and_parameter_replacement_invalidate():
 def test_cached_reference_changes_invalidate_plan():
     model = CachedWeight()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("weight").axis(0).select([1])])
     model.cached[0]["weight"] = model.weight.detach().clone()
     with pytest.raises(StaleGraphError):
         graph.validate()
@@ -87,7 +87,7 @@ def test_scalar_types_are_part_of_configuration_guards(replacement):
 
     model = Model()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     model.flag = replacement
     with pytest.raises(StaleGraphError):
         graph.validate()
@@ -99,7 +99,7 @@ def test_list_configuration_is_frozen_and_guarded_in_graph_and_plan():
     model = Chain()
     model.config = ([1, [2]], (3,))
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     serialized = plan.to_dict()
     model.route[0] = True
     model.config[0][1].append(4)

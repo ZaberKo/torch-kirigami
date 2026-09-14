@@ -206,7 +206,7 @@ flowchart TD
 
 The queue processes accumulated selections, not isolated deltas. Two paths may jointly complete a broadcast fiber or a logical block; propagating only the most recent delta would miss that implication. Provenance records only newly discovered target coordinates.
 
-A relation that exceeds the exact representation budget is disabled for that query and contributes an incomplete diagnostic. Constraints are checked after the fixed point; they do not add removals. Choosing balancing channels belongs to the planner.
+A relation that exceeds the exact representation limit is disabled for that query and contributes an incomplete diagnostic. Constraints are checked after the fixed point; they do not add removals. Choosing balancing channels belongs to the planner.
 
 ### `Diagnostic`
 
@@ -219,6 +219,8 @@ Records a `source` selection, newly added `target` regions, and the relation's `
 ### `Impact`
 
 The immutable result of a dependency query: graph identity, original requests, closure selections, diagnostics, requirements, provenance, affected interfaces, checked constraints, and known tensor references. `selection(ref)` returns an empty selection for a known unaffected tensor. `parameters` and `buffers` expose affected registered selections; shared parameter objects appear once.
+
+`impact.parameters` contains parameter selections, not a `ParameterGroup` object. `Impact` neither stores nor constructs `ParameterGroup`. The pruning-layer method `Pruner.parameter_groups(candidates)` runs dependency queries, filters their parameter selections, and constructs groups for training operations. See the [extraction sequence and ownership](sparse-training.md#live-parameter-groups).
 
 | Result property | Meaning |
 | --- | --- |

@@ -6,7 +6,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import ChannelRatio, Magnitude, Pruner, WeightTaylor
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, Pruner, WeightTaylor
 
 
 def main():
@@ -19,7 +19,8 @@ def main():
 
     graph = DependencyGraph.build(model, args=(x,))
     pruner = Pruner(model, graph=graph)
-    plan = pruner.plan(metric=Magnitude(p=2), budget=ChannelRatio(0.25))
+    space = pruner.discover_candidates()
+    plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
     print(plan.explain())
     returned, _result = pruner.apply(plan)
     assert returned is model and model[0].out_features == 6
@@ -35,7 +36,8 @@ def main():
 
     graph = DependencyGraph.build(model, args=(x,))
     pruner = Pruner(model, graph=graph)
-    plan = pruner.plan(metric=WeightTaylor(), budget=ChannelRatio(0.2))
+    space = pruner.discover_candidates()
+    plan = pruner.plan(space, budget=ChannelRatio(0.2), strategy=Greedy(WeightTaylor()))
     pruner.apply(plan)
     assert model[0].out_features == 5
     model(x).sum().backward()

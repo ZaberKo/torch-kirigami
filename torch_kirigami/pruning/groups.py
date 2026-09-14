@@ -55,7 +55,7 @@ def group_equivalence_classes(groups):
 
     Element counts and axis bounds are decomposition-independent bucket keys,
     not equality proofs. Bounds avoid materializing a potentially fragmented
-    projection that could exceed the coordinate budget of otherwise valid regions.
+    projection that could exceed the coordinate limit of otherwise valid regions.
     Exact comparison still resolves bucket collisions.
     """
     groups = tuple(groups)

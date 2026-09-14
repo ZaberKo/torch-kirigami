@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph, IndexSet, Region, Selection
-from torch_kirigami.pruning import CandidateSpace, ParameterGroup
+from torch_kirigami.pruning import ParameterGroup, Pruner
 from torch_kirigami.pruning.groups import unique_groups
 from torch_kirigami.sparsity import GroupLasso, scale_groups_, set_group_norms_
 from torch_kirigami.sparsity import values as sparse_values
@@ -84,8 +84,9 @@ def test_protected_pointwise_domains_do_not_enumerate_channels(activation, monke
         return original(*args, **kwargs)
 
     monkeypatch.setattr(graph, "propagate", propagate)
-    space = CandidateSpace(graph)
-    assert not space.axes and not space.candidates
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
+    assert not space.channel_axes and not space.candidates
     assert not calls
 
 

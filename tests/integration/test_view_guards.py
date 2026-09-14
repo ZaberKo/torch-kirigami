@@ -85,7 +85,7 @@ def test_unknown_layout_views_use_shape_proofs_and_retain_uncertainty(
     request = graph.parameter("weight").axis(1).select(removed)
     if consumer == "view":
         with pytest.raises(PlanningError, match="stride cannot be proved") as error:
-            pruner.plan(remove=[request], preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([request])
         assert "reshape(...) or contiguous().view(...)" in str(error.value)
         assert "If a copy is acceptable" in str(error.value)
         assert "rebuild the dependency graph" in str(error.value)
@@ -93,7 +93,7 @@ def test_unknown_layout_views_use_shape_proofs_and_retain_uncertainty(
         torch.testing.assert_close(model.weight, before)
         return
 
-    plan = pruner.plan(remove=[request], preserve_io=False)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([request])
     assert model.weight is original
     torch.testing.assert_close(model.weight, before)
     Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
@@ -189,8 +189,8 @@ def test_safe_view_shape_does_not_bypass_original_forward_size_requirements(exec
     before = original.detach().clone()
     graph = DependencyGraph.build(model, args=())
     with pytest.raises(PlanningError, match=r"shape|size|dimension|forward"):
-        Pruner(model, graph=graph).plan(
-            remove=[graph.parameter("weight").axis(1).select([1])], preserve_io=False
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("weight").axis(1).select([1])]
         )
     assert model.weight is original
     torch.testing.assert_close(model.weight, before)
@@ -244,11 +244,11 @@ def test_convolution_unknown_layout_allows_axis_split_only(
     remove = graph.parameter("conv.weight").axis(1 if transposed else 0).select([1, 5])
     if consumer == "view":
         with pytest.raises(PlanningError, match="stride cannot be proved"):
-            pruner.plan(remove=[remove], preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove])
         assert model.conv.weight is weight
         torch.testing.assert_close(weight, original)
         return
-    plan = pruner.plan(remove=[remove], preserve_io=False)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove])
     Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
     expected = before[:, [0, 2, 3, 4, 6, 7]]
     expected = (

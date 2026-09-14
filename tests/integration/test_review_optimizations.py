@@ -9,9 +9,9 @@ from torch.nn import functional as F
 
 from torch_kirigami import DependencyGraph, IndexSet, Region, Selection
 from torch_kirigami.pruning import (
-    CandidateSpace,
     ChannelRatio,
     Greedy,
+    Magnitude,
     ParameterGroup,
     Pruner,
     load_checkpoint,
@@ -44,7 +44,11 @@ def test_allocating_registered_families_support_inplace_consumers(
         getattr(torch, method)(y).relu(), model.last.weight[:, keep], model.last.bias
     )
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("first.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("first.weight").axis(0).select([1])]
+        )
+    )
     torch.testing.assert_close(model(x), expected)
     model(x).sum().backward()
 
@@ -61,9 +65,13 @@ def test_zero_budget_protected_head_does_not_scan_channels(width, monkeypatch, e
         return original(*args, **kwargs)
 
     monkeypatch.setattr(graph, "propagate", counted)
-    plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0), strategy=Greedy(0))
+    plan = Pruner(model, graph=graph).plan(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0),
+        strategy=Greedy(Magnitude(), max_trials=0),
+    )
     assert len(requests) <= 3 and not any(requests)
-    assert not plan.recipes and plan.budget.widths == ()
+    assert not plan.recipes and plan.selection_report.widths == ()
     before = model.weight
     Pruner(model).apply(plan)
     assert model.weight is before
@@ -80,7 +88,9 @@ def test_batched_regularizer_has_independent_loss_and_gradient_reference(
             for parameter in model.parameters():
                 parameter.zero_()
     graph = DependencyGraph.build(model, args=(torch.ones(2, 16, dtype=torch.float64),))
-    groups = CandidateSpace(graph).parameter_groups()
+    groups = Pruner(graph.model, graph=graph).parameter_groups(
+        Pruner(graph.model, graph=graph).discover_candidates().candidates
+    )
     penalty = kind(groups)
     actual = penalty()
     rows = torch.cat((model[0].weight, model[0].bias[:, None], model[1].weight.T), dim=1)
@@ -153,18 +163,25 @@ def test_tied_checkpoint_uses_storage_identity_but_checks_independent_payloads(
     assert model.alias is model.weight
 
 
-def test_zero_budget_keeps_unprotected_domain_without_building_candidates(
+def test_zero_budget_uses_explicit_space_without_rediscovery_or_scoring(
     monkeypatch, execution_device
 ):
     model = nn.Sequential(nn.Linear(4, 1024), nn.Linear(1024, 2))
     graph = DependencyGraph.build(model, args=(torch.ones(2, 4),))
 
-    def unexpected_materialization(space):
-        pytest.fail("Zero-budget planning materialized channel candidates")
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
 
-    monkeypatch.setattr(CandidateSpace, "candidates", property(unexpected_materialization))
-    plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0))
-    assert plan.budget.widths == (1024,) and plan.budget.removed == (0,)
+    def unexpected(*args, **kwargs):
+        pytest.fail("Zero-budget planning rediscovered candidates or requested scores")
+
+    monkeypatch.setattr(pruner, "discover_candidates", unexpected)
+    plan = pruner.plan(
+        space,
+        budget=ChannelRatio(0),
+        strategy=Greedy(unexpected),
+    )
+    assert plan.selection_report.widths == (1024,) and plan.selection_report.removed == (0,)
     before = tuple(model.parameters())
     Pruner(model).apply(plan)
     assert all(a is b for a, b in zip(before, model.parameters(), strict=True))

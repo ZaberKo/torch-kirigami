@@ -218,8 +218,10 @@ def test_native_normalization_loaders_preserve_compact_checkpoint(norm, executio
         source[1].running_mean.fill_(1)
         source[1].running_var.fill_(4)
     graph = DependencyGraph.build(source, args=(torch.ones(2, 2, 4),))
-    Pruner(source, graph=graph).prune(
-        remove=[graph.parameter("0.weight").axis(0).select([1])], preserve_io=False
+    Pruner(source, graph=graph, preserve_io=False).apply(
+        Pruner(source, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("0.weight").axis(0).select([1])]
+        )
     )
     stream = io.BytesIO()
     save_checkpoint(source, stream)

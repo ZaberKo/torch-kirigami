@@ -10,7 +10,6 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     Candidate,
     ChannelRatio,
-    Magnitude,
     PlanningContext,
 )
 
@@ -21,7 +20,7 @@ def _context(model=None):
     axis = graph.parameter("weight").axis(0)
     candidate = Candidate("one", (axis.select([1]),), axis)
     context = PlanningContext(
-        graph, graph.operations(), (candidate,), ChannelRatio(0.5), (axis,), Magnitude(), ()
+        graph, graph.operations(), (candidate,), ChannelRatio(0.5), (axis,), ()
     )
     return context, candidate
 

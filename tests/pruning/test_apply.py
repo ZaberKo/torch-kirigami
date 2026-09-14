@@ -17,6 +17,7 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     ChannelRatio,
     ExecutionError,
+    Greedy,
     Magnitude,
     PlanningError,
     Pruner,
@@ -27,10 +28,10 @@ def test_prune_wrapper_and_empty_plan():
     model = chain()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
     p = Pruner(model, graph=graph)
-    plan = p.plan(remove=[])
+    plan = p.plan_remove([])
     assert p.apply(plan)[0] is model
     assert p.apply(plan)[0] is model
-    returned, result = p.prune(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    returned, result = p.apply(p.plan_remove([graph.parameter("0.weight").axis(0).select([1])]))
     assert returned is model and result.plan.analysis.status == "resolved"
 
 
@@ -41,7 +42,7 @@ def test_manual_chain_readonly_and_apply_inference(execution_device):
     original = copy.deepcopy(model)
     graph, pruner = build(model, x)
     old = model[0].weight
-    plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1, 4])])
+    plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1, 4])])
     assert model[0].weight is old
     assert model[0].out_features == 6
     with pytest.raises(FrozenInstanceError):
@@ -68,10 +69,10 @@ def test_io_protection_and_mutual_exclusion():
     graph, pruner = build(model, torch.randn(2, 4))
     remove = [graph.parameter("weight").axis(0).select([1])]
     with pytest.raises(PlanningError, match="fixed_axis"):
-        pruner.plan(remove=remove)
-    with pytest.raises(ValueError, match="mutually"):
-        pruner.plan(remove=remove, metric=Magnitude())
-    plan = pruner.plan(remove=remove, preserve_io=False)
+        pruner.plan_remove(remove)
+    with pytest.raises(TypeError, match="metric"):
+        pruner.plan_remove(remove, metric=Magnitude())
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(remove)
     pruner.apply(plan)
     assert model.out_features == 5
 
@@ -79,7 +80,9 @@ def test_io_protection_and_mutual_exclusion():
 def test_plan_freshness_owner_and_value_changes():
     model = nn.Linear(4, 6)
     graph, pruner = build(model, torch.randn(2, 4))
-    plan = pruner.plan(remove=[graph.parameter("weight").axis(0).select([1])], preserve_io=False)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+        [graph.parameter("weight").axis(0).select([1])]
+    )
     with torch.no_grad():
         model.weight.add_(1)
     Pruner(model).apply(plan)
@@ -91,7 +94,7 @@ def test_allocation_and_commit_failures_restore(monkeypatch):
 
     model = nn.Sequential(nn.Linear(4, 6), nn.Linear(6, 2))
     graph, pruner = build(model, torch.randn(2, 4))
-    plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1])])
     original = tuple(model.parameters())
     gather = implementation.gather_region
 
@@ -125,7 +128,7 @@ def test_plan_state_isolation_and_altered_copy_rejected():
     graph, pruner = build(model, torch.randn(2, 4))
     state = {name: t.clone() for name, t in model.state_dict().items()}
     rng = torch.get_rng_state().clone()
-    plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1])])
     torch.testing.assert_close(torch.get_rng_state(), rng)
     assert all(m.training for m in model.modules())
     for name, t in model.state_dict().items():
@@ -137,7 +140,7 @@ def test_plan_state_isolation_and_altered_copy_rejected():
 def test_cached_reference_commit_failure_rolls_back(monkeypatch):
     model = CachedWeight()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("weight").axis(0).select([1])])
     weight, cached = model.weight, model.cached
     setter = CachedWeight.__setattr__
 
@@ -167,7 +170,11 @@ def test_final_accepted_compilation_is_revalidated(monkeypatch):
         return original(graph, operations, impact, **kwargs)
 
     monkeypatch.setattr(planner, "compile_recipes", counted)
-    plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0.25), metric=Magnitude())
+    plan = Pruner(model, graph=graph).plan(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.25),
+        strategy=Greedy(Magnitude()),
+    )
     # Search results are cached, but the final decision is independently compiled
     # under the original caller premises after the strategy callback returns.
     assert plan.recipes and max(counts.values()) == 2

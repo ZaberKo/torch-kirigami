@@ -17,7 +17,7 @@ def test_portable_queries_cover_affected_unaffected_and_unknown(execution_device
     graph = DependencyGraph.build(model, args=(x,))
     ref = graph.parameter("0.weight")
     impact = graph.propagate(remove=[ref.axis(0).select([1])])
-    plan = Pruner(model, graph=graph).plan(remove=[ref.axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([ref.axis(0).select([1])])
     assert set(plan.to_dict()) == {"format", "plan"}
     plan = PruningPlan.from_dict(plan.to_dict())
     for tensor in graph.values():

@@ -50,7 +50,11 @@ def test_fresh_producers_support_inplace_consumers(
         reference.last.bias.copy_(model.last.bias)
     x = torch.randn((3, 4, 3, 3) if spatial else (3, 4))
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("first.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("first.weight").axis(0).select([1])]
+        )
+    )
     y, expected = model(x), reference(x)
     torch.testing.assert_close(y, expected)
     y.sum().backward()
@@ -74,7 +78,9 @@ def test_functional_linear_vector_and_scalar_bias(batched, vector, bias, executi
     x = torch.randn((2, 4) if batched else (4,))
     expected = F.linear(x[..., [0, 2, 3]], model.w[..., [0, 2, 3]], model.bias)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("w").axis(-1).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("w").axis(-1).select([1])]
+        )
     )
     torch.testing.assert_close(model(x[..., [0, 2, 3]]), expected)

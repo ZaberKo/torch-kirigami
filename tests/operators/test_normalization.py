@@ -34,8 +34,10 @@ def test_normalize_default_out_none_is_readonly(explicit_none, execution_device)
     y = F.linear(x, model.fc.weight[[0, 2, 3, 4, 5]], model.fc.bias[[0, 2, 3, 4, 5]])
     expected = y / y.square().sum(1, keepdim=True).sqrt().clamp_min(1e-12)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("fc.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1])]
+        )
     )
     torch.testing.assert_close(model(x), expected)
 
@@ -45,8 +47,10 @@ def test_rms_norm_compact_domain_reference(execution_device):
     x = torch.randn(2, 6)
     old = model.weight.detach().clone()
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("weight").axis(0).select([1, 4])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("weight").axis(0).select([1, 4])]
+        )
     )
     kept = x[:, [0, 2, 3, 5]]
     expected = kept * torch.rsqrt(kept.square().mean(-1, keepdim=True) + 1e-5) * old[[0, 2, 3, 5]]
@@ -112,7 +116,7 @@ def test_normalization_compact_domain_reference(kind, execution_device):
     x = torch.randn(3, 4)
     old = copy.deepcopy(model)
     graph, pruner = build(model, x)
-    plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1, 4])])
+    plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1, 4])])
     pruner.apply(plan)
     keep = [0, 2, 3, 5]
     h = F.linear(x, old[0].weight[keep], old[0].bias[keep])
@@ -156,11 +160,11 @@ def test_functional_layernorm_argument_proof(dynamic, execution_device):
     graph, pruner = build(model, x)
     request = [graph.parameter("fc.weight").axis(0).select([1, 4])]
     if dynamic:
-        plan = pruner.plan(remove=request, preserve_io=False)
+        plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(request)
         pruner.apply(plan)
         keep = [0, 2, 3, 5]
         y = F.linear(x, old.fc.weight[keep], old.fc.bias[keep])
         torch.testing.assert_close(model(x), F.layer_norm(y, (4,), old.scale[keep]))
     else:
         with pytest.raises(PlanningError, match="functional argument"):
-            pruner.plan(remove=request, preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(request)

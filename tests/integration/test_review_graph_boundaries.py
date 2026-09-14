@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_kirigami import CaptureError, DependencyGraph
-from torch_kirigami.pruning import ChannelRatio, Magnitude, PlanningError, Pruner
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, PlanningError, Pruner
 
 
 @pytest.mark.parametrize("method", ["view", "reshape", "flatten", "contiguous_view"])
@@ -34,10 +34,10 @@ def test_layout_changes_reach_coordinate_neutral_consumers(method, execution_dev
     remove = [graph.parameter("weight").axis(1).select([2])]
     if method == "view":
         with pytest.raises(PlanningError, match=r"view|stride|executable"):
-            pruner.plan(remove=remove)
+            pruner.plan_remove(remove)
         assert model.weight is before and model.weight.stride() == (4, 8, 1)
     else:
-        pruner.prune(remove=remove)
+        pruner.apply(pruner.plan_remove(remove))
         torch.testing.assert_close(model(x), expected)
         model(x).sum().backward()
         assert model.weight.grad is not None
@@ -67,10 +67,12 @@ def test_unknown_value_consumer_blocks_reduced_ancestors_but_not_independent_bra
     assert not graph.propagate(remove=[selection]).complete
     before = model.score.weight
     with pytest.raises(PlanningError):
-        Pruner(model, graph=graph).plan(remove=[selection])
+        Pruner(model, graph=graph).plan_remove([selection])
     assert model.score.weight is before
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("independent.0.weight").axis(0).select([0])]
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("independent.0.weight").axis(0).select([0])]
+        )
     )
     torch.testing.assert_close(model(x)[0], torch.ones(4 if reduction == "sum" else 1))
     model(x)[1].sum().backward()
@@ -109,11 +111,11 @@ def test_integer_read_requires_no_intervening_writes(mutates, alias, execution_d
     request = [graph.parameter("weight").axis(0).select([1])]
     if mutates:
         with pytest.raises(PlanningError):
-            Pruner(model, graph=graph).plan(remove=request)
+            Pruner(model, graph=graph).plan_remove(request)
         assert model.weight is before
         torch.testing.assert_close(model(x), torch.tensor([[20.0]]))
     else:
-        Pruner(model, graph=graph).prune(remove=request)
+        Pruner(model, graph=graph).apply(Pruner(model, graph=graph).plan_remove(request))
         torch.testing.assert_close(model(x), torch.tensor([[10.0]]))
     assert model.idx.item() == 0
 
@@ -140,7 +142,11 @@ def test_rank_spellings_have_identical_provenance(rank_form, execution_device):
         model.last.bias,
     )
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("first.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("first.weight").axis(0).select([1])]
+        )
+    )
     torch.testing.assert_close(model(x), expected)
     model(x).sum().backward()
 
@@ -161,8 +167,14 @@ def test_reused_transposed_convolution_has_one_budget_domain(dimension, groups, 
     reference = copy.deepcopy(model)
     x = torch.randn(2, 4, *((3,) * dimension))
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(metric=Magnitude(), budget=ChannelRatio(0.5))
-    assert plan.budget.widths == (6,) and plan.budget.removed == (3 if groups == 1 else 2,)
+    plan = Pruner(model, graph=graph).plan(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.5),
+        strategy=Greedy(Magnitude()),
+    )
+    assert plan.selection_report.widths == (6,) and plan.selection_report.removed == (
+        3 if groups == 1 else 2,
+    )
     Pruner(model, graph=graph).apply(plan)
     output = next(op.outputs[0] for op in graph.operations() if op.module_path == "up")
     removed = plan.analysis.selection(output).fully_selected_indices(1)

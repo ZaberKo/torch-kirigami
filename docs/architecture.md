@@ -48,6 +48,10 @@ Repeated calls to a shared module remain separate calls. References to the same 
 
 ## From a request to an executable plan
 
+`Pruner` owns the graph, interface protection, extra constraints and optional `Granularity` settings. Candidate discovery is explicit: `pruner.discover_candidates()` returns an immutable `CandidateSpace` containing candidates and logical `channel_axes`. The space retains no model, graph or policy. Automatic planning consumes it through `plan(space, budget=..., strategy=...)`; exact manual requests use `plan_remove(remove)`.
+
+`Granularity` resolves exact module types and paths into ordinary `Divisible` constraints. Strategies own metrics and request validated scores through `PlanningContext.score(metric, candidates)`. This keeps configuration, candidate data and selection responsibilities separate without introducing another dependency solver. See [alignment configuration](pruning-design.md#retained-width-alignment).
+
 Relations grow the removal set until no new regions appear. Constraints inspect the resulting joint selection. A strategy can try additional candidates to satisfy a joint constraint; the dependency core does not rank those alternatives.
 
 Planning combines the closure with physical representation requirements. It checks that the original model can execute with the proposed compact shapes and supported attribute edits. A candidate can have a complete impact but still fail physical planning.

@@ -42,7 +42,9 @@ def test_scalar_index_select_keeps_value_and_guards_index(method, execution_devi
     x = torch.randn(2, 4)
     expected = F.linear(x, model.fc.weight[[0, 2, 3, 4, 5]], model.fc.bias[[0, 2, 3, 4, 5]]).sum()
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)
 
 
@@ -64,8 +66,8 @@ def test_static_index_values_and_coordinate_guards():
     graph = DependencyGraph.build(model, args=(x,))
     p = Pruner(model, graph=graph)
     with pytest.raises(PlanningError, match="coordinates"):
-        p.plan(remove=[graph.parameter("fc.weight").axis(0).select([1])])
-    plan = p.plan(remove=[graph.parameter("fc.weight").axis(0).select([4, 5])])
+        p.plan_remove([graph.parameter("fc.weight").axis(0).select([1])])
+    plan = p.plan_remove([graph.parameter("fc.weight").axis(0).select([4, 5])])
     p.apply(plan)
     torch.testing.assert_close(model(x), old(x))
     graph = DependencyGraph.build(model, args=(x,))
@@ -94,9 +96,9 @@ def test_structural_indices_require_portable_value_guards(registered):
     remove = [graph.parameter("a.weight").axis(0).select([5])]
     if not registered:
         with pytest.raises(PlanningError, match=r"constant|buffer"):
-            pruner.plan(remove=remove)
+            pruner.plan_remove(remove)
         return
-    plan = PruningPlan.from_dict(pruner.plan(remove=remove).to_dict())
+    plan = PruningPlan.from_dict(pruner.plan_remove(remove).to_dict())
     with pytest.raises(ExecutionError, match="preconditions"):
         Pruner(Model([4, 5])).apply(plan)
     model.index.copy_(torch.tensor([4, 5]))
@@ -124,7 +126,9 @@ def test_index_select_alias_with_registered_constant(alias, execution_device):
     x = torch.randn(2, 4)
     expected = model(x)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([5])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([5])])
+    )
     torch.testing.assert_close(model(x), expected)
 
 
@@ -178,7 +182,7 @@ def test_static_indexing_accepts_only_original_coordinate_preserving_compaction(
     remove = [graph.parameter("producer.weight").axis(0).select([removed_channel])]
     safe = removed_channel == (0 if form.endswith("negative") else 5)
     if safe:
-        pruner.prune(remove=remove)
+        pruner.apply(pruner.plan_remove(remove))
     else:
         # In both unsafe cases the compact forward still has every expected shape.
         # Only checking which original coordinates it uses can reveal the error.
@@ -187,7 +191,7 @@ def test_static_indexing_accepts_only_original_coordinate_preserving_compaction(
         assert wrong.shape == expected.shape and not torch.allclose(wrong, expected)
         parameter_ids = tuple(id(parameter) for parameter in model.parameters())
         with pytest.raises(PlanningError, match="coordinate"):
-            pruner.plan(remove=remove)
+            pruner.plan_remove(remove)
         assert tuple(id(parameter) for parameter in model.parameters()) == parameter_ids
         assert model.producer.out_features == 6
     _assert_value_and_input_gradient(model(sample), expected, sample, reference_input)
@@ -213,9 +217,9 @@ def test_slice_same_shape_wrong_coordinates(wrong):
     remove = [graph.parameter("fc.weight").axis(0).select([0 if wrong else 5])]
     if wrong:
         with pytest.raises(PlanningError, match="correspondence"):
-            pruner.plan(remove=remove, preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(remove)
     else:
-        plan = pruner.plan(remove=remove, preserve_io=False)
+        plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(remove)
         pruner.apply(plan)
         torch.testing.assert_close(model(x)[0], old(x)[0])
 
@@ -236,15 +240,15 @@ def test_dimension_based_integer_index_tracks_original_coordinate(remove):
     # Removing 0 preserves the old last column after evaluating size()-1 anew.
     # Removing the captured last output is blocked by the scalar/empty constraint.
     if remove == [0]:
-        plan = pruner.plan(
-            remove=[graph.parameter("fc.weight").axis(0).select(remove)], preserve_io=False
+        plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select(remove)]
         )
         pruner.apply(plan)
         assert model.fc.out_features == 5
     else:
         with pytest.raises(PlanningError):
-            pruner.plan(
-                remove=[graph.parameter("fc.weight").axis(0).select(remove)], preserve_io=False
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+                [graph.parameter("fc.weight").axis(0).select(remove)]
             )
 
 
@@ -278,7 +282,7 @@ def test_unregistered_tensor_constant_cannot_be_silently_compacted():
     graph, pruner = build(model, torch.randn(2, 4))
     assert graph.constants()
     with pytest.raises(PlanningError, match="Unregistered captured constant"):
-        pruner.plan(remove=[graph.parameter("fc.weight").axis(0).select([1])])
+        pruner.plan_remove([graph.parameter("fc.weight").axis(0).select([1])])
 
 
 @pytest.mark.parametrize("method", [False, True])
@@ -302,5 +306,7 @@ def test_narrow_keywords_match_positional_coordinates(method, execution_device):
         model.b.bias,
     )
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)

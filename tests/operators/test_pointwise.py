@@ -29,8 +29,10 @@ def test_cast_reference_shape_is_not_a_broadcast_dependency(execution_device):
     x = torch.randn(2, 4)
     old = copy.deepcopy(model)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("fc.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1])]
+        )
     )
     torch.testing.assert_close(model(x), old(x)[:, [0, 2, 3, 4, 5]])
 
@@ -49,8 +51,10 @@ def test_python_comparison_where_keeps_shared_structural_axes():
     original = copy.deepcopy(model)
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("fc.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1])]
+        )
     )
     torch.testing.assert_close(model(x), original(x)[:, [0, 2, 3, 4, 5]])
 
@@ -69,5 +73,5 @@ def test_tensor_integer_arithmetic_propagates_channels(op, execution_device):
     removal = graph.parameter("a.weight").axis(0).select([1])
     impact = graph.propagate(remove=[removal])
     assert list(impact.selection(graph.parameter("b.weight")).fully_selected_indices(1)) == [1]
-    Pruner(model, graph=graph).prune(remove=[removal])
+    Pruner(model, graph=graph).apply(Pruner(model, graph=graph).plan_remove([removal]))
     torch.testing.assert_close(model(x), expected)

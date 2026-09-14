@@ -59,11 +59,11 @@ def test_nested_dimension_selector_is_guarded(form, constant_selector, execution
     pruner = Pruner(model, graph=graph)
     remove = [graph.parameter("fc.weight").axis(0).select([0])]
     if constant_selector:
-        pruner.prune(remove=remove)
+        pruner.apply(pruner.plan_remove(remove))
         torch.testing.assert_close(model(*args), expected)
     else:
         with pytest.raises(PlanningError, match="argument"):
-            pruner.plan(remove=remove)
+            pruner.plan_remove(remove)
         torch.testing.assert_close(model(*args), expected)
 
 
@@ -91,7 +91,7 @@ def test_size_only_consumer_cannot_change_coordinates(operation, execution_devic
     model = Model()
     graph = DependencyGraph.build(model, args=(x, torch.ones(1, 3, 1)), operators=conv_registry())
     with pytest.raises(PlanningError, match=r"argument|coordinate"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("fc.weight").axis(0).select([0])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([0])])
 
 
 @pytest.mark.parametrize("shared_expression", [False, True])
@@ -119,7 +119,7 @@ def test_allowed_groups_does_not_allow_stride_or_padding(shared_expression, exec
         graph.parameter("w").axis(0).select([0, 1]),
     ]
     with pytest.raises(PlanningError, match="argument"):
-        Pruner(model, graph=graph).plan(remove=remove, preserve_io=False)
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(remove)
 
 
 def test_checked_groups_parameter_can_change_without_changing_spatial_arguments(execution_device):
@@ -135,8 +135,10 @@ def test_checked_groups_parameter_can_change_without_changing_spatial_arguments(
     x = torch.arange(10.0).reshape(1, 2, 5)
     expected = F.conv1d(x[:, 1:], model.w[2:], groups=1)
     graph = DependencyGraph.build(model, args=(x,), operators=conv_registry())
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("w").axis(0).select([0, 1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("w").axis(0).select([0, 1])]
+        )
     )
     torch.testing.assert_close(model(x[:, 1:]), expected)
 
@@ -155,7 +157,9 @@ def test_size_only_consumer_that_keeps_coordinates_is_supported(execution_device
     x, data = torch.randn(2, 4), torch.arange(8.0)
     expected = model(x, data)
     graph = DependencyGraph.build(model, args=(x, data))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([5])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([5])])
+    )
     torch.testing.assert_close(model(x, data), expected)
 
 
@@ -174,7 +178,7 @@ def test_size_consumers_on_unchanged_tensors_are_checked(reshape):
     model = Model()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 2),))
     with pytest.raises(PlanningError):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("fc.weight").axis(0).select([0])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([0])])
 
 
 def test_unpool_keyword_order_and_expand_template_dependencies(execution_device):
@@ -208,5 +212,7 @@ def test_unpool_keyword_order_and_expand_template_dependencies(execution_device)
     x = torch.randn(2, 4)
     expected = F.linear(model.a(x).expand(2, 5), model.c.weight[:, [0, 2, 3, 4, 5]], model.c.bias)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("b.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("b.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)

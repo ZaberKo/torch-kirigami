@@ -10,9 +10,10 @@ from torch import nn
 from ..bindings import has_tensor_hooks, storage_key
 from ..regions import gather_region
 from ..selection import TensorRef
-from .candidates import CandidateSpace, interface_constraints
+from .candidates import CandidateSpace, discover_candidates, interface_constraints, parameter_groups
+from .granularity import Granularity, alignment_constraints
 from .plan import PruningPlan, PruningResult
-from .planner import Greedy, PlanningContext
+from .planner import PlanningContext
 from .recipes import compact_stride, coordinate_mapping
 from .rewrite import compile_recipes
 from .state import (
@@ -26,10 +27,9 @@ from .state import (
 )
 from .types import (
     AnalysisSummary,
-    BudgetReport,
     ExecutionError,
     PlanningError,
-    channel_targets,
+    SelectionReport,
 )
 
 
@@ -47,6 +47,9 @@ def _snapshot(graph):
     )
 
 
+_DEFAULT_GRANULARITY = Granularity()
+
+
 class Pruner:
     """Plan and physically compact the original Module using a dependency snapshot.
 
@@ -54,123 +57,142 @@ class Pruner:
         model: The original module, identical to graph.model.
         graph: A fresh DependencyGraph for plan/prune. May be omitted when
             applying a saved plan. Rebuild explicitly after each pruning round.
+        preserve_io: Protect every external input/output axis with Fixed constraints.
+        constraints: Extra constraints shared by queries and both planning methods.
+        granularity: Immutable module alignment settings, resolved to Divisible
+            constraints using the operator rules' declared logical channel axes.
     """
 
-    def __init__(self, model, *, graph=None):
-        if graph is not None:
-            graph.validate(model)
-        self.model, self.graph = model, graph
-        self.operations = graph.operations() if graph is not None else ()
-
-    def prune(self, **kwargs) -> tuple[nn.Module, PruningResult]:
-        """Plan and apply one round using the keyword arguments of :meth:`plan`."""
-        return self.apply(self.plan(**kwargs))
-
-    def plan(
+    def __init__(
         self,
+        model,
         *,
-        remove=None,
-        metric=None,
-        budget=None,
-        candidates=None,
-        strategy=None,
+        graph=None,
         preserve_io=True,
         constraints=(),
-    ) -> PruningPlan:
-        """Generate a verified immutable plan without materializing new weights.
+        granularity=_DEFAULT_GRANULARITY,
+    ):
+        if type(preserve_io) is not bool:
+            raise TypeError("preserve_io must be boolean")
+        if not isinstance(granularity, Granularity):
+            raise TypeError("Expected a Granularity configuration")
+        self.model, self.graph = model, graph
+        self.operations = graph.operations() if graph is not None else ()
+        self._interface_constraints = ()
+        alignment, self._configuration_notes = (), ()
+        if graph is not None:
+            graph.validate(model)
+            self._interface_constraints = interface_constraints(graph, preserve_io)
+            alignment, self._configuration_notes = alignment_constraints(graph, granularity)
+        elif constraints or granularity != Granularity() or not preserve_io:
+            raise ValueError("Planning configuration requires a DependencyGraph")
+        self._constraints = (*self._interface_constraints, *tuple(constraints), *alignment)
 
-        Manual remove is mutually exclusive with automatic selection options.
-        All external tensor axes are protected unless preserve_io is False.
-        Caller-supplied candidates require explicit budget axes. Strategies
-        may omit a metric if they never request scores.
+    @property
+    def constraints(self):
+        """Return the common interface, caller, and alignment requirements."""
+        return self._constraints
 
-        Args:
-            remove: Manual original-coordinate selections, or None for automatic selection.
-            metric: Batch importance callable; required when the strategy requests scores.
-            budget: ChannelRatio or ChannelCount bound for automatic selection.
-            candidates: Optional candidate iterable; requires explicit budget axes.
-            strategy: Candidate selection callable; defaults to Greedy.
-            preserve_io: Protect all external input/output axes by default.
-            constraints: Additional structural constraints applied to the joint request.
-
-        Returns:
-            A portable static plan, containing no live model or newly allocated weights.
-
-        Raises:
-            ValueError: Manual and automatic options conflict or arguments are invalid.
-            PlanningError: Analysis or physical execution cannot be proved valid.
-            ExecutionError: A callback changes tracked tensor state during planning.
-        """
+    def _validate_graph(self):
         if self.graph is None:
             raise PlanningError("Planning requires a DependencyGraph")
         self.graph.validate(self.model)
+
+    def discover_candidates(self, *, targets=None):
+        """Discover declared candidates explicitly, optionally by module path patterns.
+
+        Targets filter candidate entry points, not the dependency closure. Only
+        domains proved wholly protected by external interfaces are excluded.
+        """
+        self._validate_graph()
+        return discover_candidates(self.graph, self._interface_constraints, targets)
+
+    def impact(self, candidates):
+        """Analyze a joint candidate batch under this pruner's fixed constraints."""
+        self._validate_graph()
+        return self.graph.propagate(
+            remove=tuple(s for c in candidates for s in c.remove),
+            constraints=self.constraints,
+        )
+
+    def parameter_groups(self, candidates, *, parameter_filter=None):
+        """Extract complete parameter groups for an explicit candidate iterable.
+
+        The optional filter receives (TensorRef, Parameter). Repairable structural
+        constraints do not prevent group extraction; incomplete influence does.
+        """
+        self._validate_graph()
+        return parameter_groups(self.graph, candidates, self.constraints, parameter_filter)
+
+    def prune(self, space, *, budget, strategy) -> tuple[nn.Module, PruningResult]:
+        """Plan and apply one automatic round with an explicit candidate space."""
+        return self.apply(self.plan(space, budget=budget, strategy=strategy))
+
+    def plan_remove(self, remove) -> PruningPlan:
+        """Plan exact manual selections, without supplementing or dropping seeds."""
+        self._validate_graph()
         before = snapshot(self.model, guarded=self.graph.constant_guards())
-        user_constraints = tuple(constraints)
-        defaults = interface_constraints(self.graph, preserve_io)
-        constraints = (*defaults, *user_constraints)
         versions = _snapshot(self.graph)
-        protected_domains = ()
-        if remove is not None:
-            if any(x is not None for x in (metric, budget, candidates, strategy)):
-                raise ValueError(
-                    "Manual remove and automatic selection options are mutually exclusive"
-                )
-            impact = self.graph.propagate(remove=tuple(remove), constraints=constraints)
-            recipes, attributes, notes = compile_recipes(self.graph, self.operations, impact)
-            keys, report = (), BudgetReport()
-        else:
-            if budget is None:
-                raise ValueError("Automatic planning requires a channel budget")
-            space = CandidateSpace(
-                self.graph,
-                candidates=candidates,
-                axes=budget.axes,
-                preserve_io=preserve_io,
-                constraints=user_constraints,
-            )
-            axes = space.axes
-            zero_automatic = (
-                candidates is None
-                and budget.axes is None
-                and strategy is None
-                and not any(channel_targets(budget, tuple(a.tensor.shape[a.dim] for a in axes)))
-            )
-            candidates = () if zero_automatic else space.candidates
-            protected_domains = space.exclusions
-            if zero_automatic:
-                protected_domains += tuple(
-                    (f"domain:{a.tensor.id}:{a.dim}", "Zero channel budget") for a in axes
-                )
-            registered = {c.key: c for c in candidates}
-            context = PlanningContext(
-                self.graph,
-                self.operations,
-                candidates,
-                budget,
-                axes,
-                metric,
-                constraints,
-            )
-            context.exclusions.extend(protected_domains)
-            keys = tuple(dict.fromkeys((Greedy() if strategy is None else strategy)(context)))
-            if any(key not in registered for key in keys):
-                raise PlanningError("Strategy returned an unregistered candidate key")
-            impact = self.graph.propagate(
-                remove=(s for key in keys for s in registered[key].remove), constraints=constraints
-            )
-            # Reestablish the caller's premises after the strategy callback.
-            final_context = PlanningContext(
-                self.graph, self.operations, candidates, budget, axes, metric, constraints
-            )
-            if not final_context.within_budget(impact):
-                raise PlanningError("Strategy exceeded the joint channel budget")
-            final_context.trials = context.trials
-            final_context.limit_reached = context.limit_reached
-            final_context.exclusions.extend(context.exclusions)
-            recipes, attributes, notes = final_context.compile(impact)
-            report = final_context.report(impact)
+        impact = self.graph.propagate(remove=tuple(remove), constraints=self.constraints)
+        recipes, attributes, notes = compile_recipes(self.graph, self.operations, impact)
+        return self._finish(
+            impact, recipes, attributes, (), SelectionReport(), notes, before, versions
+        )
+
+    def plan(self, space, *, budget, strategy) -> PruningPlan:
+        """Plan an explicit candidate space without allocating compact weights.
+
+        Args:
+            space: Explicit CandidateSpace, constructed manually or discovered.
+            budget: ChannelRatio or ChannelCount upper bound on joint removals.
+            strategy: Callable returning registered keys; owns any scoring metric.
+
+        Returns:
+            A portable static plan. No discovery, metric, or strategy is implicit.
+        """
+        self._validate_graph()
+        if not isinstance(space, CandidateSpace):
+            raise TypeError("Expected a CandidateSpace")
+        for axis in (*space.channel_axes, *space.protected_channel_axes):
+            self.graph.metadata(axis.tensor)
+        for candidate in space.candidates:
+            for selection in candidate.remove:
+                self.graph.metadata(selection.tensor)
+            if candidate.axis is not None:
+                self.graph.metadata(candidate.axis.tensor)
+        before = snapshot(self.model, guarded=self.graph.constant_guards())
+        versions = _snapshot(self.graph)
+        candidates, axes = space.candidates, space.channel_axes
+        registered = {c.key: c for c in candidates}
+        context = PlanningContext(
+            self.graph, self.operations, candidates, budget, axes, self.constraints
+        )
+        context.exclusions.extend(space.exclusions)
+        keys = tuple(dict.fromkeys(strategy(context)))
+        if any(key not in registered for key in keys):
+            raise PlanningError("Strategy returned an unregistered candidate key")
+        impact = self.graph.propagate(
+            remove=(s for key in keys for s in registered[key].remove),
+            constraints=self.constraints,
+        )
+        # Reestablish premises after arbitrary strategy callbacks.
+        final_context = PlanningContext(
+            self.graph, self.operations, candidates, budget, axes, self.constraints
+        )
+        if not final_context.within_budget(impact):
+            raise PlanningError("Strategy exceeded the joint channel budget")
+        final_context.trials = context.trials
+        final_context.limit_reached = context.limit_reached
+        final_context.exclusions.extend(context.exclusions)
+        recipes, attributes, notes = final_context.compile(impact)
+        return self._finish(
+            impact, recipes, attributes, keys, final_context.report(impact), notes, before, versions
+        )
+
+    def _finish(self, impact, recipes, attributes, keys, report, notes, before, versions):
         self.graph.validate(self.model)
         self._check_versions(versions)
+        notes = (*self._configuration_notes, *notes)
 
         def freeze(value):
             if isinstance(value, TensorRef):

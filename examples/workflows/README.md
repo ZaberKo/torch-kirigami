@@ -1,6 +1,6 @@
 # Pretrained ImageNet pruning workflows
 
-These standalone scripts show how to combine torch-kirigami's structural pruning and sparse-training components. Every workflow starts from torchvision's ImageNet-pretrained **ResNet-18** or **ViT-B/16**. Accuracy is evaluated on ImageNet validation; training and Taylor calibration use the separate ImageNet training split.
+These executable examples show how to combine torch-kirigami's structural pruning and sparse-training components. Every workflow starts from torchvision's ImageNet-pretrained **ResNet-18** or **ViT-B/16**; BN sparsity supports ResNet-18 only. Each entry defines its own task-specific arguments, training, dependency capture, candidate selection, physical pruning, and checkpoint handling. Shared support modules provide data loading, model construction, evaluation, and measurement. Accuracy is evaluated on ImageNet validation; training and Taylor calibration use the separate ImageNet training split.
 
 ```mermaid
 flowchart LR
@@ -18,9 +18,16 @@ Configure the environment **at the repository root**, then enter this directory 
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -r examples/workflows/requirements-examples.txt
+uv pip install --torch-backend=auto -r examples/workflows/requirements-examples.txt
 cd examples/workflows
 ```
+
+The installer selects a PyTorch backend from the operating system and installed
+CUDA driver. The project does not pin a CPU-only index. All workflows default to
+`--device cuda` and fail before loading data or weights if CUDA is unavailable;
+use `--device cpu` explicitly for CPU execution. Run scripts with the activated
+environment's `python` so project synchronization does not replace a locally
+selected backend or remove optional workflow dependencies.
 
 Download the validation split of [HF ILSVRC/imagenet-1k](https://huggingface.co/datasets/ILSVRC/imagenet-1k):
 
@@ -44,20 +51,36 @@ By default, evaluation uses the full 50,000-image validation split, and each tra
 
 | Setting | Behavior |
 | --- | --- |
-| `--model resnet18` | Default. Prune internal BasicBlock channels between `conv1` and `conv2`. |
+| `--model resnet18` | Default for model-selectable scripts; BN sparsity fixes this model. Prune internal BasicBlock channels between `conv1` and `conv2`. |
 | `--model vit_b_16` | Prune FFN intermediate dimensions; keep hidden width and attention heads intact. |
 | `--layers all` | Include all supported blocks; the default includes only the first block. Comma-separated block paths are also accepted. |
-| `--group-size 8` | Default candidate width: eight adjacent channels. Use `1` for individual channels. |
+| `--granularity 8` | Retained producer widths must be multiples of eight. Use `1` for no extra alignment requirement. |
 | `--ratio 0.25` | Default cumulative reduction target within the selected channel domains, not a whole-model parameter or MAC reduction. |
 | `--finetune-epochs 0` | Default: no ordinary post-pruning fine-tuning. Set a positive value to enable it. |
-| `--device cuda` | Run training, evaluation, and measurement on CUDA; default is CPU. |
+| `--device cuda` | Default. Run training, evaluation, and measurement on CUDA; use `--device cpu` to opt into CPU execution. |
 | `--compile` | Measure compiled inference latency. Training and accuracy evaluation keep their ordinary execution path. |
 
-Both models retain their original 1,000-class classifier. ViT uses an explicit forward adapter that preserves the official weights and computation while exposing the structure to FX. Each physical pruning step rebuilds the dependency graph and optimizer. Fine-tuning uses the task loss alone.
+Each script builds a `Pruner` with exact-path `Granularity` settings and calls `discover_candidates(targets=...)` for the internal producers selected by `--layers`. `--layers all` includes all supported blocks at the task-specific axes listed above, not every prunable axis in the model. Candidates remain individual producer channels; alignment constrains the retained width and does not require adjacent removals. Each task supplies its own importance scores to `Greedy`, which checks joint dependencies, alignment and deletion caps. Group regularizers operate on each channel's dependent parameter regions. The dependency graph still covers the complete model. See [candidate discovery](../../docs/pruning-design.md#default-candidate-entry-axes).
+
+Both models retain their original 1,000-class classifier. ViT uses an explicit forward adapter that preserves the official weights and computation while exposing the structure to FX. Physical pruning replaces parameters, so subsequent training uses a new optimizer. Iterative pruning rebuilds the dependency graph before planning the next round. Fine-tuning uses the task loss alone.
 
 Each recorded stage prints validation cross-entropy, top-1/top-5 accuracy, top-1 change from the pretrained baseline in percentage points, `#Params`, `#MACs`, and `latency_ms`. Pruning stages also report target/actual channel reduction and budget shortfall. Training prints task and sparse losses. Latency and MACs use a separate inference batch of size one by default; `--benchmark-batch-size`, `--warmup`, and `--repetitions` control measurement. Inspect `unsupported_ops` when interpreting MAC counts; see the [measurement contract](../../docs/measurement.md).
 
-Results go to `runs/imagenet` by default. Use `--output runs/NAME` to keep separate runs. The directory contains `metrics.json`, a compact `model.pt`, and `training.pt` with optimizer, budget, algorithm, configuration, and RNG state. The script verifies model checkpoint restoration; a command-line training-resume workflow is not provided.
+Results default to `runs/<script-name>`; use `--output runs/NAME` to separate runs of the same task. The directory contains `metrics.json`, a compact `model.pt`, and `training.pt` with optimizer, algorithm, configuration, and RNG state. Iterative pruning also saves cumulative budget accounting. Each script verifies model checkpoint restoration; a command-line training-resume workflow is not provided.
+
+Task options are declared in each file, without a shared parser:
+
+| Script | Task-specific options |
+| --- | --- |
+| `prune_finetune.py` | `--metric magnitude\|taylor` |
+| `iterative_pruning.py` | `--rounds` |
+| `bn_sparsity.py` | `--sparse-epochs`, `--strength`; fixed ResNet-18, no `--model` option |
+| `group_sparsity.py` | `--penalty lasso\|squared`, `--sparse-epochs`, `--strength` |
+| `soft_pruning.py` | `--operation zero\|decay`, `--cycles`, `--projection-epochs` |
+| `gate_pruning.py` | `--sparse-epochs`, `--strength` |
+| `stability_pruning.py` | `--search-steps`, `--window`, `--threshold`, `--strength` |
+
+All scripts provide explicit data, device, channel-budget, optional fine-tuning, and measurement options. Unrelated task flags are rejected by the parser.
 
 ## 1. Basic pruning and optional fine-tuning
 
@@ -106,7 +129,7 @@ python group_sparsity.py --model vit_b_16 --penalty squared --sparse-epochs 2 --
 
 ## 5. Soft pruning and gradual norm decay
 
-[soft_pruning.py](soft_pruning.py) performs one warm-up training epoch to establish SGD momentum, followed by two projection cycles. After each optimizer step, it either zeros the selected parameter-region union or reduces that union's L2 norm toward zero. An unprojected recovery epoch between cycles allows regrowth and reselection. The second cycle's selection is then physically pruned.
+[soft_pruning.py](soft_pruning.py) performs one warm-up training epoch to establish SGD momentum, followed by `--cycles` projection cycles (default: two). After each optimizer step, it either zeros the selected parameter-region union or reduces that union's L2 norm toward zero. An unprojected recovery epoch between cycles allows regrowth and reselection. The last cycle's selected coordinates are revalidated after training and then physically pruned.
 
 ```mermaid
 flowchart LR
@@ -121,7 +144,7 @@ python soft_pruning.py --model resnet18 --operation zero --finetune-epochs 1
 python soft_pruning.py --model vit_b_16 --operation decay --finetune-epochs 1
 ```
 
-`--sparse-epochs` sets the number of epochs in each projection cycle and must be positive. Momentum is retained during these cycles and reset by optimizer reconstruction after physical pruning.
+`--projection-epochs` sets the number of epochs in each projection cycle; both it and `--cycles` must be positive. Momentum is retained during these cycles and reset by optimizer reconstruction after physical pruning.
 
 ## 6. Gate training and pruning
 
@@ -134,7 +157,7 @@ python gate_pruning.py --model vit_b_16 --sparse-epochs 2 --finetune-epochs 1
 
 ## 7. Stability-driven pruning
 
-[stability_pruning.py](stability_pruning.py) alternates magnitude-based selection with increasing squared-L2 regularization of selected groups. It compares retained-position sets using a window of two adjacent Jaccard comparisons, which requires three selections. Search stops at similarity `0.99` or after `max(3, --sparse-epochs)` selection checks, then recomputes the final plan and prunes.
+[stability_pruning.py](stability_pruning.py) alternates magnitude-based selection with increasing squared-L2 regularization of selected groups. `--window 2` compares retained-position sets over two adjacent Jaccard comparisons, which requires three selections. Search stops at `--threshold 0.99` or after `--search-steps 3` selection checks, then recomputes the final plan and prunes. Training occurs only between selection checks. A search limit shorter than the window is allowed, but cannot establish stability. Reports distinguish selection checks from training epochs.
 
 ```mermaid
 flowchart LR
@@ -145,11 +168,21 @@ flowchart LR
 ```
 
 ```bash
-python stability_pruning.py --model vit_b_16 --sparse-epochs 4 --finetune-epochs 1
+python stability_pruning.py --model vit_b_16 --search-steps 4 --finetune-epochs 1
 ```
 
 ## Implementation guide
 
 These workflows demonstrate component composition, not complete reproductions of paper experiments or established accuracy/speedup claims. The default training subset, SGD settings, fixed preprocessing, candidate grouping, and stopping policies keep the examples small and readable. See [sparse training](../../docs/sparse-training.md) for component formulas and method context.
 
-Each entry file owns its algorithm and stage transitions. Shared mechanics live in [imagenet_models.py](imagenet_models.py), [imagenet_data.py](imagenet_data.py), [workflow_utils.py](workflow_utils.py), and [model_metrics.py](model_metrics.py). Run any entry with `--help` for its complete argument list.
+Start with each entry's `main()` to read the complete pruning workflow. Training loops, regularization, candidate scoring, graph construction, plan/apply calls, optimizer reconstruction, and saving remain visible in that file. Gate insertion is also explicit in the gate example. There is no shared experiment runner or callback-driven workflow.
+
+Three support modules are reused:
+
+| Module | Responsibility |
+| --- | --- |
+| [imagenet_data.py](imagenet_data.py) | Local ImageNet loading, label alignment, preprocessing, and validation accuracy |
+| [imagenet_models.py](imagenet_models.py) | Official model/weight selection and the ViT FX adapter |
+| [model_metrics.py](model_metrics.py) | Parameter/MAC counts and inference latency reporting |
+
+When copying an entry elsewhere, include these three files and install the Python dependencies. CLI definitions remain task-specific. Examples are maintained by hand; tests cover the shared infrastructure and every entry's complete pruning/checkpoint path. Run any entry with `--help` for its argument list.

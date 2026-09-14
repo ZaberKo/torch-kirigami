@@ -31,7 +31,9 @@ def test_sdpa_gqa_group_and_multiplier_pruning(execution_device):
             if remove == [0]
             else call.inputs[0].axis(1).select(remove)
         )
-        model, _ = Pruner(graph.model, graph=graph).prune(remove=[seed], preserve_io=False)
+        model, _ = Pruner(graph.model, graph=graph, preserve_io=False).apply(
+            Pruner(graph.model, graph=graph, preserve_io=False).plan_remove([seed])
+        )
         qs = q[:, [2, 3]] if remove == [0] else q[:, [1, 3]]
         ks, vs = (k[:, [1]], v[:, [1]]) if remove == [0] else (k, v)
         keys = ks.repeat_interleave(qs.shape[1] // ks.shape[1], dim=1)
@@ -50,8 +52,10 @@ def test_mha_width_checkpoint_and_compact_reference(separate, execution_device):
     k = torch.randn(2, 4, kwargs.get("kdim", 8))
     v = torch.randn(2, 4, kwargs.get("vdim", 8))
     graph = DependencyGraph.build(model, args=(q, k, v))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("out_proj.weight").axis(0).select([1, 5])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("out_proj.weight").axis(0).select([1, 5])]
+        )
     )
     keep = [0, 2, 3, 4, 6, 7]
     qs, ks, vs = q[..., keep], k if separate else k[..., keep], v if separate else v[..., keep]
@@ -97,9 +101,8 @@ def test_mha_keyword_order_does_not_reclassify_value(mask_first, execution_devic
     model = Model()
     args = (*[torch.randn(2, 3, 8) for _ in range(3)], torch.zeros(2, 3, dtype=torch.bool))
     graph = DependencyGraph.build(model, args=args)
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("attn.out_proj.weight").axis(0).select([1, 5])],
-        preserve_io=False,
+    plan = Pruner(model, graph=graph, preserve_io=False).plan_remove(
+        [graph.parameter("attn.out_proj.weight").axis(0).select([1, 5])]
     )
     assert plan.analysis.status == "resolved"
 
@@ -120,6 +123,6 @@ def test_implicit_causal_attention_protects_token_coordinates(execution_device):
     graph = DependencyGraph.build(model, args=(q, k, v))
     query = next(r for r in graph.interfaces() if r.shape == tuple(q.shape))
     with pytest.raises(PlanningError, match="causal"):
-        Pruner(model, graph=graph).plan(remove=[query.axis(-2).select([0])], preserve_io=False)
-    plan = Pruner(model, graph=graph).plan(remove=[query.axis(-1).select([0])], preserve_io=False)
+        Pruner(model, graph=graph, preserve_io=False).plan_remove([query.axis(-2).select([0])])
+    plan = Pruner(model, graph=graph, preserve_io=False).plan_remove([query.axis(-1).select([0])])
     assert plan.analysis.status == "resolved"

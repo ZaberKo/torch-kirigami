@@ -42,7 +42,7 @@ def test_dictionary_configuration_is_guarded_through_plan_and_checkpoint(
     graph = DependencyGraph.build(source, args=(torch.ones(2, 2),))
     plan = PruningPlan.from_dict(
         Pruner(source, graph=graph)
-        .plan(remove=[graph.parameter("first.weight").axis(0).select([0])])
+        .plan_remove([graph.parameter("first.weight").axis(0).select([0])])
         .to_dict()
     )
     changed = copy.deepcopy(source)
@@ -101,8 +101,8 @@ def test_ordinary_tensor_and_parent_references_keep_registration_categories(
     model = Model()
     original = model.weight
     graph = DependencyGraph.build(model, args=(torch.ones(4),))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("weight").axis(0).select([0])], preserve_io=False
+    plan = Pruner(model, graph=graph, preserve_io=False).plan_remove(
+        [graph.parameter("weight").axis(0).select([0])]
     )
     stream = io.BytesIO()
     save_checkpoint(model, stream)
@@ -273,9 +273,9 @@ def test_pruning_never_discards_hooks_on_replaced_parameters(when, execution_dev
     if when == "before_plan":
         handle = old.register_hook(lambda grad: grad * 0)
         with pytest.raises(PlanningError, match="gradient hooks"):
-            pruner.plan(remove=request)
+            pruner.plan_remove(request)
     else:
-        plan = pruner.plan(remove=request)
+        plan = pruner.plan_remove(request)
         parameter = model[1].bias if when == "unaffected" else old
         handle = parameter.register_hook(lambda grad: grad * 0)
         if when == "after_plan":
@@ -310,8 +310,10 @@ def test_custom_state_codecs_are_not_executed_for_raw_checkpoints(
     with torch.no_grad():
         source.weight.copy_(torch.arange(4.0))
     graph = DependencyGraph.build(source, args=(torch.ones(4),))
-    Pruner(source, graph=graph).prune(
-        remove=[graph.parameter("weight").axis(0).select([1])], preserve_io=False
+    Pruner(source, graph=graph, preserve_io=False).apply(
+        Pruner(source, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("weight").axis(0).select([1])]
+        )
     )
     stream = io.BytesIO()
     save_checkpoint(source, stream)

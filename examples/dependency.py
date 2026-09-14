@@ -1,4 +1,4 @@
-"""Run with: uv run --locked python examples/dependency.py"""
+"""Run with: python examples/dependency.py"""
 
 import torch
 from torch import nn

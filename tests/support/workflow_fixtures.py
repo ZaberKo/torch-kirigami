@@ -16,7 +16,7 @@ from torch_kirigami import (
     OperatorRule,
     Requirement,
 )
-from torch_kirigami.pruning import CandidateSpace, load_checkpoint, save_checkpoint
+from torch_kirigami.pruning import Pruner, load_checkpoint, save_checkpoint
 from torch_kirigami.sparsity import ChannelGate, register_gate_operators
 
 
@@ -109,7 +109,9 @@ def registry():
 
 
 def build_space(model, x):
-    return CandidateSpace(DependencyGraph.build(model, args=(x,), operators=registry()))
+    graph = DependencyGraph.build(model, args=(x,), operators=registry())
+    pruner = Pruner(model, graph=graph)
+    return pruner, pruner.discover_candidates()
 
 
 def train_steps(model, x, y, optimizer, steps, regularizer=None, strength=0.0):
@@ -131,9 +133,9 @@ def report(model, plan, metrics):
     print(
         {
             **metrics,
-            "target": plan.budget.targets,
-            "removed": plan.budget.removed,
-            "shortfall": plan.budget.shortfall,
+            "target": plan.selection_report.targets,
+            "removed": plan.selection_report.removed,
+            "shortfall": plan.selection_report.shortfall,
             "parameters": sum(p.numel() for p in model.parameters()),
         }
     )

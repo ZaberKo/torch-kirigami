@@ -40,12 +40,12 @@ def test_request_permutations_and_duplicates_preserve_shared_closure_and_values(
     ]
     expected = graph.propagate(remove=requests)
     assert expected.status == "resolved"
-    plan = pruner.plan(remove=requests)
+    plan = pruner.plan_remove(requests)
     for permutation in itertools.permutations(requests):
         impact = graph.propagate(remove=[*permutation, *permutation])
         assert impact.status == "resolved"
         assert all(impact.selection(ref) == expected.selection(ref) for ref in graph.values())
-        other = pruner.plan(remove=permutation)
+        other = pruner.plan_remove(permutation)
         assert other.recipes == plan.recipes and other.attributes == plan.attributes
     pruner.apply(PruningPlan.from_dict(plan.to_dict()))
     assert model.left is model.alias and model.left.weight is model.right.weight
@@ -82,7 +82,7 @@ def test_groupnorm_depthwise_batchnorm_joint_compaction(training, channels_last,
     original = copy.deepcopy(model)
     x = torch.linspace(-0.7, 1.1, 96, dtype=torch.float64).reshape(2, 4, 3, 4)
     graph, pruner = build(model, x)
-    plan = pruner.plan(remove=[graph.parameter("grouped.weight").axis(0).select([1, 4])])
+    plan = pruner.plan_remove([graph.parameter("grouped.weight").axis(0).select([1, 4])])
     pruner.apply(plan)
     keep, expanded = [0, 2, 3, 5], [0, 1, 4, 5, 6, 7, 10, 11]
     assert model.grouped.out_channels == model.norm.num_channels == model.depthwise.groups == 4
@@ -145,8 +145,8 @@ def test_projection_dynamic_shape_mask_sdpa_compact_values_and_gradients(shared,
     original = copy.deepcopy(model)
     x = torch.linspace(-1, 0.8, 24, dtype=torch.float64).reshape(2, 3, 4)
     graph, pruner = build(model, x)
-    plan = pruner.plan(
-        remove=[graph.parameter(f"{name}.weight").axis(0).select([1, 4]) for name in ("q", "v")]
+    plan = pruner.plan_remove(
+        [graph.parameter(f"{name}.weight").axis(0).select([1, 4]) for name in ("q", "v")]
     )
     pruner.apply(plan)
     assert (model.q.weight is model.k.weight) == shared

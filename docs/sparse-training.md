@@ -16,7 +16,7 @@ flowchart LR
 
 | Component | Library responsibility | Caller responsibility |
 | --- | --- | --- |
-| `CandidateSpace`, `ParameterGroup` | Discover logical candidates and expose complete parameter regions | Choose target domains and parameter filters |
+| `Pruner`, `CandidateSpace`, `ParameterGroup` | Discover explicit logical candidates and expose complete parameter regions | Choose target domains and parameter filters |
 | `ScaleL1`, `GroupLasso`, `GroupSquaredL2` | Evaluate scalar penalties on current parameter values | Task loss, strength, training duration, and optimization |
 | `ChannelGate`, `GateBinding`, `GateMagnitude` | Explicit scales, structural linkage, and gate scoring | Gate placement and candidate policy |
 | `scale_groups_`, `zero_groups_`, `set_group_norms_` | Validated parameter-region updates | Timing, regrowth policy, momentum handling |
@@ -25,9 +25,19 @@ flowchart LR
 
 ## Live parameter groups
 
-`CandidateSpace.parameter_groups(candidates=None, *, parameter_filter=None)` propagates each candidate's dependency closure and extracts its affected parameters. `parameter_filter(ref, parameter)` can restrict the objective, for example to weights rather than biases. An incomplete influence range or an empty resulting group is rejected.
+`Impact` belongs to dependency analysis; `ParameterGroup` belongs to the pruning layer and is consumed by sparse-training operations. **A parameter group is not an attribute of `Impact`, and `Impact` has no conversion method that constructs one.** The conversion is implemented by `Pruner.parameter_groups(candidates, *, parameter_filter=None)`:
+
+1. For each explicit candidate, propagate its removal selections through `graph.propagate()` with the pruner's common constraints. `Pruner.impact(candidates)` exposes the corresponding joint query.
+2. Reject the result if `impact.complete` is false: the analysis cannot identify all affected parameters reliably.
+3. Read `impact.parameters`, which contains affected parameter selections. Apply the optional `parameter_filter(ref, parameter)`, for example to exclude biases.
+4. Construct `ParameterGroup(graph, selections, candidate.key)`. Its constructor merges overlapping selections on the same parameter and rejects an empty group.
+5. Return the resulting groups, keeping only one representative of fully equivalent groups. Partially overlapping groups remain separate.
+
+The extraction does not execute the model or copy parameter values. Buffers, activation selections, constraints, and attribute-update requirements remain in `Impact`; they are not stored in `ParameterGroup`. Keeping this conversion outside `Impact` avoids a dependency from the analysis layer back to the pruning layer.
 
 `ParameterGroup(graph, selections, key="")` represents a union of selected regions, not necessarily a slice of a single parameter. Its `bindings()` method returns current `(Parameter, Selection)` pairs after graph validation.
+
+Callers can also construct a `ParameterGroup` directly. Its constructor validates and merges parameter selections; it does not perform dependency propagation or establish that the supplied selections include every affected parameter.
 
 Within one group, regions and aliases of the same parameter are deduplicated. Fully equivalent groups on the same graph are canonicalized independently of their labels. Distinct groups may overlap: their regularizer contributions add as specified by the objective. Passing equivalent groups with different coefficients is an error.
 
@@ -64,14 +74,15 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import CandidateSpace
+from torch_kirigami.pruning import CandidateSpace, Pruner
 from torch_kirigami.sparsity import GroupLasso
 
 model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
 x, target = torch.randn(2, 8), torch.randn(2, 4)
 graph = DependencyGraph.build(model, args=(x,))
-space = CandidateSpace(graph)
-regularizer = GroupLasso(space.parameter_groups())
+pruner = Pruner(model, graph=graph)
+space = pruner.discover_candidates()
+regularizer = GroupLasso(pruner.parameter_groups(space.candidates))
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 optimizer.zero_grad()
@@ -84,7 +95,7 @@ optimizer.step()
 
 The same contract works with SGD, AdamW, gradient accumulation, AMP, and clipping. The caller chooses the loss scaling: when averaging across `N` microbatches, scale the total loss consistently so the sparse term is not accidentally multiplied by `N`. Under AMP, combine the losses before applying the gradient scaler; unscale before clipping or reading Taylor statistics.
 
-For Taylor scoring, perform a separate task-only gradient collection pass. Decide the model mode explicitly; an evaluation-mode calibration pass can avoid changing BN running statistics. The [workflow utility](../examples/workflows/workflow_utils.py) restores the original module modes after collecting task-only gradients.
+For Taylor scoring, perform a separate task-only gradient collection pass. Decide the model mode explicitly; an evaluation-mode calibration pass can avoid changing BN running statistics. The [single-pass pruning example](../examples/workflows/prune_finetune.py) shows task-only gradient collection and restores the original module modes afterwards.
 
 ## Explicit activation gates
 
@@ -103,7 +114,7 @@ Place the gate explicitly in the model, then register its operator semantics bef
 
 ```python
 from torch_kirigami import OperatorRegistry
-from torch_kirigami.pruning import ChannelCount, Pruner
+from torch_kirigami.pruning import ChannelCount, Greedy, Pruner
 from torch_kirigami.sparsity import (
     ChannelGate,
     GateBinding,
@@ -116,19 +127,21 @@ model = nn.Sequential(nn.Linear(8, 12), ChannelGate(12, axis=-1), nn.Linear(12, 
 operators = OperatorRegistry.default()
 register_gate_operators(operators)
 graph = DependencyGraph.build(model, args=(x,), operators=operators)
-space = CandidateSpace(graph)
+pruner = Pruner(model, graph=graph)
+space = pruner.discover_candidates()
 regularizer = ScaleL1(graph, ("1.weight",))
 binding = GateBinding(graph, "1")
 axis = graph.parameter("0.weight").axis(0)
-plan = Pruner(model, graph=graph).plan(
-    candidates=binding.candidates(space),
-    metric=GateMagnitude((binding,)),
-    budget=ChannelCount((3,), axes=(axis,)),
+gated_space = CandidateSpace(binding.candidates(pruner, space.candidates), (axis,))
+plan = pruner.plan(
+    gated_space,
+    strategy=Greedy(GateMagnitude((binding,))),
+    budget=ChannelCount((3,), (axis,)),
 )
 model, result = Pruner(model, graph=graph).apply(plan)
 ```
 
-`register_gate_operators(operators)` adds a leaf rule linking input/output axes to the gate weight and mask, with a requirement to update `size`. It adds no candidate budget domain, so the gate does not inflate the denominator. Its multiplication produces fresh storage; this fact supports checks for an immediately following in-place activation without relaxing other alias or multiple-consumer constraints.
+`register_gate_operators(operators)` adds a leaf rule linking input/output axes to the gate weight and mask, with a requirement to update `size`. It adds no logical candidate axis, so the gate does not inflate the denominator. Its multiplication produces fresh storage; this fact supports checks for an immediately following in-place activation without relaxing other alias or multiple-consumer constraints.
 
 `GateBinding(graph, path).candidates(space)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings)` scores the sum of `abs(weight * mask)` over affected scales. It rejects ungated candidates. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
 
@@ -170,24 +183,24 @@ sequenceDiagram
 ```
 
 ```python
-from torch_kirigami.pruning import Magnitude
+from torch_kirigami.pruning import Greedy, Magnitude
 from torch_kirigami.sparsity import CumulativeChannelBudget
 
 # Start a new accounting baseline at the model's current structure.
 graph = DependencyGraph.build(model, args=(x,), operators=operators)
-space = CandidateSpace(graph)
-account = CumulativeChannelBudget(space, scope="local")
+pruner = Pruner(model, graph=graph)
+space = pruner.discover_candidates()
+account = CumulativeChannelBudget(graph, space, scope="local")
 for ratio in (0.1, 0.2, 0.3):
-    pruner = Pruner(model, graph=space.graph)
-    plan = pruner.plan(
-        metric=Magnitude(),
-        candidates=space.candidates,
-        budget=account.budget(space, ratio),
-    )
+    budget = account.budget(graph, space, ratio)
+    # Keep the accounting baseline if an axis becomes wholly protected.
+    round_space = CandidateSpace(space.candidates, budget.channel_axes)
+    plan = pruner.plan(round_space, budget=budget, strategy=Greedy(Magnitude()))
     model, result = pruner.apply(plan)
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
-    space = CandidateSpace(graph)
-    account.update(result, space)
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    account.update(result, graph, space)
     optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
 ```
 

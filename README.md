@@ -29,7 +29,7 @@ From the repository root:
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e .
+uv pip install --torch-backend=auto -e .
 ```
 
 The [ImageNet workflow guide](examples/workflows/README.md) installs the additional dependencies needed by the pretrained-model examples.
@@ -56,7 +56,7 @@ print(graph.explain(impact))
 
 # Validate all physical edits before applying them to the original model.
 pruner = Pruner(model, graph=graph)
-plan = pruner.plan(remove=[selection])
+plan = pruner.plan_remove([selection])
 print(plan.explain())
 model, result = pruner.apply(plan)
 
@@ -71,16 +71,17 @@ optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 
 Removing two outputs of the first linear layer also removes their bias entries and the corresponding input columns of the second layer. Public input and output dimensions remain unchanged.
 
-For automatic selection, replace the explicit `plan(remove=...)` call with:
+For automatic selection, replace the explicit `plan_remove(...)` call with:
 
 ```python
-from torch_kirigami.pruning import ChannelRatio, Magnitude
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
 
 pruner = Pruner(model, graph=graph)
-plan = pruner.plan(metric=Magnitude(p=2), budget=ChannelRatio(0.25))
+space = pruner.discover_candidates()
+plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
 ```
 
-Use a `Pruner` bound to the current graph. An automatic budget may be underfilled when valid structural constraints prevent the requested reduction; inspect the plan's budget report. A resolved dependency impact is not a guarantee of physical executability or numerical equivalence to the unpruned model.
+Use a `Pruner` bound to the current graph. An automatic budget may be underfilled when valid structural constraints prevent the requested reduction; inspect the plan's selection report. A resolved dependency impact is not a guarantee of physical executability or numerical equivalence to the unpruned model.
 
 ## Pretrained ImageNet workflows
 
@@ -127,12 +128,12 @@ Graph construction isolates example inputs and registered buffers and restores s
 ## Development
 
 ```bash
-uv sync --locked
-uv run --locked pytest
-uv run --locked ruff check .
-uv run --locked ruff format --check .
+uv pip install --torch-backend=auto --group dev -e .
+python -m pytest
+ruff check .
+ruff format --check .
 ```
 
-The repository lock configures the CPU development environment. See [testing and development](docs/testing.md) for optional example dependencies, CUDA checks, and minimum-version validation.
+Use the activated repository environment. Install dependencies with `uv pip install` and invoke Python and developer tools directly to preserve separately installed workflow packages. The project does not pin a CPU-only PyTorch index. See [testing and development](docs/testing.md) for optional example dependencies, CUDA checks, and minimum-version validation.
 
 Licensed under the [MIT License](LICENSE).

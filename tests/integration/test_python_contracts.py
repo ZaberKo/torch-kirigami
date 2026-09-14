@@ -51,7 +51,7 @@ def test_attribute_consumers_outside_the_pruned_branch_are_checked(consumer, exe
     expected = model(x)
     graph = DependencyGraph.build(model, args=(x,))
     with pytest.raises(PlanningError, match=r"attribute|structure"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     assert model.a.out_features == 4
     torch.testing.assert_close(model.state_dict(), before)
     torch.testing.assert_close(model(x), expected)
@@ -103,8 +103,10 @@ def test_python_boolean_operators_run_through_capture_plan_and_backward(
         y = F.linear(x, w)
         expected = torch.where(operation(y > 0, y < 1), y, 0.0)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("fc.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1])]
+        )
     )
     actual = model(x)
     torch.testing.assert_close(actual, expected)
@@ -130,8 +132,8 @@ def test_unflatten_configuration_survives_plan_and_checkpoint(container, executi
         model[3].bias,
     )
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("0.weight").axis(0).select([0, 1, 2])]
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("0.weight").axis(0).select([0, 1, 2])]
     )
     plan = PruningPlan.from_dict(plan.to_dict())
     assert model[1].unflattened_size == container((2, 3))
@@ -180,9 +182,9 @@ def test_attribute_barrier_preserves_independent_pruning_and_readonly_planning(
 
     monkeypatch.setattr(nn.Parameter, "__deepcopy__", forbid_parameter_copy)
     with pytest.raises(PlanningError, match="structure"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("safe.0.weight").axis(0).select([1])]
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("safe.0.weight").axis(0).select([1])]
     )
     assert all(a is b for a, b in zip(parameters, model.parameters(), strict=True))
     assert model.safe[1].running_mean is buffer

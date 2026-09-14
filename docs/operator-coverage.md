@@ -39,7 +39,22 @@ The table summarizes supported structural domains and their principal restrictio
 | `MultiheadAttention` | Packed/separate projections and balanced embedding-width changes for self/cross attention. | Head count stays fixed; batch, token, mask, and attention-weight positions stay fixed. |
 | `ChannelGate` through explicit registration | Activation axis, trainable scale, and fixed mask shrink together. | Register with `register_gate_operators()`; gates add no default budget domain. |
 
-Default candidate declarations cover module linear output features, convolution output channels, embedding width, and native MHA embedding width. Depthwise convolution defaults to whole logical groups. Functional operations and most coordinate/normalization operators provide dependencies without independent default candidate domains. A custom rule may declare additional domains with `CandidateAxis`.
+## Default candidate entry axes
+
+Dependency support and default candidate generation are separate contracts. The following module rules declare entry axes for automatic discovery when `Pruner.discover_candidates()` is called:
+
+| Module | Default entry | Default candidate size |
+| --- | --- | --- |
+| `Linear` | Output features: weight axis 0 | One feature |
+| Ordinary/grouped `Conv1d/2d/3d` | Output channels: weight axis 0 | One channel; group-balance constraints may require a combined request |
+| `ConvTranspose1d/2d/3d` | Logical output-channel axis | One channel, subject to group constraints |
+| Depthwise convolution | Logical output channels | A complete output block belonging to one input channel |
+| `Embedding` | Embedding width: weight axis 1 | One feature |
+| Native `MultiheadAttention` | Embedding width: output-projection weight axis 0 | One feature; balanced changes across the fixed heads require a combined request |
+
+Functional operations and most coordinate/normalization operators provide dependencies without independent default candidate domains. In particular, Linear and ordinary Conv input axes are not additional default entries: propagation from an upstream output can still remove positions on those input axes. A custom rule may declare additional domains with `CandidateAxis`.
+
+The default candidate size describes how requests are generated; relations and constraints determine which combined requests are structurally valid. Native MHA does not default to deleting whole attention heads. See [candidate discovery and budgets](pruning-design.md#default-candidate-entry-axes) for the complete selection flow.
 
 Grouped ConvTranspose illustrates why logical domains matter: the complete output-channel width is the budget domain, while a physical weight dimension may store only a per-group width. Counting that local dimension as the whole network domain would produce an incorrect budget.
 
@@ -136,7 +151,7 @@ model = nn.Sequential(nn.Linear(4, 8), Half(), nn.Linear(8, 2)).eval()
 x = torch.randn(2, 4)
 graph = DependencyGraph.build(model, args=(x,), operators=registry)
 pruner = Pruner(model, graph=graph)
-plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1, 5])])
+plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1, 5])])
 pruner.apply(plan)
 assert model[0].out_features == model[2].in_features == 6
 assert model(x).shape == (2, 2)
@@ -148,7 +163,7 @@ This rule applies specifically to `Half`. Reusing it for an arbitrary equal-shap
 
 For an affine custom module, relate input features to weight columns, output features to weight rows, and output features to bias positions. Add an attribute `Requirement` when the module stores its width in configuration. The built-in descriptor compiler can handle supported requirements without custom lowering.
 
-For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical budget axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. If the seed is a call-specific activation, declare a registered `binding` only when repeated calls use the same original-coordinate domain. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
+For packed projections or grouped tensors, declare scopes and `PartitionedLayout` explicitly. For logical channel axes, supply stable `CandidateAxis` keys that do not depend on one FX call's name. If the seed is a call-specific activation, declare a registered `binding` only when repeated calls use the same original-coordinate domain. Repeated calls and aliases should resolve to the same structural domain when they represent the same pruning choice.
 
 If shared compilation cannot express a necessary edit, implement `OperatorRule.lower()` using the public recipe records from `torch_kirigami.pruning`. The callback returns declarative results and accounts for handled requirements; it must not mutate the model. See the complete [fused-attention example](../examples/fused_attention.py) and [extension integration tests](../tests/integration/test_extensions.py).
 

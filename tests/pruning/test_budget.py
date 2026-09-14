@@ -7,29 +7,37 @@ from torch import nn
 from tests.support.pruning import build
 from torch_kirigami.pruning import (
     Candidate,
+    CandidateSpace,
     ChannelRatio,
+    Greedy,
     Magnitude,
+    Pruner,
 )
 
 
 def test_depthwise_candidate_denominator_and_custom_blocks():
     model = nn.Conv1d(4, 8, 1, groups=4)
     graph, pruner = build(model, torch.randn(2, 4, 5))
-    plan = pruner.plan(metric=Magnitude(), budget=ChannelRatio(0.25), preserve_io=False)
-    assert plan.budget.widths == (8,) and plan.budget.removed == (2,)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.25),
+        strategy=Greedy(Magnitude()),
+    )
+    assert plan.selection_report.widths == (8,) and plan.selection_report.removed == (2,)
     axis = graph.parameter("weight").axis(0)
     candidate = Candidate("pair", (axis.select([0, 1]),))
-    with pytest.raises(ValueError, match="explicit"):
-        pruner.plan(
-            candidates=[candidate], metric=Magnitude(), budget=ChannelRatio(0.25), preserve_io=False
+    with pytest.raises(TypeError):
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+            CandidateSpace(candidates=[candidate], channel_axes=None),
+            budget=ChannelRatio(0.25),
+            strategy=Greedy(Magnitude()),
         )
-    manual = pruner.plan(
-        candidates=[candidate],
-        metric=Magnitude(),
-        budget=ChannelRatio(0.25, axes=(axis,)),
-        preserve_io=False,
+    manual = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        CandidateSpace(candidates=[candidate], channel_axes=(axis,)),
+        budget=ChannelRatio(0.25),
+        strategy=Greedy(Magnitude()),
     )
-    assert manual.budget.widths == plan.budget.widths
+    assert manual.selection_report.widths == plan.selection_report.widths
 
 
 def test_global_budget_no_hidden_local_cap():
@@ -47,17 +55,27 @@ def test_global_budget_no_hidden_local_cap():
     def metric(ctx, batch):
         return [0 if c.key.startswith("a.") else 100 for c in batch]
 
-    plan = pruner.plan(metric=metric, budget=ChannelRatio(0.25, scope="global"), preserve_io=False)
-    assert plan.budget.widths == (6, 6)
-    assert plan.budget.removed == (3, 0)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.25, scope="global"),
+        strategy=Greedy(metric),
+    )
+    assert plan.selection_report.widths == (6, 6)
+    assert plan.selection_report.removed == (3, 0)
 
 
 def test_explicit_protected_axis_keeps_budget_baseline_and_seed_alias_dedup():
     model = nn.Linear(4, 6)
     graph, pruner = build(model, torch.randn(2, 4))
     axis = graph.parameter("weight").axis(0)
-    plan = pruner.plan(metric=Magnitude(), budget=ChannelRatio(0.5, axes=(axis, axis)))
-    assert plan.budget.widths == (6,) and plan.budget.shortfall == 3
+    plan = pruner.plan(
+        CandidateSpace(
+            candidates=pruner.discover_candidates().candidates, channel_axes=(axis, axis)
+        ),
+        budget=ChannelRatio(0.5),
+        strategy=Greedy(Magnitude()),
+    )
+    assert plan.selection_report.widths == (6,) and plan.selection_report.shortfall == 3
     assert not plan.recipes
     pruner.apply(plan)
     graph.validate(model)
@@ -74,8 +92,12 @@ def test_unknown_branch_underfill_keeps_denominator():
 
     model = Unknown()
     _graph, pruner = build(model, torch.randn(2, 4))
-    plan = pruner.plan(metric=Magnitude(), budget=ChannelRatio(0.5), preserve_io=False)
-    assert plan.budget.widths == (6, 6)
-    assert plan.budget.removed == (0, 3)
-    assert plan.budget.shortfall == 3
-    assert any("Incomplete" in reason for _, reason in plan.budget.exclusions)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.5),
+        strategy=Greedy(Magnitude()),
+    )
+    assert plan.selection_report.widths == (6, 6)
+    assert plan.selection_report.removed == (0, 3)
+    assert plan.selection_report.shortfall == 3
+    assert any("Incomplete" in reason for _, reason in plan.selection_report.exclusions)

@@ -68,8 +68,10 @@ def test_axis_family_compaction(mode, execution_device):
     x = torch.randn(2, 3, 4, 4)
     old = copy.deepcopy(model)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("conv.weight").axis(0).select([1, 4])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("conv.weight").axis(0).select([1, 4])]
+        )
     )
     if mode == "chunk":
         a, b = old(x)
@@ -143,8 +145,10 @@ def test_channels_last_conv_view_keeps_layout(execution_device):
     x = torch.randn(2, 3, 4, 5).contiguous(memory_format=torch.channels_last)
     original = copy.deepcopy(model)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("conv.weight").axis(0).select([0, 1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("conv.weight").axis(0).select([0, 1])]
+        )
     )
     torch.testing.assert_close(model(x), original(x)[:, 2:])
 
@@ -166,9 +170,9 @@ def test_reshape_original_size_provenance(dynamic, execution_device):
     request = [graph.parameter("fc.weight").axis(0).select([1, 3])]
     if not dynamic:
         with pytest.raises(PlanningError, match="original forward"):
-            pruner.plan(remove=request, preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(request)
     else:
-        plan = pruner.plan(remove=request, preserve_io=False)
+        plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(request)
         pruner.apply(plan)
         assert model(x).shape == (2, 4)
 
@@ -185,7 +189,9 @@ def test_view_noncontiguous_parameter_is_rejected():
     model = View()
     graph, pruner = build(model, torch.zeros(()))
     with pytest.raises(PlanningError, match=r"view.*original forward"):
-        pruner.plan(remove=[graph.parameter("weight").axis(0).select([0])], preserve_io=False)
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+            [graph.parameter("weight").axis(0).select([0])]
+        )
 
 
 def test_squeeze_new_singleton_rejected():
@@ -200,7 +206,9 @@ def test_squeeze_new_singleton_rejected():
     model = Squeeze()
     graph, pruner = build(model, torch.randn(2, 4))
     with pytest.raises(PlanningError, match="compact shape"):
-        pruner.plan(remove=[graph.parameter("fc.weight").axis(0).select([1])], preserve_io=False)
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1])]
+        )
 
 
 def test_unflatten_bound_tuple_and_unbind_ports():
@@ -217,8 +225,8 @@ def test_unflatten_bound_tuple_and_unbind_ports():
     x = torch.randn(2, 4)
     old = copy.deepcopy(model)
     graph, pruner = build(model, x)
-    plan = pruner.plan(
-        remove=[graph.parameter("fc.weight").axis(0).select([1, 4])], preserve_io=False
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+        [graph.parameter("fc.weight").axis(0).select([1, 4])]
     )
     pruner.apply(plan)
     assert model.unflatten.unflattened_size == (2, 2)
@@ -240,8 +248,8 @@ def test_channels_last_weight_layout_is_validated_before_execution(execution_dev
     x = torch.randn(2, 3, 6, 6)
     expected = model(x)[:, [0, 2, 3, 5]]
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("conv.weight").axis(0).select([1, 4])], preserve_io=False
+    plan = Pruner(model, graph=graph, preserve_io=False).plan_remove(
+        [graph.parameter("conv.weight").axis(0).select([1, 4])]
     )
     assert (
         next(r for r in plan.recipes if r.tensor.paths == ("conv.weight",)).memory_format

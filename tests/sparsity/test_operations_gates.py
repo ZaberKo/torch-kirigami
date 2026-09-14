@@ -9,6 +9,7 @@ from torch_kirigami.pruning import (
     CandidateSpace,
     ChannelCount,
     ChannelRatio,
+    Greedy,
     ParameterGroup,
     PlanningContext,
     PlanningError,
@@ -46,8 +47,9 @@ def test_gate_training_pruning_independent_reference_and_checkpoint(convolution,
     x = torch.randn((2, 2, 3, 3) if convolution else (2, 2), device=execution_device)
     operators = register_gate_operators(OperatorRegistry.default())
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
-    space = CandidateSpace(graph)
-    assert len(space.axes) == 1  # No extra gate budget domain.
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
+    assert len(space.channel_axes) == 1  # No extra gate budget domain.
     regularizer = ScaleL1(graph, ("gate.weight",))
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     optimizer.zero_grad()
@@ -58,11 +60,11 @@ def test_gate_training_pruning_independent_reference_and_checkpoint(convolution,
     model.gate.set_mask([1, 0, 1, 1])
     reference = model(x).detach()
     binding = GateBinding(graph, "gate")
-    candidates = binding.candidates(space)
+    candidates = binding.candidates(pruner, space.candidates)
     plan = Pruner(model, graph=graph).plan(
-        metric=GateMagnitude((binding,)),
-        candidates=candidates,
-        budget=ChannelCount((1,), space.axes),
+        CandidateSpace(candidates=candidates, channel_axes=space.channel_axes),
+        budget=ChannelCount((1,), space.channel_axes),
+        strategy=Greedy(GateMagnitude((binding,))),
     )
     Pruner(model, graph=graph).apply(plan)
     assert model.gate.size == 3
@@ -147,18 +149,18 @@ def test_gate_and_scale_parameter_aliases_are_not_counted_twice():
         operators=register_gate_operators(OperatorRegistry.default()),
     )
     assert ScaleL1(graph, ("gate.weight", "alias.weight"))().item() == 5
-    space = CandidateSpace(graph)
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
     metric = GateMagnitude((GateBinding(graph, "gate"), GateBinding(graph, "alias")))
     context = PlanningContext(
         graph,
         graph.operations(),
         space.candidates,
         ChannelRatio(0.5),
-        space.axes,
-        metric,
-        space.constraints,
+        space.channel_axes,
+        pruner.constraints,
     )
-    assert context.score(space.candidates) == (2.0, 0.0, 3.0)
+    assert context.score(metric, space.candidates) == (2.0, 0.0, 3.0)
 
 
 @pytest.mark.parametrize("operation", ["scale", "zero", "norm"])
@@ -245,26 +247,30 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
     x = torch.ones(2, 2, device=execution_device)
     operators = register_gate_operators(OperatorRegistry.default())
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
-    space = CandidateSpace(graph)
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
     bindings = [GateBinding(graph, name) for name in ("g1", "g2", "alias")]
-    budget = ChannelCount((1,), space.axes)
+    budget = ChannelCount((1,), space.channel_axes)
     for order in (bindings, list(reversed(bindings))):
         context = PlanningContext(
             graph,
             graph.operations(),
             space.candidates,
             budget,
-            space.axes,
-            GateMagnitude(order),
-            space.constraints,
+            space.channel_axes,
+            pruner.constraints,
         )
-        assert context.score(space.candidates) == (1.0, 1.0, 2.0)
+        assert context.score(GateMagnitude(order), space.candidates) == (1.0, 1.0, 2.0)
     # An actually inactive shared channel remains a valid physical alternative.
     model.g1.set_mask([0, 0, 1])
     model.g2.set_mask([0, 1, 1])
     reference = model(x).detach()
     pruner = Pruner(model, graph=graph)
-    pruner.apply(pruner.plan(metric=GateMagnitude(bindings), budget=budget))
+    pruner.apply(
+        pruner.plan(
+            pruner.discover_candidates(), budget=budget, strategy=Greedy(GateMagnitude(bindings))
+        )
+    )
     assert model.g1.weight is model.g2.weight
     assert model.g1 is model.alias
     torch.testing.assert_close(model(x), reference)
@@ -284,7 +290,7 @@ def test_gate_allocation_allows_following_relu_and_physical_pruning(inplace, exe
         model, args=(x,), operators=register_gate_operators(OperatorRegistry.default())
     )
     pruner = Pruner(model, graph=graph)
-    pruner.apply(pruner.plan(remove=(graph.parameter("0.weight").axis(0).select([1, 3]),)))
+    pruner.apply(pruner.plan_remove((graph.parameter("0.weight").axis(0).select([1, 3]),)))
     assert model[0].out_features == model[1].size == model[3].in_features == 4
     torch.testing.assert_close(model(x), expected)
     torch.testing.assert_close(x, original_input)
@@ -313,8 +319,8 @@ def test_gate_allocation_does_not_relax_inplace_multiple_consumer_guard():
     )
     state = {name: (id(value), value.detach().clone()) for name, value in model.named_parameters()}
     with pytest.raises(PlanningError, match="alias/consumer"):
-        Pruner(model, graph=graph).plan(
-            remove=(graph.parameter("first.weight").axis(0).select([1]),)
+        Pruner(model, graph=graph).plan_remove(
+            (graph.parameter("first.weight").axis(0).select([1]),)
         )
     for name, value in model.named_parameters():
         assert id(value) == state[name][0]

@@ -9,8 +9,8 @@ from torch import nn
 
 from torch_kirigami import DependencyGraph, Region, Selection, StaleGraphError
 from torch_kirigami.pruning import (
-    CandidateSpace,
     ChannelRatio,
+    Greedy,
     Magnitude,
     ParameterGroup,
     PlanningError,
@@ -82,20 +82,25 @@ def test_precision_scale_aliases_and_freshness(dtype):
     value.backward()
     torch.testing.assert_close(model[0].bias.grad, model[0].bias.new_tensor([-1, 0, 1]))
     assert value.item() == 5
-    Pruner(model, graph=graph).prune(metric=Magnitude(), budget=ChannelRatio(0.34))
+    Pruner(model, graph=graph).prune(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.34),
+        strategy=Greedy(Magnitude()),
+    )
     with pytest.raises(StaleGraphError):
         regularizer()
 
 
 def test_group_discovery_filter_duplicates_and_incomplete_path():
     model, graph = setup()
-    space = CandidateSpace(graph)
-    assert len(space.axes) == 1 and len(space.candidates) == 3
-    groups = space.parameter_groups([space.candidates[0]] * 2)
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
+    assert len(space.channel_axes) == 1 and len(space.candidates) == 3
+    groups = pruner.parameter_groups([space.candidates[0]] * 2)
     assert len(groups) == 1
     assert {s.tensor.paths[0] for s in groups[0].selections} == {"0.weight", "0.bias", "2.weight"}
     with pytest.raises(ValueError, match="nonempty"):
-        space.parameter_groups(parameter_filter=lambda *_: False)
+        pruner.parameter_groups(space.candidates, parameter_filter=lambda *_: False)
     with pytest.raises(ValueError, match="conflicting"):
         GroupLasso(groups * 2, coefficients=(1, 2))
     for coefficients in [(-1,), (float("nan"),), (torch.tensor(1.0),), ()]:
@@ -111,8 +116,16 @@ def test_sparse_loss_accumulation_matches_single_batch(optimizer_cls):
     model, graph = setup()
     other, other_graph = setup()
     other.load_state_dict(model.state_dict())
-    reg = GroupLasso(CandidateSpace(graph).parameter_groups())
-    other_reg = GroupLasso(CandidateSpace(other_graph).parameter_groups())
+    reg = GroupLasso(
+        Pruner(graph.model, graph=graph).parameter_groups(
+            Pruner(graph.model, graph=graph).discover_candidates().candidates
+        )
+    )
+    other_reg = GroupLasso(
+        Pruner(other_graph.model, graph=other_graph).parameter_groups(
+            Pruner(other_graph.model, graph=other_graph).discover_candidates().candidates
+        )
+    )
     x = torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.float64)
     optimizers = [optimizer_cls(m.parameters(), lr=0.01) for m in (model, other)]
     for optimizer in optimizers:
@@ -129,7 +142,11 @@ def test_sparse_loss_accumulation_matches_single_batch(optimizer_cls):
 def test_autocast_sparse_loss_then_public_prune_and_train(execution_device):
     device = torch.device(execution_device)
     model, graph = setup(torch.float32, device)
-    regularizer = GroupLasso(CandidateSpace(graph).parameter_groups())
+    regularizer = GroupLasso(
+        Pruner(graph.model, graph=graph).parameter_groups(
+            Pruner(graph.model, graph=graph).discover_candidates().candidates
+        )
+    )
     optimizer = torch.optim.AdamW(model.parameters(), lr=0.01)
     scaler = torch.amp.GradScaler(device.type, enabled=device.type == "cuda")
     x = torch.ones(2, 2, device=device)
@@ -144,9 +161,17 @@ def test_autocast_sparse_loss_then_public_prune_and_train(execution_device):
     nn.utils.clip_grad_norm_(model.parameters(), 1)
     scaler.step(optimizer)
     scaler.update()
-    Pruner(model, graph=graph).prune(metric=Magnitude(), budget=ChannelRatio(0.34))
+    Pruner(model, graph=graph).prune(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.34),
+        strategy=Greedy(Magnitude()),
+    )
     fresh = DependencyGraph.build(model, args=(x,))
-    new_reg = GroupLasso(CandidateSpace(fresh).parameter_groups())
+    new_reg = GroupLasso(
+        Pruner(fresh.model, graph=fresh).parameter_groups(
+            Pruner(fresh.model, graph=fresh).discover_candidates().candidates
+        )
+    )
     optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
     optimizer.zero_grad()
     (model(x).square().mean() + 0.01 * new_reg()).backward()
@@ -167,12 +192,13 @@ def test_unknown_influence_rejects_groups_but_valid_alternative_can_train():
 
     model = Branches()
     graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))
-    space = CandidateSpace(graph)
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
     before = {n: t.clone() for n, t in model.state_dict().items()}
     with pytest.raises(PlanningError, match="Incomplete"):
-        space.parameter_groups()
+        pruner.parameter_groups(space.candidates)
     candidates = [c for c in space.candidates if c.axis.tensor.paths[0] == "good.weight"]
-    penalty = GroupLasso(space.parameter_groups(candidates))
+    penalty = GroupLasso(pruner.parameter_groups(candidates))
     penalty().backward()
     assert model.good.weight.grad is not None and model.bad.weight.grad is None
     for name, tensor in model.state_dict().items():

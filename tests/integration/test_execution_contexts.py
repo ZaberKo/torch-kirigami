@@ -46,7 +46,7 @@ def test_compact_singleton_strides_match_plan_and_checkpoint(
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("0.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("0.weight").axis(0).select([1])])
         .to_dict()
     )
     Pruner(model).apply(plan)
@@ -181,7 +181,7 @@ def test_partial_amp_paths_join_with_captured_dtype(
     with torch.autocast(execution_device, dtype=dtype, enabled=planning_autocast):
         plan = PruningPlan.from_dict(
             Pruner(model, graph=graph)
-            .plan(remove=[graph.parameter("q.weight").axis(0).select([1, 5])])
+            .plan_remove([graph.parameter("q.weight").axis(0).select([1, 5])])
             .to_dict()
         )
     Pruner(model).apply(plan)
@@ -316,13 +316,17 @@ def test_cast_copy_contract_preserves_native_compact_view_behavior(
     graph = DependencyGraph.build(model, args=(x,))
     old = tuple(model.parameters())
     if copy_output:
-        Pruner(model, graph=graph).prune(remove=[graph.parameter("a.weight").axis(0).select([5])])
+        Pruner(model, graph=graph).apply(
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("a.weight").axis(0).select([5])]
+            )
+        )
         torch.testing.assert_close(model(x), expected)
         model(x).sum().backward()
     else:
         with pytest.raises(PlanningError, match="view"):
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("a.weight").axis(0).select([5])]
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("a.weight").axis(0).select([5])]
             )
         assert all(a is b for a, b in zip(old, model.parameters(), strict=True))
 

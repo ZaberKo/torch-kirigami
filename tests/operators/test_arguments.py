@@ -63,7 +63,7 @@ def test_native_keyword_spellings_have_same_coordinates(canonical, alias, execut
             )
         )
         try:
-            plan = Pruner(model, graph=graph).plan(remove=remove, preserve_io=False)
+            plan = Pruner(model, graph=graph, preserve_io=False).plan_remove(remove)
         except PlanningError:
             plans.append(None)
         else:
@@ -133,5 +133,7 @@ def test_named_arguments_and_negative_narrow(mode, execution_device):
         y = y[-1:]
     expected = F.linear(y, model.b.weight[:, keep], model.b.bias)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)

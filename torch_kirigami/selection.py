@@ -59,7 +59,7 @@ class IndexSet:
 
         Raises:
             ValueError: An index is negative or is not a Python integer.
-            AnalysisLimitError: The normalized set exceeds the interval budget.
+            AnalysisLimitError: The normalized set exceeds the interval limit.
         """
         values = []
         for i in indices:
@@ -202,7 +202,7 @@ def normalize(regions: Iterable[Region]) -> tuple[Region, ...]:
         Sorted, nonoverlapping regions with empty pieces removed.
 
     Raises:
-        AnalysisLimitError: The intermediate region representation exceeds its budget.
+        AnalysisLimitError: The intermediate region representation exceeds its limit.
     """
     result: list[Region] = []
     for region in sorted(set(regions), key=lambda r: tuple(a.intervals for a in r.axes)):
@@ -433,7 +433,7 @@ class Selection:
             return False
         # Each side's regions are disjoint, so pairwise intersection volumes
         # count every common coordinate exactly once. Equality must not fail
-        # because a hypothetical difference exceeds the representation budget.
+        # because a hypothetical difference exceeds the representation limit.
         covered = 0
         for left in self.regions:
             for right in other.regions:
@@ -522,7 +522,7 @@ def linear_indices(region: Region, shape: tuple[int, ...]) -> IndexSet:
         Flat offset intervals, collapsing complete trailing dimensions.
 
     Raises:
-        AnalysisLimitError: The exact offset representation exceeds its budget.
+        AnalysisLimitError: The exact offset representation exceeds its limit.
     """
     if not shape:
         return IndexSet.span(0, 1)

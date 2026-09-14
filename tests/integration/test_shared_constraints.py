@@ -10,6 +10,7 @@ from torch_kirigami import (
 )
 from torch_kirigami.pruning import (
     ChannelRatio,
+    Greedy,
 )
 
 
@@ -124,7 +125,7 @@ def test_shared_module_parameters_and_aliases(execution_device):
     x = torch.randn(2, 4)
     graph, pruner = build(model, x)
     old = model.a.weight
-    plan = pruner.plan(remove=[graph.parameter("a.weight").axis(0).select([1, 3])])
+    plan = pruner.plan_remove([graph.parameter("a.weight").axis(0).select([1, 3])])
     _returned, result = pruner.apply(plan)
     assert model.a.weight is model.alias.weight is model.b.weight
     assert len([p for p in result.parameter_map if p is old]) == 1
@@ -143,8 +144,10 @@ def test_joint_rows_columns_greedy_grouped_chain(execution_device):
             for c in batch
         ]
 
-    plan = pruner.plan(metric=metric, budget=ChannelRatio(0.34))
-    assert plan.budget.removed == (2, 2)
+    plan = pruner.plan(
+        pruner.discover_candidates(), budget=ChannelRatio(0.34), strategy=Greedy(metric)
+    )
+    assert plan.selection_report.removed == (2, 2)
     pruner.apply(plan)
     model(x).sum().backward()
     assert model[1].weight.shape == (4, 2, 1)

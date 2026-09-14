@@ -30,7 +30,7 @@ def test_global_forward_hooks_rejected_at_build_and_apply(pre):
 
     model = CachedWeight()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("weight").axis(0).select([1])])
     register = (
         runtime.register_module_forward_pre_hook if pre else runtime.register_module_forward_hook
     )
@@ -63,7 +63,7 @@ def test_forward_hooks_rejected_before_capture(where, pre):
 def test_apply_rechecks_added_hooks(where):
     model = Chain()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     (model if where == "root" else model.a).register_forward_hook(lambda *args: None)
     old = model.a.weight
     with pytest.raises(ExecutionError, match="hook"):

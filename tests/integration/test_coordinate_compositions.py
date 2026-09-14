@@ -92,7 +92,7 @@ def test_reshape_permutation_composition_preserves_original_coordinates(
     model(sample)
     graph = DependencyGraph.build(model, args=(sample,))
     pruner = Pruner(model, graph=graph)
-    plan = pruner.plan(remove=[graph.parameter("producer.weight").axis(0).select([1, 4])])
+    plan = pruner.plan_remove([graph.parameter("producer.weight").axis(0).select([1, 4])])
     # Original transpose+flatten order is [0, 3, 1, 4, 2, 5].
     consumer_columns = [0, 1, 4, 5]
     assert tuple(
@@ -136,8 +136,8 @@ def test_partition_reordering_joint_pruning_matches_retained_coordinate_referenc
     # Validate the native invocation first, so invalid API spellings are not library bugs.
     model(sample)
     graph = DependencyGraph.build(model, args=(sample,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("producer.weight").axis(0).select(remove)]
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("producer.weight").axis(0).select(remove)]
     )
     original_order = [3, 4, 5, 0, 1, 2]
     keep_columns = [
@@ -192,7 +192,7 @@ def test_matmul_cat_residual_and_fixed_loop_execution(execution_device):
     old = copy.deepcopy(model)
     x = torch.randn(2, 4)
     graph, pruner = build(model, x)
-    plan = pruner.plan(remove=[graph.parameter("a").axis(1).select([1, 4])])
+    plan = pruner.plan_remove([graph.parameter("a").axis(1).select([1, 4])])
     pruner.apply(plan)
     keep = [0, 2, 3, 5]
     y = x @ old.a[:, keep]

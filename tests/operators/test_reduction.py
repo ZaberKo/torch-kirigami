@@ -58,8 +58,8 @@ def test_alias_reduction_joint_channels(method, mean, keepdims, execution_device
     hidden = hidden.mean(dim=0, keepdim=keepdims) if mean else hidden.sum(dim=0, keepdim=keepdims)
     expected = F.linear(hidden, model.b.weight[:, keep])
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[
+    plan = Pruner(model, graph=graph).plan_remove(
+        [
             graph.parameter("a.weight").axis(0).select([1]),
             graph.parameter("b.weight").axis(1).select([2]),
         ]
@@ -92,7 +92,9 @@ def test_empty_reduction_dimensions_are_all_axes(kind, dims, keep, execution_dev
         dim=(0, 1),
     )
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)
 
 
@@ -137,8 +139,10 @@ def test_reduction_api_forms_recompute_retained_domain_with_independent_arithmet
     # Validate the native invocation first, so invalid API spellings are not library bugs.
     model(sample)
     graph = DependencyGraph.build(model, args=(sample,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("producer.weight").axis(0).select([1, 4])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("producer.weight").axis(0).select([1, 4])]
+        )
     )
     hidden = F.linear(
         reference_input,

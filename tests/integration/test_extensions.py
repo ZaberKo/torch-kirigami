@@ -15,6 +15,7 @@ from torch_kirigami import (
 )
 from torch_kirigami.pruning import (
     AttributeRecipe,
+    Pruner,
     RewriteResult,
 )
 
@@ -70,7 +71,9 @@ def test_custom_root_nested_extension(nested, execution_device):
     )
     graph, pruner = build(model, x, rules)
     path = "0.weight" if nested else "weight"
-    plan = pruner.plan(remove=[graph.parameter(path).axis(0).select([1, 3])], preserve_io=nested)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=nested).plan_remove(
+        [graph.parameter(path).axis(0).select([1, 3])]
+    )
     pruner.apply(plan)
     assert model(x).shape == (2, 2 if nested else 4)
     with pytest.raises(ValueError, match="already"):
@@ -98,6 +101,8 @@ def test_custom_function_rule_does_not_require_core_changes():
     graph, pruner = build(model, torch.randn(2, 4), rules)
     assert any(c.node.target is fused_function for c in graph.operations())
     pruner.apply(
-        pruner.plan(remove=[graph.parameter("fc.weight").axis(0).select([0])], preserve_io=False)
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([0])]
+        )
     )
     assert model.fc.out_features == 5

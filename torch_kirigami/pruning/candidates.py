@@ -1,9 +1,12 @@
 """One candidate universe for planning, budget accounting and sparse training."""
 
 from collections import defaultdict, deque
+from dataclasses import dataclass
+from fnmatch import fnmatchcase
 
 from ..contracts import Fixed
 from ..relations import AxisRelation, BlockMap, BroadcastRelation, ReshapeRelation
+from ..selection import AxisRef
 from .groups import ParameterGroup, unique_groups
 from .types import Candidate, PlanningError
 
@@ -86,105 +89,107 @@ def _protected_equal_axes(graph, defaults):
     return protected
 
 
+@dataclass(frozen=True)
 class CandidateSpace:
-    """Discover candidates and expose complete dependency groups without a budget.
+    """Explicit candidates and logical axes used to count channels.
 
-    Args:
-        graph: Fresh dependency snapshot.
-        candidates: Optional explicit candidates; requires explicit axes.
-        axes: Logical budget axes. Explicit axes retain protected domains.
-        preserve_io: Protect external axes, as in Pruner.plan.
-        constraints: Additional structural constraints.
-
-    Discovery only removes domains provably protected by external interfaces.
-    protected_axes records those excluded domains for cumulative accounting.
-    Unknown paths remain visible; group extraction rejects incomplete influence.
-    Groups may overlap and do not imply zero-mask/physical-pruning equivalence.
+    Construction performs no discovery or analysis and retains no model. The
+    consuming Pruner validates graph ownership. Discovery metadata records excluded
+    protected axes for cumulative accounting; explicit axes are never filtered.
     """
 
-    def __init__(self, graph, *, candidates=None, axes=None, preserve_io=True, constraints=()):
-        graph.validate()
-        self.graph = graph
-        defaults = interface_constraints(graph, preserve_io)
-        self.constraints = (*defaults, *tuple(constraints))
-        exclusions = []
-        self.protected_axes = ()
-        self._candidates = None
-        self._domains = ()
-        if candidates is None:
-            domains = discover(graph, graph.operations())
-            if axes is None:
-                protected = _protected_equal_axes(graph, defaults) if defaults else set()
-                if defaults:
-                    for domain in domains:
-                        if domain.axis not in protected and all(
-                            any(
-                                d.code == "fixed_axis"
-                                for d in graph.propagate(
-                                    remove=c.remove, constraints=defaults
-                                ).diagnostics
-                            )
-                            for c in _candidates(domain)
-                        ):
-                            protected.add(domain.axis)
-                self.protected_axes = tuple(d.axis for d in domains if d.axis in protected)
-                exclusions = [
-                    (f"domain:{d.key}", "All positions are protected by external interfaces")
-                    for d in domains
-                    if d.axis in protected
-                ]
-                domains = tuple(d for d in domains if d.axis not in protected)
-                axes = tuple(d.axis for d in domains)
-            self._domains = domains
-        else:
-            if axes is None:
-                raise ValueError("Custom candidates require explicit budget axes")
-            self._candidates = tuple(candidates)
-            if len({c.key for c in self._candidates}) != len(self._candidates):
-                raise ValueError("Duplicate candidate keys")
-            for candidate in self._candidates:
-                for selection in candidate.remove:
-                    graph.metadata(selection.tensor)
-        self.axes = tuple(dict.fromkeys(axes))
-        self.exclusions = tuple(exclusions)
-        for axis in self.axes:
-            graph.metadata(axis.tensor)
+    candidates: tuple[Candidate, ...]
+    channel_axes: tuple[AxisRef, ...]
+    protected_channel_axes: tuple[AxisRef, ...] = ()
+    exclusions: tuple[tuple[str, str], ...] = ()
 
-    @property
-    def candidates(self):
-        """Instantiate the fixed candidate universe only when it is requested."""
-        self.graph.validate()
-        if self._candidates is None:
-            self._candidates = tuple(c for domain in self._domains for c in _candidates(domain))
-        return self._candidates
+    def __post_init__(self):
+        candidates = tuple(self.candidates)
+        if any(not isinstance(c, Candidate) for c in candidates):
+            raise TypeError("CandidateSpace requires Candidate records")
+        if len({c.key for c in candidates}) != len(candidates):
+            raise ValueError("Duplicate candidate keys")
+        object.__setattr__(self, "candidates", candidates)
+        for name in ("channel_axes", "protected_channel_axes"):
+            axes = tuple(getattr(self, name))
+            if any(not isinstance(a, AxisRef) for a in axes):
+                raise TypeError("Channel axes must be AxisRef instances")
+            object.__setattr__(self, name, tuple(dict.fromkeys(axes)))
+        exclusions = tuple(tuple(item) for item in self.exclusions)
+        if any(len(item) != 2 or any(not isinstance(s, str) for s in item) for item in exclusions):
+            raise ValueError("Exclusions require key/reason pairs")
+        object.__setattr__(self, "exclusions", exclusions)
 
-    def impact(self, candidates):
-        """Analyze a joint batch, including temporary combined candidates."""
-        return self.graph.propagate(
-            remove=tuple(s for c in candidates for s in c.remove),
-            constraints=self.constraints,
-        )
 
-    def parameter_groups(self, candidates=None, *, parameter_filter=None):
-        """Return unique complete groups; reject incomplete influence or empty filters.
-
-        The filter accepts (TensorRef, Parameter). Repairable count constraints
-        are allowed here; the eventual joint pruning request must still compile.
-        """
-        result = []
-        for candidate in self.candidates if candidates is None else tuple(candidates):
-            impact = self.impact((candidate,))
-            if not impact.complete:
-                raise PlanningError(
-                    "Incomplete parameter group: "
-                    + "; ".join(d.message for d in impact.diagnostics if not d.complete)
+def discover_candidates(graph, defaults, targets):
+    """Filter declared domains before freezing widths and creating seeds."""
+    graph.validate()
+    operations = graph.operations()
+    if targets is not None:
+        if isinstance(targets, str):
+            raise TypeError("Candidate targets require an iterable of module path patterns")
+        targets = tuple(targets)
+        if any(not isinstance(p, str) for p in targets):
+            raise TypeError("Candidate targets must be module path patterns")
+        aliases = defaultdict(list)
+        for path, module in graph.model.named_modules(remove_duplicate=False):
+            aliases[id(module)].append(path)
+        matching, selected = set(), []
+        for operation in operations:
+            hits = {
+                p
+                for p in targets
+                if any(fnmatchcase(path, p) for path in aliases[id(operation.module)])
+            }
+            if hits and graph.operator_spec(operation).candidates:
+                selected.append(operation)
+                matching.update(hits)
+        if set(targets) - matching:
+            raise PlanningError(
+                f"Candidate targets declare no channel axes: {sorted(set(targets) - matching)}"
+            )
+        operations = tuple(selected)
+    domains = discover(graph, operations)
+    protected = _protected_equal_axes(graph, defaults) if defaults else set()
+    if defaults:
+        for domain in domains:
+            if domain.axis not in protected and all(
+                any(
+                    d.code == "fixed_axis"
+                    for d in graph.propagate(remove=c.remove, constraints=defaults).diagnostics
                 )
-            selections = []
-            for selection in impact.parameters:
-                if parameter_filter is None or parameter_filter(
-                    selection.tensor, self.graph.tensor(selection.tensor)
-                ):
-                    selections.append(selection)
-                self.graph.validate()
-            result.append(ParameterGroup(self.graph, tuple(selections), candidate.key))
-        return unique_groups(result)
+                for c in _candidates(domain)
+            ):
+                protected.add(domain.axis)
+    active = tuple(d for d in domains if d.axis not in protected)
+    return CandidateSpace(
+        tuple(c for d in active for c in _candidates(d)),
+        tuple(d.axis for d in active),
+        tuple(d.axis for d in domains if d.axis in protected),
+        tuple(
+            (f"domain:{d.key}", "All positions are protected by external interfaces")
+            for d in domains
+            if d.axis in protected
+        ),
+    )
+
+
+def parameter_groups(graph, candidates, constraints, parameter_filter):
+    """Extract complete groups without requiring individual feasibility."""
+    result = []
+    for candidate in candidates:
+        impact = graph.propagate(remove=candidate.remove, constraints=constraints)
+        if not impact.complete:
+            raise PlanningError(
+                "Incomplete parameter group: "
+                + "; ".join(d.message for d in impact.diagnostics if not d.complete)
+            )
+        selections = []
+        for selection in impact.parameters:
+            if parameter_filter is None or parameter_filter(
+                selection.tensor, graph.tensor(selection.tensor)
+            ):
+                selections.append(selection)
+            graph.validate()
+        result.append(ParameterGroup(graph, tuple(selections), candidate.key))
+    return unique_groups(result)

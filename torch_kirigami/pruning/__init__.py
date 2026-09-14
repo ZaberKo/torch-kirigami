@@ -2,6 +2,7 @@
 
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
+from .granularity import Granularity
 from .groups import ParameterGroup
 from .metrics import Magnitude, WeightTaylor
 from .plan import PruningPlan, PruningResult
@@ -10,7 +11,6 @@ from .pruner import Pruner
 from .types import (
     AnalysisSummary,
     AttributeRecipe,
-    BudgetReport,
     Candidate,
     ChannelCount,
     ChannelRatio,
@@ -21,6 +21,7 @@ from .types import (
     PlanningError,
     RewriteContext,
     RewriteResult,
+    SelectionReport,
     Strategy,
     TensorRecipe,
 )
@@ -28,13 +29,13 @@ from .types import (
 __all__ = [
     "AnalysisSummary",
     "AttributeRecipe",
-    "BudgetReport",
     "Candidate",
     "CandidateSpace",
     "ChannelCount",
     "ChannelRatio",
     "CoordinateSegment",
     "ExecutionError",
+    "Granularity",
     "Greedy",
     "Magnitude",
     "Metric",
@@ -47,6 +48,7 @@ __all__ = [
     "PruningResult",
     "RewriteContext",
     "RewriteResult",
+    "SelectionReport",
     "Strategy",
     "TensorRecipe",
     "WeightTaylor",

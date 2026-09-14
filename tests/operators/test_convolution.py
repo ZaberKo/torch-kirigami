@@ -14,6 +14,7 @@ from torch_kirigami import (
 )
 from torch_kirigami.pruning import (
     ChannelRatio,
+    Greedy,
     Magnitude,
     Pruner,
 )
@@ -64,9 +65,10 @@ def test_grouped_transpose_independent_input_and_output_positions(cls, shape, ex
     x = torch.randn(shape)
     graph = DependencyGraph.build(model, args=(x,))
     call = graph.calls("")[0]
-    Pruner(model, graph=graph).prune(
-        remove=[call.input().axis(1).select([0, 4]), call.output().axis(1).select([1, 6])],
-        preserve_io=False,
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [call.input().axis(1).select([0, 4]), call.output().axis(1).select([1, 6])]
+        )
     )
     weight = torch.cat((old.weight[[1, 2]][:, [0, 2, 3]], old.weight[[3, 5]][:, [0, 1, 3]]))
     keep_out = [0, 2, 3, 4, 5, 7]
@@ -83,8 +85,12 @@ def test_grouped_transpose_independent_input_and_output_positions(cls, shape, ex
 def test_transpose_output_protection_uses_logical_domain():
     model = nn.Sequential(nn.Conv1d(3, 6, 1), nn.ConvTranspose1d(6, 8, 1, groups=2))
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3, 4),))
-    model, result = Pruner(model, graph=graph).prune(metric=Magnitude(), budget=ChannelRatio(0.34))
-    assert result.plan.budget.widths == (6,)
+    model, result = Pruner(model, graph=graph).prune(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.34),
+        strategy=Greedy(Magnitude()),
+    )
+    assert result.plan.selection_report.widths == (6,)
     assert model[0].out_channels == 4 and model[1].out_channels == 8
 
 
@@ -134,12 +140,11 @@ def test_grouped_rows_and_different_local_columns(conv, shape, execution_device)
     x = torch.randn(shape)
     original = copy.deepcopy(model)
     graph, pruner = build(model, x)
-    plan = pruner.plan(
-        remove=[
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+        [
             graph.calls("")[0].input().axis(1).select([0, 4]),
             graph.parameter("weight").axis(0).select([1, 5]),
-        ],
-        preserve_io=False,
+        ]
     )
     weight_recipe = next(
         r for r in plan.recipes if r.tensor.paths == graph.parameter("weight").paths
@@ -164,8 +169,8 @@ def test_depthwise_groups_and_multiplier(whole, execution_device):
     old = copy.deepcopy(model)
     graph, pruner = build(model, x)
     indices = [2, 3] if whole else [1, 2, 5, 6]
-    plan = pruner.plan(
-        remove=[graph.parameter("weight").axis(0).select(indices)], preserve_io=False
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+        [graph.parameter("weight").axis(0).select(indices)]
     )
     pruner.apply(plan)
     assert model.groups == (3 if whole else 4)
@@ -183,9 +188,13 @@ def test_automatic_group_balance_selects_different_local_positions():
         ranking = {0: 0, 4: 1, 1: 2, 2: 3, 3: 4, 5: 5}
         return [ranking[int(c.key.rsplit(":", 1)[1])] for c in batch]
 
-    plan = pruner.plan(metric=metric, budget=ChannelRatio(0.34), preserve_io=False)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.34),
+        strategy=Greedy(metric),
+    )
     assert set(plan.analysis.selection(graph.parameter("weight")).fully_selected_indices(0)) == {
         0,
         4,
     }
-    assert plan.budget.removed == (2,)
+    assert plan.selection_report.removed == (2,)

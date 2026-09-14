@@ -103,7 +103,7 @@ def test_unchanged_metadata_read_allows_other_axis_compaction(query, execution_d
     remove = graph.parameter("a.weight").axis(0).select([1])
     assert graph.propagate(remove=[remove]).status == "resolved"
     before = tuple(model.parameters())
-    plan = PruningPlan.from_dict(Pruner(model, graph=graph).plan(remove=[remove]).to_dict())
+    plan = PruningPlan.from_dict(Pruner(model, graph=graph).plan_remove([remove]).to_dict())
     assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
     target = copy.deepcopy(model)
     Pruner(target).apply(plan)
@@ -125,7 +125,7 @@ def test_changed_metadata_read_rejects_before_mutation(query, execution_device):
     original, buffer = tuple(model.parameters()), model.scale
     expected = model(x).detach()
     with pytest.raises(PlanningError, match="metadata"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     assert model.scale is buffer
     assert all(a is b for a, b in zip(original, model.parameters(), strict=True))
     torch.testing.assert_close(model(x), expected)
@@ -138,7 +138,7 @@ def test_compaction_checks_actual_planned_buffer_layout(query, execution_device)
     graph = DependencyGraph.build(model, args=(x,))
     before = tuple(model.parameters()), model.scale
     with pytest.raises(PlanningError, match="metadata"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     assert model.scale is before[1]
     assert all(a is b for a, b in zip(before[0], model.parameters(), strict=True))
 
@@ -150,7 +150,7 @@ def test_portable_metadata_plan_rejects_incompatible_original_binding(change, ex
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     target = copy.deepcopy(model)
@@ -228,13 +228,13 @@ def test_grouped_metadata_uses_final_partitioned_layout_without_blocking_other_b
     remove = [graph.parameter("a.weight").axis(0).select([0, 4])]
     if not allowed:
         with pytest.raises(PlanningError, match="metadata"):
-            Pruner(model, graph=graph).plan(remove=remove)
+            Pruner(model, graph=graph).plan_remove(remove)
         assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
         for name, value in model.state_dict().items():
             torch.testing.assert_close(value, original.state_dict()[name])
         # A rejected grouped component must not lock an independent branch.
         remove = [graph.parameter("independent.0.weight").axis(0).select([1])]
-    plan = PruningPlan.from_dict(Pruner(model, graph=graph).plan(remove=remove).to_dict())
+    plan = PruningPlan.from_dict(Pruner(model, graph=graph).plan_remove(remove).to_dict())
     target = copy.deepcopy(model)
     Pruner(target).apply(plan)
     assert target.grouped is target.alias

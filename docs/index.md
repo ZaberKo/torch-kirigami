@@ -26,7 +26,7 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 | Constraint | A condition the complete selection must satisfy, such as balanced groups or a nonempty axis. |
 | Requirement | A change that execution must handle or reject, such as updating a module attribute. |
 | Candidate | A policy-level removal proposal, possibly containing multiple selections. |
-| Logical budget domain | An axis used to count deletions without counting dependent representations repeatedly. |
+| Logical channel axis | An axis used to count deletions without counting dependent representations repeatedly. |
 | Parameter group | The affected parameter regions used by a regularizer or parameter operation. |
 | Impact | The result of dependency analysis; it is not an executable plan. |
 | Pruning plan | Static, validated structure changes that can be applied to a compatible model. |

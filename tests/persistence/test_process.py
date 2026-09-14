@@ -17,8 +17,8 @@ def test_checkpoint_and_plan_load_in_fresh_process(tmp_path):
     model = chain()
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("0.weight").axis(0).select([1, 4])]
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("0.weight").axis(0).select([1, 4])]
     )
     torch.save(plan.to_dict(), tmp_path / "plan.pt")
     Pruner(model).apply(plan)

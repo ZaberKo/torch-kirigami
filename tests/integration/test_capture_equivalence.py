@@ -73,8 +73,8 @@ def test_generated_constants_are_compared_by_fact_and_do_not_leak(dependent, exe
     ref = copy.deepcopy(model)
     if dependent:
         with pytest.raises(PlanningError, match=r"constant|structure"):
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("a.weight").axis(0).select([1])]
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("a.weight").axis(0).select([1])]
             )
     else:
         kept = [0, 2, 3]
@@ -85,7 +85,11 @@ def test_generated_constants_are_compared_by_fact_and_do_not_leak(dependent, exe
             ref.a.bias.copy_(model.a.bias[kept])
             ref.b.weight.copy_(model.b.weight[:, kept])
             ref.b.bias.copy_(model.b.bias)
-        Pruner(model, graph=graph).prune(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).apply(
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("a.weight").axis(0).select([1])]
+            )
+        )
         torch.testing.assert_close(model(x), ref(x))
     assert not any(k.startswith("_tensor_constant") for k in vars(model))
 

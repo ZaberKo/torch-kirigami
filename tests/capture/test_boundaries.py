@@ -76,8 +76,8 @@ def test_native_conv_preserves_fx_version_boundary(execution_device):
     else:
         graph = DependencyGraph.build(model, args=args)
         with pytest.raises(PlanningError, match="argument"):
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("fc.weight").axis(0).select([0])]
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("fc.weight").axis(0).select([0])]
             )
 
 

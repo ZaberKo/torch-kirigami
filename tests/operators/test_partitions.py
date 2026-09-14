@@ -9,6 +9,7 @@ from torch import nn
 from tests.support.pruning import build
 from torch_kirigami.pruning import (
     PlanningError,
+    Pruner,
 )
 
 
@@ -28,14 +29,14 @@ def test_split_original_ports(legal):
     graph, pruner = build(model, x)
     remove = [graph.parameter("fc.weight").axis(0).select([5 if legal else 1])]
     if legal:
-        plan = pruner.plan(remove=remove, preserve_io=False)
+        plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(remove)
         pruner.apply(plan)
         a, b = model(x)
         torch.testing.assert_close(a, old(x)[0])
         torch.testing.assert_close(b, old(x)[1][:, :1])
     else:
         with pytest.raises(PlanningError, match="split"):
-            pruner.plan(remove=remove, preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(remove)
 
 
 def test_dynamic_split_sizes_need_no_forward_edit():
@@ -52,8 +53,8 @@ def test_dynamic_split_sizes_need_no_forward_edit():
     x = torch.randn(2, 4)
     old = copy.deepcopy(model)
     graph, pruner = build(model, x)
-    plan = pruner.plan(
-        remove=[graph.parameter("fc.weight").axis(0).select([1, 6])], preserve_io=False
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
+        [graph.parameter("fc.weight").axis(0).select([1, 6])]
     )
     pruner.apply(plan)
     outputs = model(x)

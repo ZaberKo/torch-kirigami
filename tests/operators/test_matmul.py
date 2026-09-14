@@ -31,7 +31,11 @@ def test_einsum_and_addmm_independent_reference(execution_device):
     old = copy.deepcopy(model)
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([1, 4])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("fc.weight").axis(0).select([1, 4])]
+        )
+    )
     retained = old.fc(x)[:, [0, 2, 3, 5]] @ old.weight[[0, 2, 3, 5]]
     torch.testing.assert_close(model(x), (retained, retained + old.bias))
 

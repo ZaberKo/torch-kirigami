@@ -8,10 +8,10 @@ from ..selection import AxisRef, IndexSet, Region, Selection, TensorRef
 from .types import (
     AnalysisSummary,
     AttributeRecipe,
-    BudgetReport,
     CoordinateSegment,
     ModelStructure,
     ModuleState,
+    SelectionReport,
     TensorRecipe,
     TensorState,
 )
@@ -33,7 +33,7 @@ RECORD_TYPES = MappingProxyType(
             TensorState,
             AnalysisSummary,
             AttributeRecipe,
-            BudgetReport,
+            SelectionReport,
             CoordinateSegment,
             TensorRecipe,
         )

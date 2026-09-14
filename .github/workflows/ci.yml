@@ -27,18 +27,17 @@ jobs:
         env:
           TEST_PYTHON: ${{ matrix.python }}
           TEST_TORCH: ${{ matrix.torch }}
-        run: >-
-          uv run --isolated --no-project --python "$TEST_PYTHON"
-          --with "torch==$TEST_TORCH+cpu" --with pytest --with numpy
-          --index https://download.pytorch.org/whl/cpu python -m pytest
+        run: |
+          uv venv .venv --python "$TEST_PYTHON"
+          uv pip install --python .venv/bin/python --torch-backend=cpu --group dev -e . "torch==$TEST_TORCH+cpu"
+          .venv/bin/python -m pytest
       - name: Lint, examples and package
         if: matrix.torch == '2.14.0'
         run: |
-          uv sync --locked --python 3.12
-          uv run --locked ruff check .
-          uv run --locked ruff format --check .
-          uv run --locked python examples/dependency.py
-          uv run --locked python examples/custom_rule.py
-          uv run --locked python examples/pruning.py
-          uv run --locked python examples/fused_attention.py
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+          .venv/bin/python examples/dependency.py
+          .venv/bin/python examples/custom_rule.py
+          .venv/bin/python examples/pruning.py
+          .venv/bin/python examples/fused_attention.py
           uv build

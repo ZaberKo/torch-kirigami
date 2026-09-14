@@ -9,7 +9,13 @@ from torch import nn
 from tests.support.pruning import build
 from torch_kirigami import CandidateAxis, TensorRef
 from torch_kirigami.configuration import thaw
-from torch_kirigami.pruning import AttributeRecipe, Candidate, ChannelRatio, PruningResult
+from torch_kirigami.pruning import (
+    AttributeRecipe,
+    Candidate,
+    CandidateSpace,
+    ChannelRatio,
+    PruningResult,
+)
 from torch_kirigami.pruning.serialization import decode, encode
 
 
@@ -34,7 +40,7 @@ def test_candidates_freeze_seeds_and_reject_invalid_domains():
         lambda: ChannelRatio(1),
         lambda: ChannelRatio(-0.1),
         lambda: ChannelRatio(0.5, scope="typo"),
-        lambda: ChannelRatio(0.5, axes=["axis"]),
+        lambda: CandidateSpace((), channel_axes=["axis"]),
     ):
         with pytest.raises((ValueError, TypeError)):
             factory()
@@ -47,7 +53,7 @@ def test_execution_report_detaches_maps_and_preserves_original_coordinate_segmen
     original = model[0].weight
     graph, pruner = build(model, torch.randn(2, 4))
     ref = graph.parameter("0.weight")
-    _, result = pruner.apply(pruner.plan(remove=[ref.axis(0).select([1, 4])]))
+    _, result = pruner.apply(pruner.plan_remove([ref.axis(0).select([1, 4])]))
     assert result.parameter_map[original] is model[0].weight
     torch.testing.assert_close(model[0].weight, original[[0, 2, 3, 5]])
     parameters = dict(result.parameter_map)

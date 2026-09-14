@@ -22,8 +22,8 @@ from torch_kirigami.pruning import (
 
 def test_plan_direct_construction_is_static_and_bad_decode_is_value_error():
     context, candidate = _context()
-    plan = Pruner(context.graph.model, graph=context.graph).plan(
-        remove=candidate.remove, preserve_io=False
+    plan = Pruner(context.graph.model, graph=context.graph, preserve_io=False).plan_remove(
+        candidate.remove
     )
     notes = ["note"]
     rebuilt = replace(plan, notes=notes, recipes=list(plan.recipes), selected=[])
@@ -43,8 +43,8 @@ def test_static_plan_is_pure_repeatable_and_does_not_retain_graph(execution_devi
     remove = [graph.parameter("0.weight").axis(0).select([1, 4])]
     state = dict(pruner.__dict__)
     rng = torch.get_rng_state().clone()
-    first = pruner.plan(remove=remove)
-    second = pruner.plan(remove=remove)
+    first = pruner.plan_remove(remove)
+    second = pruner.plan_remove(remove)
     assert first.to_dict() == second.to_dict()
     assert state == pruner.__dict__
     assert torch.equal(rng, torch.get_rng_state())

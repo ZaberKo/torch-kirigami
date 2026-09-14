@@ -17,6 +17,7 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     Candidate,
     ChannelRatio,
+    Greedy,
     Magnitude,
     PlanningError,
     Pruner,
@@ -48,7 +49,7 @@ def test_cache_hit_validates_full_reference_and_impact_owner():
     with pytest.raises(ValueError, match="altered"):
         context.impact(invalid.remove)
     with pytest.raises(ValueError, match="altered"):
-        context.score((invalid,))
+        context.score(Magnitude(), (invalid,))
     context.compile(context.impact(()))
     other, _ = _context()
     with pytest.raises(ValueError, match="another graph"):
@@ -62,8 +63,7 @@ def test_context_premises_are_readonly():
         "operations",
         "candidates",
         "budget",
-        "axes",
-        "metric",
+        "channel_axes",
         "constraints",
         "widths",
         "targets",
@@ -105,28 +105,29 @@ def test_candidate_domains_use_axes_not_keys(conflict):
     registry.modules[nn.Linear] = DuplicateDomains()
     model = Model()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),), operators=registry)
-    pruner = Pruner(model, graph=graph)
+    pruner = Pruner(model, graph=graph, preserve_io=False)
     options = {
-        "metric": lambda ctx, batch: [
-            0 if c.axis.tensor.paths[0] == "b.weight" else 1 for c in batch
-        ],
+        "strategy": Greedy(
+            lambda ctx, batch: [0 if c.axis.tensor.paths[0] == "b.weight" else 1 for c in batch]
+        ),
         "budget": ChannelRatio(0.25, scope="global"),
-        "preserve_io": False,
     }
     if conflict:
         with pytest.raises(PlanningError, match="Conflicting"):
-            pruner.plan(**options)
+            pruner.discover_candidates()
     else:
-        plan = pruner.plan(**options)
-        assert plan.budget.widths == (6, 6)
-        assert plan.budget.targets == (3,) and plan.budget.removed == (0, 3)
+        plan = pruner.plan(pruner.discover_candidates(), **options)
+        assert plan.selection_report.widths == (6, 6)
+        assert plan.selection_report.targets == (3,) and plan.selection_report.removed == (0, 3)
 
 
 def test_falsey_strategy_and_parameter_filters_are_called():
     model = nn.Linear(4, 6)
     context, candidate = _context(model)
-    plan = Pruner(model, graph=context.graph).plan(
-        budget=ChannelRatio(0.5), strategy=FalseyStrategy(), preserve_io=False
+    plan = Pruner(model, graph=context.graph, preserve_io=False).plan(
+        Pruner(model, graph=context.graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.5),
+        strategy=FalseyStrategy(),
     )
     assert plan.selected == ()
     # No gradient is needed because the supplied filter excludes all parameters.

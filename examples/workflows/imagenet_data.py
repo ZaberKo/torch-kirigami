@@ -1,4 +1,4 @@
-"""Real held-out evaluation for torchvision's ImageNet classifier."""
+"""Shared local ImageNet loading, label alignment and held-out evaluation."""
 
 from pathlib import Path
 
@@ -9,20 +9,11 @@ from pyarrow.parquet import read_metadata
 from torch.nn import functional as F
 from torch.utils.data import Dataset, IterableDataset
 
-DATASET = "ILSVRC/imagenet-1k"
-
 
 def label_mapping(names, categories):
-    """Validate the official sorted-synset ImageNet label order.
-
-    HF uses comma-separated synonyms; torchvision uses shorter display names.
-    The official dataset and weights both use the 1000 sorted synsets.
-    Check all labels against their synonyms instead of comparing display strings.
-    """
+    """Check HF labels against the pretrained weights' sorted ImageNet classes."""
     if len(names) != 1000 or len(categories) != 1000:
         raise ValueError("Expected the original 1000 ImageNet classes")
-    # These three display names differ in the official HF metadata.
-    # Keep the bird and machine 'crane' classes distinct by checking their IDs.
     aliases = {
         134: ("crane", "crane bird"),
         517: ("crane2", "crane"),
@@ -37,7 +28,7 @@ def label_mapping(names, categories):
 
 
 class Images(Dataset):
-    """Lazy RGB decoding and the exact preprocessing associated with the weights."""
+    """Decode validation images lazily with the selected weights' preprocessing."""
 
     def __init__(self, rows, transform, mapping):
         self.rows, self.transform, self.mapping = rows, transform, mapping
@@ -51,7 +42,7 @@ class Images(Dataset):
 
 
 class TrainingImages(IterableDataset):
-    """Stream the requested training samples from local Parquet shards."""
+    """Stream a fixed shuffled subset without materializing the training split."""
 
     def __init__(self, rows, transform, mapping, size):
         self.rows, self.transform, self.mapping, self.size = rows, transform, mapping, size
@@ -67,35 +58,31 @@ class TrainingImages(IterableDataset):
 def load_images(
     weights, data_dir=None, *, need_train=False, train_samples=512, val_samples=0, seed=7
 ):
-    """Read HF ImageNet Parquet shards downloaded with hf download.
-
-    Resolve the default HF cache offline unless a directory is explicitly supplied.
-    Only validation is required by default. Training uses a separate local split;
-    limits of zero select the full split. This function never downloads data.
-    """
+    """Read local HF ImageNet shards; never download data during an experiment."""
     if train_samples < 0 or val_samples < 0:
         raise ValueError("Sample limits must be nonnegative")
+    dataset = "ILSVRC/imagenet-1k"
     splits = ("validation", "train") if need_train else ("validation",)
     root = Path(
         data_dir
         if data_dir is not None
         else snapshot_download(
-            DATASET,
+            dataset,
             repo_type="dataset",
-            allow_patterns=[f"data/{split}-*.parquet" for split in splits],
             local_files_only=True,
+            allow_patterns=[f"data/{split}-*.parquet" for split in splits],
         )
     ).resolve()
-    files = {}
+    files = {
+        split: [str(path) for path in sorted((root / "data").glob(f"{split}-*.parquet"))]
+        for split in splits
+    }
     for split in splits:
-        files[split] = [str(path) for path in sorted((root / "data").glob(f"{split}-*.parquet"))]
         if not files[split]:
             raise FileNotFoundError(f"Missing ImageNet {split} shards under {root / 'data'}")
-    metadata = {"dataset": DATASET, "data_dir": str(root), "files": files, "subset_seed": seed}
+    metadata = {"dataset": dataset, "data_dir": str(root), "files": files, "subset_seed": seed}
     rows = load_dataset(
-        "parquet",
-        split="validation",
-        data_files={"validation": files["validation"]},
+        "parquet", split="validation", data_files={"validation": files["validation"]}
     )
     mapping = label_mapping(rows.features["label"].names, weights.meta["categories"])
     if val_samples:
@@ -103,14 +90,11 @@ def load_images(
     if not len(rows):
         raise ValueError("Empty validation split")
     validation = Images(rows, weights.transforms(), mapping)
-    metadata["validation"] = {"samples": len(rows)}
+    metadata["validation"] = {"samples": len(validation)}
     train = None
     if need_train:
         rows = load_dataset(
-            "parquet",
-            split="train",
-            streaming=True,
-            data_files={"train": files["train"]},
+            "parquet", split="train", streaming=True, data_files={"train": files["train"]}
         )
         mapping = label_mapping(rows.features["label"].names, weights.meta["categories"])
         rows = rows.shuffle(seed=seed, buffer_size=1000)
@@ -127,21 +111,20 @@ def load_images(
 
 @torch.no_grad()
 def evaluate(model, loader, device, *, progress_every=0):
-    """Sample-weighted CE/top-1/top-5 over all 1000 logits; restore module modes."""
+    """Measure sample-weighted CE/top-1/top-5 and restore every module's mode."""
     modes = [(module, module.training) for module in model.modules()]
     loss, top1, top5, count = 0.0, 0, 0, 0
     try:
         model.eval()
-        for batch_index, (images, labels) in enumerate(loader, start=1):
+        for batch, (images, labels) in enumerate(loader, start=1):
             images, labels = images.to(device), labels.to(device)
             logits = model(images)
             loss += F.cross_entropy(logits, labels, reduction="sum").item()
-            predictions = logits.topk(min(5, logits.shape[1]), dim=1).indices
-            matches = predictions.eq(labels[:, None])
+            matches = logits.topk(min(5, logits.shape[1]), dim=1).indices.eq(labels[:, None])
             top1 += matches[:, 0].sum().item()
             top5 += matches.any(dim=1).sum().item()
             count += labels.numel()
-            if progress_every and batch_index % progress_every == 0:
+            if progress_every and batch % progress_every == 0:
                 print(f"Evaluated {count} images; top1={100 * top1 / count:.3f}%", flush=True)
     finally:
         for module, training in modes:
@@ -154,26 +137,3 @@ def evaluate(model, loader, device, *, progress_every=0):
         "top1": 100 * top1 / count,
         "top5": 100 * top5 / count,
     }
-
-
-def train_epoch(
-    model, loader, optimizer, device, regularizer=None, strength=0.0, *, after_step=None
-):
-    """Train on the training split only; sparse loss stays a scalar autograd term."""
-    model.train()
-    total, sparse_total, count = 0.0, 0.0, 0
-    for batch_index, (images, labels) in enumerate(loader, start=1):
-        images, labels = images.to(device), labels.to(device)
-        optimizer.zero_grad(set_to_none=True)
-        task_loss = F.cross_entropy(model(images), labels)
-        sparse_loss = regularizer() if regularizer is not None else task_loss.new_zeros(())
-        (task_loss + strength * sparse_loss).backward()
-        optimizer.step()
-        if after_step is not None:
-            after_step(batch_index)
-        count += labels.numel()
-        total += task_loss.detach().item() * labels.numel()
-        sparse_total += sparse_loss.detach().item() * labels.numel()
-    if not count:
-        raise ValueError("Cannot train on an empty loader")
-    return {"task_loss": total / count, "sparse_loss": sparse_total / count}

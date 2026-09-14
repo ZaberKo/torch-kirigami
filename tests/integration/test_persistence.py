@@ -24,7 +24,11 @@ def test_checkpoint_final_structure_after_two_rounds(execution_device):
     x = torch.randn(2, 4)
     for _ in range(2):
         graph = DependencyGraph.build(model, args=(x,))
-        Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).apply(
+            Pruner(model, graph=graph).plan_remove(
+                [graph.parameter("fc.weight").axis(0).select([1])]
+            )
+        )
         with torch.no_grad():
             model.fc.weight.add_(0.5)
     model.eval()
@@ -58,7 +62,7 @@ def test_cached_parameter_plan_apply_and_checkpoint(execution_device):
     keep = [0, 2, 3]
     expected = F.linear(F.linear(x, model.weight[keep]), model.out.weight[:, keep], model.out.bias)
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(remove=[graph.parameter("weight").axis(0).select([1])])
+    plan = Pruner(model, graph=graph).plan_remove([graph.parameter("weight").axis(0).select([1])])
     portable = PruningPlan.from_dict(plan.to_dict())
     Pruner(model).apply(portable)
     assert model.cached is model.alias
@@ -82,8 +86,8 @@ def test_shared_attribute_recipes_require_one_final_value(
     model = WithBuffer()
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("fc.weight").axis(0).select([1])]
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("fc.weight").axis(0).select([1])]
     )
     edits = (
         AttributeRecipe("fc.out_features", 6, new_widths[0]),

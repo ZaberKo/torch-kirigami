@@ -708,7 +708,7 @@ class DependencyGraph:
         Raises:
             StaleGraphError: A tracked model property has changed.
             ValueError: A selection or constraint refers to another graph.
-            AnalysisLimitError: A supplied selection exceeds the region budget.
+            AnalysisLimitError: A supplied selection exceeds the region limit.
                 Limits reached while following relations are reported as diagnostics.
         """
         self._check_fresh()

@@ -14,15 +14,11 @@ jobs:
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           version: "0.9.11"
+      - name: Install CUDA test environment
+        run: |
+          uv venv .venv --python 3.12
+          uv pip install --python .venv/bin/python --torch-backend=cu130 -e . 'torch==2.14.0+cu130' pytest numpy
       - name: Require actual CUDA execution
-        run: >-
-          uv run --isolated --no-project --python 3.12
-          --with 'torch==2.14.0+cu130' --with pytest --with numpy
-          --index https://download.pytorch.org/whl/cu130
-          python -m pytest --require-cuda
+        run: .venv/bin/python -m pytest --require-cuda
       - name: Run two pruning rounds on CUDA
-        run: >-
-          uv run --isolated --no-project --python 3.12
-          --with 'torch==2.14.0+cu130' --with pytest --with numpy
-          --index https://download.pytorch.org/whl/cu130
-          python -m examples.pruning --device cuda
+        run: .venv/bin/python -m examples.pruning --device cuda

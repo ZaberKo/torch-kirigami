@@ -176,7 +176,7 @@ class OperationContext:
 
 @dataclass(frozen=True)
 class CandidateAxis:
-    """Declare a logical budget axis and its default contiguous removal blocks.
+    """Declare a logical channel axis and its default contiguous removal blocks.
 
     The stable key names a structural domain, independently of FX call identity.
     Seeds use the logical axis; registered relations map them to parameter regions.

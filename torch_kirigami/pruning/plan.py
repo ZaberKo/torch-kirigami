@@ -14,10 +14,10 @@ from .state import validate_plan
 from .types import (
     AnalysisSummary,
     AttributeRecipe,
-    BudgetReport,
     CoordinateSegment,
     ModelStructure,
     PlanningError,
+    SelectionReport,
     TensorRecipe,
 )
 
@@ -34,7 +34,7 @@ class PruningPlan:
     recipes: tuple[TensorRecipe, ...]
     attributes: tuple[AttributeRecipe, ...]
     selected: tuple[str, ...]
-    budget: BudgetReport
+    selection_report: SelectionReport
     notes: tuple[str, ...]
     before: ModelStructure
     after: ModelStructure
@@ -52,7 +52,7 @@ class PruningPlan:
             object.__setattr__(self, name, values)
         for name, cls in (
             ("analysis", AnalysisSummary),
-            ("budget", BudgetReport),
+            ("selection_report", SelectionReport),
             ("before", ModelStructure),
             ("after", ModelStructure),
         ):
@@ -87,18 +87,20 @@ class PruningPlan:
     def explain(self) -> str:
         """Describe the joint decision, budget, and physical modifications."""
         lines = [f"Pruning plan: {self.analysis.status}; {len(self.recipes)} tensor replacements"]
-        if self.budget.scope != "manual":
+        if self.selection_report.scope != "manual":
             lines.append(
-                f"Channels: target {sum(self.budget.targets)}, removed {sum(self.budget.removed)}, "
-                f"shortfall {self.budget.shortfall}; {self.budget.trials} trials"
+                f"Channels: target {sum(self.selection_report.targets)}, removed {sum(self.selection_report.removed)}, "
+                f"shortfall {self.selection_report.shortfall}; {self.selection_report.trials} trials"
             )
         lines.extend(f"{r.tensor.paths[0]}: {r.tensor.shape} -> {r.shape}" for r in self.recipes)
         if self.selected:
             lines.append("Selected candidates: " + ", ".join(self.selected))
         lines.extend(f"{a.path}: {a.old} -> {a.new}" for a in self.attributes)
         lines.extend(self.notes)
-        lines.extend(f"Excluded {key}: {reason}" for key, reason in self.budget.exclusions)
-        if self.budget.limit_reached:
+        lines.extend(
+            f"Excluded {key}: {reason}" for key, reason in self.selection_report.exclusions
+        )
+        if self.selection_report.limit_reached:
             lines.append("Strategy trial limit reached; no claim of infeasibility")
         return "\n".join(lines)
 

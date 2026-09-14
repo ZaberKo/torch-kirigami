@@ -36,11 +36,10 @@ def test_builtin_scoring_does_not_thrash_small_impact_cache(width, monkeypatch):
         return propagate(**kwargs)
 
     monkeypatch.setattr(graph, "propagate", counted)
-    Pruner(model, graph=graph).plan(
-        metric=Magnitude(),
+    Pruner(model, graph=graph, preserve_io=False).plan(
+        Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
         budget=ChannelRatio(0.2),
-        strategy=Greedy(max_trials=1),
-        preserve_io=False,
+        strategy=Greedy(Magnitude(), max_trials=1),
     )
     assert count <= width + 12
 
@@ -69,8 +68,10 @@ def test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly():
         batch_sizes.append(len(batch))
         return [len(batch)] * len(batch)
 
-    Pruner(model, graph=graph).plan(
-        metric=metric, budget=ChannelRatio(0.2), strategy=Greedy(max_trials=1), preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).plan(
+        Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
+        budget=ChannelRatio(0.2),
+        strategy=Greedy(metric, max_trials=1),
     )
     assert batch_sizes == [64]
 
@@ -79,20 +80,20 @@ def test_greedy_initial_invalid_divisibility_and_limit():
     model = nn.Linear(4, 10)
     graph, pruner = build(model, torch.randn(2, 4))
     axis = graph.parameter("weight").axis(0)
-    kwargs = {"metric": Magnitude(), "preserve_io": False, "constraints": [Divisible(axis, 4)]}
-    plan = pruner.plan(budget=ChannelRatio(0.2), **kwargs)
-    assert plan.budget.removed == (2,)
+    aligned = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 4)])
+    space = aligned.discover_candidates()
+    plan = aligned.plan(space, budget=ChannelRatio(0.2), strategy=Greedy(Magnitude()))
+    assert plan.selection_report.removed == (2,)
     with pytest.raises(PlanningError, match="empty request"):
-        pruner.plan(budget=ChannelRatio(0.1), **kwargs)
-    plan = pruner.plan(
-        metric=Magnitude(),
+        aligned.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(Magnitude()))
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
         budget=ChannelRatio(0.4),
-        preserve_io=False,
-        strategy=Greedy(max_trials=1),
+        strategy=Greedy(Magnitude(), max_trials=1),
     )
-    assert plan.budget.limit_reached
+    assert plan.selection_report.limit_reached
     assert plan.analysis.status == "resolved"
-    assert plan.budget.removed == (1,)
+    assert plan.selection_report.removed == (1,)
 
 
 def test_balanced_completion_multiple_constraints_and_stable_ties():
@@ -106,32 +107,31 @@ def test_balanced_completion_multiple_constraints_and_stable_ties():
     def metric(ctx, batch):
         return [0.0] * len(batch)
 
-    kwargs = {
-        "metric": metric,
-        "budget": ChannelRatio(0.5),
-        "constraints": constraints,
-        "preserve_io": False,
-    }
-    a, b = pruner.plan(**kwargs), pruner.plan(**kwargs)
+    pruner = Pruner(model, graph=graph, constraints=constraints, preserve_io=False)
+    space = pruner.discover_candidates()
+    a = pruner.plan(space, budget=ChannelRatio(0.5), strategy=Greedy(metric))
+    b = pruner.plan(space, budget=ChannelRatio(0.5), strategy=Greedy(metric))
     assert a.selected == b.selected
     assert a.analysis.status == "resolved"
-    assert 0 <= sum(a.budget.removed) <= 6
-    manual = pruner.plan(
-        remove=[axis.select([0, 1, 4, 6, 8, 9])], constraints=constraints, preserve_io=False
-    )
+    assert 0 <= sum(a.selection_report.removed) <= 6
+    manual = Pruner(
+        pruner.model, graph=pruner.graph, preserve_io=False, constraints=constraints
+    ).plan_remove([axis.select([0, 1, 4, 6, 8, 9])])
     assert manual.analysis.status == "resolved"
-    assert a.budget.trials <= 10_000
+    assert a.selection_report.trials <= 10_000
 
 
 def test_metric_errors_and_nonadditive_custom_scoring():
     model = nn.Linear(4, 6)
     _graph, pruner = build(model, torch.randn(2, 4))
-    common = {"budget": ChannelRatio(0.4), "preserve_io": False}
+    pruner = Pruner(model, graph=_graph, preserve_io=False)
+    space = pruner.discover_candidates()
+    common = {"budget": ChannelRatio(0.4)}
     with pytest.raises(PlanningError, match="gradients"):
-        pruner.plan(metric=WeightTaylor(), **common)
+        pruner.plan(space, strategy=Greedy(WeightTaylor()), **common)
     for metric in (lambda c, b: [float("nan")] * len(b), lambda c, b: [1]):
         with pytest.raises(PlanningError, match=r"nonfinite|length"):
-            pruner.plan(metric=metric, **common)
+            pruner.plan(space, strategy=Greedy(metric), **common)
     seen = []
 
     def metric(ctx, batch):
@@ -141,13 +141,13 @@ def test_metric_errors_and_nonadditive_custom_scoring():
     def strategy(ctx):
         a, b = ctx.candidates[:2]
         joint = Candidate("temporary", (*a.remove, *b.remove))
-        assert ctx.score([joint]) == (4.0,)
+        assert ctx.score(metric, [joint]) == (4.0,)
         return [a.key, b.key]
 
-    plan = pruner.plan(metric=metric, strategy=strategy, **common)
+    plan = pruner.plan(space, strategy=strategy, **common)
     assert seen == [2] and len(plan.selected) == 2
     with pytest.raises(PlanningError, match="unregistered"):
-        pruner.plan(strategy=lambda c: ["bad"], **common)
+        pruner.plan(space, strategy=lambda c: ["bad"], **common)
 
 
 def test_default_zero_budget_avoids_candidate_scoring(monkeypatch):
@@ -164,7 +164,11 @@ def test_default_zero_budget_avoids_candidate_scoring(monkeypatch):
         raise AssertionError("Zero budget must not score candidates")
 
     monkeypatch.setattr(DependencyGraph, "propagate", counted)
-    plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0), metric=forbidden_metric)
+    plan = Pruner(model, graph=graph).plan(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0),
+        strategy=Greedy(forbidden_metric),
+    )
     assert not plan.recipes and len(calls) <= 5
 
 
@@ -178,6 +182,8 @@ def test_zero_trial_strategy_skips_scoring_but_validates_empty(monkeypatch):
         raise AssertionError("No score should be needed")
 
     plan = Pruner(model, graph=graph).plan(
-        budget=ChannelRatio(0.5), metric=metric, strategy=Greedy(max_trials=0)
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.5),
+        strategy=Greedy(metric, max_trials=0),
     )
-    assert not calls and not plan.recipes and plan.budget.limit_reached
+    assert not calls and not plan.recipes and plan.selection_report.limit_reached

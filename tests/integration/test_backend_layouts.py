@@ -10,7 +10,9 @@ from torch.nn import functional as F
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
     Candidate,
+    CandidateSpace,
     ChannelRatio,
+    Greedy,
     Magnitude,
     PlanningError,
     Pruner,
@@ -43,9 +45,8 @@ def test_cpu_channels_last_groupnorm_view(mode):
         before = {name: value.clone() for name, value in model.state_dict().items()}
         parameters = tuple(model.parameters())
         with pytest.raises(PlanningError, match="stride cannot be proved") as error:
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("conv.weight").axis(0).select([1, 5])],
-                preserve_io=False,
+            Pruner(model, graph=graph, preserve_io=False).plan_remove(
+                [graph.parameter("conv.weight").axis(0).select([1, 5])]
             )
         assert "If a copy is acceptable" in str(error.value)
         assert "reshape(...) or contiguous().view(...)" in str(error.value)
@@ -54,8 +55,8 @@ def test_cpu_channels_last_groupnorm_view(mode):
             torch.testing.assert_close(value, before[name])
         return
     plan = PruningPlan.from_dict(
-        Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("conv.weight").axis(0).select([1, 5])], preserve_io=False)
+        Pruner(model, graph=graph, preserve_io=False)
+        .plan_remove([graph.parameter("conv.weight").axis(0).select([1, 5])])
         .to_dict()
     )
     Pruner(model).apply(plan)
@@ -96,9 +97,8 @@ def test_cpu_float64_conv3d_layout_remains_unknown(mode):
         before = {name: value.clone() for name, value in model.state_dict().items()}
         parameters = tuple(model.parameters())
         with pytest.raises(PlanningError, match="stride cannot be proved") as error:
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("conv.weight").axis(0).select([1])],
-                preserve_io=False,
+            Pruner(model, graph=graph, preserve_io=False).plan_remove(
+                [graph.parameter("conv.weight").axis(0).select([1])]
             )
         assert "If a copy is acceptable" in str(error.value)
         assert "reshape(...) or contiguous().view(...)" in str(error.value)
@@ -106,8 +106,8 @@ def test_cpu_float64_conv3d_layout_remains_unknown(mode):
         for name, value in model.state_dict().items():
             torch.testing.assert_close(value, before[name])
         return
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+    plan = Pruner(model, graph=graph, preserve_io=False).plan_remove(
+        [graph.parameter("conv.weight").axis(0).select([1])]
     )
     Pruner(model).apply(plan)
     keep = [0, 2, 3, 4, 5, 6, 7]
@@ -142,8 +142,8 @@ def test_backend_dependent_conv_layout_requires_explicit_layout_for_view(mode, e
     old = tuple(model.parameters())
 
     def plan():
-        return Pruner(model, graph=graph).plan(
-            remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+        return Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("conv.weight").axis(0).select([1])]
         )
 
     if mode == "view":
@@ -178,14 +178,16 @@ def test_cudnn_settings_do_not_establish_layout(mode, cudnn_enabled, execution_d
     with torch.backends.cudnn.flags(enabled=cudnn_enabled):
         if mode == "view":
             with pytest.raises(PlanningError, match="stride"):
-                Pruner(model, graph=graph).plan(
-                    remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+                Pruner(model, graph=graph, preserve_io=False).plan_remove(
+                    [graph.parameter("conv.weight").axis(0).select([1])]
                 )
             assert all(a is b for a, b in zip(old, model.parameters(), strict=True))
         else:
             reference = model(x)[:, [0, 2, 3, 4, 5, 6, 7]]
-            Pruner(model, graph=graph).prune(
-                remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+            Pruner(model, graph=graph, preserve_io=False).apply(
+                Pruner(model, graph=graph, preserve_io=False).plan_remove(
+                    [graph.parameter("conv.weight").axis(0).select([1])]
+                )
             )
             torch.testing.assert_close(model(x), reference)
             model(x).sum().backward()
@@ -215,8 +217,10 @@ def test_padded_convolution_with_explicit_layout(
     original = copy.deepcopy(model)
     x = torch.randn(2, 4, 4, 4).to(memory_format=torch.channels_last)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("conv.weight").axis(0).select([1])]
+        )
     )
     # Independent native compact operator with the same public padding contract.
     compact = nn.Conv2d(4, 5, 3, padding=1, padding_mode=padding_mode)
@@ -252,8 +256,10 @@ def test_explicit_padding_with_explicit_layout(padding_mode, module_form, mode, 
     x = torch.randn(2, 4, 4, 4).to(memory_format=torch.channels_last)
     reference = model(x).detach()
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("conv.weight").axis(0).select([1])]
+        )
     )
     expected = reference.reshape(2, 6, -1)[:, [0, 2, 3, 4, 5]].reshape(2, -1)
     torch.testing.assert_close(model(x), expected)
@@ -300,9 +306,8 @@ def test_batchnorm_spatial_transpose_layout_is_unknown(rank, functional, trainin
         before = {name: value.clone() for name, value in model.state_dict().items()}
         parameters = tuple(model.parameters())
         with pytest.raises(PlanningError, match="stride cannot be proved") as error:
-            Pruner(model, graph=graph).plan(
-                remove=[graph.parameter("conv.weight").axis(0).select([1])],
-                preserve_io=False,
+            Pruner(model, graph=graph, preserve_io=False).plan_remove(
+                [graph.parameter("conv.weight").axis(0).select([1])]
             )
         assert "If a copy is acceptable" in str(error.value)
         assert "reshape(...) or contiguous().view(...)" in str(error.value)
@@ -311,8 +316,8 @@ def test_batchnorm_spatial_transpose_layout_is_unknown(rank, functional, trainin
             torch.testing.assert_close(value, before[name])
         return
     plan = PruningPlan.from_dict(
-        Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("conv.weight").axis(0).select([1])], preserve_io=False)
+        Pruner(model, graph=graph, preserve_io=False)
+        .plan_remove([graph.parameter("conv.weight").axis(0).select([1])])
         .to_dict()
     )
     Pruner(model).apply(plan)
@@ -363,11 +368,11 @@ def test_shuffle_backend_layout_uncertainty_is_local(pixel, functional, mode):
     pruner = Pruner(model, graph=graph)
     if mode == "view":
         with pytest.raises(PlanningError, match=r"layout|stride|view"):
-            pruner.plan(remove=[remove], preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove])
         assert model.weight is original
         torch.testing.assert_close(model.weight, before)
         return
-    plan = pruner.plan(remove=[remove], preserve_io=False)
+    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove])
     pruner.apply(PruningPlan.from_dict(plan.to_dict()))
     compact = before[:, :, :, 4:] if pixel else before[:, :1, :, :]
     value = compact.permute(0, 3, 1, 2)
@@ -405,11 +410,11 @@ def test_pool_meta_layout_does_not_claim_a_backend_stride_proof(functional, mode
     remove = graph.parameter("weight").axis(2).select([1])
     if mode == "view":
         with pytest.raises(PlanningError, match="stride cannot be proved"):
-            pruner.plan(remove=[remove], preserve_io=False)
+            Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove])
         assert model.weight is original
         torch.testing.assert_close(model.weight, before)
         return
-    pruner.apply(pruner.plan(remove=[remove], preserve_io=False))
+    pruner.apply(Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove([remove]))
     compact = before[:, :, [0, 2, 3]].permute(0, 2, 1)
     expected = compact.reshape(2, 3, 4, 2).amax(-1).reshape(2, -1)
     torch.testing.assert_close(model(), expected)
@@ -435,15 +440,23 @@ def test_unknown_convolution_layout_excludes_only_affected_candidate(mode, execu
     x = torch.randn(2, 4, 4, 4)
     graph = DependencyGraph.build(model, args=(x,))
     bad, good = (graph.parameter(path).axis(0) for path in ("bad.weight", "good.0.weight"))
-    plan = Pruner(model, graph=graph).plan(
-        candidates=[Candidate("bad", (bad.select([1]),)), Candidate("good", (good.select([1]),))],
-        budget=ChannelRatio(0.25, axes=(bad, good)),
-        metric=Magnitude(),
-        preserve_io=False,
+    plan = Pruner(model, graph=graph, preserve_io=False).plan(
+        CandidateSpace(
+            candidates=[
+                Candidate("bad", (bad.select([1]),)),
+                Candidate("good", (good.select([1]),)),
+            ],
+            channel_axes=(bad, good),
+        ),
+        budget=ChannelRatio(0.25),
+        strategy=Greedy(Magnitude()),
     )
     assert set(plan.selected) == ({"good"} if mode == "view" else {"bad", "good"})
     if mode == "view":
-        assert "reshape(...) or contiguous().view(...)" in dict(plan.budget.exclusions)["bad"]
+        assert (
+            "reshape(...) or contiguous().view(...)"
+            in dict(plan.selection_report.exclusions)["bad"]
+        )
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, original.state_dict()[name])
     bad_weight = model.bad.weight

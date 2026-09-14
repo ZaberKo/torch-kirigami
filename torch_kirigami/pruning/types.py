@@ -77,56 +77,53 @@ class ChannelRatio:
     Args:
         ratio: Fraction in [0, 1). Integer targets round down.
         scope: Local per-axis caps or a global cap without hidden local caps.
-        axes: Explicit logical axes; required with caller-supplied candidates.
+
+    The candidate space supplies the logical channel axes.
     """
 
     ratio: float
     scope: str = "local"
-    axes: tuple[AxisRef, ...] | None = None
 
     def __post_init__(self):
         if not math.isfinite(self.ratio) or not 0 <= self.ratio < 1:
             raise ValueError("ratio must be finite and in [0, 1)")
         if self.scope not in ("local", "global"):
             raise ValueError("scope must be local or global")
-        if self.axes is not None:
-            axes = tuple(self.axes)
-            if any(not isinstance(axis, AxisRef) for axis in axes):
-                raise TypeError("Budget axes must be AxisRef instances")
-            object.__setattr__(self, "axes", tuple(dict.fromkeys(axes)))
 
 
 @dataclass(frozen=True)
 class ChannelCount:
-    """Integer removal caps over explicit logical axes.
+    """Integer removal caps over explicit logical channel axes.
 
     Args:
-        counts: Local tuple aligned with axes, or one integer for global scope.
-        axes: Explicit unique logical axes; no protected-domain filtering occurs.
+        counts: Local tuple aligned with channel_axes, or one integer for global scope.
+        channel_axes: Explicit unique logical axes, matching the candidate space in order.
         scope: Local per-axis caps or a global joint cap.
     """
 
     counts: int | tuple[int, ...]
-    axes: tuple[AxisRef, ...]
+    channel_axes: tuple[AxisRef, ...]
     scope: str = "local"
 
     def __post_init__(self):
-        axes = tuple(self.axes)
-        if any(not isinstance(a, AxisRef) for a in axes) or len(set(axes)) != len(axes):
-            raise ValueError("ChannelCount requires unique explicit axes")
+        channel_axes = tuple(self.channel_axes)
+        if any(not isinstance(a, AxisRef) for a in channel_axes) or len(set(channel_axes)) != len(
+            channel_axes
+        ):
+            raise ValueError("ChannelCount requires unique explicit channel axes")
         if self.scope not in ("local", "global"):
             raise ValueError("scope must be local or global")
         counts = (self.counts,) if self.scope == "global" else tuple(self.counts)
-        if len(counts) != (1 if self.scope == "global" else len(axes)) or any(
+        if len(counts) != (1 if self.scope == "global" else len(channel_axes)) or any(
             type(c) is not int or c < 0 for c in counts
         ):
             raise ValueError("Invalid integer channel caps")
-        widths = tuple(a.tensor.shape[a.dim] for a in axes)
+        widths = tuple(a.tensor.shape[a.dim] for a in channel_axes)
         if (self.scope == "global" and counts[0] > sum(widths)) or (
             self.scope == "local" and any(c > w for c, w in zip(counts, widths, strict=True))
         ):
             raise ValueError("Channel cap exceeds current width")
-        object.__setattr__(self, "axes", axes)
+        object.__setattr__(self, "channel_axes", channel_axes)
         if self.scope == "local":
             object.__setattr__(self, "counts", counts)
 
@@ -140,8 +137,8 @@ def channel_targets(budget, widths):
             else (math.floor(budget.ratio * sum(widths)),)
         )
     if isinstance(budget, ChannelCount):
-        if tuple(a.tensor.shape[a.dim] for a in budget.axes) != tuple(widths):
-            raise ValueError("Integer budget axes do not match planning widths")
+        if tuple(a.tensor.shape[a.dim] for a in budget.channel_axes) != tuple(widths):
+            raise ValueError("Integer budget channel axes do not match planning widths")
         return (budget.counts,) if budget.scope == "global" else budget.counts
     raise TypeError("Expected ChannelRatio or ChannelCount")
 
@@ -247,10 +244,10 @@ class CoordinateSegment:
 
 
 @dataclass(frozen=True)
-class BudgetReport:
+class SelectionReport:
     """Frozen denominator, target, and measured joint removals for this round."""
 
-    axes: tuple[AxisRef, ...] = ()
+    channel_axes: tuple[AxisRef, ...] = ()
     widths: tuple[int, ...] = ()
     removed: tuple[int, ...] = ()
     targets: tuple[int, ...] = ()
@@ -260,41 +257,43 @@ class BudgetReport:
     exclusions: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self):
-        for name in ("axes", "widths", "removed", "targets"):
+        for name in ("channel_axes", "widths", "removed", "targets"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         object.__setattr__(self, "exclusions", tuple(tuple(item) for item in self.exclusions))
         if self.scope not in ("manual", "local", "global"):
-            raise ValueError("Invalid budget report scope")
+            raise ValueError("Invalid selection report scope")
         if type(self.limit_reached) is not bool:
-            raise TypeError("Budget limit_reached must be boolean")
-        if len(self.axes) != len(self.widths) or len(self.widths) != len(self.removed):
-            raise ValueError("Budget axes, widths and removals must align")
+            raise TypeError("Selection limit_reached must be boolean")
+        if len(self.channel_axes) != len(self.widths) or len(self.widths) != len(self.removed):
+            raise ValueError("Selection channel axes, widths and removals must align")
         if self.scope != "manual" and len(self.targets) != (
-            1 if self.scope == "global" else len(self.axes)
+            1 if self.scope == "global" else len(self.channel_axes)
         ):
-            raise ValueError("Budget targets do not match the scope")
+            raise ValueError("Selection targets do not match the scope")
         if any(
             type(n) is not int or n < 0
             for n in (*self.widths, *self.removed, *self.targets, self.trials)
         ):
-            raise ValueError("Budget counts must be nonnegative integers")
-        if any(not isinstance(axis, AxisRef) for axis in self.axes) or len(set(self.axes)) != len(
-            self.axes
-        ):
-            raise ValueError("Budget report axes must be unique AxisRef instances")
+            raise ValueError("Selection counts must be nonnegative integers")
+        if any(not isinstance(axis, AxisRef) for axis in self.channel_axes) or len(
+            set(self.channel_axes)
+        ) != len(self.channel_axes):
+            raise ValueError("Selection report channel axes must be unique AxisRef instances")
         if any(
             width != axis.tensor.shape[axis.dim] or removed > width
-            for axis, width, removed in zip(self.axes, self.widths, self.removed, strict=True)
+            for axis, width, removed in zip(
+                self.channel_axes, self.widths, self.removed, strict=True
+            )
         ):
-            raise ValueError("Budget report disagrees with original widths")
+            raise ValueError("Selection report disagrees with original widths")
         if any(
             len(item) != 2 or any(not isinstance(v, str) for v in item) for item in self.exclusions
         ):
-            raise ValueError("Budget exclusions require key/reason pairs")
+            raise ValueError("Selection exclusions require key/reason pairs")
 
     @property
     def shortfall(self):
-        """Return the unfilled channel target, counting coupled axes separately."""
+        """Return the unfilled channel target, counting coupled logical axes separately."""
         return max(0, sum(self.targets) - sum(self.removed))
 
 

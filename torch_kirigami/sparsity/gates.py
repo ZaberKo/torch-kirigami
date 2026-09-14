@@ -83,7 +83,7 @@ def _gate_effects(node, module):
 
 
 def register_gate_operators(operators):
-    """Register ChannelGate as an explicit leaf without adding a budget domain."""
+    """Register ChannelGate as an explicit leaf without adding a logical candidate axis."""
     return operators.register(ChannelGate, OperatorRule(analyze=_gate_rule, effects=_gate_effects))
 
 
@@ -105,14 +105,14 @@ class GateBinding:
             raise ValueError("GateBinding requires a ChannelGate module")
         self.graph.parameter(f"{self.path}.weight".lstrip("."))
 
-    def candidates(self, space):
+    def candidates(self, pruner, candidates):
         """Return candidates whose closure removes at least one gate parameter."""
-        if space.graph is not self.graph:
+        if pruner.graph is not self.graph:
             raise ValueError("Gate and candidate space belong to different graphs")
         ref = self.graph.parameter(f"{self.path}.weight".lstrip("."))
         result = []
-        for candidate in space.candidates:
-            impact = space.impact((candidate,))
+        for candidate in candidates:
+            impact = pruner.impact((candidate,))
             if not impact.complete:
                 raise ValueError("Incomplete gate-candidate influence")
             if impact.selection(ref):

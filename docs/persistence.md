@@ -24,7 +24,7 @@ def make_model():
 
 model = make_model()
 graph = DependencyGraph.build(model, args=(torch.randn(2, 8),))
-plan = Pruner(model, graph=graph).plan(remove=(graph.parameter("0.weight").axis(0).select([1, 3]),))
+plan = Pruner(model, graph=graph).plan_remove((graph.parameter("0.weight").axis(0).select([1, 3]),))
 torch.save(plan.to_dict(), "decision.pt")
 
 restored_plan = PruningPlan.from_dict(torch.load("decision.pt", weights_only=True))

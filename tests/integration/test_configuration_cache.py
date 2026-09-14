@@ -42,7 +42,11 @@ def test_same_width_configuration_checks_are_shared(dependent, monkeypatch, exec
                 context.compile(impact)
         return [] if dependent else [context.candidates[0].key]
 
-    plan = Pruner(model, graph=graph).plan(budget=ChannelRatio(0.25), strategy=strategy)
+    plan = Pruner(model, graph=graph).plan(
+        Pruner(model, graph=graph).discover_candidates(),
+        budget=ChannelRatio(0.25),
+        strategy=strategy,
+    )
     # A final independently validated context is retained for accepted changes.
     assert len(calls) == (1 if dependent else 2)
     Pruner(model, graph=graph).apply(plan)
@@ -74,5 +78,9 @@ def test_configuration_cache_invalidates_after_tensor_write(monkeypatch, executi
     # User callbacks must not train while planning; invalidation also prevents
     # stale reuse before the public callback-exit guard reports that violation.
     with pytest.raises(ExecutionError, match="changed since planning"):
-        Pruner(model, graph=graph).plan(budget=ChannelRatio(0.25), strategy=strategy)
+        Pruner(model, graph=graph).plan(
+            Pruner(model, graph=graph).discover_candidates(),
+            budget=ChannelRatio(0.25),
+            strategy=strategy,
+        )
     assert model[0].weight.shape == (8, 4) and model[1].weight.shape == (2, 8)

@@ -23,7 +23,7 @@ def test_registration_replacement_cannot_break_committed_aliases(checkpoint, exe
     model.cached = [model[0].weight]
     graph = DependencyGraph.build(model, args=(torch.ones(1, 4),))
     pruner = Pruner(model, graph=graph)
-    plan = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    plan = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1])])
     stream = io.BytesIO()
     save_checkpoint(model, stream)
     stream.seek(0)

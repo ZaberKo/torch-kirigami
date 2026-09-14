@@ -9,7 +9,7 @@ from torch.nn import functional as F
 from tests.support.numerics import _assert_value_and_input_gradient, _initialize
 from tests.support.pruning import build
 from torch_kirigami import Balanced, Divisible, IndexSet
-from torch_kirigami.pruning import Candidate, ChannelRatio
+from torch_kirigami.pruning import Candidate, CandidateSpace, ChannelRatio, Greedy, Pruner
 
 
 class Branches(nn.Module):
@@ -48,16 +48,13 @@ def test_shared_budget_constraint_completion_preserves_opaque_branch_and_io(exec
         Balanced(axes["good"], (IndexSet.span(0, 3), IndexSet.span(3, 6))),
         Divisible(axes["good"], 2),
     ]
-    kwargs = {
-        "candidates": candidates,
-        "metric": metric,
-        "constraints": constraints,
-        "budget": ChannelRatio(0.5, scope="global", axes=tuple(axes.values())),
-    }
-    plan, repeated = pruner.plan(**kwargs), pruner.plan(**kwargs)
+    pruner = Pruner(model, graph=graph, constraints=constraints)
+    space = CandidateSpace(candidates, tuple(axes.values()))
+    plan = pruner.plan(space, budget=ChannelRatio(0.5, scope="global"), strategy=Greedy(metric))
+    repeated = pruner.plan(space, budget=ChannelRatio(0.5, scope="global"), strategy=Greedy(metric))
     assert plan.selected == repeated.selected
-    assert plan.budget.widths == (6, 6, 2)
-    assert plan.budget.removed == (4, 0, 0) and plan.budget.shortfall == 3
+    assert plan.selection_report.widths == (6, 6, 2)
+    assert plan.selection_report.removed == (4, 0, 0) and plan.selection_report.shortfall == 3
     # IO conflicts are complete analyses and may be scored; the opaque branch
     # has incomplete influence and must be excluded before metric invocation.
     expected_batch = (*[f"good:{i}" for i in range(6)], "out:0", "out:1")

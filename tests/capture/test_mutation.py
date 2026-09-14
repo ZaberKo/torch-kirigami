@@ -152,9 +152,9 @@ def test_inplace_single_consumer_proof(unsafe):
     remove = [graph.parameter("fc.weight").axis(0).select([1])]
     if unsafe:
         with pytest.raises(PlanningError, match="in-place"):
-            pruner.plan(remove=remove)
+            pruner.plan_remove(remove)
     else:
-        plan = pruner.plan(remove=remove)
+        plan = pruner.plan_remove(remove)
         pruner.apply(plan)
         assert model(x).shape == (2, 2)
 

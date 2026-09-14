@@ -32,8 +32,10 @@ def test_channel_family_matches_independent_retained_channels(operation, executi
     original = copy.deepcopy(model)
     x = torch.randn(2, 3, 6, 6)
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("0.weight").axis(0).select([1, 4])], preserve_io=False
+    Pruner(model, graph=graph, preserve_io=False).apply(
+        Pruner(model, graph=graph, preserve_io=False).plan_remove(
+            [graph.parameter("0.weight").axis(0).select([1, 4])]
+        )
     )
     torch.testing.assert_close(model(x), original(x)[:, [0, 2, 3, 5]])
 
@@ -56,7 +58,7 @@ def test_padding_shift_cannot_masquerade_as_identity(execution_device):
     remove = [graph.parameter("a.weight").axis(0).select([1])]
     assert graph.propagate(remove=remove).status != "resolved"
     with pytest.raises(PlanningError):
-        Pruner(model, graph=graph).plan(remove=remove)
+        Pruner(model, graph=graph).plan_remove(remove)
 
 
 @pytest.mark.parametrize("module_pad", [False, True])
@@ -79,5 +81,7 @@ def test_spatial_padding_keeps_channel_pruning(module_pad, execution_device):
         F.pad(model.fc(x)[:, kept], (1, 2)), model.out.weight[:, kept], model.out.bias
     )
     graph = DependencyGraph.build(model, args=(x,))
-    Pruner(model, graph=graph).prune(remove=[graph.parameter("fc.weight").axis(0).select([1])])
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([1])])
+    )
     torch.testing.assert_close(model(x), expected)

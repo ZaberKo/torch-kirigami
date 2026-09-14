@@ -7,8 +7,10 @@ from torch import nn
 from tests.support.pruning import build
 from torch_kirigami.pruning import (
     Candidate,
+    CandidateSpace,
     ChannelRatio,
     Magnitude,
+    Pruner,
     WeightTaylor,
 )
 
@@ -27,7 +29,7 @@ def test_metric_union_formula_and_precision(metric, execution_device):
     candidate = Candidate("joint", (ref.axis(0).select([1]), ref.axis(1).select([2])))
 
     def strategy(ctx):
-        score = ctx.score([candidate])[0]
+        score = ctx.score(metric, [candidate])[0]
         mask = torch.zeros_like(model.weight, dtype=torch.bool)
         mask[1] = True
         mask[:, 2] = True
@@ -43,10 +45,8 @@ def test_metric_union_formula_and_precision(metric, execution_device):
         assert score == pytest.approx(expected.item(), rel=1e-12)
         return ["joint"]
 
-    pruner.plan(
-        candidates=[candidate],
-        metric=metric,
+    Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
+        CandidateSpace(candidates=[candidate], channel_axes=(ref.axis(0),)),
+        budget=ChannelRatio(0.5),
         strategy=strategy,
-        budget=ChannelRatio(0.5, axes=(ref.axis(0),)),
-        preserve_io=False,
     )

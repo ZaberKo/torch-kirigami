@@ -7,13 +7,23 @@ This guide describes how to develop and validate a change. It is not a historica
 From the repository root:
 
 ```bash
-uv sync --locked
-uv run --locked ruff check .
-uv run --locked ruff format --check .
-uv run --locked pytest
+uv venv .venv
+source .venv/bin/activate
+uv pip install --torch-backend=auto --group dev -e .
+ruff check .
+ruff format --check .
+python -m pytest
 ```
 
-The package uses a flat `torch_kirigami/` layout, Python 3.10+, and PyTorch 2.6+. Runtime dependencies remain limited to PyTorch. The repository development environment also supplies pytest, Ruff and NumPy.
+The package uses a flat `torch_kirigami/` layout, Python 3.10+, and PyTorch 2.6+.
+Runtime dependencies remain limited to PyTorch. The development group supplies
+pytest, Ruff, and NumPy. Install packages with `uv pip install` and invoke tools
+from the activated environment directly, or use their `.venv/bin/` paths.
+Environment synchronization can remove separately installed workflow packages.
+
+The PyTorch backend is selected for the host during installation. CPU
+compatibility jobs select CPU wheels explicitly in dedicated test environments;
+local development does not force a CPU-only package source.
 
 Optional torchvision/ImageNet workflow tests require the example dependencies. Install them in the root virtual environment as described in the [workflow README](../examples/workflows/README.md). Those tests skip when the optional packages are unavailable.
 
@@ -40,11 +50,19 @@ Keep imports explicit and acyclic. Shared records belong below their consumers. 
 A typical focused run is:
 
 ```bash
-uv run --locked pytest tests/core tests/graph tests/architecture
-uv run --locked pytest tests/pruning tests/persistence tests/integration/test_lifecycle.py
+python -m pytest tests/core tests/graph tests/architecture
+python -m pytest tests/pruning tests/persistence tests/integration/test_lifecycle.py
 ```
 
 Choose the tests relevant to the actual change. Run the full suite after changes to shared capture, planning or execution contracts.
+
+The ImageNet workflow tests exercise each entry's task-specific CLI and full
+pruning/training/checkpoint path on both devices. Launch tests copy only the
+entry and its three shared support modules, so workflows cannot depend on each
+other. Shared data loading, label alignment and evaluation are tested directly;
+the shared ViT adapter is compared with torchvision with and without gates.
+Workflow fixtures use small synthetic datasets and random test weights;
+passing these checks does not establish ImageNet accuracy.
 
 ## Numerical and failure-state references
 
@@ -82,10 +100,10 @@ Workflow definitions describe intended checks, not evidence that a remote run su
 ## Small executable examples and packaging
 
 ```bash
-uv run --locked python examples/dependency.py
-uv run --locked python examples/custom_rule.py
-uv run --locked python examples/pruning.py
-uv run --locked python examples/fused_attention.py
+python examples/dependency.py
+python examples/custom_rule.py
+python examples/pruning.py
+python examples/fused_attention.py
 uv build
 ```
 

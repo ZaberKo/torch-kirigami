@@ -20,7 +20,7 @@ sequenceDiagram
 
 `Pruner(model, graph=graph)` requires that `model` is the original module associated with the graph. `plan()` and `prune()` require a fresh graph. `Pruner(model).apply(plan)` can execute a compatible saved decision without a graph, example inputs, scoring, or a forward pass.
 
-`prune(**kwargs)` is exactly the convenience composition of `plan(**kwargs)` and `apply(plan)`. It performs one round; it does not train, schedule budgets, or migrate optimizer state.
+`prune(space, *, budget, strategy)` composes `plan(space, budget=budget, strategy=strategy)` and `apply(plan)`. It performs one round; it does not train, schedule budgets, or migrate optimizer state.
 
 ## Manual and automatic selection
 
@@ -38,7 +38,7 @@ x = torch.randn(2, 8)
 graph = DependencyGraph.build(model, args=(x,))
 remove = graph.parameter("0.weight").axis(0).select([1, 3])
 pruner = Pruner(model, graph=graph)
-plan = pruner.plan(remove=(remove,))
+plan = pruner.plan_remove((remove,))
 print(plan.explain())
 model, result = pruner.apply(plan)
 assert model[0].out_features == model[2].in_features == 10
@@ -48,18 +48,48 @@ assert model(x).shape == (2, 4)
 For automatic selection, replace the manual `plan()` call on the unmodified model with:
 
 ```python
-from torch_kirigami.pruning import ChannelRatio, Magnitude
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
 
-plan = pruner.plan(metric=Magnitude(p=2), budget=ChannelRatio(0.25))
+space = pruner.discover_candidates()
+plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
 ```
 
-Manual `remove` is mutually exclusive with `metric`, `budget`, `candidates`, and `strategy`. A manual request is accepted as a joint request or raises `PlanningError`; the planner does not silently substitute another selection.
+Manual selections use `plan_remove(remove)`; automatic selections use `plan(space, *, budget, strategy)`. A manual request is accepted as a joint request or raises `PlanningError`; the planner does not silently substitute another selection.
 
-By default, `preserve_io=True` protects every axis of external input and output tensors using `Fixed` constraints. Set `preserve_io=False` only when the caller also controls the resulting interfaces. Additional `constraints` apply to the combined dependency closure in either selection mode.
+On `Pruner`, `preserve_io=True` protects every axis of external input and output tensors using `Fixed` constraints. Set `preserve_io=False` only when the caller also controls the resulting interfaces. Additional `constraints` apply to the combined dependency closure in either selection mode.
 
 ## Candidate space and logical budgets
 
-`CandidateSpace(graph, *, candidates=None, axes=None, preserve_io=True, constraints=())` is shared by automatic planning and sparse-training components. Default candidates come from `CandidateAxis` declarations in operator specifications. Discovery first deduplicates logical domains and follows exact axis-identity relations to prove input/output protection; only the remaining cases need per-candidate propagation. Candidate selections are materialized on demand, and a default zero-budget request keeps the frozen domain denominator without constructing channel candidates. There is no separate, inferred global grouping algorithm in the training layer.
+### Default candidate entry axes
+
+Candidate discovery is an explicit call to `pruner.discover_candidates(targets=None)`; neither `plan()` nor the `CandidateSpace` constructor discovers anything.
+
+1. Scan captured operations for rule-declared `CandidateAxis` entries.
+2. Optionally filter entries by module path patterns supplied through `targets`. This filters starting points, not dependency propagation or constraints. Unmatched patterns raise an error.
+3. Deduplicate shared logical domains and exclude domains proved wholly protected by external input/output interfaces.
+4. Freeze the logical axes and generate candidates using each rule's declared block size.
+
+**Default discovery covers rule-declared entry axes throughout the graph, not every tensor axis.** For example, the module `Linear` and ordinary `Conv` rules declare weight axis 0, representing output features/channels. They do not also declare their input axes as default entries. See [default entries by operator](operator-coverage.md#default-candidate-entry-axes).
+
+For `Linear(4, 6) → ReLU → Linear(6, 3)`, default discovery finds the two Linear output domains. With default interface protection, the final width-3 output domain is excluded. The hidden width-6 domain supplies six individual candidates. Selecting hidden position 2 propagates to the first Linear's weight row and bias entry, the intervening activation, and the second Linear's weight column. No separate candidate starting at that consumer input column is needed for this change.
+
+This is not an enumeration of all possible entrances followed by deduplication of equivalent dependency groups. Distinct declared entries can still have overlapping effects. Dependency propagation works in both directions; callers can explicitly request another supported entry axis through custom candidates or manual `remove`.
+
+### CandidateSpace contents
+
+`CandidateSpace(candidates, channel_axes, protected_channel_axes=(), exclusions=())` is a frozen data record. Both candidates and channel axes are explicit, copied into tuples, and validated when consumed by a Pruner. It retains no model, graph, constraints, or scoring state.
+
+| Field | Meaning |
+| --- | --- |
+| `candidates` | Available named batches of original-coordinate removal requests |
+| `channel_axes` | Logical axes whose original widths define ratio denominators and whose actual deletions are counted |
+| `protected_channel_axes`, `exclusions` | Discovery metadata for cumulative accounting and explanations |
+
+Candidate order aligns with metric scores. Channel-axis order aligns with local counts; these two sequences are not index-aligned. Packaging or overlapping candidates does not change the denominator. Explicit channel axes are not filtered.
+
+`Pruner.impact(candidates)` jointly propagates candidate seeds with the pruner's constraints. `Pruner.parameter_groups(candidates, parameter_filter=None)` extracts complete parameter groups for sparse training. Both require explicit candidate iterables and perform no discovery.
+
+A zero budget still consumes the supplied space; Greedy can skip scoring when the empty request is valid and no candidate can change an uncounted axis.
 
 A `Candidate(key, remove, axis=None)` names one batch of original-coordinate removal seeds. Its associated `axis` describes a logical domain; the candidate itself does not create an indivisible structural constraint. Required coupling comes from dependency relations and constraints.
 
@@ -67,24 +97,26 @@ A `Candidate(key, remove, axis=None)` names one batch of original-coordinate rem
 flowchart LR
     Seeds["Selections"] --> Closure["Joint closure"]
     Closure --> Counts["Deleted channels"]
-    Axes["Budget axes"] --> Caps["Caps"]
+    Axes["Logical channel axes"] --> Caps["Caps"]
     Counts --> Check{"Within budget?"}
     Caps --> Check
 ```
 
-Automatic discovery excludes a domain only when all its candidates are provably protected by the default IO constraints. Unsupported influence paths remain visible; they cannot silently reduce the budget denominator. Explicit axes retain protected domains. Caller-supplied candidates require explicit budget axes.
+### Logical budgets
+
+Unsupported influence paths remain visible during discovery; they cannot silently reduce the budget denominator. Explicit axes retain protected domains in budget accounting.
 
 | Budget | Local scope | Global scope |
 | --- | --- | --- |
-| `ChannelRatio(ratio, scope="local", axes=None)` | Per-axis cap `floor(ratio * width)` | One cap `floor(ratio * sum(widths))` |
-| `ChannelCount(counts, axes, scope="local")` | Tuple of nonnegative integer caps, aligned with unique axes | One nonnegative integer cap |
+| `ChannelRatio(ratio, scope="local")` | Per-axis cap `floor(ratio * width)` | One cap `floor(ratio * sum(widths))` |
+| `ChannelCount(counts, channel_axes, scope="local")` | Tuple of nonnegative integer caps, aligned with unique axes | One nonnegative integer cap |
 
 A ratio must be finite and in `[0, 1)`. Counts are upper bounds, not a promise that the target is attainable. Global scope adds no hidden local percentage cap. Structural constraints still prohibit invalid results, including empty required dimensions.
 
 Budgets count actual removals in the union of the dependency closure. Two seeds that remove the same logical position count once. If one removal affects two distinct budget axes, both axes contribute. Candidate count, parameter count, MACs, and latency are not channel budgets.
 
 ```python
-from torch_kirigami.pruning import Candidate, ChannelCount
+from torch_kirigami.pruning import Candidate, CandidateSpace, ChannelCount, Greedy
 
 # A separate example on a fresh model and dependency snapshot.
 model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
@@ -94,14 +126,34 @@ axis = graph.parameter("0.weight").axis(0)
 candidates = tuple(
     Candidate(f"hidden:{i}", (axis.select([i]),), axis) for i in range(axis.tensor.shape[axis.dim])
 )
-plan = pruner.plan(
-    candidates=candidates,
-    metric=Magnitude(),
-    budget=ChannelCount((3,), axes=(axis,)),
-)
+space = CandidateSpace(candidates, channel_axes=(axis,))
+plan = pruner.plan(space, budget=ChannelCount((3,), (axis,)), strategy=Greedy(Magnitude()))
 ```
 
 For several rounds, use [CumulativeChannelBudget](sparse-training.md#cumulative-budgets-and-rebinding) rather than repeatedly applying a ratio to shrinking widths.
+
+## Retained-width alignment
+
+`Granularity` is a frozen dataclass on `Pruner`. It adds ordinary `Divisible` constraints; it does not define candidate blocks, score channels, or implement a separate solver.
+
+```python
+from torch_kirigami.pruning import Granularity
+
+alignment = Granularity(
+    default=1,
+    by_type={nn.Conv2d: 8, nn.Linear: 16},
+    by_path={"classifier": 1},
+)
+# Pass this configuration to Pruner(model, graph=graph, granularity=alignment).
+```
+
+Factors are positive integers, excluding booleans. Mappings are copied and read-only. Matching precedence is exact module path, exact module type, then default. Paths have no wildcard, prefix or regex semantics; the empty path addresses the root. A path override must identify a captured module declaring logical axes. Unmatched type overrides are listed in the plan explanation.
+
+A setting applies to every logical candidate axis declared by the matched module's operator rule. No weight-layout inference is added. Subclasses require their own registered semantics and type override. Multi-axis custom modules can use explicit axis-level constraints for different factors.
+
+Original aliases are resolved before deduplication. A path override configures the shared module object; contradictory explicit overrides on its aliases raise an error. Separate modules sharing a Parameter retain all their requirements. A factor of one adds no requirement and cannot cancel another module's or operator's constraints.
+
+Alignment is a final-structure requirement, including unchanged and protected axes. Width 10 with factor 4 requires at least two removals; a budget allowing only one cannot produce a valid plan. Width 64 with factor 8 and a 20% deletion cap permits eight removals, leaving a shortfall of four. Manual requests and custom strategies cannot bypass these checks. Configuration resolution appears in plan notes; plans retain static recipes, not the configuration object.
 
 ## Scoring and strategy contracts
 
@@ -124,21 +176,21 @@ A `Strategy` is a callable `strategy(context)` returning registered candidate ke
 
 | Interface | Purpose |
 | --- | --- |
-| `graph`, `operations`, `candidates`, `budget`, `axes`, `constraints` | Fixed planning inputs |
+| `graph`, `operations`, `candidates`, `budget`, `channel_axes`, `constraints` | Fixed planning inputs |
 | `widths`, `targets` | Frozen denominator and integer caps |
 | `impact(remove)` | Propagate joint original-coordinate seeds |
 | `require_complete(impact)` | Reject incomplete influence; repairable count constraints may remain |
-| `score(candidate_batch)` | Invoke and validate the metric |
+| `score(metric, candidate_batch)` | Invoke an explicit metric and validate the returned scores |
 | `counts(impact)`, `within_budget(impact)` | Measure and check actual logical removals |
 | `compile(impact)` | Verify tensor/attribute recipes without allocating compact weights |
-| `report(impact)` | Freeze budget diagnostics |
+| `report(impact)` | Freeze measured counts and strategy diagnostics |
 | `trials`, `limit_reached`, `exclusions` | Strategy-owned diagnostic counters and reasons |
 
 Callbacks must not mutate model state or structural premises. Planning checks graph freshness and tracked tensor identity, version, and `requires_grad` after callbacks; detected mutation raises an error. This check is not a transaction that reverses arbitrary user callback side effects.
 
 ## Default greedy search
 
-`Greedy(max_trials=10_000)` computes a deterministic score order, breaking ties by candidate key. It maintains a verified committed selection, tries additions, and can add further candidates to satisfy `Balanced` or `Divisible` constraints. Rejected candidates may become feasible after another commitment. The search does not backtrack or prove global optimality.
+`Greedy(metric, max_trials=10_000)` computes a deterministic score order, breaking ties by candidate key. It maintains a verified committed selection, tries additions, and can add further candidates to satisfy `Balanced` or `Divisible` constraints. Rejected candidates may become feasible after another commitment. The search does not backtrack or prove global optimality.
 
 ```mermaid
 flowchart TD
@@ -150,7 +202,7 @@ flowchart TD
     Next -->|Done or limit| Result["Plan selection"]
 ```
 
-`BudgetReport` records `axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`, `limit_reached`, and `exclusions`. Its `shortfall` is the unfilled target. A nonzero shortfall can result from coupling, protected dimensions, unsupported execution, or bounded search. `limit_reached=True` is not proof that no better solution exists.
+`SelectionReport`, exposed as `plan.selection_report`, records `channel_axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`, `limit_reached`, and `exclusions`. Its `shortfall` is the unfilled target. A nonzero shortfall can result from coupling, protected dimensions, unsupported execution, or bounded search. `limit_reached=True` is not proof that no better solution exists.
 
 Greedy reports the latest failed joint attempt for each excluded candidate, including
 constraint codes and available operation locations, actual exceeded budget caps,
@@ -182,7 +234,7 @@ A custom lowerer is responsible for proving that the original forward remains va
 
 | Class | Responsibility |
 | --- | --- |
-| `PruningPlan` | Immutable analysis summary, selected keys, budget report, recipes, notes, and before/after structures; no live model or tensor |
+| `PruningPlan` | Immutable analysis summary, selected keys, selection report, recipes, notes, and before/after structures; no live model or tensor |
 | `AnalysisSummary` | Portable original-coordinate requests, propagated selections, reasons, and tensor catalog; `selection(ref)` rejects unknown references |
 | `TensorRecipe` | Gather retained Cartesian `Region` segments and concatenate them in declared order; preserve a supported memory format |
 | `AttributeRecipe` | Validated assignment of a structural module attribute from an expected old value to a new value |

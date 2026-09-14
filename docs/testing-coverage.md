@@ -44,7 +44,7 @@ Operator spelling coverage alone misses interactions between capture, dependency
 | Shared calls have one declared budget domain | [Graph boundaries](../tests/integration/test_review_graph_boundaries.py): repeated ordinary/grouped ConvTranspose1d/2d/3d, independent compact numerical references |
 | Restored values retain ownership and runtime semantics | [State boundaries](../tests/integration/test_review_state_boundaries.py): nested/order-sensitive dictionaries, cached tensors, parent references, slots, hooks, custom decoding, rollback and backward |
 | Measurement executes the caller's input relationships | [Measurement boundaries](../tests/integration/test_review_measurement_boundaries.py): actual MHA native path, args/kwargs identity, shared views, full buffer registration restoration on success and failure |
-| Optimizations preserve objectives and reduce work | [Optimizations](../tests/integration/test_review_optimizations.py): allocating unary families followed by in-place activation, bounded protected-domain queries, lazy zero budgets, shared-state equality, batched and irregular loss/gradient references, extreme and mixed precision |
+| Optimizations preserve objectives and reduce work | [Optimizations](../tests/integration/test_review_optimizations.py): allocating unary families followed by in-place activation, bounded protected-domain queries, zero-budget planning without rediscovery or scoring, shared-state equality, batched and irregular loss/gradient references, extreme and mixed precision |
 
 Every registered native entry also checks any fresh-storage promise against the actual PyTorch output, including registered parameters and buffers among possible aliases.
 

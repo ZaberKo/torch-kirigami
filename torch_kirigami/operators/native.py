@@ -122,7 +122,7 @@ def linear(ctx):
 
 
 def convolution(ctx):
-    """Describe ordinary/transposed groups once for mapping, budgets, and packing."""
+    """Describe ordinary/transposed groups once for mapping, channel counting, and packing."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
     transposed = type(ctx.module) in (

@@ -16,6 +16,7 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     ChannelRatio,
     ExecutionError,
+    Greedy,
     Magnitude,
     Pruner,
     PruningPlan,
@@ -126,8 +127,8 @@ def compact_reference(original, x, keep):
 
 def portable_plan(model, x, remove):
     graph = DependencyGraph.build(model, args=(x,))
-    plan = Pruner(model, graph=graph).plan(
-        remove=[graph.parameter("fc.weight").axis(0).select(remove)]
+    plan = Pruner(model, graph=graph).plan_remove(
+        [graph.parameter("fc.weight").axis(0).select(remove)]
     )
     stream = io.BytesIO()
     torch.save(plan.to_dict(), stream)
@@ -259,12 +260,16 @@ def test_rebuild_explicit_second_round_and_all_old_plans_stale(execution_device)
     model = nn.Sequential(nn.Linear(4, 8), nn.Linear(8, 2))
     x = torch.randn(2, 4)
     graph, pruner = build(model, x)
-    a = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([1])])
-    b = pruner.plan(remove=[graph.parameter("0.weight").axis(0).select([2])])
+    a = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([1])])
+    b = pruner.plan_remove([graph.parameter("0.weight").axis(0).select([2])])
     pruner.apply(a)
     with pytest.raises(ExecutionError):
         pruner.apply(b)
     graph, pruner = build(model, x)
-    pruner.apply(pruner.plan(metric=Magnitude(), budget=ChannelRatio(0.2)))
+    pruner.apply(
+        pruner.plan(
+            pruner.discover_candidates(), budget=ChannelRatio(0.2), strategy=Greedy(Magnitude())
+        )
+    )
     assert model[0].out_features == 6
     assert model(x).shape == (2, 2)

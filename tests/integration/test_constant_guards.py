@@ -68,7 +68,7 @@ def test_guarded_metadata_and_python_configuration_allow_pruning(
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     Pruner(model).apply(plan)
@@ -101,7 +101,7 @@ def test_ordinary_tensor_premises_guard_live_and_portable_plans(
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     target = copy.deepcopy(model)
@@ -131,7 +131,7 @@ def test_ordinary_constant_values_remain_constructor_owned(container, execution_
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     target = copy.deepcopy(model)
@@ -170,11 +170,13 @@ def test_eager_buffer_metadata_blocks_only_its_affected_component(query, executi
     graph = DependencyGraph.build(model, args=(x,))
     old = tuple(model.parameters())
     with pytest.raises(PlanningError, match="metadata"):
-        Pruner(model, graph=graph).plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        Pruner(model, graph=graph).plan_remove([graph.parameter("a.weight").axis(0).select([1])])
     assert all(a is b for a, b in zip(old, model.parameters(), strict=True))
     expected = model(x)[0].detach()
-    Pruner(model, graph=graph).prune(
-        remove=[graph.parameter("independent.0.weight").axis(0).select([1])]
+    Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(
+            [graph.parameter("independent.0.weight").axis(0).select([1])]
+        )
     )
     torch.testing.assert_close(model(x)[0], expected)
     sum(y.sum() for y in model(x)).backward()
@@ -246,7 +248,7 @@ def test_native_torch_configuration_is_guarded_and_serialized(values, container,
     graph = DependencyGraph.build(model, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     compatible = copy.deepcopy(model)
@@ -329,7 +331,7 @@ def test_ordinary_dictionary_keys_cannot_hide_live_bindings(key_kind, execution_
     graph = DependencyGraph.build(good, args=(x,))
     plan = PruningPlan.from_dict(
         Pruner(good, graph=graph)
-        .plan(remove=[graph.parameter("weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("weight").axis(0).select([1])])
         .to_dict()
     )
     Pruner(good).apply(plan)
@@ -368,7 +370,7 @@ def test_read_only_complex_nan_buffers_preserve_capture_and_independent_pruning(
     assert model.offset is original and model.offset.is_conj() == conjugate
     plan = PruningPlan.from_dict(
         Pruner(model, graph=graph)
-        .plan(remove=[graph.parameter("a.weight").axis(0).select([1])])
+        .plan_remove([graph.parameter("a.weight").axis(0).select([1])])
         .to_dict()
     )
     Pruner(model).apply(plan)

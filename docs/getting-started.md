@@ -9,10 +9,10 @@ Python 3.10 or newer and PyTorch 2.6 or newer are required. From the repository 
 ```bash
 uv venv .venv
 source .venv/bin/activate
-uv pip install -e .
+uv pip install --torch-backend=auto -e .
 ```
 
-For the locked development environment and test tools, use `uv sync --locked` instead. The repository's development lock uses a CPU PyTorch build. The installed library's runtime dependency is ordinary `torch>=2.6`.
+Install test and lint tools with `uv pip install --group dev`. Use the activated environment's `python`, `pytest`, and `ruff` directly. The installation command selects PyTorch for the host; the project keeps the portable runtime dependency `torch>=2.6` and does not pin a CPU-only index.
 
 The Python blocks below form one script when run in order.
 
@@ -68,7 +68,7 @@ Use `impact.diagnostics` and `impact.requirements` to investigate unresolved req
 
 ```python
 pruner = Pruner(model, graph=graph)
-plan = pruner.plan(remove=[remove])
+plan = pruner.plan_remove([remove])
 print(plan.explain())
 
 returned_model, result = pruner.apply(plan)
@@ -113,19 +113,25 @@ The checkpoint includes final structural information and values. The supplied or
 This is an independent example using a fresh model:
 
 ```python
-from torch_kirigami.pruning import ChannelRatio, Magnitude
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
 
 automatic_model = make_model()
 automatic_graph = DependencyGraph.build(automatic_model, args=(inputs,))
 automatic_pruner = Pruner(automatic_model, graph=automatic_graph)
+space = automatic_pruner.discover_candidates()
 automatic_plan = automatic_pruner.plan(
-    metric=Magnitude(p=2),
+    space,
+    strategy=Greedy(Magnitude(p=2)),
     budget=ChannelRatio(0.34),
 )
 print(automatic_plan.explain())
 automatic_pruner.apply(automatic_plan)
 assert automatic_model[0].out_features == 4
 ```
+
+The explicit `discover_candidates()` call discovers entry axes declared by operator rules throughout the captured graph. The resulting space is passed unchanged to planning. **The Linear rule declares its output-feature axis, not its input-feature axis.** In this example, the first Linear supplies six hidden-feature candidates; the last Linear's three output features are protected as the model output. ReLU supplies dependency relations, but no independent candidates.
+
+Selecting a hidden feature removes the first Linear's corresponding weight row and bias entry and, through dependency propagation, the second Linear's corresponding weight column. These linked changes do not require separate candidates at both ends. Default discovery does not enumerate every possible entry axis; custom candidates or manual requests can select other supported entries. See [default candidate discovery](pruning-design.md#default-candidate-entry-axes).
 
 `Magnitude` scores the union of affected parameter regions. `ChannelRatio` measures logical channel deletions, not parameter count, MACs or latency. The default strategy can return less pruning than requested when constraints prevent reaching the target.
 
@@ -140,6 +146,6 @@ For caller-provided task gradients, use `WeightTaylor`; for custom candidates, d
 | `StaleGraphError` | Tracked structure, mode, configuration or constants changed | Rebuild the graph and all live bindings |
 | `PlanningError` | The joint selection or physical representation is not valid | Read the exception and graph.explain(impact); change the request or extend the rule |
 | `ExecutionError` | Execution preconditions or state validation failed | Verify model compatibility and inspect the reported binding or recipe |
-| Smaller-than-requested deletion count | Constraints or bounded selection left budget unused | Read the budget report; do not count the shortfall as deleted channels |
+| Smaller-than-requested deletion count | Constraints or bounded selection left budget unused | Read the selection report; do not count the shortfall as deleted channels |
 
 The [architecture overview](architecture.md) explains why these phases are separate. The [dependency graph reference](dependency-graph-design.md) documents the objects used to inspect each phase.

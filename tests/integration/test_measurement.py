@@ -30,7 +30,7 @@ def test_complexity_linear_conv_and_frozen_shared_parameters(execution_device):
 def test_complexity_includes_attention_and_survives_pruning(gated, execution_device):
     model = Transformer(gated=gated).to(execution_device)
     x = torch.randn(1, 4, 8, device=execution_device)
-    space = build_space(model, x)
+    pruner, _space = build_space(model, x)
     with torch.inference_mode():
         before = calculate_model_complexity(model, x)
     # Projections/FFN/output + QK and AV; do not derive the reference from a counter.
@@ -40,10 +40,9 @@ def test_complexity_includes_attention_and_survives_pruning(gated, execution_dev
     )
     assert not before.unsupported_ops
     assert model.training
-    space.graph.validate()
-    pruner = Pruner(model, graph=space.graph)
+    pruner.graph.validate()
     pruner.apply(
-        pruner.plan(remove=(space.graph.parameter("attn.k.weight").axis(0).select(range(4)),))
+        pruner.plan_remove((pruner.graph.parameter("attn.k.weight").axis(0).select(range(4)),))
     )
     after = calculate_model_complexity(model, x)
     assert (
@@ -156,7 +155,7 @@ def test_actual_compilation_and_remeasurement_after_pruning(execution_device):
     assert math.isfinite(latency) and latency >= 0
     graph.validate()
     pruner = Pruner(model, graph=graph)
-    pruner.apply(pruner.plan(remove=(graph.parameter("0.weight").axis(0).select([0, 1]),)))
+    pruner.apply(pruner.plan_remove((graph.parameter("0.weight").axis(0).select([0, 1]),)))
     assert calculate_model_complexity(model, x).macs == 48
     latency = measure_module_latency(
         model, x, compile=True, compile_kwargs={"backend": "eager"}, repetitions=2, warmup=1

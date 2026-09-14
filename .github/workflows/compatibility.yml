@@ -21,7 +21,7 @@ jobs:
       - name: Test release line
         env:
           TEST_TORCH: ${{ matrix.torch }}
-        run: >-
-          uv run --no-project --python 3.12
-          --with "torch==$TEST_TORCH" --with pytest --with numpy
-          --index https://download.pytorch.org/whl/cpu python -m pytest
+        run: |
+          uv venv .venv --python 3.12
+          uv pip install --python .venv/bin/python --torch-backend=cpu -e . "torch==$TEST_TORCH" pytest numpy
+          .venv/bin/python -m pytest

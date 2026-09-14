@@ -10,7 +10,7 @@ import torch
 from ..contracts import Balanced, Divisible
 from .metrics import Magnitude, WeightTaylor
 from .rewrite import compile_recipes
-from .types import BudgetReport, PlanningError, channel_targets
+from .types import ChannelCount, PlanningError, SelectionReport, channel_targets
 
 _IMPACT_CACHE_SIZE = 32
 
@@ -24,12 +24,14 @@ class PlanningContext:
     compilation caches, and callback boundaries still validate state.
     """
 
-    def __init__(self, graph, operations, candidates, budget, axes, metric, constraints):
+    def __init__(self, graph, operations, candidates, budget, channel_axes, constraints):
         self._graph, self._operations = graph, tuple(operations)
         self._candidates = tuple(candidates)
-        self._budget, self._axes, self._metric = budget, tuple(dict.fromkeys(axes)), metric
+        self._budget, self._channel_axes = budget, tuple(dict.fromkeys(channel_axes))
+        if isinstance(budget, ChannelCount) and budget.channel_axes != self.channel_axes:
+            raise ValueError("ChannelCount axes must match the candidate space in order")
         self._constraints = tuple(constraints)
-        self._widths = tuple(a.tensor.shape[a.dim] for a in self.axes)
+        self._widths = tuple(a.tensor.shape[a.dim] for a in self.channel_axes)
         self._targets = channel_targets(budget, self.widths)
         self.trials, self.limit_reached = 0, False
         self.exclusions = []
@@ -59,14 +61,9 @@ class PlanningContext:
         return self._budget
 
     @property
-    def axes(self):
-        """Return unique original budget axes."""
-        return self._axes
-
-    @property
-    def metric(self):
-        """Return the supplied scoring callable, if any."""
-        return self._metric
+    def channel_axes(self):
+        """Return unique original logical channel axes."""
+        return self._channel_axes
 
     @property
     def constraints(self):
@@ -104,14 +101,12 @@ class PlanningContext:
         if incomplete:
             raise PlanningError("Incomplete scoring influence: " + "; ".join(map(str, incomplete)))
 
-    def score(self, candidate_batch):
+    def score(self, metric, candidate_batch):
         """Call the metric on a batch, including temporary combined candidates."""
         batch = tuple(candidate_batch)
-        if self.metric is None:
-            raise PlanningError("This strategy requested scores without a metric")
         for candidate in batch:
             self.require_complete(self.impact(candidate.remove))
-        values = self.metric(self, batch)
+        values = metric(self, batch)
         self.graph.validate()
         if isinstance(values, torch.Tensor):
             if values.ndim != 1 or values.is_complex():
@@ -131,7 +126,7 @@ class PlanningContext:
         """Measure actual full-axis removals, counting each logical axis once."""
         self.graph.validate_impact(impact)
         return tuple(
-            len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.axes
+            len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.channel_axes
         )
 
     def within_budget(self, impact):
@@ -176,8 +171,8 @@ class PlanningContext:
 
     def report(self, impact):
         """Freeze the measured budget and strategy diagnostics."""
-        return BudgetReport(
-            self.axes,
+        return SelectionReport(
+            self.channel_axes,
             self.widths,
             self.counts(impact),
             self.targets,
@@ -199,7 +194,7 @@ def _budget_reason(context, impact):
     details = (
         f"{axis.tensor.paths[0] if axis.tensor.paths else axis.tensor.id} "
         f"axis {axis.dim}: {count} removals > {cap} allowed"
-        for axis, count, cap in zip(context.axes, counts, context.targets, strict=True)
+        for axis, count, cap in zip(context.channel_axes, counts, context.targets, strict=True)
         if count > cap
     )
     return "Joint request exceeds the local channel budget: " + "; ".join(details)
@@ -209,13 +204,17 @@ class Greedy:
     """Static score order with bounded balance/divisibility completion and no backtracking.
 
     Args:
+        metric: Batch scoring callable owned by this strategy.
         max_trials: Maximum joint attempts, including cache hits. Scoring queries
             are separate. Rejected candidates may be retried after a commitment.
     """
 
-    def __init__(self, max_trials=10_000):
+    def __init__(self, metric, *, max_trials=10_000):
         if not isinstance(max_trials, int) or isinstance(max_trials, bool) or max_trials < 0:
             raise ValueError("max_trials must be a nonnegative integer")
+        if not callable(metric):
+            raise TypeError("Greedy requires a callable metric")
+        self.metric = metric
         self.max_trials = max_trials
 
     def __call__(self, context):
@@ -251,7 +250,7 @@ class Greedy:
                 any(
                     s.tensor == a.tensor and s.fully_selected_indices(a.dim)
                     for s in c.remove
-                    for a in context.axes
+                    for a in context.channel_axes
                 )
                 for c in context.candidates
             )
@@ -264,7 +263,7 @@ class Greedy:
         # arbitrary custom callables still receive one complete eligible batch.
         batch_size = (
             _IMPACT_CACHE_SIZE
-            if type(context.metric) in (Magnitude, WeightTaylor)
+            if type(self.metric) in (Magnitude, WeightTaylor)
             else max(1, len(context.candidates))
         )
         for start in range(0, len(context.candidates), batch_size):
@@ -277,7 +276,7 @@ class Greedy:
                 else:
                     batch.append(candidate)
             if batch:
-                scores.extend(context.score(batch))
+                scores.extend(context.score(self.metric, batch))
                 eligible.extend(batch)
         ranked = [
             c
