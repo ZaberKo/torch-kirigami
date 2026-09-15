@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from math import prod
 
 import torch
 from torch import nn
@@ -11,7 +12,7 @@ from ..bindings import AttributeEdit, reference_edits, reference_signature, stor
 from ..configuration import attributes as configuration_attributes
 from ..configuration import forward_hook_paths, freeze, has_registration_hooks, thaw
 from .recipes import compact_stride, validate_recipe
-from .types import ExecutionError, ModelStructure, ModuleState, TensorState
+from .types import ExecutionError, ModelStructure, ModuleState, ParameterReport, TensorState
 
 STRUCTURE_ATTRIBUTE = "_kirigami_structure"
 
@@ -162,6 +163,16 @@ def validate_plan(plan):
         raise ValueError("Duplicate attribute recipe")
     if transformed(plan.before, plan.recipes, plan.attributes) != plan.after:
         raise ValueError("Plan postconditions disagree with modification recipes")
+    report = plan.selection_report
+    if isinstance(report, ParameterReport):
+        before, after = (
+            sum(prod(s.shape) for s in structure.tensors if s.kind == "parameter")
+            for structure in (plan.before, plan.after)
+        )
+        if (report.before_params, report.after_params) != (before, after) or not report.target_met:
+            raise ValueError(
+                "Parameter report disagrees with plan structures or exceeds its target"
+            )
 
 
 def check_structure(model, expected):

@@ -235,6 +235,35 @@ An unbalanced grouped request can be complete but unresolved. A protected-axis v
 
 Constraints inspect the accumulated closure. The distinction between **propagating required effects** and **checking admissibility** prevents the analysis layer from silently making pruning-policy choices.
 
+### Supplying constraints
+
+Pass extra constraints to one analysis query or to a `Pruner` for all its plans:
+
+```python
+import torch
+from torch import nn
+from torch_kirigami import Balanced, DependencyGraph, Divisible, Fixed, IndexSet
+from torch_kirigami.pruning import Pruner
+
+model = nn.Sequential(nn.Linear(4, 8), nn.Linear(8, 2)).eval()
+graph = DependencyGraph.build(model, args=(torch.randn(1, 4),))
+hidden = graph.parameter("0.weight").axis(0)
+constraints = (
+    Fixed(graph.parameter("1.weight").axis(0)),
+    Balanced(hidden, (IndexSet.span(0, 4), IndexSet.span(4, 8))),
+    Divisible(hidden, 2),
+)
+remove = [hidden.select([1, 5])]  # Each partition retains three; total width is six.
+impact = graph.propagate(remove=remove, constraints=constraints)
+assert impact.status == "resolved"
+plan = Pruner(model, graph=graph, constraints=constraints).plan_remove(remove)
+```
+
+Query constraints are not stored on the graph; pass them to `Pruner` as well when
+planning. `NonEmpty` is automatic for structurally used tensors. `Pruner` adds
+external IO protection by default; `Granularity` adds `Divisible`. Operator rules
+supply grouping and support restrictions. Caller constraints add to these checks.
+
 ### `Constraint` — protocol
 
 Requires `refs` and `check(selections) -> Diagnostic | None`. The mapping is keyed by graph-local tensor IDs and must be treated as read-only. A constraint checks its own declared references; it must not execute the model or select more channels.
@@ -242,6 +271,9 @@ Requires `refs` and `check(selections) -> Diagnostic | None`. The mapping is key
 ### `NonEmpty`
 
 Requires at least one retained position on an axis. Selecting the whole axis produces an `empty_axis` conflict. Graph construction adds these checks to structurally used tensors.
+
+Example: width 8 may shrink to 1, but not 0. Combined with `Divisible(axis, 4)`,
+the smallest legal retained width is 4.
 
 ### `Fixed`
 
@@ -251,9 +283,19 @@ Protects complete positions on one axis. A selected full position is a `fixed_ax
 
 Requires equal retained counts across fixed, nonempty, disjoint original partitions of an axis. The partitions may cover only part of the axis. By default each partition must remain nonempty. Unequal counts are unresolved and require a planner choice; an emptied required partition is a conflict.
 
+In the example above, deleting `[1, 5]` is balanced; deleting only `[1]` is not.
+Local positions may differ between partitions. `nonempty=False` permits empty
+partitions, but does not disable the separate whole-axis `NonEmpty` constraint.
+
 ### `BlockBalance`
 
 Checks member counts for surviving logical groups. A `groups` axis represents groups, a `members` axis contains equal contiguous blocks, and `block_size` connects their original sizes. Entire groups may disappear; surviving groups must retain equal positive member counts. This differs from `Balanced`, whose partition structure stays fixed.
+
+Example: three groups with two members each may become two groups with two members
+each, or three groups with one member each. Retaining member counts `[1, 2, 2]`
+is invalid. The operator's relations must also map group removal to member removal;
+`BlockBalance` only checks counts. Greedy does not implement general completion
+for this constraint.
 
 ### `Divisible`
 
@@ -267,13 +309,25 @@ Marks tensors whose structural influence is unproved. It activates only when a q
 
 Limits unsupported behavior to full positions of one physical axis. It is useful when channel changes are supported but token, spatial, or mask positions must remain fixed. Activated barriers mark the influence incomplete.
 
+Extension example: support channel pruning while placing an `AxisBarrier` on the
+token axis whose resizing semantics are unknown. Use `Fixed` instead when the
+semantics are known and preservation is a caller policy.
+
 ### `LayoutConstraint`
 
 Checks whether selected regions fit ordinary axis compaction or the allowed scoped axis ports of a tensor use. Each shared-tensor use must satisfy its own layout restriction; merging incompatible consumers into one permissive set would lose information. Unsupported packing is unresolved.
 
+Generated during graph construction. For grouped convolution, removing different
+local input columns in different groups requires partitioned compaction; one
+global column slice would remove the wrong weights.
+
 ### `CallArgumentConstraint` — internal, `operators/shapes.py`
 
 Stores immutable pairs of `ShapeExpr` and observed integer argument values, plus relevant `PartitionedLayout` descriptors. During a query it reevaluates shape-derived arguments on compact shapes. Arguments explicitly validated by a requirement are excluded by argument location, not expression identity; the same `size()` expression can feed both a permitted width and a semantic stride that must remain unchanged.
+
+Generated by shape analysis. For example, shrinking a width used in
+`x[..., ::y.size(1)]` also changes the slice step; the original argument cannot be
+assumed unchanged merely because it came from a dimension read.
 
 ### `_PendingLayout` — private, `operators/shapes.py`
 

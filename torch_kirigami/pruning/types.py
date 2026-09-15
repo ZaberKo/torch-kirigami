@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Any, Protocol
 
 import torch
@@ -12,6 +13,7 @@ from ..configuration import FrozenDict, FrozenList, FrozenScalar, freeze, thaw
 from ..contracts import Impact, Requirement
 from ..errors import KirigamiError
 from ..graph import DependencyGraph
+from ..measurement import count_parameters
 from ..operation import OperationContext, OperatorSpec
 from ..regions import concatenated_shape
 from ..selection import AxisRef, Region, Selection, TensorRef, resolve_reference
@@ -68,6 +70,43 @@ class Candidate:
             raise ValueError("Candidate requires nonempty selections")
         if self.axis is not None and not isinstance(self.axis, AxisRef):
             raise TypeError("Candidate axis must be an AxisRef")
+
+
+@dataclass(frozen=True)
+class ParameterBudget:
+    """Upper bound on the final whole-model parameter count.
+
+    All unique Parameter objects count, including frozen and protected tensors;
+    buffers do not. A strategy must reach this absolute target before a plan can
+    be returned. Structural granularity can make the result smaller than the cap.
+    """
+
+    max_params: int
+
+    def __post_init__(self):
+        if type(self.max_params) is not int or self.max_params < 0:
+            raise ValueError("max_params must be a nonnegative integer")
+
+    @classmethod
+    def from_ratio(cls, model: torch.nn.Module, pruning_ratio: float) -> ParameterBudget:
+        """Convert a whole-model parameter reduction fraction to an absolute cap.
+
+        Args:
+            model: Original model supplying the unique-parameter baseline.
+            pruning_ratio: Finite fraction in [0, 1); this is not a channel ratio.
+
+        Returns:
+            Budget with floor(original_count * (1 - pruning_ratio)) parameters.
+            The baseline is read once; later model changes do not alter the cap.
+            Granularity may require a greater reduction. No model is retained.
+        """
+        if type(pruning_ratio) not in (int, float) or not 0 <= pruning_ratio < 1:
+            raise ValueError("pruning_ratio must be finite and in [0, 1)")
+        # Interpret the supplied decimal value exactly: binary subtraction such
+        # as 1 - 0.9 must not turn a mathematically integral cap into one less.
+        ratio = Fraction(str(pruning_ratio))
+        count = count_parameters(model)
+        return cls(count * (ratio.denominator - ratio.numerator) // ratio.denominator)
 
 
 @dataclass(frozen=True)
@@ -241,6 +280,40 @@ class CoordinateSegment:
             or tuple(map(len, self.source.axes)) != tuple(map(len, self.destination.axes))
         ):
             raise ValueError("Coordinate segments require matching per-axis cardinalities")
+
+
+@dataclass(frozen=True)
+class ParameterReport:
+    """Exact parameter counts and search diagnostics, without live model state."""
+
+    before_params: int
+    after_params: int
+    max_params: int
+    trials: int = 0
+    limit_reached: bool = False
+    exclusions: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self):
+        if (
+            any(
+                type(n) is not int or n < 0
+                for n in (self.before_params, self.after_params, self.max_params, self.trials)
+            )
+            or self.after_params > self.before_params
+        ):
+            raise ValueError("Invalid parameter report counts")
+        if type(self.limit_reached) is not bool:
+            raise TypeError("Parameter report limit_reached must be boolean")
+        object.__setattr__(self, "exclusions", tuple(tuple(item) for item in self.exclusions))
+        if any(
+            len(item) != 2 or any(not isinstance(v, str) for v in item) for item in self.exclusions
+        ):
+            raise ValueError("Parameter exclusions require key/reason pairs")
+
+    @property
+    def target_met(self):
+        """Whether the final model meets the requested absolute cap."""
+        return self.after_params <= self.max_params
 
 
 @dataclass(frozen=True)

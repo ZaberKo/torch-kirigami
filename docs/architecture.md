@@ -56,7 +56,12 @@ Relations grow the removal set until no new regions appear. Constraints inspect 
 
 Planning combines the closure with physical representation requirements. It checks that the original model can execute with the proposed compact shapes and supported attribute edits. A candidate can have a complete impact but still fail physical planning.
 
-Automatic budgets are upper bounds. Dependencies, grouped layouts, minimum widths and bounded search can leave a target unmet. The plan reports that shortfall; it does not silently reinterpret it as a completed target.
+Automatic planning accepts separate immutable budget objects. `ChannelRatio` and
+`ChannelCount` cap logical removals and report underfill. `ParameterBudget` caps
+the final whole-model parameter count and rejects an unmet target before apply.
+All share candidate selection, dependency propagation and recipe verification.
+The parameter baseline includes fixed, frozen and uncaptured Parameter objects,
+deduplicated by identity; it is independent of candidate-space channel axes.
 
 ## Mutation and object lifetime
 

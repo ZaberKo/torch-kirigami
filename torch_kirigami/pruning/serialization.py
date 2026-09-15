@@ -11,6 +11,7 @@ from .types import (
     CoordinateSegment,
     ModelStructure,
     ModuleState,
+    ParameterReport,
     SelectionReport,
     TensorRecipe,
     TensorState,
@@ -34,6 +35,7 @@ RECORD_TYPES = MappingProxyType(
             AnalysisSummary,
             AttributeRecipe,
             SelectionReport,
+            ParameterReport,
             CoordinateSegment,
             TensorRecipe,
         )

@@ -15,9 +15,9 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    ChannelRatio,
     Granularity,
     Greedy,
+    ParameterBudget,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -57,10 +57,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--channel_pruning_ratio",
+        "--pruning_ratio",
         type=float,
-        default=0.25,
-        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+        default=0.05,
+        help="Fraction of whole-model parameters to remove (default: 0.05); not a channel ratio",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--penalty", choices=("lasso", "squared"), default="lasso")
@@ -90,12 +90,8 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if (
-        not 0 < options.channel_pruning_ratio < 1
-        or not math.isfinite(options.lr)
-        or options.lr <= 0
-    ):
-        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
+    if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
+        parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if not math.isfinite(options.strength) or options.strength < 0:
         parser.error("--strength must be finite and nonnegative")
     if options.device == "cuda" and not torch.cuda.is_available():
@@ -138,11 +134,14 @@ def main():
         validation, batch_size=options.val_batch_size, num_workers=options.val_workers
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
+    budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(options).items()
     }
-    config.update(weights=str(weights), dataset=dataset_info, layers=layers)
+    config.update(
+        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+    )
     options.output.mkdir(parents=True, exist_ok=True)
     records = []
 
@@ -174,7 +173,6 @@ def main():
         granularity=Granularity(by_path=dict.fromkeys(targets, options.granularity)),
     )
     space = pruner.discover_candidates(targets=targets)
-    original_width = sum(axis.tensor.shape[axis.dim] for axis in space.channel_axes)
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     # Lasso penalizes every candidate group. The squared variant refreshes only
     # the currently selected groups each epoch and increases their penalty.
@@ -186,7 +184,7 @@ def main():
     for epoch in range(options.sparse_epochs):
         strength = options.strength
         if options.penalty == "squared":
-            tentative_plan = make_plan(pruner, space, options.channel_pruning_ratio)
+            tentative_plan = make_plan(pruner, space, budget)
             selected = set(tentative_plan.selected)
             groups = pruner.parameter_groups(
                 candidate for candidate in space.candidates if candidate.key in selected
@@ -232,16 +230,14 @@ def main():
     if options.sparse_epochs:
         record("sparse_trained")
 
-    plan = make_plan(pruner, space, options.channel_pruning_ratio)
+    plan = make_plan(pruner, space, budget)
     model, _ = pruner.apply(plan)
-    current_width = sum(model.get_parameter(path).shape[0] for path in paths)
     record(
         "pruned",
-        target_ratio=options.channel_pruning_ratio,
-        actual_ratio=1 - current_width / original_width,
-        target=plan.selection_report.targets,
-        removed=plan.selection_report.removed,
-        shortfall=plan.selection_report.shortfall,
+        max_params=plan.selection_report.max_params,
+        before_params=plan.selection_report.before_params,
+        after_params=plan.selection_report.after_params,
+        target_met=plan.selection_report.target_met,
         planning_trials=plan.selection_report.trials,
         planning_limit_reached=plan.selection_report.limit_reached,
     )
@@ -295,7 +291,7 @@ def main():
     print(f"Checkpoint verified; results: {options.output}", flush=True)
 
 
-def make_plan(pruner, space, ratio):
+def make_plan(pruner, space, budget):
     """Score producer channels and select a jointly aligned request."""
     scores = {}
     for axis in space.channel_axes:
@@ -318,7 +314,7 @@ def make_plan(pruner, space, ratio):
     def score(context, batch):
         return [scores[c.key] for c in batch]
 
-    return pruner.plan(space, budget=ChannelRatio(ratio), strategy=Greedy(score))
+    return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
 if __name__ == "__main__":

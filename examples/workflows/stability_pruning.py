@@ -15,9 +15,9 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    ChannelRatio,
     Granularity,
     Greedy,
+    ParameterBudget,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -57,10 +57,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--channel_pruning_ratio",
+        "--pruning_ratio",
         type=float,
-        default=0.25,
-        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+        default=0.05,
+        help="Fraction of whole-model parameters to remove (default: 0.05); not a channel ratio",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument(
@@ -109,12 +109,8 @@ def parse_args():
         parser.error("--threshold must be in [0, 1]")
     if not math.isfinite(options.strength) or options.strength < 0:
         parser.error("--strength must be finite and nonnegative")
-    if (
-        not 0 < options.channel_pruning_ratio < 1
-        or not math.isfinite(options.lr)
-        or options.lr <= 0
-    ):
-        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
+    if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
+        parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -122,7 +118,7 @@ def parse_args():
     return options
 
 
-def make_plan(pruner, space, ratio):
+def make_plan(pruner, space, budget):
     """Score producer channels and check stability on feasible aligned selections."""
     scores = {}
     for axis in space.channel_axes:
@@ -139,7 +135,7 @@ def make_plan(pruner, space, ratio):
     def score(context, batch):
         return [scores[c.key] for c in batch]
 
-    return pruner.plan(space, budget=ChannelRatio(ratio), strategy=Greedy(score))
+    return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
 def train_epoch(
@@ -214,11 +210,14 @@ def main():
         validation, batch_size=options.val_batch_size, num_workers=options.val_workers
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
+    budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(options).items()
     }
-    config.update(weights=str(weights), dataset=dataset_info, layers=layers)
+    config.update(
+        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+    )
     options.output.mkdir(parents=True, exist_ok=True)
     records = []
 
@@ -250,13 +249,12 @@ def main():
         granularity=Granularity(by_path=dict.fromkeys(targets, options.granularity)),
     )
     space = pruner.discover_candidates(targets=targets)
-    original_width = sum(axis.tensor.shape[axis.dim] for axis in space.channel_axes)
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     window = SelectionWindow(options.window)
     stable, training_epochs = False, 0
 
     for check in range(options.search_steps):
-        plan = make_plan(pruner, space, options.channel_pruning_ratio)
+        plan = make_plan(pruner, space, budget)
         selected = tuple(c for c in space.candidates if c.key in plan.selected)
         retained = {}
         for axis in space.channel_axes:
@@ -302,14 +300,12 @@ def main():
     )
     model, _ = pruner.apply(plan)
     window.reset()  # Original channel coordinates no longer describe the compact model.
-    current_width = sum(model.get_parameter(path).shape[0] for path in paths)
     record(
         "pruned",
-        target_ratio=options.channel_pruning_ratio,
-        actual_ratio=1 - current_width / original_width,
-        target=selection_report.targets,
-        removed=selection_report.removed,
-        shortfall=selection_report.shortfall,
+        max_params=selection_report.max_params,
+        before_params=selection_report.before_params,
+        after_params=selection_report.after_params,
+        target_met=selection_report.target_met,
         planning_trials=selection_report.trials,
         planning_limit_reached=selection_report.limit_reached,
     )

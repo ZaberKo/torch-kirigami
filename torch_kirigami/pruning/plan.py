@@ -16,6 +16,7 @@ from .types import (
     AttributeRecipe,
     CoordinateSegment,
     ModelStructure,
+    ParameterReport,
     PlanningError,
     SelectionReport,
     TensorRecipe,
@@ -34,7 +35,7 @@ class PruningPlan:
     recipes: tuple[TensorRecipe, ...]
     attributes: tuple[AttributeRecipe, ...]
     selected: tuple[str, ...]
-    selection_report: SelectionReport
+    selection_report: SelectionReport | ParameterReport
     notes: tuple[str, ...]
     before: ModelStructure
     after: ModelStructure
@@ -52,7 +53,7 @@ class PruningPlan:
             object.__setattr__(self, name, values)
         for name, cls in (
             ("analysis", AnalysisSummary),
-            ("selection_report", SelectionReport),
+            ("selection_report", (SelectionReport, ParameterReport)),
             ("before", ModelStructure),
             ("after", ModelStructure),
         ):
@@ -87,7 +88,13 @@ class PruningPlan:
     def explain(self) -> str:
         """Describe the joint decision, budget, and physical modifications."""
         lines = [f"Pruning plan: {self.analysis.status}; {len(self.recipes)} tensor replacements"]
-        if self.selection_report.scope != "manual":
+        if isinstance(self.selection_report, ParameterReport):
+            report = self.selection_report
+            lines.append(
+                f"Parameters: {report.before_params} -> {report.after_params}, "
+                f"maximum {report.max_params}; {report.trials} trials"
+            )
+        elif self.selection_report.scope != "manual":
             lines.append(
                 f"Channels: target {sum(self.selection_report.targets)}, removed {sum(self.selection_report.removed)}, "
                 f"shortfall {self.selection_report.shortfall}; {self.selection_report.trials} trials"

@@ -58,7 +58,7 @@ Manual selections use `plan_remove(remove)`; automatic selections use `plan(spac
 
 On `Pruner`, `preserve_io=True` protects every axis of external input and output tensors using `Fixed` constraints. Set `preserve_io=False` only when the caller also controls the resulting interfaces. Additional `constraints` apply to the combined dependency closure in either selection mode.
 
-## Candidate space and logical budgets
+## Candidate space and budgets
 
 ### Default candidate entry axes
 
@@ -102,7 +102,68 @@ flowchart LR
     Caps --> Check
 ```
 
-### Logical budgets
+### Whole-model parameter budget
+
+`ParameterBudget(max_params=...)` sets a nonnegative integer upper bound on the
+**final** model parameter count. Pass it to the same `plan` / `prune` entry:
+
+```python
+from torch_kirigami.pruning import ParameterBudget
+
+plan = pruner.plan(space, budget=ParameterBudget(max_params=120), strategy=Greedy(Magnitude()))
+```
+
+The baseline contains every unique registered Parameter, including frozen,
+protected and uncaptured tensors. Buffers are excluded. Each verified tensor
+recipe contributes its final shape once, so shared parameters and intersections
+of simultaneous row/column deletions are not double-counted. Planning counts
+shapes without allocating compact weights. Candidate packaging and `channel_axes`
+do not affect this count; axes remain useful for discovery, ranking and channel
+policies.
+
+Intermediate requests may remain above the target. Greedy accepts structurally
+executable batches and stops as soon as the final count meets the cap. A model
+already below the cap produces an empty plan without scoring, provided all added
+structural constraints hold. Granularity can force a smaller result than requested.
+If search ends above the cap, `PlanningError` reports the count reached, trials and
+recent blockers; `prune()` does not apply a partial result. Custom strategies must
+also meet the target and undergo independent final validation. This is bounded
+greedy selection, not a minimum-accuracy-loss or global-feasibility solver.
+
+`plan.selection_report` is a `ParameterReport` for this budget, containing
+`before_params`, `after_params`, `max_params`, `target_met`, `trials`,
+`limit_reached`, and `exclusions`. Portable loading and apply recheck its counts
+against the before/after structures and reject an unmet recorded cap.
+
+To request a parameter reduction fraction, use
+`ParameterBudget.from_ratio(model, pruning_ratio=0.05)`. It uses
+`measurement.count_parameters(model)` and returns an ordinary `ParameterBudget`
+with `floor(initial_count * (1 - pruning_ratio))`. The finite ratio must lie in
+`[0, 1)`; its decimal representation is used to avoid off-by-one caps caused by
+binary subtraction. The result retains neither the model nor the ratio. This is
+an input conversion, not another budget type or selection algorithm.
+
+For multiple rounds, interpolate absolute caps from a fixed initial count; do not
+reapply a fraction to shrinking models. See the iterative workflow. Parameter
+budgets impose no hidden per-layer ratio and do not change the metric's meaning
+or enable score normalization.
+
+Budget-specific accounting, admissibility and final checks reside in
+`PlanningContext`; Greedy also stops early when a parameter target is met.
+`Pruner.plan()` independently validates the final selection. These parts share
+candidate discovery, scoring, count-constraint completion, dependency
+propagation, recipe compilation, and transactional application. Changing an
+existing budget at a call site only changes the `budget=` argument. Adding a new
+budget semantic would require its accounting/stopping rules and portable report
+validation; accepting arbitrary objects does not implement those semantics.
+
+There is no catch-all `ResourceBudget`, budget registry, or nested budget DSL.
+Latency remains an explicit post-pruning measurement: its hardware, batch,
+compilation and runtime dependence requires isolated trial execution for a future
+latency-target search. No `LatencyBudget` placeholder or MAC target is exposed;
+partial supported-op MAC accounting cannot establish a strict resource cap.
+
+### Logical channel budgets
 
 Unsupported influence paths remain visible during discovery; they cannot silently reduce the budget denominator. Explicit axes retain protected domains in budget accounting.
 
@@ -197,7 +258,10 @@ A `Strategy` is a callable `strategy(context)` returning registered candidate ke
 | `impact(remove)` | Propagate joint original-coordinate seeds |
 | `require_complete(impact)` | Reject incomplete influence; repairable count constraints may remain |
 | `score(metric, candidate_batch)` | Invoke an explicit metric and validate the returned scores |
-| `counts(impact)`, `within_budget(impact)` | Measure and check actual logical removals |
+| `counts(impact)` | Actual logical channel removals |
+| `admissible(impact)` | Intermediate removal caps; parameter targets allow progress above the final cap |
+| `parameter_count(impact)` | Whole-model count from executable joint recipes |
+| `within_budget(impact)`, `require_budget(impact)` | Final budget check, boolean or diagnostic exception |
 | `compile(impact)` | Verify tensor/attribute recipes without allocating compact weights |
 | `report(impact)` | Freeze measured counts and strategy diagnostics |
 | `trials`, `limit_reached`, `exclusions` | Strategy-owned diagnostic counters and reasons |
@@ -273,7 +337,11 @@ flowchart TD
     Next -->|Done or limit| Result["Plan selection"]
 ```
 
-`SelectionReport`, exposed as `plan.selection_report`, records `channel_axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`, `limit_reached`, and `exclusions`. Its `shortfall` is the unfilled target. A nonzero shortfall can result from coupling, protected dimensions, unsupported execution, or bounded search. `limit_reached=True` is not proof that no better solution exists.
+For channel budgets, `plan.selection_report` is a `SelectionReport` recording
+`channel_axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`,
+`limit_reached`, and `exclusions`. Its `shortfall` is the unfilled channel target.
+A nonzero shortfall can result from coupling, protected dimensions, unsupported
+execution, or bounded search. `limit_reached=True` does not prove infeasibility.
 
 Greedy reports the latest rejection for each excluded candidate, whether from a
 joint attempt or a proven budget excess. Diagnostics include

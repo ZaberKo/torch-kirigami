@@ -10,7 +10,14 @@ import torch
 from ..contracts import Balanced, Divisible
 from .metrics import Magnitude, WeightTaylor
 from .rewrite import compile_recipes
-from .types import ChannelCount, PlanningError, SelectionReport, channel_targets
+from .types import (
+    ChannelCount,
+    ParameterBudget,
+    ParameterReport,
+    PlanningError,
+    SelectionReport,
+    channel_targets,
+)
 
 _IMPACT_CACHE_SIZE = 32
 
@@ -32,7 +39,12 @@ class PlanningContext:
             raise ValueError("ChannelCount axes must match the candidate space in order")
         self._constraints = tuple(constraints)
         self._widths = tuple(a.tensor.shape[a.dim] for a in self.channel_axes)
-        self._targets = channel_targets(budget, self.widths)
+        self._targets = (
+            () if isinstance(budget, ParameterBudget) else channel_targets(budget, self.widths)
+        )
+        self._parameter_count = sum(
+            math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"
+        )
         self.trials, self.limit_reached = 0, False
         self.exclusions = []
         self._cache = OrderedDict()
@@ -72,12 +84,12 @@ class PlanningContext:
 
     @property
     def widths(self):
-        """Return the frozen budget denominator."""
+        """Return logical axis widths, used only by channel budgets."""
         return self._widths
 
     @property
     def targets(self):
-        """Return fixed local caps or the single global cap."""
+        """Return channel removal caps; empty for a parameter budget."""
         return self._targets
 
     def impact(self, remove):
@@ -141,9 +153,44 @@ class PlanningContext:
             len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.channel_axes
         )
 
-    def within_budget(self, impact):
-        """Check the frozen budget against the whole dependency closure."""
+    def admissible(self, impact):
+        """Check intermediate removal caps, allowing progress toward a resource target.
+
+        Structural/execution validity is checked separately by compile(). A
+        parameter target cannot reject intermediate requests merely because they
+        still leave too many parameters.
+        """
         return _within_targets(self, self.counts(impact))
+
+    def parameter_count(self, impact):
+        """Count final unique Parameter elements using verified joint recipes."""
+        recipes, _, _ = self.compile(impact)
+        return self._parameter_count - sum(
+            math.prod(r.tensor.shape) - math.prod(r.shape)
+            for r in recipes
+            if r.tensor.kind == "parameter"
+        )
+
+    def within_budget(self, impact):
+        """Check the final budget, including an absolute parameter target if given."""
+        if isinstance(self.budget, ParameterBudget):
+            return self.parameter_count(impact) <= self.budget.max_params
+        return self.admissible(impact)
+
+    def require_budget(self, impact):
+        """Reject an unmet final target with actual counts and bounded-search diagnostics."""
+        if self.within_budget(impact):
+            return
+        if isinstance(self.budget, ParameterBudget):
+            detail = "; ".join(f"{k}: {reason}" for k, reason in self.exclusions[-3:])
+            raise PlanningError(
+                f"Parameter target not reached: {self.parameter_count(impact)} remain, "
+                f"max_params={self.budget.max_params}; {self.trials} joint trials"
+                + ("; strategy trial limit reached" if self.limit_reached else "")
+                + ". No plan was produced or applied. This is not a proof of infeasibility."
+                + (f" Last exclusions: {detail}" if detail else "")
+            )
+        raise PlanningError(_budget_reason(self, self.counts(impact)))
 
     def compile(self, impact):
         """Return (tensor recipes, attribute recipes, notes), without new weights."""
@@ -178,6 +225,15 @@ class PlanningContext:
 
     def report(self, impact):
         """Freeze the measured budget and strategy diagnostics."""
+        if isinstance(self.budget, ParameterBudget):
+            return ParameterReport(
+                self._parameter_count,
+                self.parameter_count(impact),
+                self.budget.max_params,
+                self.trials,
+                self.limit_reached,
+                tuple(self.exclusions),
+            )
         return SelectionReport(
             self.channel_axes,
             self.widths,
@@ -192,6 +248,8 @@ class PlanningContext:
 
 def _within_targets(context, counts):
     """Apply the same caps to exact counts and proven lower bounds."""
+    if isinstance(context.budget, ParameterBudget):
+        return True
     return (
         all(a <= b for a, b in zip(counts, context.targets, strict=True))
         if context.budget.scope == "local"
@@ -321,7 +379,7 @@ def _complete_trial(context, trial, ranked, removals, axes, attempt):
     if impact is None:
         raise PlanningError("Strategy trial limit reached before this candidate could be tested")
     while True:
-        if not context.within_budget(impact):
+        if not context.admissible(impact):
             raise PlanningError(_budget_reason(context, context.counts(impact)))
         if impact.status == "resolved":
             context.compile(impact)
@@ -360,7 +418,7 @@ def _complete_trial(context, trial, ranked, removals, axes, attempt):
             delta = new.selection(axis.tensor).fully_selected_indices(axis.dim).subtract(before)
             if not delta or (partitions and not any(delta.intersect(p) for p in partitions)):
                 continue
-            if not context.within_budget(new):
+            if not context.admissible(new):
                 last_blocker = _budget_reason(context, context.counts(new))
                 continue
             if new.status == "conflict":
@@ -401,7 +459,7 @@ class Greedy:
         self.max_trials = max_trials
 
     def __call__(self, context):
-        """Return only a fully verified set, with an explicit underfill report."""
+        """Verify joint selections; tolerate channel underfill, require resource targets."""
         committed = []
         committed_impact = context.impact(())
         empty_error = ""
@@ -411,10 +469,13 @@ class Greedy:
         failures, revision = {}, 0
         try:
             context.compile(committed_impact)
-            valid = context.within_budget(committed_impact)
+            valid = context.admissible(committed_impact)
         except PlanningError as error:
             valid = False
             empty_error = str(error)
+        parameter_target = isinstance(context.budget, ParameterBudget)
+        if valid and parameter_target and context.within_budget(committed_impact):
+            return ()  # Already below the cap: no scoring or needless pruning.
         if self.max_trials == 0:
             context.limit_reached = bool(context.candidates)
             if not valid:
@@ -422,12 +483,14 @@ class Greedy:
                     "The empty request is invalid and the strategy limit is zero: " + empty_error
                 )
             context.exclusions.extend((c.key, "Strategy limit is zero") for c in context.candidates)
+            context.require_budget(committed_impact)
             return ()
         # A zero budget proves no choice is possible only when each candidate
         # directly removes a budgeted position. Custom unbudgeted seeds may still
         # be legal, so do not infer this solely from ratio or candidate count.
         if (
             valid
+            and not parameter_target
             and not any(context.targets)
             and all(
                 any(
@@ -523,6 +586,8 @@ class Greedy:
                         committed, committed_impact, valid, progress = trial, impact, True, True
                         committed_removals = _axis_removals(impact, axes)
                         revision += 1
+                        if parameter_target and context.within_budget(impact):
+                            return tuple(c.key for c in committed)
                         break
                 if context.limit_reached:
                     break
@@ -564,4 +629,5 @@ class Greedy:
         context.exclusions = [
             (k, v) for k, v in context.exclusions if k not in chosen and k not in covered
         ]
+        context.require_budget(committed_impact)
         return tuple(c.key for c in committed)

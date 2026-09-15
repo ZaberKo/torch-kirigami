@@ -16,9 +16,9 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    ChannelRatio,
     Granularity,
     Greedy,
+    ParameterBudget,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -57,10 +57,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--channel_pruning_ratio",
+        "--pruning_ratio",
         type=float,
-        default=0.125,
-        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+        default=0.05,
+        help="Fraction of whole-model parameters to remove (default: 0.05); not a channel ratio",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--metric", choices=("magnitude", "taylor"), default="magnitude")
@@ -87,12 +87,8 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if (
-        not 0 < options.channel_pruning_ratio < 1
-        or not math.isfinite(options.lr)
-        or options.lr <= 0
-    ):
-        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
+    if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
+        parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -121,7 +117,7 @@ def collect_task_gradients(model, loader, device):
             module.training = training
 
 
-def make_plan(pruner, space, ratio, metric):
+def make_plan(pruner, space, budget, metric):
     """Score producer channels; Greedy enforces joint constraints and alignment."""
     scores = {}
     for axis in space.channel_axes:
@@ -146,7 +142,7 @@ def make_plan(pruner, space, ratio, metric):
     def score(context, batch):
         return [scores[c.key] for c in batch]
 
-    return pruner.plan(space, budget=ChannelRatio(ratio), strategy=Greedy(score))
+    return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
 def main():
@@ -188,11 +184,14 @@ def main():
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     records = []
+    budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(options).items()
     }
-    config.update(weights=str(weights), dataset=dataset_info, layers=layers)
+    config.update(
+        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+    )
     options.output.mkdir(parents=True, exist_ok=True)
 
     def record(stage, **extra):
@@ -231,26 +230,23 @@ def main():
         f"Graph and {len(space.candidates)} candidates ready in {time.perf_counter() - started:.1f}s",
         flush=True,
     )
-    original_width = sum(axis.tensor.shape[axis.dim] for axis in space.channel_axes)
     if options.metric == "taylor":
         collect_task_gradients(model, train_loader, options.device)
     print("Planning pruning: dependency propagation and constraint search run on CPU", flush=True)
     started = time.perf_counter()
-    plan = make_plan(pruner, space, options.channel_pruning_ratio, options.metric)
+    plan = make_plan(pruner, space, budget, options.metric)
     print(
         f"Plan completed in {time.perf_counter() - started:.1f}s; "
         f"{plan.selection_report.trials} joint trials; applying on {options.device}",
         flush=True,
     )
     model, _ = pruner.apply(plan)
-    current_width = sum(model.get_parameter(path).shape[0] for path in paths)
     record(
         "pruned",
-        target_ratio=options.channel_pruning_ratio,
-        actual_ratio=1 - current_width / original_width,
-        target=plan.selection_report.targets,
-        removed=plan.selection_report.removed,
-        shortfall=plan.selection_report.shortfall,
+        max_params=plan.selection_report.max_params,
+        before_params=plan.selection_report.before_params,
+        after_params=plan.selection_report.after_params,
+        target_met=plan.selection_report.target_met,
         planning_trials=plan.selection_report.trials,
         planning_limit_reached=plan.selection_report.limit_reached,
     )

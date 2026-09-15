@@ -135,6 +135,14 @@ Selecting a hidden feature removes the first Linear's corresponding weight row a
 
 `Magnitude` scores the union of affected parameter regions. `ChannelRatio` measures logical channel deletions, not parameter count, MACs or latency. The default strategy can return less pruning than requested when constraints prevent reaching the target.
 
+For a cap on the final whole-model parameter count, pass
+`budget=ParameterBudget(max_params=...)` after importing `ParameterBudget` from
+`torch_kirigami.pruning`. It counts all unique Parameters, including fixed and
+frozen tensors, and stops once an executable selection meets the cap. Unlike a
+channel removal allowance, an unmet parameter target raises `PlanningError`
+before applying changes. `plan.selection_report` then uses `ParameterReport`
+with exact before/after counts instead of channel-count fields.
+
 For caller-provided task gradients, use `WeightTaylor`; for custom candidates, domains and strategies, read [Pruning design](pruning-design.md).
 
 ## Diagnose the common failure modes

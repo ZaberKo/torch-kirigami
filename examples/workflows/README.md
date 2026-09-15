@@ -45,7 +45,13 @@ BN sparsity accepts the three ResNet models; the other entries accept all five. 
 
 Every workflow enumerates supported pruning positions throughout the entire model. There is no layer-selection CLI and no first-layer default. Whole-model coverage means all positions in the table participate; protected dimensions and axes outside the method's scope remain unchanged. The dependency graph covers the entire model, and a selected channel can affect other parameters through dependencies.
 
-Each entry passes every supported producer path to `Granularity` and `discover_candidates`. Granularity constrains retained widths; it does not package adjacent channels. Ratios count channels in those domains, not whole-model parameters or MACs. Whole-model ViT candidate spaces can take substantially longer to plan than ResNets; reducing dataset samples does not reduce dependency-planning work. The strategy reports any shortfall when its bounded search cannot reach the target.
+Each entry passes every supported producer path to `Granularity` and
+`discover_candidates`. Granularity constrains retained widths; it does not package
+adjacent channels. `--pruning_ratio` is a reduction fraction of the entire model's
+parameter count, including fixed parts, rather than a per-layer channel ratio.
+Whole-model ViT candidate spaces can take substantially longer to plan than
+ResNets; reducing dataset samples does not reduce dependency-planning work.
+Planning fails explicitly if bounded search cannot reach the parameter target.
 
 ## Common CLI options
 
@@ -62,7 +68,7 @@ All multiword workflow options use underscores. The CLI accepts complete option 
 | `--val_batch_size` | `256` | Accuracy-evaluation batch size and the fixed synthetic inference batch for MAC/latency measurement |
 | `--val_workers` | `0` | Validation DataLoader worker processes. Training streams in the main process to avoid duplicating the iterable dataset |
 | `--seed` | `7` | Model/training RNG and shuffled data selection seed |
-| `--channel_pruning_ratio` | `0.125` for basic pruning; `0.25` otherwise | Maximum fraction of candidate-domain channels to delete, not a parameter or MAC ratio; iterative pruning uses the final cumulative target |
+| `--pruning_ratio` | `0.05` | Fraction of initial whole-model parameters to remove; includes fixed/frozen parameters and inserted gates. Iterative pruning uses the final cumulative reduction |
 | `--granularity` | `8` | Retained producer widths must be divisible by this factor; `1` adds no alignment constraint |
 | `--finetune_epochs` | `0` | Task-only epochs after physical pruning; iterative pruning applies this after every round |
 | `--lr` | `0.001` | SGD learning rate; momentum is `0.9` |
@@ -128,7 +134,7 @@ For a single magnitude-pruning pass **without training**:
 ```bash
 python prune_finetune.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.125 --granularity 8 --metric magnitude \
+  --pruning_ratio 0.05 --granularity 8 --metric magnitude \
   --finetune_epochs 0 --output runs/resnet18_prune_only
 ```
 
@@ -137,30 +143,37 @@ compiled latency, and saves and verifies the compact checkpoint. Only the
 validation split is needed. It still evaluates all 50,000 validation images at
 each stage; omitting training does not omit evaluation or latency compilation.
 
-The basic example uses a 12.5% channel cap instead of 25% to make the first
-pruning pass less aggressive. On ResNet-18 this permits aligned removals in every
-candidate domain, including width 64 with granularity 8. This is a demonstration
-setting, not an accuracy guarantee: magnitude-only pruning can still cause a
-substantial immediate accuracy loss. Compare the reported full-validation scores
-and fine-tune when needed.
+The basic example requests a 5% reduction from ResNet-18's 11,689,512 parameters,
+giving a cap of 11,105,036. Each entry uses
+`ParameterBudget.from_ratio(model, options.pruning_ratio)` to count unique
+Parameters once and compute `floor(initial_params * (1 - pruning_ratio))`.
+The converted `max_params` is saved in the run configuration. Alignment can
+require additional removal. The policy allocates removals across eligible blocks instead of prescribing an
+equal ratio per block. This is a demonstration target, not an accuracy guarantee.
+Compare full-validation scores and fine-tune when needed.
 
 To follow the pruning pass with one epoch of fine-tuning:
 
 ```bash
 python prune_finetune.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.125 --granularity 8 --metric magnitude \
+  --pruning_ratio 0.05 --granularity 8 --metric magnitude \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_prune_finetune
 ```
 
 ### 2. Iterative pruning
 
-`iterative_pruning.py` increases the cumulative target over `--rounds`. It rebuilds the graph, recomputes scores, and deducts actual previous removals from the original-width budget. An underfilled round is not counted as completed pruning.
+`iterative_pruning.py` interpolates absolute parameter caps from the initial model
+to the cap converted from `--pruning_ratio` over `--rounds`. The initial parameter
+count is fixed; the ratio is not reapplied to each shrinking model. It rebuilds
+the graph and recomputes scores after each round. An alignment-induced overshoot
+may make the next round a no-op. An
+unmet round target raises an error; earlier completed rounds remain applied.
 
 ```bash
 python iterative_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 --rounds 2 \
+  --pruning_ratio 0.05 --granularity 8 --rounds 2 \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_iterative_pruning
 ```
 
@@ -171,7 +184,7 @@ python iterative_pruning.py \
 ```bash
 python bn_sparsity.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 \
+  --pruning_ratio 0.05 --granularity 8 \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_bn_sparsity
 ```
@@ -183,7 +196,7 @@ python bn_sparsity.py \
 ```bash
 python group_sparsity.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 --penalty lasso \
+  --pruning_ratio 0.05 --granularity 8 --penalty lasso \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_group_sparsity
 ```
@@ -195,7 +208,7 @@ python group_sparsity.py \
 ```bash
 python soft_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 \
+  --pruning_ratio 0.05 --granularity 8 \
   --operation decay --cycles 2 --projection_epochs 1 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_soft_pruning
 ```
@@ -207,7 +220,7 @@ python soft_pruning.py \
 ```bash
 python gate_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 \
+  --pruning_ratio 0.05 --granularity 8 \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_gate_pruning
 ```
@@ -219,25 +232,38 @@ python gate_pruning.py \
 ```bash
 python stability_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.25 --granularity 8 \
+  --pruning_ratio 0.05 --granularity 8 \
   --search_steps 3 --window 2 --threshold 0.99 --strength 0.0001 \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_stability_pruning
 ```
 
 ## Additional models
 
-For ResNet-34/50, replace `--model` in a workflow command with `resnet34` or `resnet50`. The ViT command below includes every encoder block. Its small ratio caps deletion at eight FFN channels per block; inspect the actual per-axis removals and shortfall rather than assuming the search reaches every cap. Even this small-ratio run analyzes all candidates and may take considerably longer to plan than the CNN workflows:
+For ResNet-34/50, change `--model`; the parameter cap is computed from that model's
+initial count. The ViT command below includes every encoder block and requests a
+0.3% parameter reduction (ViT-B/32 starts at 88,224,232). Even a small reduction
+analyzes all candidates and may take considerably longer to plan than the CNN
+workflows:
 
 ```bash
 python prune_finetune.py \
   --model vit_b_32 --device cuda --compile_latency \
-  --channel_pruning_ratio 0.003 --granularity 8 --metric magnitude \
+  --pruning_ratio 0.003 --granularity 8 --metric magnitude \
   --finetune_epochs 1 --lr 0.001 --output runs/vit_b_32_prune_finetune
 ```
 
 ## Results and verification
 
-Each stage records validation cross-entropy, top-1/top-5 accuracy, change from baseline in percentage points, parameter count, MACs, and `latency_ms`. MACs and latency describe the **whole configured validation batch**, not one image. Baseline and compact measurements use identical batch size, dtype, device, and compilation settings. Check `unsupported_ops` before treating MAC counts as complete. Pruning stages also report requested/actual channel reductions, shortfall, `planning_trials`, and `planning_limit_reached`. A reached strategy limit can leave some blocks unchanged even though every supported block was included in discovery; inspect the per-axis `removed` values instead of assuming the requested ratio was achieved everywhere.
+Each stage records validation cross-entropy, top-1/top-5 accuracy, change from
+baseline in percentage points, parameter count, MACs, and `latency_ms`. MACs and
+latency describe the **whole configured validation batch**, not one image.
+Baseline and compact measurements use identical batch size, dtype, device, and
+compilation settings. Check `unsupported_ops` before treating MAC counts as
+complete. Neither MACs nor latency is a pruning target in these workflows.
+Pruning stages report `max_params`, `before_params`, `after_params`, `target_met`,
+`planning_trials`, and `planning_limit_reached`. Counts include all unique
+Parameters, including retained learned gates; buffers are excluded. Meeting the
+parameter cap does not imply a particular latency or accuracy improvement.
 
 The default Greedy limit is 10,000 tentative joint dependency queries, including
 fallback completion attempts. It does not count training steps or removed
@@ -245,16 +271,20 @@ channels; scoring queries are separate. The strategy first combines candidates
 using the known divisibility and balance constraints, then checks the complete
 batch jointly. A width of 64 aligned to 8 can submit eight selected channels in
 one trial. Unpredicted joint effects still require further checks, and proven
-budget violations are skipped without a query. A limit hit retains only complete,
-executable combinations. Increasing
+channel-budget violations are skipped without a query. Parameter-budget search
+allows intermediate requests above the final cap and stops at the first verified
+combination meeting it. If the cap remains unmet, planning raises an error before
+any new model mutation or compact checkpoint is produced. The error reports the
+count reached on this greedy path, the limit, and recent blockers; it is not a
+proof that no other selection could succeed. Increasing
 `Greedy(..., max_trials=...)` in the example permits more search, but cannot make
-an incompatible ratio and granularity feasible.
+an unsupported structural change executable.
 
 Each output directory contains:
 
 - `metrics.json`: effective CLI settings, data/weight metadata, and stage results.
 - `model.pt`: the compact model checkpoint.
-- `training.pt`: optimizer, algorithm, configuration, and RNG state; iterative pruning also saves cumulative accounting.
+- `training.pt`: optimizer, algorithm, configuration, and RNG state; iterative pruning also saves initial and target parameter counts.
 
 A successful run ends with `Checkpoint verified; results: ...`. Restoration is checked against the in-memory compact model. Optimizers are recreated after parameter replacement. The saved training state is not a general resume CLI. These examples demonstrate component composition; their simple SGD, preprocessing, and regularization choices do not constitute complete paper reproductions or established accuracy/speedup claims.
 

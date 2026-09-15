@@ -1,4 +1,4 @@
-"""Prune a pretrained ImageNet model in rounds with cumulative channel budgets."""
+"""Prune a pretrained ImageNet model toward a final absolute parameter limit."""
 
 import argparse
 import json
@@ -14,15 +14,15 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
+from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
-    CandidateSpace,
     Granularity,
     Greedy,
+    ParameterBudget,
     Pruner,
     load_checkpoint,
     save_checkpoint,
 )
-from torch_kirigami.sparsity import CumulativeChannelBudget
 
 
 def parse_args():
@@ -52,10 +52,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--channel_pruning_ratio",
+        "--pruning_ratio",
         type=float,
-        default=0.25,
-        help="Final cumulative fraction of original candidate-domain channels to remove",
+        default=0.05,
+        help="Final fraction of initial whole-model parameters to remove (default: 0.05)",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--rounds", type=int, default=3)
@@ -90,12 +90,8 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if (
-        not 0 < options.channel_pruning_ratio < 1
-        or not math.isfinite(options.lr)
-        or options.lr <= 0
-    ):
-        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
+    if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
+        parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -136,11 +132,14 @@ def main():
         validation, batch_size=options.val_batch_size, num_workers=options.val_workers
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
+    budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(options).items()
     }
-    config.update(weights=str(weights), dataset=dataset_info, layers=layers)
+    config.update(
+        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+    )
     options.output.mkdir(parents=True, exist_ok=True)
     records = []
 
@@ -168,29 +167,28 @@ def main():
     graph = DependencyGraph.build(model, args=(example,))
     pruner = Pruner(model, graph=graph, granularity=alignment)
     space = pruner.discover_candidates(targets=targets)
-    accounting = CumulativeChannelBudget(graph, space)
-    original_width = sum(axis.tensor.shape[axis.dim] for axis in space.channel_axes)
+    original_params = count_parameters(model)
+    reduction = original_params - budget.max_params
 
     for index in range(1, options.rounds + 1):
-        # Ratios always refer to the original widths, not the previous round.
-        ratio = options.channel_pruning_ratio * index / options.rounds
-        budget = accounting.budget(graph, space, ratio)
-        # Preserve the original accounting axes even if a domain becomes protected.
-        round_space = CandidateSpace(space.candidates, budget.channel_axes)
-        plan = make_plan(pruner, round_space, budget)
-        model, result = pruner.apply(plan)
+        # Interpolate absolute caps from the fixed initial model. Alignment may
+        # overshoot an intermediate target; the next round can then be a no-op.
+        max_params = (
+            budget.max_params
+            if index == options.rounds
+            else original_params - reduction * index // options.rounds
+        )
+        plan = make_plan(pruner, space, ParameterBudget(max_params))
+        model, _ = pruner.apply(plan)
         graph = DependencyGraph.build(model, args=(example,))
         pruner = Pruner(model, graph=graph, granularity=alignment)
         space = pruner.discover_candidates(targets=targets)
-        accounting.update(result, graph, space)
-        current_width = sum(model.get_parameter(path).shape[0] for path in paths)
         record(
             f"round_{index}_pruned",
-            target_ratio=ratio,
-            actual_ratio=1 - current_width / original_width,
-            target=plan.selection_report.targets,
-            removed=plan.selection_report.removed,
-            shortfall=plan.selection_report.shortfall,
+            max_params=plan.selection_report.max_params,
+            before_params=plan.selection_report.before_params,
+            after_params=plan.selection_report.after_params,
+            target_met=plan.selection_report.target_met,
             planning_trials=plan.selection_report.trials,
             planning_limit_reached=plan.selection_report.limit_reached,
         )
@@ -237,7 +235,7 @@ def main():
     torch.save(
         {
             "optimizer": optimizer.state_dict(),
-            "budget": accounting.state_dict(),
+            "budget": {"initial_params": original_params, "max_params": budget.max_params},
             "config": config,
             "algorithm": {"completed_rounds": options.rounds},
             "rng": torch.get_rng_state(),

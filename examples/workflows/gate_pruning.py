@@ -16,9 +16,9 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
-    ChannelRatio,
     Granularity,
     Greedy,
+    ParameterBudget,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -66,10 +66,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--channel_pruning_ratio",
+        "--pruning_ratio",
         type=float,
-        default=0.25,
-        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+        default=0.05,
+        help="Fraction of whole-model parameters, including inserted gates, to remove (default: 0.05)",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--sparse_epochs", type=int, default=1)
@@ -98,12 +98,8 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if (
-        not 0 < options.channel_pruning_ratio < 1
-        or not math.isfinite(options.lr)
-        or options.lr <= 0
-    ):
-        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
+    if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
+        parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if not math.isfinite(options.strength) or options.strength < 0:
         parser.error("--strength must be finite and nonnegative")
     if options.device == "cuda" and not torch.cuda.is_available():
@@ -147,11 +143,18 @@ def main():
         validation, batch_size=options.val_batch_size, num_workers=options.val_workers
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
+    budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(options).items()
     }
-    config.update(weights=str(weights), dataset=dataset_info, layers=layers, gated=True)
+    config.update(
+        weights=str(weights),
+        dataset=dataset_info,
+        layers=layers,
+        gated=True,
+        max_params=budget.max_params,
+    )
     records = []
     options.output.mkdir(parents=True, exist_ok=True)
 
@@ -252,19 +255,16 @@ def main():
 
     plan = pruner.plan(
         space,
-        budget=ChannelRatio(options.channel_pruning_ratio),
+        budget=budget,
         strategy=Greedy(score),
     )
-    original_width = sum(axis.tensor.shape[0] for axis in axes)
     model, _ = pruner.apply(plan)
-    current_width = sum(model.get_parameter(path).shape[0] for path in paths)
     record(
         "pruned",
-        target_ratio=options.channel_pruning_ratio,
-        actual_ratio=1 - current_width / original_width,
-        target=plan.selection_report.targets,
-        removed=plan.selection_report.removed,
-        shortfall=plan.selection_report.shortfall,
+        max_params=plan.selection_report.max_params,
+        before_params=plan.selection_report.before_params,
+        after_params=plan.selection_report.after_params,
+        target_met=plan.selection_report.target_met,
         planning_trials=plan.selection_report.trials,
         planning_limit_reached=plan.selection_report.limit_reached,
     )

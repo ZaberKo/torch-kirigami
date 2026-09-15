@@ -676,6 +676,40 @@
       ]
     },
     {
+      "object": "torch_kirigami.pruning.ParameterBudget",
+      "contracts": [
+        {
+          "behavior": "Whole-model unique-parameter counts, target stopping, granularity completion, and no mutation on unmet targets",
+          "tests": [
+            "tests/integration/test_parameter_budget.py::test_parameter_target_counts_whole_model_and_stops",
+            "tests/integration/test_parameter_budget.py::test_frozen_uncaptured_and_aliased_parameters_count_once",
+            "tests/integration/test_parameter_budget.py::test_joint_row_column_overlap_and_wrapped_candidates",
+            "tests/integration/test_parameter_budget.py::test_unmet_parameter_target_never_applies",
+            "tests/integration/test_parameter_budget.py::test_parameter_target_completes_alignment_and_invalid_empty_request",
+            "tests/integration/test_parameter_budget.py::test_parameter_budget_requires_an_integer_count",
+            "tests/integration/test_parameter_budget.py::test_ratio_conversion_is_exact_at_integer_boundaries",
+            "tests/integration/test_parameter_budget.py::test_ratio_budget_uses_the_same_plan_and_portable_execution"
+          ],
+          "conditions": "CPU and CUDA for execution_device tests; static validation on CPU",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ParameterReport",
+      "contracts": [
+        {
+          "behavior": "Portable resource report verified against before/after structures on load and apply",
+          "tests": [
+            "tests/integration/test_parameter_budget.py::test_parameter_target_counts_whole_model_and_stops",
+            "tests/integration/test_parameter_budget.py::test_parameter_report_is_checked_against_portable_structure"
+          ],
+          "conditions": "CPU and CUDA plan replay; corrupted reports rejected before mutation",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.SelectionReport",
       "contracts": [
         {
@@ -1803,6 +1837,21 @@
           "gaps": [
             "未穷举自定义算子、输入形状与编译后端组合"
           ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.measurement.count_parameters",
+      "contracts": [
+        {
+          "behavior": "Count unique registered Parameters without execution or mutation, including frozen and unused tensors and distinguishing storage from object identity",
+          "tests": [
+            "tests/integration/test_parameter_budget.py::test_counting_is_readonly_and_distinguishes_parameter_identity",
+            "tests/integration/test_parameter_budget.py::test_frozen_uncaptured_and_aliased_parameters_count_once",
+            "tests/integration/test_measurement.py::test_complexity_linear_conv_and_frozen_shared_parameters"
+          ],
+          "conditions": "CPU and CUDA through execution_device",
+          "gaps": []
         }
       ]
     },

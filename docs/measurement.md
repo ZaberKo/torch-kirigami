@@ -4,7 +4,19 @@
 
 ## Basic use
 
-Pass the original eager module to both functions, with its parameters and buffers already on the selected device. `compile=True` requests compilation inside the latency function.
+For parameter counts alone, use `count_parameters(model)` from
+`torch_kirigami.measurement`. It requires no sample input or forward execution
+and returns the sum of unique registered Parameter elements. Frozen and unused
+parameters count; buffers do not. Aliases of one Parameter count once, while
+distinct Parameters sharing storage count separately. It does not transfer data
+between devices. Complexity measurement and `ParameterBudget.from_ratio()` use
+the same counter. Zero weights and pruning masks do not reduce this count;
+physical tensor sizes determine the number of parameters.
+
+For MACs and latency, pass the original eager module to
+`calculate_model_complexity()` and `measure_module_latency()`, with its parameters
+and buffers already on the selected device. `compile=True` requests compilation
+inside the latency function.
 
 ```python
 import torch
@@ -22,6 +34,7 @@ latency_ms = measure_module_latency(model, (x,), compile=True, warmup=5, repetit
 print(f"#Params: {complexity.params}")
 print(f"#MACs: {complexity.macs}")
 print(f"Unsupported operations: {complexity.unsupported_ops}")
+print(f"Recorded FLOPs (registered formulas only): {complexity.flops}")
 print(f"Batch latency: {latency_ms:.3f} ms")
 ```
 
@@ -50,13 +63,20 @@ Counting and timing are separate forwards. Instrumentation and the math attentio
 | --- | --- |
 | `params: int` | Number of elements in unique registered parameters, including frozen parameters; buffers are excluded |
 | `macs: int` | MACs for the entire supplied input batch and executed path |
-| `unsupported_ops: tuple[str, ...]` | Observed operations outside the explicitly supported counting convention |
+| `flops: int` | Native counter total for registered FLOP formulas, including non-MAC formulas; not a complete model FLOP count |
+| `unsupported_ops: tuple[str, ...]` | Observed operations whose MAC coverage could not be verified; excludes known non-MAC operations |
 
 One MAC is one multiply-accumulate, equivalent to two FLOPs in the counting convention. Matrix products and convolutions contribute, including the matrix products in attention. Bias addition, activation, normalization, and other elementwise work are excluded. Parameter sharing is deduplicated by `Parameter` identity, not by comparing numerical values.
 
-The implementation uses PyTorch's native `FlopCounterMode` formulas divided by two and profiles executed operations to identify unsupported coverage. It temporarily selects the SDPA math backend so fused attention does not silently bypass matrix-operation counting. Counting uses `no_grad` outside inference mode.
+`flops` retains the native counter's total without converting units. Additional registered non-MAC formulas contribute to `flops` but not `macs`. Operations without a formula or counted decomposition contribute nothing to `flops`; for example, standard activation and normalization work is generally absent from the native counter. `unsupported_ops` describes MAC coverage only: an empty tuple does not establish FLOP completeness. Consequently, `flops` may equal `2 * macs` for common models, but that equality is not an API invariant.
 
-A nonempty `unsupported_ops` means the MAC result is a partial count. The result is neither a complete count of all floating-point operations nor a prediction of compiler-generated instructions. Coverage describes the observed execution path; it cannot establish the cost of arbitrary opaque Python or native code. Pass an eager module, not a previously compiled wrapper.
+The implementation sums audited matrix and convolution entries from PyTorch's native `FlopCounterMode`, converting each from FLOPs to MACs. It does not divide the counter's unrestricted total by two: formulas registered for other operations need not represent multiply-accumulates. A formula on an explicitly excluded operation cannot increase MACs; an unverified formula on a computational operation remains unsupported. Replacing an audited PyTorch formula is outside the contract; malformed negative, odd or non-integer counts are rejected, but this check cannot verify an arbitrary replacement formula.
+
+Counts describe dense theoretical work, not hardware instructions. Matrix multiplication contributes `M * N * K` per batch item. Ordinary convolution contributes output elements times kernel volume times input channels per group; transposed convolution uses the input spatial positions. Attention contributes the `QKᵀ` and `AV` matrix products. Zero weights, causal masks and kernel fusion do not reduce these counts. Pooling, activation, normalization and bias work are excluded; twice the MAC count is not a complete model FLOP count.
+
+Executed operations are profiled to identify missing coverage. The SDPA math backend is selected temporarily so fused attention does not silently bypass matrix-operation counting. Counting uses `no_grad` outside inference mode.
+
+A nonempty `unsupported_ops` means MAC completeness could not be established, not that every listed operation necessarily contains omitted MACs. Known excluded operations such as ReLU and pooling do not cause this warning. Coverage describes the observed execution path; it cannot establish the cost of arbitrary opaque Python or native code. Pass an eager module, not a previously compiled wrapper.
 
 ## Latency definition
 

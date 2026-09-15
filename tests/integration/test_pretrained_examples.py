@@ -1,4 +1,5 @@
 import copy
+import decimal
 import json
 import re
 import shlex
@@ -19,7 +20,8 @@ from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
-    ChannelRatio,
+    ParameterBudget,
+    PlanningError,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -110,7 +112,7 @@ def test_workflow_producer_scores_transfer_together(entry, metric, execution_dev
     monkeypatch.setattr(pruner, "plan", inspect_scores)
     module = importlib.import_module(entry)
     args = ("taylor" if metric == "taylor" else "magnitude",) if entry == "prune_finetune" else ()
-    budget = ChannelRatio(0.5) if entry == "iterative_pruning" else 0.5
+    budget = ParameterBudget(20)
     with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
         scores = module.make_plan(pruner, space, budget, *args)
     assert not any(event.key == "aten::item" for event in profile.key_averages())
@@ -359,8 +361,8 @@ def test_pretrained_workflow(
             *model_args,
             "--device",
             execution_device,
-            "--channel_pruning_ratio",
-            "0.5",
+            "--pruning_ratio",
+            "0.15" if model_name == "resnet18" else "0.02",
             "--train_batch_size",
             "2",
             "--val_batch_size",
@@ -402,18 +404,24 @@ def test_pretrained_workflow(
     assert saved["config"]["val_batch_size"] == 1
     assert requested == [weights, None]
     baseline = results[0]
+    # Independent decimal arithmetic verifies the CLI conversion, including
+    # learned gates and the fixed initial baseline used by iterative pruning.
+    requested_ratio = decimal.Decimal(str(saved["config"]["pruning_ratio"]))
+    assert saved["config"]["max_params"] == int(baseline["#Params"] * (1 - requested_ratio))
     assert baseline["stage"] == "pretrained"
     assert all(r["samples"] == 2 for r in results)
     assert all(r["top1_delta_pp"] == pytest.approx(r["top1"] - baseline["top1"]) for r in results)
     pruned = [r for r in results if r["stage"].endswith("pruned")]
-    assert pruned[-1]["removed"] == [8 if recipe == "iterative_pruning" else 16] * len(
-        expected_layers
-    )
-    assert pruned[-1]["actual_ratio"] == 0.5
+    assert pruned[-1]["max_params"] == saved["config"]["max_params"]
+    assert all(row["target_met"] and row["#Params"] <= row["max_params"] for row in pruned)
+    assert all(row["#Params"] == row["after_params"] for row in pruned)
     assert pruned[-1]["#Params"] < baseline["#Params"]
     assert pruned[-1]["#MACs"] < baseline["#MACs"]
     if recipe == "iterative_pruning":
-        assert [row["actual_ratio"] for row in pruned] == [0.25, 0.5]
+        initial = baseline["#Params"]
+        cap = saved["config"]["max_params"]
+        assert [row["max_params"] for row in pruned] == [initial - (initial - cap) // 2, cap]
+        assert pruned[1]["before_params"] == pruned[0]["after_params"]
     if recipe == "stability_pruning" and "--search_steps" in extra:
         search = next(row for row in results if row["stage"] == "search_completed")
         assert search["selection_checks"] == 1
@@ -455,16 +463,15 @@ def test_evaluation_only_workflows_do_not_request_training(
     monkeypatch.setattr(module, "load_images", data)
     monkeypatch.setattr(torch.optim.SGD, "step", unexpected_training)
     device_args = ["--device", "cpu"] if execution_device == "cpu" else []
-    # The narrow fixture has width 32: use an explicit cap that allows one
-    # eight-channel deletion so this tests real pruning, not an empty plan.
+    # The narrow fixture contains about 130k parameters; require real compaction.
     monkeypatch.setattr(
         sys,
         "argv",
         [
             recipe + ".py",
             *device_args,
-            "--channel_pruning_ratio",
-            "0.25",
+            "--pruning_ratio",
+            "0.05",
             "--val_batch_size",
             "1",
             "--latency_warmup",
@@ -567,7 +574,11 @@ def test_workflow_device_default_requires_cuda(
 ):
     module = importlib.import_module(recipe)
     monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
-    monkeypatch.setattr(sys, "argv", ["workflow", *(["--device", "cpu"] if explicit_cpu else [])])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["workflow", *(["--device", "cpu"] if explicit_cpu else [])],
+    )
     if not cuda_available and not explicit_cpu:
         with pytest.raises(SystemExit) as error:
             module.parse_args()
@@ -596,7 +607,10 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "--channel_pruning_ratio" in completed.stdout
+    assert "--pruning_ratio" in completed.stdout
+    assert "--max_params" not in completed.stdout
+    assert "--channel_pruning_ratio" not in completed.stdout
+    assert "--max_macs" not in completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -635,7 +649,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     assert options.latency_warmup == latency_defaults["warmup"].default
     assert options.latency_repetitions == latency_defaults["repetitions"].default
     assert not options.compile_latency
-    assert options.channel_pruning_ratio == (0.125 if recipe == "prune_finetune" else 0.25)
+    assert options.pruning_ratio == 0.05
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
     monkeypatch.setattr(
         sys,
@@ -644,6 +658,8 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
             recipe,
             "--device",
             "cpu",
+            "--pruning_ratio",
+            "0.1",
             "--train_batch_size",
             "16",
             "--val_batch_size",
@@ -658,6 +674,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     options = module.parse_args()
     assert (options.train_batch_size, options.val_batch_size) == (16, 128)
     assert options.compile_latency
+    assert options.pruning_ratio == 0.1
     for removed in (
         "--layers",
         "--threads",
@@ -665,11 +682,24 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
         "--batch-size",
         "--train-samples",
         "--ratio",
+        "--channel_pruning_ratio",
+        "--max_macs",
+        "--max_params",
     ):
         monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", removed])
         with pytest.raises(SystemExit) as error:
             module.parse_args()
         assert error.value.code == 2
+
+
+@pytest.mark.parametrize("recipe", WORKFLOWS)
+@pytest.mark.parametrize("ratio", ["-0.1", "1", "nan", "inf"])
+def test_workflow_rejects_invalid_parameter_ratio(monkeypatch, capsys, recipe, ratio):
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", "--pruning_ratio", ratio])
+    with pytest.raises(SystemExit) as error:
+        importlib.import_module(recipe).parse_args()
+    assert error.value.code == 2
+    assert "0 <= pruning_ratio < 1" in capsys.readouterr().err
 
 
 def test_readme_workflow_commands_match_the_cli(monkeypatch):
@@ -760,7 +790,7 @@ def test_supported_pretrained_models_use_explicit_official_weights(monkeypatch, 
     assert type(model) is type(skeleton)
 
 
-def test_workflow_reports_strategy_limit_without_claiming_target_completion(monkeypatch, tmp_path):
+def test_workflow_unmet_parameter_target_stops_before_apply(monkeypatch, tmp_path):
     module = prune_finetune
     strategy = module.Greedy
     weights = module.MODELS["resnet18"][1]
@@ -776,11 +806,14 @@ def test_workflow_reports_strategy_limit_without_claiming_target_completion(monk
             {},
         ),
     )
-    monkeypatch.setattr(sys, "argv", ["workflow", "--device", "cpu", "--output", str(tmp_path)])
-    module.main()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["workflow", "--device", "cpu", "--pruning_ratio", "0.05", "--output", str(tmp_path)],
+    )
+    with pytest.raises(PlanningError, match=r"Parameter target not reached.*strategy trial limit"):
+        module.main()
     saved = json.loads((tmp_path / "metrics.json").read_text())
-    pruned = next(stage for stage in saved["stages"] if stage["stage"] == "pruned")
     assert len(saved["config"]["layers"]) == 5
-    assert pruned["planning_trials"] == 0 and pruned["planning_limit_reached"]
-    assert pruned["removed"] == [0] * 5
-    assert pruned["actual_ratio"] == 0 and pruned["shortfall"] == 20
+    assert [row["stage"] for row in saved["stages"]] == ["pretrained"]
+    assert not (tmp_path / "model.pt").exists()

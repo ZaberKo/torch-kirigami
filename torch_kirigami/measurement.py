@@ -18,13 +18,53 @@ from torch.utils.flop_counter import FlopCounterMode
 from .bindings import ordinary_tensors, storage_key
 from .capture import isolated_execution, tensor_leaves
 
-__all__ = ["ModelComplexity", "calculate_model_complexity", "measure_module_latency"]
+__all__ = [
+    "ModelComplexity",
+    "calculate_model_complexity",
+    "count_parameters",
+    "measure_module_latency",
+]
 
-# Composite wrappers are counted through their constituent matrix/conv calls.
-# Other entries have no MAC cost under our matrix/conv-only convention. Keep
-# this explicit: unfamiliar kernels must appear in unsupported_ops, not as zero.
-_MAC_FREE_OR_COMPOSITE = frozenset(
-    [
+
+def count_parameters(model: nn.Module) -> int:
+    """Count elements in unique registered Parameters without executing the model.
+
+    Includes frozen and unused parameters; excludes buffers. Multiple names for
+    the same Parameter count once. Distinct Parameters sharing storage remain
+    distinct entities. No device transfer, sample input, or FX graph is needed.
+    Counts tensor sizes, not nonzero values: masking weights does not lower it.
+    """
+    return sum(parameter.numel() for parameter in model.parameters())
+
+
+# Only these audited forward formulas use two FLOPs per dense MAC. Do not
+# convert the counter's total: its registry also accepts arbitrary FLOP formulas.
+_MAC_FORMULAS = frozenset(
+    f"aten::{name}"
+    for name in (
+        "mm",
+        "addmm",
+        "bmm",
+        "baddbmm",
+        "_scaled_mm",
+        "convolution",
+        "_convolution",
+        "cudnn_convolution",
+        "_slow_conv2d_forward",
+        "convolution_overrideable",
+        "_scaled_dot_product_efficient_attention",
+        "_scaled_dot_product_flash_attention",
+        "_scaled_dot_product_cudnn_attention",
+        "_flash_attention_forward",
+        "_efficient_attention_forward",
+    )
+)
+
+# These wrappers contribute through their constituent matrix/conv calls, not
+# through formulas registered directly on the wrappers.
+_MAC_COMPOSITES = frozenset(
+    f"aten::{name}"
+    for name in (
         "linear",
         "matmul",
         "einsum",
@@ -36,7 +76,16 @@ _MAC_FREE_OR_COMPOSITE = frozenset(
         "conv_transpose3d",
         "scaled_dot_product_attention",
         "_scaled_dot_product_attention_math",
+    )
+)
+
+# Explicit exclusions under the matrix/conv MAC convention. Unfamiliar kernels
+# must appear in unsupported_ops, not silently become zero-cost operations.
+_MAC_FREE_OPS = frozenset(
+    f"aten::{name}"
+    for name in (
         "add",
+        "add_",
         "sub",
         "mul",
         "div",
@@ -51,9 +100,11 @@ _MAC_FREE_OR_COMPOSITE = frozenset(
         "tanh",
         "sigmoid",
         "relu",
+        "relu_",
         "gelu",
         "silu",
         "clamp_min",
+        "clamp_min_",
         "clamp",
         "where",
         "eq",
@@ -76,10 +127,29 @@ _MAC_FREE_OR_COMPOSITE = frozenset(
         "_native_batch_norm_legit",
         "_native_batch_norm_legit_no_training",
         "native_batch_norm",
+        "cudnn_batch_norm",
+        "miopen_batch_norm",
         "layer_norm",
         "native_layer_norm",
         "group_norm",
         "native_group_norm",
+        "avg_pool1d",
+        "avg_pool2d",
+        "avg_pool3d",
+        "adaptive_avg_pool1d",
+        "adaptive_avg_pool2d",
+        "adaptive_avg_pool3d",
+        "_adaptive_avg_pool2d",
+        "_adaptive_avg_pool3d",
+        "max_pool1d",
+        "max_pool2d",
+        "max_pool3d",
+        "max_pool1d_with_indices",
+        "max_pool2d_with_indices",
+        "max_pool3d_with_indices",
+        "adaptive_max_pool1d",
+        "adaptive_max_pool2d",
+        "adaptive_max_pool3d",
         "mean",
         "sum",
         "amax",
@@ -156,23 +226,30 @@ _MAC_FREE_OR_COMPOSITE = frozenset(
         "_reshape_alias",
         "_autocast_to_reduced_precision",
         "_autocast_to_full_precision",
-    ]
+    )
 )
 
 
 @dataclass(frozen=True)
 class ModelComplexity:
-    """MACs for one supplied batch and all unique registered parameter elements.
+    """Recorded FLOPs, dense MACs and unique registered parameter elements.
+
+    flops is the native counter's total for registered formulas, including any
+    additional non-MAC formulas. It is not a complete model FLOP count. Both
+    operation counts cover the entire supplied batch and executed path.
 
     One multiply-accumulate counts as one MAC (two FLOPs). Matrix products and
     convolutions count; bias, normalization, activation and other elementwise
-    work do not. unsupported_ops lists observed operations outside the supported
-    convention; a nonempty list means macs is only a partial count. Parameters
-    include frozen weights, deduplicated by Parameter identity.
+    work do not. unsupported_ops lists operations with unverified MAC coverage,
+    not these explicit exclusions; a nonempty list means completeness is unknown.
+    This field describes MAC coverage only, not FLOP coverage: an empty tuple
+    does not imply that all floating-point operations were counted.
+    Parameters include frozen weights, deduplicated by Parameter identity.
     """
 
     macs: int
     params: int
+    flops: int
     unsupported_ops: tuple[str, ...] = ()
 
 
@@ -249,7 +326,7 @@ def calculate_model_complexity(
     device: torch.device | str | None = None,
     input_kwargs: dict[str, Any] | None = None,
 ) -> ModelComplexity:
-    """Count eager inference MACs and parameters without changing training state.
+    """Record eager inference FLOPs, MACs and parameters without changing training state.
 
     Args:
         target: Eager module already on the chosen device; do not pass a compiled
@@ -261,7 +338,9 @@ def calculate_model_complexity(
 
     Returns:
         Counts for the entire supplied batch and explicit unsupported operations.
-        Uses PyTorch's native FLOP formulas divided by two. SDPA uses the math
+        FLOPs retain the native counter total; MAC coverage diagnostics do not
+        certify FLOP completeness.
+        Converts only audited native matrix/conv FLOP formulas to MACs. SDPA uses the math
         backend here so fused CPU attention cannot silently bypass counting.
 
     Model modes, registered buffer bindings/values, inputs and torch RNG state
@@ -279,12 +358,21 @@ def calculate_model_complexity(
             FlopCounterMode(display=False) as counter,
         ):
             target(*args, **kwargs)
-        counted = {
-            str(op).replace("aten.", "aten::", 1)
-            for op in counter.get_flop_counts().get("Global", {})
+        counts = {
+            str(op).replace("aten.", "aten::", 1): flops
+            for op, flops in counter.get_flop_counts().get("Global", {}).items()
         }
-        ignored = {f"aten::{op}" for op in _MAC_FREE_OR_COMPOSITE}
-        unsupported = set()
+        counted = counts.keys() & _MAC_FORMULAS
+        macs = 0
+        for op in counted:
+            flops = counts[op]
+            if type(flops) is not int or flops < 0 or flops % 2:
+                raise ValueError(f"{op}: expected a nonnegative even FLOP count for dense MACs")
+            macs += flops // 2
+        # A registered composite formula may suppress decomposition. Its count
+        # has no verified MAC meaning, so it cannot be ignored as a wrapper.
+        unsupported = counts.keys() - counted - _MAC_FREE_OPS
+        ignored = (_MAC_FREE_OPS | _MAC_COMPOSITES) - unsupported
         for event in trace.events():
             if "::" not in event.name or event.name in counted or event.name in ignored:
                 continue
@@ -296,9 +384,10 @@ def calculate_model_complexity(
             if parent is None:
                 unsupported.add(event.name)
         return ModelComplexity(
-            counter.get_total_flops() // 2,
-            sum(parameter.numel() for parameter in target.parameters()),
-            tuple(sorted(unsupported)),
+            macs=macs,
+            params=count_parameters(target),
+            flops=counter.get_total_flops(),
+            unsupported_ops=tuple(sorted(unsupported)),
         )
 
 

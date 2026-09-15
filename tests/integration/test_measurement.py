@@ -6,6 +6,8 @@ import math
 import pytest
 import torch
 from torch import nn
+from torch.nn import functional as F
+from torch.utils.flop_counter import flop_registry
 
 from tests.support.workflow_fixtures import Transformer, build_space
 from torch_kirigami import DependencyGraph
@@ -19,11 +21,43 @@ def test_complexity_linear_conv_and_frozen_shared_parameters(execution_device):
     linear.register_parameter("alias", linear.weight)
     value = calculate_model_complexity(linear, torch.ones(2, 3, 4), execution_device)
     assert (value.macs, value.params, value.unsupported_ops) == (2 * 3 * 4 * 5, 4 * 5 + 5, ())
+    assert value.flops == 2 * (2 * 3 * 4 * 5)
     conv = nn.Conv2d(4, 6, 3, padding=1, groups=2).to(execution_device)
     value = calculate_model_complexity(conv, torch.ones(2, 4, 5, 5), execution_device)
     assert value.macs == 2 * 6 * 5 * 5 * 2 * 3 * 3
+    assert value.flops == 2 * (2 * 6 * 5 * 5 * 2 * 3 * 3)
     assert value.params == 6 * 2 * 3 * 3 + 6
     assert not value.unsupported_ops
+
+
+@pytest.mark.parametrize("dimensions", [1, 2, 3])
+@pytest.mark.parametrize("transposed", [False, True])
+def test_grouped_convolution_mac_formulas(dimensions, transposed, execution_device):
+    classes = (
+        (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)
+        if transposed
+        else (nn.Conv1d, nn.Conv2d, nn.Conv3d)
+    )
+    conv = classes[dimensions - 1](4, 6, 3, stride=2, padding=1, groups=2).to(execution_device)
+    result = calculate_model_complexity(conv, torch.ones(2, 4, *((5,) * dimensions)))
+    positions = 5**dimensions if transposed else 3**dimensions
+    assert result.macs == 2 * positions * 4 * (6 // 2) * 3**dimensions
+    assert result.unsupported_ops == ()
+
+
+@pytest.mark.parametrize("causal", [False, True])
+def test_attention_macs_are_dense_even_with_causal_mask(causal, execution_device):
+    class Attention(nn.Module):
+        def forward(self, q, k, v):
+            return F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+
+    result = calculate_model_complexity(
+        Attention(),
+        (torch.randn(2, 3, 4, 8), torch.randn(2, 3, 4, 8), torch.randn(2, 3, 4, 6)),
+        device=execution_device,
+    )
+    assert result.macs == 2 * 3 * 4 * 4 * (8 + 6)
+    assert result.unsupported_ops == ()
 
 
 @pytest.mark.parametrize("gated", [False, True])
@@ -60,6 +94,72 @@ def test_complexity_reports_unsupported_work():
 
     result = calculate_model_complexity(Inverse(), torch.eye(3))
     assert result.unsupported_ops and any("linalg" in op for op in result.unsupported_ops)
+
+
+def test_complexity_excludes_cnn_non_mac_work(execution_device):
+    class CNN(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Conv2d(4, 8, 3, padding=1, groups=4)
+            self.bn = nn.BatchNorm2d(8)
+
+        def forward(self, x):
+            y = self.bn(self.conv(x))
+            y.add_(1).relu_().clamp_min_(0)
+            return F.adaptive_avg_pool2d(F.max_pool2d(y, 2), (1, 1))
+
+    model = CNN().to(execution_device)
+    result = calculate_model_complexity(model, torch.randn(2, 4, 6, 6))
+    assert result.macs == 2 * 8 * 6 * 6 * 3 * 3
+    assert result.unsupported_ops == ()
+
+
+def test_non_mac_flop_registration_does_not_change_macs(monkeypatch, execution_device):
+    # An odd FLOP count must not be rounded down into an invented MAC. Even
+    # counts would be equally invalid: ReLU is outside the MAC convention.
+    monkeypatch.setitem(flop_registry, torch.ops.aten.relu, lambda *args, **kwargs: 3)
+    model = nn.Sequential(nn.Linear(4, 5), nn.ReLU()).to(execution_device)
+    result = calculate_model_complexity(model, torch.ones(2, 4))
+    assert result.macs == 2 * 4 * 5
+    assert result.flops == 2 * (2 * 4 * 5) + 3
+    assert result.unsupported_ops == ()
+
+
+def test_unverified_registered_formula_still_reports_missing_coverage(
+    monkeypatch, execution_device
+):
+    class Inverse(nn.Module):
+        def forward(self, x):
+            return torch.linalg.inv(x)
+
+    monkeypatch.setitem(flop_registry, torch.ops.aten.linalg_inv_ex, lambda *args, **kwargs: 42)
+    result = calculate_model_complexity(Inverse(), torch.eye(3), device=execution_device)
+    assert result.macs == 0
+    assert result.flops == 42
+    assert "aten::linalg_inv_ex" in result.unsupported_ops
+
+
+def test_registered_composite_cannot_hide_missing_macs(monkeypatch, execution_device):
+    monkeypatch.setitem(flop_registry, torch.ops.aten.linear, lambda *args, **kwargs: 42)
+    model = nn.Linear(4, 5).to(execution_device)
+    result = calculate_model_complexity(model, torch.ones(2, 4))
+    # Depending on dispatch decomposition, linear may still reach addmm. Both
+    # paths must either count its MACs or explicitly report missing coverage.
+    assert result.macs == 40 or "aten::linear" in result.unsupported_ops
+    assert result.macs != 21
+
+
+@pytest.mark.parametrize("invalid_count", [-2, 3, 2.5])
+def test_invalid_mac_formula_restores_execution_state(monkeypatch, invalid_count, execution_device):
+    monkeypatch.setitem(flop_registry, torch.ops.aten.addmm, lambda *args, **kwargs: invalid_count)
+    model = nn.Linear(4, 5).to(execution_device)
+    x = torch.ones(2, 4)
+    weight = model.weight.detach().clone()
+    with pytest.raises(ValueError, match="nonnegative even FLOP count"):
+        calculate_model_complexity(model, x)
+    assert model.training
+    torch.testing.assert_close(model.weight, weight)
+    torch.testing.assert_close(x, torch.ones_like(x))
 
 
 @pytest.mark.parametrize("kind", ["complexity", "latency"])

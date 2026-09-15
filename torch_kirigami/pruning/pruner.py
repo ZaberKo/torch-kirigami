@@ -144,7 +144,8 @@ class Pruner:
 
         Args:
             space: Explicit CandidateSpace, constructed manually or discovered.
-            budget: ChannelRatio or ChannelCount upper bound on joint removals.
+            budget: ParameterBudget for a final whole-model cap, or ChannelRatio /
+                ChannelCount for upper bounds on channel removals.
             strategy: Callable returning registered keys; owns any scoring metric.
 
         Returns:
@@ -179,12 +180,11 @@ class Pruner:
         final_context = PlanningContext(
             self.graph, self.operations, candidates, budget, axes, self.constraints
         )
-        if not final_context.within_budget(impact):
-            raise PlanningError("Strategy exceeded the joint channel budget")
         final_context.trials = context.trials
         final_context.limit_reached = context.limit_reached
         final_context.exclusions.extend(context.exclusions)
         recipes, attributes, notes = final_context.compile(impact)
+        final_context.require_budget(impact)
         return self._finish(
             impact, recipes, attributes, keys, final_context.report(impact), notes, before, versions
         )

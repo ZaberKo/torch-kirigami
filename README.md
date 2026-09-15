@@ -45,7 +45,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, Pruner
+from torch_kirigami.pruning import Greedy, Magnitude, ParameterBudget, Pruner
 
 device = "cuda"
 model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3)).to(device).eval()
@@ -56,7 +56,7 @@ pruner = Pruner(model, graph=graph)
 space = pruner.discover_candidates()
 model, result = pruner.prune(
     space,
-    budget=ChannelRatio(0.25),
+    budget=ParameterBudget(max_params=51),
     strategy=Greedy(Magnitude(p=2)),
 )
 
@@ -66,10 +66,16 @@ print(result.plan.explain())
 ```
 
 `prune()` combines `plan()` and `apply()` and modifies the original model in place.
-External input/output dimensions are protected by default. Here the 25% channel
-budget removes two of eight hidden features; it is not a parameter-count ratio.
+External input/output dimensions are protected by default. Here the whole model
+shrinks from 67 to 51 parameters, removing two of eight hidden features.
 For another pruning round, rebuild the graph. Create a new optimizer if training
 afterward, because physical pruning replaces parameters.
+
+For a whole-model parameter reduction fraction, use
+`budget=ParameterBudget.from_ratio(model, pruning_ratio=0.05)`. This counts the
+initial parameters and converts the ratio to an absolute cap once. The standalone
+`torch_kirigami.measurement.count_parameters(model)` also exposes that count
+without tracing or executing the model.
 
 For a pretrained ResNet one-shot command without fine-tuning, see the
 [workflow guide](examples/workflows/README.md#1-magnitude-or-taylor-pruning-and-fine-tuning).
@@ -121,7 +127,12 @@ space = pruner.discover_candidates()
 plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
 ```
 
-Use a `Pruner` bound to the current graph. An automatic budget may be underfilled when valid structural constraints prevent the requested reduction; inspect the plan's selection report. A resolved dependency impact is not a guarantee of physical executability or numerical equivalence to the unpruned model.
+Use a `Pruner` bound to the current graph. `ChannelRatio` limits channel removals
+and may return an underfilled plan. `ParameterBudget(max_params=...)` instead
+requires the final whole-model count to meet an absolute cap; an unmet target
+raises `PlanningError` before application. Both use the same dependency and
+execution checks. A resolved impact alone does not guarantee executability or
+numerical equivalence to the unpruned model.
 
 ## Pretrained ImageNet workflows
 
@@ -130,7 +141,7 @@ The [workflow guide](examples/workflows/README.md) provides seven standalone scr
 | Workflow | Purpose |
 | --- | --- |
 | Basic pruning | Magnitude or task-gradient Taylor selection, pruning, optional fine-tuning |
-| Iterative pruning | Repeated selection with cumulative channel budgets |
+| Iterative pruning | Repeated selection toward a final absolute parameter limit |
 | BN sparsity | L1 regularization of ResNet batch-normalization scales |
 | Dependency-group sparsity | Group Lasso or increasing squared-L2 regularization |
 | Soft pruning | Repeated zeroing or gradual norm reduction before physical deletion |

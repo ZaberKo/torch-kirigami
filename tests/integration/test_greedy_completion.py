@@ -14,6 +14,7 @@ from torch_kirigami.pruning import (
     ChannelRatio,
     Granularity,
     Greedy,
+    ParameterBudget,
     PlanningError,
     Pruner,
     PruningPlan,
@@ -165,8 +166,9 @@ def test_one_batch_satisfies_multiple_balance_and_alignment_constraints(executio
     ("conv", "conv_fn", "spatial"),
     [(nn.Conv1d, F.conv1d, (3,)), (nn.Conv2d, F.conv2d, (3, 3)), (nn.Conv3d, F.conv3d, (2, 2, 2))],
 )
+@pytest.mark.parametrize("budget", [ChannelRatio(0.5), ParameterBudget(62)])
 def test_grouped_convolution_batches_balance_different_local_input_columns(
-    conv, conv_fn, spatial, execution_device
+    conv, conv_fn, spatial, budget, execution_device
 ):
     model = nn.Sequential(conv(3, 8, 1), conv(8, 8, 1, groups=2), conv(8, 2, 1)).double().eval()
     original = copy.deepcopy(model)
@@ -179,10 +181,11 @@ def test_grouped_convolution_batches_balance_different_local_input_columns(
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path={"0": 4}))
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
-        budget=ChannelRatio(0.5),
+        budget=budget,
         strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
     )
-    assert plan.selection_report.removed == (4,) and plan.selection_report.trials == 1
+    assert len(plan.analysis.selection(axis.tensor).fully_selected_indices(0)) == 4
+    assert plan.selection_report.trials == 1
     assert not plan.selection_report.limit_reached
     pruner.apply(PruningPlan.from_dict(plan.to_dict()))
     hidden = conv_fn(x, original[0].weight[[2, 3, 4, 5]], original[0].bias[[2, 3, 4, 5]])
@@ -190,10 +193,14 @@ def test_grouped_convolution_batches_balance_different_local_input_columns(
     middle = conv_fn(hidden, middle_weight, original[1].bias, groups=2)
     expected = conv_fn(middle, original[2].weight, original[2].bias)
     torch.testing.assert_close(model(x), expected)
+    assert sum(p.numel() for p in model.parameters()) == 4 * 3 + 4 + 8 * 2 + 8 + 2 * 8 + 2
     model(x).sum().backward()
 
 
-def test_depthwise_candidate_blocks_keep_channel_denominator_and_batch_alignment(execution_device):
+@pytest.mark.parametrize("budget", [ChannelRatio(0.5), ParameterBudget(26)])
+def test_depthwise_candidate_blocks_keep_channel_denominator_and_batch_alignment(
+    budget, execution_device
+):
     model = nn.Sequential(
         nn.Conv1d(3, 4, 1), nn.Conv1d(4, 8, 1, groups=4), nn.Conv1d(8, 2, 1)
     ).eval()
@@ -205,16 +212,20 @@ def test_depthwise_candidate_blocks_keep_channel_denominator_and_batch_alignment
     assert len(space.candidates) == 4
     plan = pruner.plan(
         space,
-        budget=ChannelRatio(0.5),
+        budget=budget,
         strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
     )
-    assert plan.selection_report.widths == (8,) and plan.selection_report.removed == (4,)
+    axis = graph.parameter("1.weight").axis(0)
+    assert len(plan.analysis.selection(axis.tensor).fully_selected_indices(0)) == 4
+    if isinstance(budget, ChannelRatio):
+        assert plan.selection_report.widths == (8,) and plan.selection_report.removed == (4,)
     assert len(plan.selected) == 2 and plan.selection_report.trials == 1
     pruner.apply(plan)
     hidden = F.conv1d(x, original[0].weight[2:], original[0].bias[2:])
     depthwise = F.conv1d(hidden, original[1].weight[4:], original[1].bias[4:], groups=2)
     expected = F.conv1d(depthwise, original[2].weight[:, 4:], original[2].bias)
     torch.testing.assert_close(model(x), expected)
+    assert sum(p.numel() for p in model.parameters()) == 26
 
 
 def test_custom_constraint_subclass_receives_full_closure_not_axis_projection(execution_device):
