@@ -34,5 +34,6 @@ def measure_model(model, example, options):
         "compiled": options.compile_latency,
         "warmup": options.latency_warmup,
         "repetitions": options.latency_repetitions,
+        # Environment metadata, including for CUDA; not current thread utilization.
         "cpu_threads": torch.get_num_threads(),
     }

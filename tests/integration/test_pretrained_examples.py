@@ -359,7 +359,7 @@ def test_pretrained_workflow(
             *model_args,
             "--device",
             execution_device,
-            "--ratio",
+            "--channel_pruning_ratio",
             "0.5",
             "--train_batch_size",
             "2",
@@ -455,12 +455,16 @@ def test_evaluation_only_workflows_do_not_request_training(
     monkeypatch.setattr(module, "load_images", data)
     monkeypatch.setattr(torch.optim.SGD, "step", unexpected_training)
     device_args = ["--device", "cpu"] if execution_device == "cpu" else []
+    # The narrow fixture has width 32: use an explicit cap that allows one
+    # eight-channel deletion so this tests real pruning, not an empty plan.
     monkeypatch.setattr(
         sys,
         "argv",
         [
             recipe + ".py",
             *device_args,
+            "--channel_pruning_ratio",
+            "0.25",
             "--val_batch_size",
             "1",
             "--latency_warmup",
@@ -481,6 +485,7 @@ def test_evaluation_only_workflows_do_not_request_training(
         expected = ["pretrained", "search_completed", "pruned"]
     assert [row["stage"] for row in stages] == expected
     assert all(row["device"].split(":")[0] == execution_device for row in stages)
+    assert stages[-1]["#Params"] < stages[0]["#Params"]
 
 
 @pytest.mark.parametrize("gated", [False, True])
@@ -591,7 +596,7 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "--ratio" in completed.stdout
+    assert "--channel_pruning_ratio" in completed.stdout
 
 
 @pytest.mark.parametrize(
@@ -630,6 +635,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     assert options.latency_warmup == latency_defaults["warmup"].default
     assert options.latency_repetitions == latency_defaults["repetitions"].default
     assert not options.compile_latency
+    assert options.channel_pruning_ratio == (0.125 if recipe == "prune_finetune" else 0.25)
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
     monkeypatch.setattr(
         sys,
@@ -652,7 +658,14 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     options = module.parse_args()
     assert (options.train_batch_size, options.val_batch_size) == (16, 128)
     assert options.compile_latency
-    for removed in ("--layers", "--threads", "--compile", "--batch-size", "--train-samples"):
+    for removed in (
+        "--layers",
+        "--threads",
+        "--compile",
+        "--batch-size",
+        "--train-samples",
+        "--ratio",
+    ):
         monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", removed])
         with pytest.raises(SystemExit) as error:
             module.parse_args()
@@ -770,4 +783,4 @@ def test_workflow_reports_strategy_limit_without_claiming_target_completion(monk
     assert len(saved["config"]["layers"]) == 5
     assert pruned["planning_trials"] == 0 and pruned["planning_limit_reached"]
     assert pruned["removed"] == [0] * 5
-    assert pruned["actual_ratio"] == 0 and pruned["shortfall"] == 40
+    assert pruned["actual_ratio"] == 0 and pruned["shortfall"] == 20

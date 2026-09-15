@@ -52,7 +52,10 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
-        "--ratio", type=float, default=0.25, help="Final fraction of original channels"
+        "--channel_pruning_ratio",
+        type=float,
+        default=0.25,
+        help="Final cumulative fraction of original candidate-domain channels to remove",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--rounds", type=int, default=3)
@@ -87,8 +90,12 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if not 0 < options.ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
-        parser.error("Require 0 < ratio < 1 and positive finite lr")
+    if (
+        not 0 < options.channel_pruning_ratio < 1
+        or not math.isfinite(options.lr)
+        or options.lr <= 0
+    ):
+        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -166,7 +173,7 @@ def main():
 
     for index in range(1, options.rounds + 1):
         # Ratios always refer to the original widths, not the previous round.
-        ratio = options.ratio * index / options.rounds
+        ratio = options.channel_pruning_ratio * index / options.rounds
         budget = accounting.budget(graph, space, ratio)
         # Preserve the original accounting axes even if a domain becomes protected.
         round_space = CandidateSpace(space.candidates, budget.channel_axes)

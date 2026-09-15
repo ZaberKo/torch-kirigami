@@ -62,7 +62,7 @@ All multiword workflow options use underscores. The CLI accepts complete option 
 | `--val_batch_size` | `256` | Accuracy-evaluation batch size and the fixed synthetic inference batch for MAC/latency measurement |
 | `--val_workers` | `0` | Validation DataLoader worker processes. Training streams in the main process to avoid duplicating the iterable dataset |
 | `--seed` | `7` | Model/training RNG and shuffled data selection seed |
-| `--ratio` | `0.25` | Channel deletion cap; iterative pruning interprets it as the final cumulative target |
+| `--channel_pruning_ratio` | `0.125` for basic pruning; `0.25` otherwise | Maximum fraction of candidate-domain channels to delete, not a parameter or MAC ratio; iterative pruning uses the final cumulative target |
 | `--granularity` | `8` | Retained producer widths must be divisible by this factor; `1` adds no alignment constraint |
 | `--finetune_epochs` | `0` | Task-only epochs after physical pruning; iterative pruning applies this after every round |
 | `--lr` | `0.001` | SGD learning rate; momentum is `0.9` |
@@ -88,6 +88,11 @@ run in the main process and can leave the GPU waiting. `--val_workers 4` enables
 parallel validation loading. Training currently streams in the main process.
 Initial `torch.compile` work can also occupy the CPU before GPU latency timing.
 CPU utilization alone therefore cannot identify the device used by the model.
+
+`cpu_threads` records `torch.get_num_threads()`: the configured intra-op CPU
+thread count. It is retained for both CPU and CUDA measurements as environment
+metadata, not as a count of active threads or an indication of model placement.
+It does not report DataLoader workers or compiler subprocesses.
 
 The magnitude/Taylor entry prints stage boundaries, actual parameter and input
 devices, planning duration, and training progress. Evaluation and measurement
@@ -123,7 +128,7 @@ For a single magnitude-pruning pass **without training**:
 ```bash
 python prune_finetune.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 --metric magnitude \
+  --channel_pruning_ratio 0.125 --granularity 8 --metric magnitude \
   --finetune_epochs 0 --output runs/resnet18_prune_only
 ```
 
@@ -132,12 +137,19 @@ compiled latency, and saves and verifies the compact checkpoint. Only the
 validation split is needed. It still evaluates all 50,000 validation images at
 each stage; omitting training does not omit evaluation or latency compilation.
 
+The basic example uses a 12.5% channel cap instead of 25% to make the first
+pruning pass less aggressive. On ResNet-18 this permits aligned removals in every
+candidate domain, including width 64 with granularity 8. This is a demonstration
+setting, not an accuracy guarantee: magnitude-only pruning can still cause a
+substantial immediate accuracy loss. Compare the reported full-validation scores
+and fine-tune when needed.
+
 To follow the pruning pass with one epoch of fine-tuning:
 
 ```bash
 python prune_finetune.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 --metric magnitude \
+  --channel_pruning_ratio 0.125 --granularity 8 --metric magnitude \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_prune_finetune
 ```
 
@@ -148,7 +160,7 @@ python prune_finetune.py \
 ```bash
 python iterative_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 --rounds 2 \
+  --channel_pruning_ratio 0.25 --granularity 8 --rounds 2 \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_iterative_pruning
 ```
 
@@ -159,7 +171,7 @@ python iterative_pruning.py \
 ```bash
 python bn_sparsity.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 \
+  --channel_pruning_ratio 0.25 --granularity 8 \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_bn_sparsity
 ```
@@ -171,7 +183,7 @@ python bn_sparsity.py \
 ```bash
 python group_sparsity.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 --penalty lasso \
+  --channel_pruning_ratio 0.25 --granularity 8 --penalty lasso \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_group_sparsity
 ```
@@ -183,7 +195,7 @@ python group_sparsity.py \
 ```bash
 python soft_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 \
+  --channel_pruning_ratio 0.25 --granularity 8 \
   --operation decay --cycles 2 --projection_epochs 1 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_soft_pruning
 ```
@@ -195,7 +207,7 @@ python soft_pruning.py \
 ```bash
 python gate_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 \
+  --channel_pruning_ratio 0.25 --granularity 8 \
   --sparse_epochs 1 --strength 0.0001 --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_gate_pruning
 ```
@@ -207,7 +219,7 @@ python gate_pruning.py \
 ```bash
 python stability_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --ratio 0.25 --granularity 8 \
+  --channel_pruning_ratio 0.25 --granularity 8 \
   --search_steps 3 --window 2 --threshold 0.99 --strength 0.0001 \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_stability_pruning
 ```
@@ -219,7 +231,7 @@ For ResNet-34/50, replace `--model` in a workflow command with `resnet34` or `re
 ```bash
 python prune_finetune.py \
   --model vit_b_32 --device cuda --compile_latency \
-  --ratio 0.003 --granularity 8 --metric magnitude \
+  --channel_pruning_ratio 0.003 --granularity 8 --metric magnitude \
   --finetune_epochs 1 --lr 0.001 --output runs/vit_b_32_prune_finetune
 ```
 

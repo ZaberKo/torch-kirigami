@@ -60,7 +60,12 @@ def parse_args():
         help="Validation loader workers; training streams in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--channel_pruning_ratio",
+        type=float,
+        default=0.25,
+        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+    )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--sparse_epochs", type=int, default=1)
     parser.add_argument("--strength", type=float, default=1e-4)
@@ -88,8 +93,12 @@ def parse_args():
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
-    if not 0 < options.ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
-        parser.error("Require 0 < ratio < 1 and positive finite lr")
+    if (
+        not 0 < options.channel_pruning_ratio < 1
+        or not math.isfinite(options.lr)
+        or options.lr <= 0
+    ):
+        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
     if not math.isfinite(options.strength) or options.strength < 0:
         parser.error("--strength must be finite and nonnegative")
     if options.device == "cuda" and not torch.cuda.is_available():
@@ -225,7 +234,7 @@ def main():
 
     plan = pruner.plan(
         space,
-        budget=ChannelRatio(options.ratio),
+        budget=ChannelRatio(options.channel_pruning_ratio),
         strategy=Greedy(score),
     )
     original_width = sum(axis.tensor.shape[0] for axis in axes)
@@ -233,7 +242,7 @@ def main():
     current_width = sum(model.get_parameter(f"{layer}.conv1.weight").shape[0] for layer in layers)
     record(
         "pruned",
-        target_ratio=options.ratio,
+        target_ratio=options.channel_pruning_ratio,
         actual_ratio=1 - current_width / original_width,
         target=plan.selection_report.targets,
         removed=plan.selection_report.removed,

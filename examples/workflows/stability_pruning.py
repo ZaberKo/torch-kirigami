@@ -56,7 +56,12 @@ def parse_args():
         help="Validation loader workers; training streams in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
-    parser.add_argument("--ratio", type=float, default=0.25)
+    parser.add_argument(
+        "--channel_pruning_ratio",
+        type=float,
+        default=0.25,
+        help="Maximum fraction of candidate-domain channels to remove (not parameters or MACs)",
+    )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument(
         "--search_steps",
@@ -104,8 +109,12 @@ def parse_args():
         parser.error("--threshold must be in [0, 1]")
     if not math.isfinite(options.strength) or options.strength < 0:
         parser.error("--strength must be finite and nonnegative")
-    if not 0 < options.ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
-        parser.error("Require 0 < ratio < 1 and positive finite lr")
+    if (
+        not 0 < options.channel_pruning_ratio < 1
+        or not math.isfinite(options.lr)
+        or options.lr <= 0
+    ):
+        parser.error("Require 0 < channel_pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -247,7 +256,7 @@ def main():
     stable, training_epochs = False, 0
 
     for check in range(options.search_steps):
-        plan = make_plan(pruner, space, options.ratio)
+        plan = make_plan(pruner, space, options.channel_pruning_ratio)
         selected = tuple(c for c in space.candidates if c.key in plan.selected)
         retained = {}
         for axis in space.channel_axes:
@@ -296,7 +305,7 @@ def main():
     current_width = sum(model.get_parameter(path).shape[0] for path in paths)
     record(
         "pruned",
-        target_ratio=options.ratio,
+        target_ratio=options.channel_pruning_ratio,
         actual_ratio=1 - current_width / original_width,
         target=selection_report.targets,
         removed=selection_report.removed,
