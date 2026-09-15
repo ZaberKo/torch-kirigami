@@ -1,6 +1,7 @@
 import copy
 import decimal
 import json
+import math
 import re
 import shlex
 import shutil
@@ -171,9 +172,15 @@ def test_data_loading_requests_only_needed_splits(tmp_path, monkeypatch, need_tr
     assert len(validation) == 3
     assert validation[0][0].shape == (3, 224, 224)
     assert metadata["validation"]["samples"] == 3
+    assert metadata["validation"]["storage"] == "arrow"
+    assert metadata["validation"]["cache_files"]
+    assert validation.rows._indices is None  # Subsets are physically materialized.
     if need_train:
         samples = list(train)
         assert len(samples) == len(train) == 2
+        assert isinstance(train, imagenet.Images)
+        assert metadata["train"]["storage"] == "arrow"
+        assert metadata["train"]["cache_files"]
         assert {label for _, label in samples}.isdisjoint({validation[i][1] for i in range(3)})
         assert set(metadata["files"]) == {"validation", "train"}
         full_train, full_validation, full_metadata = imagenet.load_images(
@@ -196,6 +203,82 @@ def test_missing_hf_cache_does_not_download(tmp_path, monkeypatch):
     monkeypatch.setattr(HfApi, "repo_info", no_network)
     with pytest.raises(LocalEntryNotFoundError):
         imagenet.load_images(ResNet18_Weights.IMAGENET1K_V1)
+
+
+@pytest.mark.parametrize("indices", [[0, 1, 2], [2, 0, 2], [-1, 0], []])
+def test_arrow_image_batch_fetch_matches_scalar_preprocessing(indices):
+    weights = ResNet18_Weights.IMAGENET1K_V1
+    pictures = [
+        PILImage.new(mode, size, color)
+        for mode, size, color in (
+            ("RGB", (300, 260), (10, 60, 200)),
+            ("L", (150, 350), 120),
+            ("RGB", (500, 180), (255, 0, 70)),
+        )
+    ]
+    rows = Dataset.from_dict(
+        {"image": pictures, "label": [0, 1, 2]},
+        features=Features({"image": Image(), "label": ClassLabel(names=["a", "b", "c"])}),
+    )
+    images = imagenet.Images(rows, weights.transforms(), (2, 0, 1))
+    batch = images.__getitems__(indices)
+    assert len(batch) == len(indices)
+    for (tensor, label), index in zip(batch, indices, strict=True):
+        torch.testing.assert_close(
+            tensor, weights.transforms()(pictures[index].convert("RGB")), rtol=0, atol=0
+        )
+        assert label == (2, 0, 1)[index]
+    with pytest.raises(IndexError):
+        images.__getitems__([2, 3])
+
+
+def test_arrow_caches_reuse_and_spawn_workers(tmp_path):
+    weights = ResNet18_Weights.IMAGENET1K_V1
+    features = Features({"image": Image(), "label": ClassLabel(names=weights.meta["categories"])})
+    folder = tmp_path / "data"
+    folder.mkdir()
+    pictures = [PILImage.new("RGB", (250, 280), (i * 30, 15, 200)) for i in range(5)]
+    for split in ("validation", "train"):
+        rows = Dataset.from_dict({"image": pictures, "label": list(range(5))}, features=features)
+        rows.to_parquet(folder / f"{split}-00000.parquet")
+    train, validation, metadata = imagenet.load_images(
+        weights, tmp_path, need_train=True, val_samples=3
+    )
+    paths = [
+        Path(path) for split in ("train", "validation") for path in metadata[split]["cache_files"]
+    ]
+    before = [(path, path.stat().st_mtime_ns) for path in paths]
+    _, repeated, repeated_metadata = imagenet.load_images(
+        weights, tmp_path, need_train=True, val_samples=3
+    )
+    assert repeated_metadata == metadata
+    assert [(path, path.stat().st_mtime_ns) for path in paths] == before
+    assert [repeated[i][1] for i in range(3)] == [validation[i][1] for i in range(3)]
+    parent_threads = torch.get_num_threads()
+    # Map-style Arrow data must survive spawn and persistent worker reuse. Each
+    # shuffled traversal visits all samples exactly once, unlike an unsharded iterable.
+    for dataset, shuffle in ((train, True), (validation, False)):
+        loader = DataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=2,
+            persistent_workers=True,
+            multiprocessing_context="spawn",
+            shuffle=shuffle,
+            generator=torch.Generator().manual_seed(7),
+        )
+        expected_labels = sorted(dataset[i][1] for i in range(len(dataset)))
+        for _ in range(2):
+            seen = []
+            for tensors, labels in loader:
+                for tensor, label in zip(tensors, labels.tolist(), strict=True):
+                    torch.testing.assert_close(
+                        tensor, weights.transforms()(pictures[label]), rtol=0, atol=0
+                    )
+                    seen.append(label)
+            assert sorted(seen) == expected_labels
+        del loader
+    assert torch.get_num_threads() == parent_threads
 
 
 def test_accuracy_uses_all_logits_weights_partial_batches_and_restores_modes():
@@ -300,17 +383,37 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
     "recipe,extra",
     [
         ("prune_finetune", []),
+        ("prune_finetune", ["--train_workers", "2", "--val_workers", "2"]),
         ("prune_finetune", ["--metric", "taylor"]),
         ("iterative_pruning", ["--rounds", "2"]),
         ("bn_sparsity", []),
         ("group_sparsity", []),
         ("group_sparsity", ["--penalty", "squared"]),
+        ("group_sparsity", ["--penalty", "squared", "--train_samples", "2"]),
+        (
+            "group_sparsity",
+            [
+                "--penalty",
+                "squared",
+                "--sparse_epochs",
+                "3",
+                "--selection_interval_steps",
+                "2",
+                "--sparsity_schedule",
+                "linear",
+            ],
+        ),
         ("soft_pruning", ["--operation", "zero"]),
         ("soft_pruning", ["--operation", "decay"]),
         ("soft_pruning", ["--operation", "decay", "--cycles", "1", "--projection_epochs", "2"]),
         ("gate_pruning", []),
         ("stability_pruning", []),
-        ("stability_pruning", ["--search_steps", "1", "--window", "2", "--threshold", "1"]),
+        ("stability_pruning", ["--max_selection_checks", "1", "--window", "2", "--threshold", "1"]),
+        ("stability_pruning", ["--max_selection_checks", "2", "--selection_interval_steps", "1"]),
+        (
+            "stability_pruning",
+            ["--max_selection_checks", "5", "--threshold", "0", "--sparsity_schedule", "linear"],
+        ),
     ],
 )
 def test_pretrained_workflow(
@@ -321,6 +424,38 @@ def test_pretrained_workflow(
     requested = []
     module = importlib.import_module(recipe)
     weights = prune_finetune.MODELS[model_name][1]
+    # Observe the coefficient reaching autograd, not just a scheduler helper or
+    # printed value. Keep real group penalties and public plan/apply/save/load.
+    penalty_weights, selection_steps = [], []
+    training_samples_seen = []
+    optimizer_steps = 0
+    if recipe in ("group_sparsity", "stability_pruning"):
+        original_penalty, original_plan = module.GroupSquaredL2, module.make_plan
+        original_step = torch.optim.SGD.step
+
+        def observed_penalty(*args, **kwargs):
+            regularizer = original_penalty(*args, **kwargs)
+
+            def evaluate_penalty():
+                value = regularizer()
+                value.register_hook(lambda gradient: penalty_weights.append(gradient.item()))
+                return value
+
+            return evaluate_penalty
+
+        def observed_plan(*args, **kwargs):
+            selection_steps.append(optimizer_steps)
+            return original_plan(*args, **kwargs)
+
+        def observed_step(optimizer, *args, **kwargs):
+            nonlocal optimizer_steps
+            result = original_step(optimizer, *args, **kwargs)
+            optimizer_steps += 1
+            return result
+
+        monkeypatch.setattr(module, "GroupSquaredL2", observed_penalty)
+        monkeypatch.setattr(module, "make_plan", observed_plan)
+        monkeypatch.setattr(torch.optim.SGD, "step", observed_step)
 
     def factory(*, weights):
         requested.append(weights)
@@ -342,8 +477,20 @@ def test_pretrained_workflow(
     def data(selected_weights, data_dir, *, need_train, **kwargs):
         assert selected_weights is weights
         x = torch.randn(2, 3, 224, 224)
+        training = TensorDataset(x, torch.tensor([0, 1])) if need_train else None
+        if need_train and (
+            recipe == "stability_pruning"
+            or (recipe == "group_sparsity" and "squared" in extra and kwargs["train_samples"] != 2)
+        ):
+
+            class ObservedTrainingData(TensorDataset):
+                def __getitem__(self, index):
+                    training_samples_seen.append(index)
+                    return super().__getitem__(index)
+
+            training = ObservedTrainingData(x.repeat(3, 1, 1, 1), torch.arange(6))
         return (
-            TensorDataset(x, torch.tensor([0, 1])) if need_train else None,
+            training,
             TensorDataset(x + 0.1, torch.tensor([2, 3])),
             {"test_fixture": True},
         )
@@ -365,6 +512,10 @@ def test_pretrained_workflow(
             "0.15" if model_name == "resnet18" else "0.02",
             "--train_batch_size",
             "2",
+            "--train_workers",
+            "0",
+            "--val_workers",
+            "0",
             "--val_batch_size",
             "1",
             "--finetune_epochs",
@@ -375,6 +526,7 @@ def test_pretrained_workflow(
             "1",
             "--output",
             str(tmp_path),
+            *(["--selection_interval_steps", "2"] if recipe == "stability_pruning" else []),
             *extra,
         ],
     )
@@ -422,11 +574,41 @@ def test_pretrained_workflow(
         cap = saved["config"]["max_params"]
         assert [row["max_params"] for row in pruned] == [initial - (initial - cap) // 2, cap]
         assert pruned[1]["before_params"] == pruned[0]["after_params"]
-    if recipe == "stability_pruning" and "--search_steps" in extra:
+    if recipe == "stability_pruning":
         search = next(row for row in results if row["stage"] == "search_completed")
-        assert search["selection_checks"] == 1
-        assert search["training_epochs"] == 0
-        assert search["stable"] is False
+        interval = saved["config"]["selection_interval_steps"]
+        checks = saved["config"]["max_selection_checks"]
+        total_steps = (checks - 1) * interval
+        actual_steps = search["training_steps"]
+        assert actual_steps == (search["selection_checks"] - 1) * interval
+        assert selection_steps == list(range(0, actual_steps + 1, interval))
+        if checks == 1:
+            assert actual_steps == 0 and search["stable"] is False
+        if saved["config"]["threshold"] == 0:
+            assert search["stable"] and search["selection_checks"] == 3
+            assert actual_steps < total_steps
+        # Three batches per traversal, checks every two: a check must neither
+        # rewind to the first batch nor discard the remaining third batch.
+        sparse_samples = training_samples_seen[: actual_steps * 2]
+        for start in range(0, len(sparse_samples), 6):
+            traversal = sparse_samples[start : start + 6]
+            assert len(set(traversal)) == len(traversal)
+            assert set(traversal) <= set(range(6))
+        assert sorted(training_samples_seen[actual_steps * 2 :]) == list(range(6))
+    elif recipe == "group_sparsity" and "squared" in extra:
+        batches_per_epoch = 1 if saved["config"]["train_samples"] == 2 else 3
+        total_steps = actual_steps = saved["config"]["sparse_epochs"] * batches_per_epoch
+        interval = saved["config"]["selection_interval_steps"]
+        assert selection_steps == [*range(0, actual_steps, interval), actual_steps]
+    if recipe == "stability_pruning" or (recipe == "group_sparsity" and "squared" in extra):
+        fractions = [step / total_steps for step in range(1, actual_steps + 1)]
+        if saved["config"]["sparsity_schedule"] == "cosine":
+            # sin²(x/2) is an independent expression for the half-cosine ramp.
+            fractions = [math.sin(math.pi * p / 2) ** 2 for p in fractions]
+        expected = [saved["config"]["sparse_loss_weight"] * p for p in fractions]
+        assert penalty_weights == pytest.approx(expected)
+        finetune_steps = 3 if recipe == "stability_pruning" else batches_per_epoch
+        assert optimizer_steps == actual_steps + finetune_steps
     if recipe == "soft_pruning" and "--cycles" in extra:
         assert [row["stage"] for row in results if row["stage"].endswith("projected")] == [
             "cycle_1_projected"
@@ -443,7 +625,7 @@ def test_pretrained_workflow(
         ("bn_sparsity", ["--sparse_epochs", "0"]),
         ("group_sparsity", ["--sparse_epochs", "0"]),
         ("gate_pruning", ["--sparse_epochs", "0"]),
-        ("stability_pruning", ["--search_steps", "1"]),
+        ("stability_pruning", ["--max_selection_checks", "1"]),
     ],
 )
 def test_evaluation_only_workflows_do_not_request_training(
@@ -474,6 +656,8 @@ def test_evaluation_only_workflows_do_not_request_training(
             "0.05",
             "--val_batch_size",
             "1",
+            "--val_workers",
+            "0",
             "--latency_warmup",
             "0",
             "--latency_repetitions",
@@ -483,7 +667,10 @@ def test_evaluation_only_workflows_do_not_request_training(
             *extra,
         ],
     )
-    module.main()
+    # Real Arrow datasets produce CPU tensors; the CUDA fixture's default
+    # device must not turn the mocked dataset into already-device-resident data.
+    with torch.device("cpu"):
+        module.main()
     stages = json.loads((tmp_path / "metrics.json").read_text())["stages"]
     expected = ["pretrained", "pruned"]
     if recipe == "iterative_pruning":
@@ -617,14 +804,14 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
     "recipe,flag",
     [
         ("prune_finetune", "--rounds"),
-        ("prune_finetune", "--strength"),
+        ("prune_finetune", "--sparse_loss_weight"),
         ("iterative_pruning", "--sparse_epochs"),
         ("iterative_pruning", "--metric"),
         ("bn_sparsity", "--metric"),
         ("bn_sparsity", "--rounds"),
         ("group_sparsity", "--metric"),
         ("gate_pruning", "--penalty"),
-        ("soft_pruning", "--strength"),
+        ("soft_pruning", "--sparse_loss_weight"),
         ("soft_pruning", "--sparse_epochs"),
         ("stability_pruning", "--sparse_epochs"),
         ("stability_pruning", "--operation"),
@@ -645,12 +832,22 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     options = module.parse_args()
     assert options.train_samples == options.val_samples == 0
     assert options.train_batch_size == options.val_batch_size == 256
+    assert options.train_workers == options.val_workers == 8
     latency_defaults = signature(model_metrics.measure_module_latency).parameters
     assert options.latency_warmup == latency_defaults["warmup"].default
     assert options.latency_repetitions == latency_defaults["repetitions"].default
     assert not options.compile_latency
     assert options.pruning_ratio == 0.05
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
+    if recipe in ("bn_sparsity", "gate_pruning", "group_sparsity", "stability_pruning"):
+        assert options.sparse_loss_weight == 1e-4
+    if recipe in ("group_sparsity", "stability_pruning"):
+        assert options.sparsity_schedule == "cosine"
+        assert options.selection_interval_steps == 100
+    if recipe == "stability_pruning":
+        assert options.max_selection_checks == 11
+        assert options.max_selection_checks > options.window + 1
+        assert (options.max_selection_checks - 1) * options.selection_interval_steps == 1000
     monkeypatch.setattr(
         sys,
         "argv",
@@ -685,11 +882,98 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
         "--channel_pruning_ratio",
         "--max_macs",
         "--max_params",
+        "--strength",
+        "--search_steps",
     ):
         monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", removed])
         with pytest.raises(SystemExit) as error:
             module.parse_args()
         assert error.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "recipe", ["bn_sparsity", "gate_pruning", "group_sparsity", "stability_pruning"]
+)
+@pytest.mark.parametrize("weight", ["-1", "nan", "inf"])
+def test_workflow_rejects_invalid_sparse_loss_weight(monkeypatch, recipe, weight):
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", "--sparse_loss_weight", weight])
+    with pytest.raises(SystemExit) as error:
+        importlib.import_module(recipe).parse_args()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("recipe", ["group_sparsity", "stability_pruning"])
+@pytest.mark.parametrize(
+    "flag,value",
+    [
+        ("--selection_interval_steps", "0"),
+        ("--selection_interval_steps", "-1"),
+        ("--sparsity_schedule", "invalid"),
+    ],
+)
+def test_workflow_rejects_invalid_sparse_schedule(monkeypatch, recipe, flag, value):
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", flag, value])
+    with pytest.raises(SystemExit) as error:
+        importlib.import_module(recipe).parse_args()
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("schedule", ["linear", "cosine"])
+def test_stability_step_training_matches_loss_reference(schedule, execution_device, capsys):
+    module = importlib.import_module("stability_pruning")
+    model = nn.Linear(2, 2, bias=False, dtype=torch.float64, device=execution_device)
+    with torch.no_grad():
+        model.weight.copy_(model.weight.new_tensor([[0.2, -0.1], [0.3, 0.4]]))
+    reference = copy.deepcopy(model)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.05)
+    reference_optimizer = torch.optim.SGD(reference.parameters(), lr=0.05)
+    batches = [
+        (
+            torch.tensor([[1.0, -0.5]], dtype=torch.float64).repeat(n, 1),
+            torch.zeros(n, dtype=torch.long),
+        )
+        for n in (3, 1, 2, 1)
+    ]
+    factors = (
+        [0.25, 0.5, 0.75, 1.0]
+        if schedule == "linear"
+        else [(2 - math.sqrt(2)) / 4, 0.5, (2 + math.sqrt(2)) / 4, 1.0]
+    )
+    expected_weighted_losses = []
+    for (images, labels), factor in zip(batches, factors, strict=True):
+        reference_optimizer.zero_grad(set_to_none=True)
+        task_loss = F.cross_entropy(
+            reference(images.to(execution_device)), labels.to(execution_device)
+        )
+        penalty = reference.weight.square().sum() / 2
+        expected_weighted_losses.append(0.01 * factor * penalty.item())
+        (task_loss + 0.01 * factor * penalty).backward()
+        reference_optimizer.step()
+
+    iterator = iter(batches)
+    for offset in (0, 2):
+        module.train_steps(
+            model,
+            iterator,
+            optimizer,
+            execution_device,
+            2,
+            regularizer=lambda: model.weight.square().sum() / 2,
+            sparse_loss_weight=0.01,
+            sparsity_schedule=schedule,
+            completed_steps=offset,
+            total_steps=4,
+        )
+    torch.testing.assert_close(model.weight, reference.weight)
+    logs = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert [row["sparse_loss_weight"] for row in logs] == pytest.approx([0.005, 0.01])
+    assert [row["training_steps"] for row in logs] == [2, 4]
+    assert [row["weighted_sparse_loss"] for row in logs] == pytest.approx(
+        [
+            (3 * expected_weighted_losses[0] + expected_weighted_losses[1]) / 4,
+            (2 * expected_weighted_losses[2] + expected_weighted_losses[3]) / 3,
+        ]
+    )
 
 
 @pytest.mark.parametrize("recipe", WORKFLOWS)
@@ -700,6 +984,16 @@ def test_workflow_rejects_invalid_parameter_ratio(monkeypatch, capsys, recipe, r
         importlib.import_module(recipe).parse_args()
     assert error.value.code == 2
     assert "0 <= pruning_ratio < 1" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("recipe", WORKFLOWS)
+@pytest.mark.parametrize("flag", ["--train_workers", "--val_workers"])
+def test_workflow_rejects_negative_worker_counts(monkeypatch, capsys, recipe, flag):
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", flag, "-1"])
+    with pytest.raises(SystemExit) as error:
+        importlib.import_module(recipe).parse_args()
+    assert error.value.code == 2
+    assert f"{flag} must be nonnegative" in capsys.readouterr().err
 
 
 def test_readme_workflow_commands_match_the_cli(monkeypatch):
@@ -716,7 +1010,7 @@ def test_readme_workflow_commands_match_the_cli(monkeypatch):
         assert options.compile_latency
         assert options.train_samples == options.val_samples == 0
         assert options.val_batch_size == options.train_batch_size == 256
-        assert options.val_workers == 0 and options.seed == 7
+        assert options.val_workers == options.train_workers == 8 and options.seed == 7
         latency_defaults = signature(model_metrics.measure_module_latency).parameters
         assert options.latency_warmup == latency_defaults["warmup"].default
         assert options.latency_repetitions == latency_defaults["repetitions"].default
@@ -809,7 +1103,17 @@ def test_workflow_unmet_parameter_target_stops_before_apply(monkeypatch, tmp_pat
     monkeypatch.setattr(
         sys,
         "argv",
-        ["workflow", "--device", "cpu", "--pruning_ratio", "0.05", "--output", str(tmp_path)],
+        [
+            "workflow",
+            "--device",
+            "cpu",
+            "--val_workers",
+            "0",
+            "--pruning_ratio",
+            "0.05",
+            "--output",
+            str(tmp_path),
+        ],
     )
     with pytest.raises(PlanningError, match=r"Parameter target not reached.*strategy trial limit"):
         module.main()

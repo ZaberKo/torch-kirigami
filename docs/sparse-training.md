@@ -240,7 +240,7 @@ These references explain the ideas behind the example compositions. The library 
 | Reference | Connection to the examples | Scope of this implementation |
 | --- | --- | --- |
 | [Network Slimming](https://arxiv.org/abs/1708.06519) | Channel sparsity through learned scaling factors | The BN workflow applies `ScaleL1` to explicitly selected ResNet BN scales, then ranks and physically prunes those channels |
-| [Neural Pruning via Growing Regularization](https://arxiv.org/abs/2012.09243) | Gradually increasing regularization strength | The squared-L2 workflow reselects target groups and applies a simple linear strength schedule; it does not reproduce every importance-estimation or training variant |
+| [Neural Pruning via Growing Regularization](https://arxiv.org/abs/2012.09243) | Gradually increasing regularization strength | The squared-L2 workflow reselects groups at optimizer-step intervals and increases the sparse-loss weight each step using cosine or linear interpolation; it does not reproduce every importance-estimation or training variant |
 | [Decay Pruning Method](https://arxiv.org/html/2406.03879v2) | Gradual target-norm decay during optimization | The decay workflow projects one union of selected dependency regions and reselects between two cycles; it does not implement the paper's gradient-driven self-rectification criteria or separate per-structure norm trajectories |
 | [One-Cycle Structured Pruning](https://arxiv.org/html/2501.13439v2) | Selection stability based on layer-wise Jaccard similarity | The stability workflow uses a two-comparison adjacent-selection window and a fixed trigger; it does not reproduce the paper's full delayed-start and one-cycle training policy |
 

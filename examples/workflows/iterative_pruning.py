@@ -51,10 +51,16 @@ def parse_args() -> argparse.Namespace:
         help="Accuracy evaluation and latency measurement batch size",
     )
     parser.add_argument(
+        "--train_workers",
+        type=int,
+        default=8,
+        help="Training loader processes; 0 runs in the main process",
+    )
+    parser.add_argument(
         "--val_workers",
         type=int,
-        default=0,
-        help="Validation loader workers; training streams in the main process",
+        default=8,
+        help="Validation loader processes; 0 runs in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
@@ -91,6 +97,7 @@ def parse_args() -> argparse.Namespace:
         "train_samples",
         "val_samples",
         "val_workers",
+        "train_workers",
         "finetune_epochs",
         "latency_warmup",
     ):
@@ -131,12 +138,26 @@ def main() -> None:
     )
     generator = torch.Generator().manual_seed(options.seed)
     train_loader = (
-        DataLoader(train, batch_size=options.train_batch_size, generator=generator)
+        DataLoader(
+            train,
+            batch_size=options.train_batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=options.train_workers,
+            persistent_workers=options.train_workers > 0,
+            multiprocessing_context="spawn" if options.train_workers else None,
+            pin_memory=options.device == "cuda",
+        )
         if train is not None
         else None
     )
     val_loader = DataLoader(
-        validation, batch_size=options.val_batch_size, num_workers=options.val_workers
+        validation,
+        batch_size=options.val_batch_size,
+        num_workers=options.val_workers,
+        persistent_workers=options.val_workers > 0,
+        multiprocessing_context="spawn" if options.val_workers else None,
+        pin_memory=options.device == "cuda",
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
@@ -213,7 +234,8 @@ def main() -> None:
                 dynamic_ncols=True,
             ) as progress:
                 for images, labels in progress:
-                    images, labels = images.to(options.device), labels.to(options.device)
+                    images = images.to(options.device, non_blocking=True)
+                    labels = labels.to(options.device, non_blocking=True)
                     optimizer.zero_grad(set_to_none=True)
                     loss = F.cross_entropy(model(images), labels)
                     loss.backward()

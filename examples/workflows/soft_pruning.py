@@ -58,10 +58,16 @@ def parse_args() -> argparse.Namespace:
         help="Accuracy evaluation and latency measurement batch size",
     )
     parser.add_argument(
+        "--train_workers",
+        type=int,
+        default=8,
+        help="Training loader processes; 0 runs in the main process",
+    )
+    parser.add_argument(
         "--val_workers",
         type=int,
-        default=0,
-        help="Validation loader workers; training streams in the main process",
+        default=8,
+        help="Validation loader processes; 0 runs in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
@@ -99,6 +105,7 @@ def parse_args() -> argparse.Namespace:
         "train_samples",
         "val_samples",
         "val_workers",
+        "train_workers",
         "finetune_epochs",
         "latency_warmup",
     ):
@@ -158,7 +165,8 @@ def train_epoch(
         loader, desc=f"{description} ({device})", unit="batch", dynamic_ncols=True
     ) as progress:
         for batch, (images, labels) in enumerate(progress, start=1):
-            images, labels = images.to(device), labels.to(device)
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             loss = F.cross_entropy(model(images), labels)
             loss.backward()
@@ -203,9 +211,23 @@ def main() -> None:
         seed=options.seed,
     )
     generator = torch.Generator().manual_seed(options.seed)
-    train_loader = DataLoader(train, batch_size=options.train_batch_size, generator=generator)
+    train_loader = DataLoader(
+        train,
+        batch_size=options.train_batch_size,
+        shuffle=True,
+        generator=generator,
+        num_workers=options.train_workers,
+        persistent_workers=options.train_workers > 0,
+        multiprocessing_context="spawn" if options.train_workers else None,
+        pin_memory=options.device == "cuda",
+    )
     val_loader = DataLoader(
-        validation, batch_size=options.val_batch_size, num_workers=options.val_workers
+        validation,
+        batch_size=options.val_batch_size,
+        num_workers=options.val_workers,
+        persistent_workers=options.val_workers > 0,
+        multiprocessing_context="spawn" if options.val_workers else None,
+        pin_memory=options.device == "cuda",
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     budget = ParameterBudget.from_ratio(model, options.pruning_ratio)

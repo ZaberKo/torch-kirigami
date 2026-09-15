@@ -3,7 +3,7 @@
 import argparse
 import json
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Generator, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -57,10 +57,16 @@ def parse_args() -> argparse.Namespace:
         help="Accuracy evaluation and latency measurement batch size",
     )
     parser.add_argument(
+        "--train_workers",
+        type=int,
+        default=8,
+        help="Training loader processes; 0 runs in the main process",
+    )
+    parser.add_argument(
         "--val_workers",
         type=int,
-        default=0,
-        help="Validation loader workers; training streams in the main process",
+        default=8,
+        help="Validation loader processes; 0 runs in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
@@ -71,16 +77,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument(
-        "--search_steps",
+        "--max_selection_checks",
         type=int,
-        default=3,
-        help="Maximum selection checks; train one epoch between checks",
+        default=11,
+        help="Maximum selection checks, including the initial check (default: 11); 1 skips sparse training",
     )
     parser.add_argument(
-        "--window", type=int, default=2, help="Selection history length, at least 2"
+        "--selection_interval_steps",
+        type=int,
+        default=100,
+        help="Optimizer steps between selection checks (default: 100)",
+    )
+    parser.add_argument(
+        "--window",
+        type=int,
+        default=2,
+        help="Consecutive selection comparisons required; first stability test needs window + 1 checks (default: 2)",
     )
     parser.add_argument("--threshold", type=float, default=0.99)
-    parser.add_argument("--strength", type=float, default=1e-4)
+    parser.add_argument(
+        "--sparse_loss_weight",
+        type=float,
+        default=1e-4,
+        help="Final sparse-loss multiplier if training reaches its step limit (default: 1e-4)",
+    )
+    parser.add_argument(
+        "--sparsity_schedule",
+        choices=("linear", "cosine"),
+        default="cosine",
+        help="Increase the sparse-loss weight each optimizer step (default: cosine)",
+    )
     parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output", type=Path, default=Path("runs/stability_pruning"))
@@ -96,7 +122,8 @@ def parse_args() -> argparse.Namespace:
         "train_batch_size",
         "val_batch_size",
         "granularity",
-        "search_steps",
+        "max_selection_checks",
+        "selection_interval_steps",
         "latency_repetitions",
     ):
         if getattr(options, name) <= 0:
@@ -105,6 +132,7 @@ def parse_args() -> argparse.Namespace:
         "train_samples",
         "val_samples",
         "val_workers",
+        "train_workers",
         "finetune_epochs",
         "latency_warmup",
     ):
@@ -114,8 +142,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--window must be at least 2")
     if not 0 <= options.threshold <= 1:
         parser.error("--threshold must be in [0, 1]")
-    if not math.isfinite(options.strength) or options.strength < 0:
-        parser.error("--strength must be finite and nonnegative")
+    if not math.isfinite(options.sparse_loss_weight) or options.sparse_loss_weight < 0:
+        parser.error("--sparse_loss_weight must be finite and nonnegative")
     if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
         parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
     if options.device == "cuda" and not torch.cuda.is_available():
@@ -146,36 +174,68 @@ def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) ->
     return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
-def train_epoch(
+def train_steps(
     model: nn.Module,
-    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    batches: Iterator[tuple[torch.Tensor, torch.Tensor]],
     optimizer: torch.optim.Optimizer,
     device: torch.device | str,
+    steps: int,
     *,
     regularizer: Callable[[], torch.Tensor] | None = None,
-    strength: float = 0.0,
+    sparse_loss_weight: float = 0.0,
+    sparsity_schedule: str = "cosine",
+    completed_steps: int = 0,
+    total_steps: int = 0,
     description: str = "Training",
 ) -> None:
-    """Add the selected-group penalty to task loss before backward and SGD."""
+    """Train a fixed number of batches without restarting the input iterator.
+
+    A positive `total_steps` enables the sparse-weight ramp over the full
+    search, using `completed_steps` as its offset. Fine-tuning omits the
+    regularizer and ramp. Logs report the last weight and mean weighted loss.
+    """
+    if steps <= 0:
+        raise ValueError("Training steps must be positive")
+    if sparsity_schedule not in ("linear", "cosine"):
+        raise ValueError("Unknown sparsity schedule")
+    if (
+        completed_steps < 0
+        or total_steps < 0
+        or (total_steps and completed_steps + steps > total_steps)
+    ):
+        raise ValueError("Training interval exceeds the sparse-weight schedule")
     model.train()
-    total, sparse_total, count = 0.0, 0.0, 0
+    total, sparse_total, weighted_sparse_total, count = 0.0, 0.0, 0.0, 0
     with tqdm(
-        loader, desc=f"{description} ({device})", unit="batch", dynamic_ncols=True
+        range(steps), desc=f"{description} ({device})", unit="batch", dynamic_ncols=True
     ) as progress:
-        for images, labels in progress:
-            images, labels = images.to(device), labels.to(device)
+        for step in progress:
+            try:
+                images, labels = next(batches)
+            except StopIteration as error:
+                raise ValueError("Training data ended before the requested steps") from error
+            current_weight = sparse_loss_weight
+            if total_steps:
+                fraction = (completed_steps + step + 1) / total_steps
+                if sparsity_schedule == "cosine":
+                    fraction = 0.5 * (1 - math.cos(math.pi * fraction))
+                current_weight *= fraction
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
             optimizer.zero_grad(set_to_none=True)
             task_loss = F.cross_entropy(model(images), labels)
             sparse_loss = regularizer() if regularizer is not None else task_loss.new_zeros(())
-            (task_loss + strength * sparse_loss).backward()
+            (task_loss + current_weight * sparse_loss).backward()
             optimizer.step()
             total += task_loss.detach().item() * labels.numel()
             sparse_total += sparse_loss.detach().item() * labels.numel()
+            weighted_sparse_total += current_weight * sparse_loss.detach().item() * labels.numel()
             count += labels.numel()
             progress.set_postfix(
                 images=count,
                 loss=f"{total / count:.4f}",
                 sparse=f"{sparse_total / count:.4f}",
+                sparse_loss_weight=f"{current_weight:.3g}",
                 refresh=False,
             )
     if not count:
@@ -185,7 +245,9 @@ def train_epoch(
             {
                 "task_loss": total / count,
                 "sparse_loss": sparse_total / count,
-                "strength": strength,
+                "weighted_sparse_loss": weighted_sparse_total / count,
+                "sparse_loss_weight": current_weight,
+                "training_steps": completed_steps + steps,
             }
         ),
         flush=True,
@@ -211,19 +273,33 @@ def main() -> None:
     train, validation, dataset_info = load_images(
         weights,
         options.data_dir,
-        need_train=options.search_steps > 1 or options.finetune_epochs > 0,
+        need_train=options.max_selection_checks > 1 or options.finetune_epochs > 0,
         train_samples=options.train_samples,
         val_samples=options.val_samples,
         seed=options.seed,
     )
     generator = torch.Generator().manual_seed(options.seed)
     train_loader = (
-        DataLoader(train, batch_size=options.train_batch_size, generator=generator)
+        DataLoader(
+            train,
+            batch_size=options.train_batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=options.train_workers,
+            persistent_workers=options.train_workers > 0,
+            multiprocessing_context="spawn" if options.train_workers else None,
+            pin_memory=options.device == "cuda",
+        )
         if train is not None
         else None
     )
     val_loader = DataLoader(
-        validation, batch_size=options.val_batch_size, num_workers=options.val_workers
+        validation,
+        batch_size=options.val_batch_size,
+        num_workers=options.val_workers,
+        persistent_workers=options.val_workers > 0,
+        multiprocessing_context="spawn" if options.val_workers else None,
+        pin_memory=options.device == "cuda",
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
@@ -257,7 +333,7 @@ def main() -> None:
     record("pretrained")
     suffix = "conv1.weight" if options.model.startswith("resnet") else "mlp.0.weight"
     paths = tuple(f"{layer}.{suffix}" for layer in layers)
-    model.train(options.search_steps > 1 or options.finetune_epochs > 0)
+    model.train(options.max_selection_checks > 1 or options.finetune_epochs > 0)
     targets = tuple(path.removesuffix(".weight") for path in paths)
     graph = DependencyGraph.build(model, args=(example,))
     pruner = Pruner(
@@ -268,9 +344,24 @@ def main() -> None:
     space = pruner.discover_candidates(targets=targets)
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     window = SelectionWindow(options.window)
-    stable, training_epochs = False, 0
+    stable, training_steps = False, 0
+    total_steps = (options.max_selection_checks - 1) * options.selection_interval_steps
 
-    for check in range(options.search_steps):
+    def training_batches() -> Generator[tuple[torch.Tensor, torch.Tensor], None, None]:
+        """Continue across checks; reopen the training stream only at its end."""
+        if train_loader is None or not len(train_loader):
+            raise ValueError("Cannot train on an empty training split")
+        while True:
+            yielded = False
+            for batch in train_loader:
+                yielded = True
+                yield batch
+            if not yielded:
+                raise ValueError("Cannot train on an empty training split")
+
+    batches = training_batches()
+
+    for check in range(options.max_selection_checks):
         plan = make_plan(pruner, space, budget)
         selected = tuple(c for c in space.candidates if c.key in plan.selected)
         retained = {}
@@ -286,27 +377,32 @@ def main() -> None:
         stable = similarity is not None and similarity >= options.threshold
         # A check measures the current weights. Do not train after the final
         # check: that would apply a selection never assessed for stability.
-        if stable or check + 1 == options.search_steps:
+        if stable or check + 1 == options.max_selection_checks:
             break
         groups = pruner.parameter_groups(selected)
         regularizer = GroupSquaredL2(groups) if groups else None
-        train_epoch(
+        train_steps(
             model,
-            train_loader,
+            batches,
             optimizer,
             options.device,
+            options.selection_interval_steps,
             regularizer=regularizer,
-            strength=options.strength * (check + 1) / (options.search_steps - 1),
-            description=f"Stability training {training_epochs + 1}",
+            sparse_loss_weight=options.sparse_loss_weight,
+            sparsity_schedule=options.sparsity_schedule,
+            completed_steps=training_steps,
+            total_steps=total_steps,
+            description=f"Stability training before check {check + 2}",
         )
-        training_epochs += 1
+        training_steps += options.selection_interval_steps
 
+    batches.close()
     selection_checks = check + 1
     record(
         "search_completed",
         stable=stable,
         selection_checks=selection_checks,
-        training_epochs=training_epochs,
+        training_steps=training_steps,
         similarity=similarity,
     )
     # Evaluation preserves weights and modes; regenerate from the same checked
@@ -328,11 +424,12 @@ def main() -> None:
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     for epoch in range(options.finetune_epochs):
-        train_epoch(
+        train_steps(
             model,
-            train_loader,
+            iter(train_loader),
             optimizer,
             options.device,
+            len(train_loader),
             description=f"Fine-tuning {epoch + 1}/{options.finetune_epochs}",
         )
     if options.finetune_epochs:
@@ -353,7 +450,7 @@ def main() -> None:
             "algorithm": {
                 "stable": stable,
                 "selection_checks": selection_checks,
-                "training_epochs": training_epochs,
+                "training_steps": training_steps,
                 "window": window.state_dict(),
             },
             "rng": torch.get_rng_state(),

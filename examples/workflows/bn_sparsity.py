@@ -58,10 +58,16 @@ def parse_args() -> argparse.Namespace:
         help="Accuracy evaluation and latency measurement batch size",
     )
     parser.add_argument(
+        "--train_workers",
+        type=int,
+        default=8,
+        help="Training loader processes; 0 runs in the main process",
+    )
+    parser.add_argument(
         "--val_workers",
         type=int,
-        default=0,
-        help="Validation loader workers; training streams in the main process",
+        default=8,
+        help="Validation loader processes; 0 runs in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
@@ -72,7 +78,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument("--sparse_epochs", type=int, default=1)
-    parser.add_argument("--strength", type=float, default=1e-4)
+    parser.add_argument(
+        "--sparse_loss_weight",
+        type=float,
+        default=1e-4,
+        help="Fixed multiplier of the sparse loss in task_loss + weight * sparse_loss (default: 1e-4)",
+    )
     parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output", type=Path, default=Path("runs/bn_sparsity"))
@@ -91,6 +102,7 @@ def parse_args() -> argparse.Namespace:
         "train_samples",
         "val_samples",
         "val_workers",
+        "train_workers",
         "sparse_epochs",
         "finetune_epochs",
         "latency_warmup",
@@ -99,8 +111,8 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name} must be nonnegative")
     if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
         parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
-    if not math.isfinite(options.strength) or options.strength < 0:
-        parser.error("--strength must be finite and nonnegative")
+    if not math.isfinite(options.sparse_loss_weight) or options.sparse_loss_weight < 0:
+        parser.error("--sparse_loss_weight must be finite and nonnegative")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -130,12 +142,26 @@ def main() -> None:
     )
     generator = torch.Generator().manual_seed(options.seed)
     train_loader = (
-        DataLoader(train, batch_size=options.train_batch_size, generator=generator)
+        DataLoader(
+            train,
+            batch_size=options.train_batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=options.train_workers,
+            persistent_workers=options.train_workers > 0,
+            multiprocessing_context="spawn" if options.train_workers else None,
+            pin_memory=options.device == "cuda",
+        )
         if train is not None
         else None
     )
     val_loader = DataLoader(
-        validation, batch_size=options.val_batch_size, num_workers=options.val_workers
+        validation,
+        batch_size=options.val_batch_size,
+        num_workers=options.val_workers,
+        persistent_workers=options.val_workers > 0,
+        multiprocessing_context="spawn" if options.val_workers else None,
+        pin_memory=options.device == "cuda",
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
@@ -182,11 +208,12 @@ def main() -> None:
             dynamic_ncols=True,
         ) as progress:
             for images, labels in progress:
-                images, labels = images.to(options.device), labels.to(options.device)
+                images = images.to(options.device, non_blocking=True)
+                labels = labels.to(options.device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 task_loss = F.cross_entropy(model(images), labels)
                 sparse_loss = cast(ScaleL1, regularizer)()
-                loss = task_loss + options.strength * sparse_loss
+                loss = task_loss + options.sparse_loss_weight * sparse_loss
                 loss.backward()
                 optimizer.step()
                 task_total += task_loss.detach().item() * labels.numel()
@@ -206,7 +233,7 @@ def main() -> None:
                     "epoch": epoch + 1,
                     "task_loss": task_total / count,
                     "sparse_loss": sparse_total / count,
-                    "strength": options.strength,
+                    "sparse_loss_weight": options.sparse_loss_weight,
                 }
             ),
             flush=True,
@@ -266,7 +293,8 @@ def main() -> None:
             dynamic_ncols=True,
         ) as progress:
             for images, labels in progress:
-                images, labels = images.to(options.device), labels.to(options.device)
+                images = images.to(options.device, non_blocking=True)
+                labels = labels.to(options.device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 loss = F.cross_entropy(model(images), labels)
                 loss.backward()
@@ -295,7 +323,7 @@ def main() -> None:
         {
             "optimizer": optimizer.state_dict(),
             "config": config,
-            "algorithm": {"strength": options.strength},
+            "algorithm": {"sparse_loss_weight": options.sparse_loss_weight},
             "rng": torch.get_rng_state(),
             "data_rng": generator.get_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,

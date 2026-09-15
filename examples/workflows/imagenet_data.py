@@ -1,25 +1,28 @@
 """Shared local ImageNet loading, label alignment and held-out evaluation."""
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
 import torch
 from datasets import Dataset as HFDataset
-from datasets import IterableDataset as HFIterableDataset
 from datasets import load_dataset
 from huggingface_hub import snapshot_download
 from PIL.Image import Image
-from pyarrow.parquet import read_metadata
 from torch import nn
 from torch.nn import functional as F
-from torch.utils.data import Dataset, IterableDataset
+from torch.utils.data import Dataset
 from torchvision.models import WeightsEnum
 from tqdm.auto import tqdm
 
 
 def label_mapping(names: Sequence[str], categories: Sequence[str]) -> tuple[int, ...]:
-    """Check HF labels against the pretrained weights' sorted ImageNet classes."""
+    """Verify HF label indices match torchvision output indices; return identity.
+
+    HF names may list several comma-separated synonyms. The index-specific
+    aliases below account only for display-name differences in ImageNet-1k;
+    this function rejects mismatches rather than reordering dataset labels.
+    """
     if len(names) != 1000 or len(categories) != 1000:
         raise ValueError("Expected the original 1000 ImageNet classes")
     aliases = {
@@ -36,7 +39,11 @@ def label_mapping(names: Sequence[str], categories: Sequence[str]) -> tuple[int,
 
 
 class Images(Dataset[tuple[torch.Tensor, int]]):
-    """Decode validation images lazily with the selected weights' preprocessing."""
+    """Read either split from Arrow, decoding with the weights' PIL preprocessing.
+
+    DataLoader workers perform decoding and transforms; their PyTorch intra-op
+    thread count is one. Batched fetches avoid repeated HF row-formatting calls.
+    """
 
     def __init__(
         self, rows: HFDataset, transform: Callable[[Image], torch.Tensor], mapping: Sequence[int]
@@ -50,25 +57,24 @@ class Images(Dataset[tuple[torch.Tensor, int]]):
         row = self.rows[int(index)]
         return self.transform(row["image"].convert("RGB")), self.mapping[row["label"]]
 
-
-class TrainingImages(IterableDataset[tuple[torch.Tensor, int]]):
-    """Stream the full shuffled split or an explicitly limited subset."""
-
-    def __init__(
-        self,
-        rows: HFIterableDataset,
-        transform: Callable[[Image], torch.Tensor],
-        mapping: Sequence[int],
-        size: int,
-    ) -> None:
-        self.rows, self.transform, self.mapping, self.size = rows, transform, mapping, size
-
-    def __len__(self) -> int:
-        return self.size
-
-    def __iter__(self) -> Iterator[tuple[torch.Tensor, int]]:
-        for row in self.rows:
-            yield self.transform(row["image"].convert("RGB")), self.mapping[row["label"]]
+    def __getitems__(self, indices: list[int]) -> list[tuple[torch.Tensor, int]]:
+        """Fetch one batch through HF while preserving sample order and labels."""
+        # DataLoader commonly requests a contiguous validation range. A slice
+        # lets Arrow avoid gathering individual rows even for a full batch.
+        if not indices:
+            return []
+        start = indices[0]
+        stop = start + len(indices)
+        key = (
+            slice(start, stop)
+            if 0 <= start < stop <= len(self) and indices == list(range(start, stop))
+            else indices
+        )
+        rows = self.rows[key]
+        return [
+            (self.transform(image.convert("RGB")), self.mapping[label])
+            for image, label in zip(rows["image"], rows["label"], strict=True)
+        ]
 
 
 def load_images(
@@ -79,8 +85,15 @@ def load_images(
     train_samples: int = 0,
     val_samples: int = 0,
     seed: int = 7,
-) -> tuple[TrainingImages | None, Images, dict[str, Any]]:
-    """Read local HF ImageNet shards; never download data during an experiment."""
+) -> tuple[Images | None, Images, dict[str, Any]]:
+    """Prepare/reuse memory-mapped HF Arrow caches from local ImageNet shards.
+
+    Both splits use map-style datasets. A limited subset is sampled once and
+    materialized in Arrow to remove indirect indices. The training DataLoader
+    owns per-epoch shuffling. Cached images still contain encoded image bytes;
+    decoding and deterministic preprocessing remain in DataLoader workers.
+    No dataset files are downloaded. `HF_DATASETS_CACHE` selects the cache root.
+    """
     if train_samples < 0 or val_samples < 0:
         raise ValueError("Sample limits must be nonnegative")
     dataset = "ILSVRC/imagenet-1k"
@@ -103,32 +116,26 @@ def load_images(
         if not files[split]:
             raise FileNotFoundError(f"Missing ImageNet {split} shards under {root / 'data'}")
     metadata = {"dataset": dataset, "data_dir": str(root), "files": files, "subset_seed": seed}
-    rows = load_dataset(
-        "parquet", split="validation", data_files={"validation": files["validation"]}
-    )
-    mapping = label_mapping(rows.features["label"].names, weights.meta["categories"])
-    if val_samples:
-        rows = rows.shuffle(seed=seed).select(range(min(val_samples, len(rows))))
-    if not len(rows):
-        raise ValueError("Empty validation split")
-    validation = Images(rows, weights.transforms(), mapping)
-    metadata["validation"] = {"samples": len(validation)}
-    train = None
-    if need_train:
+    images = {}
+    for split in splits:
+        print(f"[{split}] Preparing/reusing local PyArrow cache", flush=True)
         rows = load_dataset(
-            "parquet", split="train", streaming=True, data_files={"train": files["train"]}
+            "parquet", split=split, data_files={split: files[split]}, streaming=False
         )
         mapping = label_mapping(rows.features["label"].names, weights.meta["categories"])
-        rows = rows.shuffle(seed=seed, buffer_size=1000)
-        if train_samples:
-            rows = rows.take(train_samples)
-        available = sum(read_metadata(path).num_rows for path in files["train"])
-        size = min(train_samples, available) if train_samples else available
-        if not size:
-            raise ValueError("Empty ImageNet training split")
-        train = TrainingImages(rows, weights.transforms(), mapping, size)
-        metadata["train"] = {"samples": size, "streaming": True}
-    return train, validation, metadata
+        limit = train_samples if split == "train" else val_samples
+        if limit and limit < len(rows):
+            rows = rows.shuffle(seed=seed).select(range(limit)).flatten_indices()
+        if not len(rows):
+            raise ValueError(f"Empty ImageNet {split} split")
+        images[split] = Images(rows, weights.transforms(), mapping)
+        metadata[split] = {
+            "samples": len(rows),
+            "storage": "arrow",
+            "cache_files": [item["filename"] for item in rows.cache_files],
+        }
+        print(f"[{split}] Arrow cache ready: {len(rows)} images", flush=True)
+    return images.get("train"), images["validation"], metadata
 
 
 @torch.no_grad()
@@ -148,7 +155,8 @@ def evaluate(
             loader, desc=f"{description} ({device})", unit="batch", dynamic_ncols=True
         ) as progress:
             for images, labels in progress:
-                images, labels = images.to(device), labels.to(device)
+                images = images.to(device, non_blocking=True)
+                labels = labels.to(device, non_blocking=True)
                 logits = model(images)
                 loss += F.cross_entropy(logits, labels, reduction="sum").item()
                 matches = logits.topk(min(5, logits.shape[1]), dim=1).indices.eq(labels[:, None])

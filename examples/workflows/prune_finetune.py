@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import torch
-from imagenet_data import TrainingImages, evaluate, load_images
+from imagenet_data import Images, evaluate, load_images
 from imagenet_models import MODELS, make_model
 from model_metrics import measure_model
 from torch import nn
@@ -57,10 +57,16 @@ def parse_args() -> argparse.Namespace:
         help="Accuracy evaluation and latency measurement batch size",
     )
     parser.add_argument(
+        "--train_workers",
+        type=int,
+        default=8,
+        help="Training loader processes; 0 runs in the main process",
+    )
+    parser.add_argument(
         "--val_workers",
         type=int,
-        default=0,
-        help="Validation loader workers; training streams in the main process",
+        default=8,
+        help="Validation loader processes; 0 runs in the main process",
     )
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument(
@@ -89,6 +95,7 @@ def parse_args() -> argparse.Namespace:
         "train_samples",
         "val_samples",
         "val_workers",
+        "train_workers",
         "finetune_epochs",
         "latency_warmup",
     ):
@@ -119,7 +126,9 @@ def collect_task_gradients(
             total=1, desc=f"Taylor calibration ({device})", unit="batch", dynamic_ncols=True
         ) as progress:
             images, labels = next(iter(loader))
-            loss = F.cross_entropy(model(images.to(device)), labels.to(device))
+            loss = F.cross_entropy(
+                model(images.to(device, non_blocking=True)), labels.to(device, non_blocking=True)
+            )
             loss.backward()
             progress.set_postfix(loss=f"{loss.detach().item():.4f}", refresh=False)
             progress.update()
@@ -190,12 +199,26 @@ def main() -> None:
     )
     generator = torch.Generator().manual_seed(options.seed)
     train_loader = (
-        DataLoader(train, batch_size=options.train_batch_size, generator=generator)
+        DataLoader(
+            train,
+            batch_size=options.train_batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=options.train_workers,
+            persistent_workers=options.train_workers > 0,
+            multiprocessing_context="spawn" if options.train_workers else None,
+            pin_memory=options.device == "cuda",
+        )
         if train is not None
         else None
     )
     val_loader = DataLoader(
-        validation, batch_size=options.val_batch_size, num_workers=options.val_workers
+        validation,
+        batch_size=options.val_batch_size,
+        num_workers=options.val_workers,
+        persistent_workers=options.val_workers > 0,
+        multiprocessing_context="spawn" if options.val_workers else None,
+        pin_memory=options.device == "cuda",
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
     records: list[dict[str, Any]] = []
@@ -271,7 +294,7 @@ def main() -> None:
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     for epoch in range(options.finetune_epochs):
         print(
-            f"Fine-tuning epoch {epoch + 1}: {len(cast(TrainingImages, train))} images on {options.device}; "
+            f"Fine-tuning epoch {epoch + 1}: {len(cast(Images, train))} images on {options.device}; "
             "training data decoded in the main process",
             flush=True,
         )
@@ -284,7 +307,8 @@ def main() -> None:
             dynamic_ncols=True,
         ) as progress:
             for images, labels in progress:
-                images, labels = images.to(options.device), labels.to(options.device)
+                images = images.to(options.device, non_blocking=True)
+                labels = labels.to(options.device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)
                 loss = F.cross_entropy(model(images), labels)
                 loss.backward()
