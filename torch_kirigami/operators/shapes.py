@@ -1,24 +1,28 @@
 """Dimension provenance and dependencies shared by operator contracts."""
 
+from __future__ import annotations
+
 import builtins
 import operator
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from math import prod
+from typing import Any, cast
 
 from torch import fx
 
-from ..contracts import Diagnostic, ShapeExpr
+from ..contracts import ArgumentRef, Diagnostic, ShapeExpr
 from ..errors import UnsupportedOperation
-from ..operation import PartitionedLayout, argument_locations
+from ..operation import OperationContext, PartitionedLayout, argument_locations
 from ..regions import concatenated_shape
-from ..selection import TensorRef
+from ..selection import Selection, TensorRef
 
 
 class _PendingLayout(Exception):
     """Known structure whose partition counts still need a legal completion."""
 
 
-def shape_expression(ctx, value):
+def shape_expression(ctx: OperationContext, value: object) -> ShapeExpr:
     """Resolve dimension provenance without guessing from numeric equality."""
     if isinstance(value, fx.Node):
         return ctx.expressions.get(value, ShapeExpr("unknown", value.name))
@@ -29,12 +33,12 @@ def shape_expression(ctx, value):
     return ShapeExpr("unknown", repr(value))
 
 
-def has_known_provenance(expr):
+def has_known_provenance(expr: ShapeExpr) -> bool:
     """Check whether every leaf of a shape expression has known provenance."""
     return expr.kind != "unknown" and all(has_known_provenance(arg) for arg in expr.args)
 
 
-def expression_for(ctx):
+def expression_for(ctx: OperationContext) -> ShapeExpr | None:
     """Recognize public dimension reads and scalar integer arithmetic."""
     node = ctx.node
     x = ctx.args[0] if ctx.args else None
@@ -88,12 +92,14 @@ def expression_for(ctx):
     return expression
 
 
-def evaluate(expr, shape):
+def evaluate(
+    expr: ShapeExpr, shape: Callable[[TensorRef], tuple[int, ...]]
+) -> int | tuple[int, ...]:
     """Evaluate supported integer provenance using supplied compact shapes."""
     if expr.kind in ("constant", "infer"):
         return expr.value
     if expr.kind == "tuple":
-        return tuple(evaluate(e, shape) for e in expr.args)
+        return tuple(cast(int, evaluate(e, shape)) for e in expr.args)
     if expr.kind == "dimension":
         ref, dim = expr.value
         return shape(ref)[dim]
@@ -118,7 +124,12 @@ def evaluate(expr, shape):
     raise ValueError(f"Unknown shape expression: {expr.kind}")
 
 
-def reevaluate(raw, normalized, expressions, shape):
+def reevaluate(
+    raw: Any,
+    normalized: Any,
+    expressions: Mapping[fx.Node, ShapeExpr],
+    shape: Callable[[TensorRef], tuple[int, ...]],
+) -> Any:
     """Recompute only captured dimension expressions in an argument tree."""
     if isinstance(raw, fx.Node):
         expression = expressions.get(raw)
@@ -132,7 +143,7 @@ def reevaluate(raw, normalized, expressions, shape):
     return normalized
 
 
-def dependencies(ctx):
+def dependencies(ctx: OperationContext) -> tuple[TensorRef, ...]:
     """Return dimension-source tensors used by scalar arguments of a call."""
     return tuple(
         dict.fromkeys(
@@ -158,7 +169,7 @@ class CallArgumentConstraint:
     layouts: tuple[PartitionedLayout, ...] = ()
     hint: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         arguments = tuple(
             (expr, tuple(value) if isinstance(value, (list, tuple)) else value)
             for expr, value in self.arguments
@@ -175,11 +186,14 @@ class CallArgumentConstraint:
         object.__setattr__(self, "layouts", tuple(self.layouts))
 
     @classmethod
-    def from_operation(cls, context, *, checked_arguments=()):
+    def from_operation(
+        cls, context: OperationContext, *, checked_arguments: tuple[ArgumentRef, ...] = ()
+    ) -> CallArgumentConstraint:
         """Detach the used shape expressions and observed values from capture."""
         arguments = []
 
-        def visit(raw, observed):
+        def visit(raw: object, observed: Any) -> None:
+            """Collect expressions found in one raw and normalized value pair."""
             if isinstance(raw, fx.Node):
                 expression = context.expressions.get(raw)
                 if expression is not None:
@@ -214,16 +228,17 @@ class CallArgumentConstraint:
         return cls(context.node.name, tuple(arguments))
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return tensors whose sizes feed this call's scalar arguments."""
         return tuple(dict.fromkeys(ref for expr, _ in self.arguments for ref in expr.refs))
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Reject changed semantic arguments while permitting declared shape contracts."""
         if not any(r.id in selections for r in self.refs):
             return None
 
-        def shape(ref):
+        def shape(ref: TensorRef) -> tuple[int, ...]:
+            """Resolve a reference's compact shape under the current selections."""
             if ref.id not in selections:
                 return ref.shape
             selection = selections[ref.id]

@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import fields, is_dataclass
+from typing import Any, cast
 
 import torch
 from torch import nn
 
 from ..bindings import has_tensor_hooks, storage_key
+from ..contracts import Constraint, Fixed, Impact
+from ..graph import DependencyGraph
 from ..regions import gather_region
-from ..selection import TensorRef
+from ..selection import Selection, TensorRef
 from .candidates import CandidateSpace, discover_candidates, interface_constraints, parameter_groups
 from .granularity import Granularity, alignment_constraints
+from .groups import ParameterGroup
 from .plan import PruningPlan, PruningResult
 from .planner import PlanningContext
 from .recipes import compact_stride, coordinate_mapping
@@ -27,20 +32,33 @@ from .state import (
 )
 from .types import (
     AnalysisSummary,
+    AttributeRecipe,
+    Candidate,
+    ChannelCount,
+    ChannelRatio,
     ExecutionError,
+    ModelStructure,
+    ParameterBudget,
+    ParameterReport,
     PlanningError,
     SelectionReport,
+    Strategy,
+    TensorRecipe,
 )
 
+_TensorVersions = tuple[tuple[TensorRef, torch.Tensor, int | None, bool], ...]
 
-def _version(tensor):
+
+def _version(tensor: torch.Tensor) -> int | None:
+    """Read the mutation counter when the tensor supports version tracking."""
     try:
         return tensor._version
     except RuntimeError:  # Inference tensors do not expose a version counter.
         return None
 
 
-def _snapshot(graph):
+def _snapshot(graph: DependencyGraph) -> _TensorVersions:
+    """Retain live bindings and mutation counters for planning validation."""
     return tuple(
         (ref, tensor, _version(tensor), tensor.requires_grad)
         for ref, tensor in graph.tensor_bindings()
@@ -65,21 +83,22 @@ class Pruner:
 
     def __init__(
         self,
-        model,
+        model: nn.Module,
         *,
-        graph=None,
-        preserve_io=True,
-        constraints=(),
-        granularity=_DEFAULT_GRANULARITY,
-    ):
+        graph: DependencyGraph | None = None,
+        preserve_io: bool = True,
+        constraints: Iterable[Constraint] = (),
+        granularity: Granularity = _DEFAULT_GRANULARITY,
+    ) -> None:
         if type(preserve_io) is not bool:
             raise TypeError("preserve_io must be boolean")
         if not isinstance(granularity, Granularity):
             raise TypeError("Expected a Granularity configuration")
         self.model, self.graph = model, graph
         self.operations = graph.operations() if graph is not None else ()
-        self._interface_constraints = ()
-        alignment, self._configuration_notes = (), ()
+        self._interface_constraints: tuple[Fixed, ...] = ()
+        alignment: tuple[Constraint, ...] = ()
+        self._configuration_notes: tuple[str, ...] = ()
         if graph is not None:
             graph.validate(model)
             self._interface_constraints = interface_constraints(graph, preserve_io)
@@ -89,57 +108,76 @@ class Pruner:
         self._constraints = (*self._interface_constraints, *tuple(constraints), *alignment)
 
     @property
-    def constraints(self):
+    def constraints(self) -> tuple[Constraint, ...]:
         """Return the common interface, caller, and alignment requirements."""
         return self._constraints
 
-    def _validate_graph(self):
+    def _validate_graph(self) -> DependencyGraph:
+        """Return the graph after checking its presence, ownership and freshness."""
         if self.graph is None:
             raise PlanningError("Planning requires a DependencyGraph")
         self.graph.validate(self.model)
+        return self.graph
 
-    def discover_candidates(self, *, targets=None):
+    def discover_candidates(self, *, targets: Iterable[str] | None = None) -> CandidateSpace:
         """Discover declared candidates explicitly, optionally by module path patterns.
 
         Targets filter candidate entry points, not the dependency closure. Only
         domains proved wholly protected by external interfaces are excluded.
         """
-        self._validate_graph()
-        return discover_candidates(self.graph, self._interface_constraints, targets)
+        graph = self._validate_graph()
+        return discover_candidates(graph, self._interface_constraints, targets)
 
-    def impact(self, candidates):
+    def impact(self, candidates: Iterable[Candidate]) -> Impact:
         """Analyze a joint candidate batch under this pruner's fixed constraints."""
-        self._validate_graph()
-        return self.graph.propagate(
+        graph = self._validate_graph()
+        return graph.propagate(
             remove=tuple(s for c in candidates for s in c.remove),
             constraints=self.constraints,
         )
 
-    def parameter_groups(self, candidates, *, parameter_filter=None):
+    def parameter_groups(
+        self,
+        candidates: Iterable[Candidate],
+        *,
+        parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None = None,
+    ) -> tuple[ParameterGroup, ...]:
         """Extract complete parameter groups for an explicit candidate iterable.
 
         The optional filter receives (TensorRef, Parameter). Repairable structural
         constraints do not prevent group extraction; incomplete influence does.
         """
-        self._validate_graph()
-        return parameter_groups(self.graph, candidates, self.constraints, parameter_filter)
+        graph = self._validate_graph()
+        return parameter_groups(graph, candidates, self.constraints, parameter_filter)
 
-    def prune(self, space, *, budget, strategy) -> tuple[nn.Module, PruningResult]:
+    def prune(
+        self,
+        space: CandidateSpace,
+        *,
+        budget: ChannelCount | ChannelRatio | ParameterBudget,
+        strategy: Strategy[PlanningContext],
+    ) -> tuple[nn.Module, PruningResult]:
         """Plan and apply one automatic round with an explicit candidate space."""
         return self.apply(self.plan(space, budget=budget, strategy=strategy))
 
-    def plan_remove(self, remove) -> PruningPlan:
+    def plan_remove(self, remove: Iterable[Selection]) -> PruningPlan:
         """Plan exact manual selections, without supplementing or dropping seeds."""
-        self._validate_graph()
-        before = snapshot(self.model, guarded=self.graph.constant_guards())
-        versions = _snapshot(self.graph)
-        impact = self.graph.propagate(remove=tuple(remove), constraints=self.constraints)
-        recipes, attributes, notes = compile_recipes(self.graph, self.operations, impact)
+        graph = self._validate_graph()
+        before = snapshot(self.model, guarded=graph.constant_guards())
+        versions = _snapshot(graph)
+        impact = graph.propagate(remove=tuple(remove), constraints=self.constraints)
+        recipes, attributes, notes = compile_recipes(graph, self.operations, impact)
         return self._finish(
             impact, recipes, attributes, (), SelectionReport(), notes, before, versions
         )
 
-    def plan(self, space, *, budget, strategy) -> PruningPlan:
+    def plan(
+        self,
+        space: CandidateSpace,
+        *,
+        budget: ChannelCount | ChannelRatio | ParameterBudget,
+        strategy: Strategy[PlanningContext],
+    ) -> PruningPlan:
         """Plan an explicit candidate space without allocating compact weights.
 
         Args:
@@ -151,34 +189,34 @@ class Pruner:
         Returns:
             A portable static plan. No discovery, metric, or strategy is implicit.
         """
-        self._validate_graph()
+        graph = self._validate_graph()
         if not isinstance(space, CandidateSpace):
             raise TypeError("Expected a CandidateSpace")
         for axis in (*space.channel_axes, *space.protected_channel_axes):
-            self.graph.metadata(axis.tensor)
+            graph.metadata(axis.tensor)
         for candidate in space.candidates:
             for selection in candidate.remove:
-                self.graph.metadata(selection.tensor)
+                graph.metadata(selection.tensor)
             if candidate.axis is not None:
-                self.graph.metadata(candidate.axis.tensor)
-        before = snapshot(self.model, guarded=self.graph.constant_guards())
-        versions = _snapshot(self.graph)
+                graph.metadata(candidate.axis.tensor)
+        before = snapshot(self.model, guarded=graph.constant_guards())
+        versions = _snapshot(graph)
         candidates, axes = space.candidates, space.channel_axes
         registered = {c.key: c for c in candidates}
         context = PlanningContext(
-            self.graph, self.operations, candidates, budget, axes, self.constraints
+            graph, self.operations, candidates, budget, axes, self.constraints
         )
         context.exclusions.extend(space.exclusions)
         keys = tuple(dict.fromkeys(strategy(context)))
         if any(key not in registered for key in keys):
             raise PlanningError("Strategy returned an unregistered candidate key")
-        impact = self.graph.propagate(
+        impact = graph.propagate(
             remove=(s for key in keys for s in registered[key].remove),
             constraints=self.constraints,
         )
         # Reestablish premises after arbitrary strategy callbacks.
         final_context = PlanningContext(
-            self.graph, self.operations, candidates, budget, axes, self.constraints
+            graph, self.operations, candidates, budget, axes, self.constraints
         )
         final_context.trials = context.trials
         final_context.limit_reached = context.limit_reached
@@ -189,18 +227,30 @@ class Pruner:
             impact, recipes, attributes, keys, final_context.report(impact), notes, before, versions
         )
 
-    def _finish(self, impact, recipes, attributes, keys, report, notes, before, versions):
-        self.graph.validate(self.model)
-        self._check_versions(versions)
+    def _finish(
+        self,
+        impact: Impact,
+        recipes: tuple[TensorRecipe, ...],
+        attributes: tuple[AttributeRecipe, ...],
+        keys: tuple[str, ...],
+        report: SelectionReport | ParameterReport,
+        notes: tuple[str, ...],
+        before: ModelStructure,
+        versions: _TensorVersions,
+    ) -> PruningPlan:
+        """Freeze validated analysis and recipes into a portable plan."""
+        graph = self._validate_graph()
+        self._check_versions(graph, versions)
         notes = (*self._configuration_notes, *notes)
 
-        def freeze(value):
+        def freeze(value: Any) -> Any:
+            """Rebuild heterogeneous dataclass trees with portable tensor references."""
             if isinstance(value, TensorRef):
                 return value.portable()
             if isinstance(value, tuple):
                 return tuple(freeze(v) for v in value)
             if is_dataclass(value):
-                return type(value)(
+                return cast(Callable[..., Any], type(value))(
                     **{f.name: freeze(getattr(value, f.name)) for f in fields(value)}
                 )
             return value
@@ -210,7 +260,7 @@ class Pruner:
             impact.requested,
             tuple(impact.selections.values()),
             tuple(dict.fromkeys(p.reason for p in impact.provenance)),
-            self.graph.values(),
+            graph.values(),
         )
         plan = PruningPlan(
             freeze(summary),
@@ -225,8 +275,9 @@ class Pruner:
         validate_plan(plan)
         return plan
 
-    def _check_versions(self, versions):
-        bindings = dict(self.graph.tensor_bindings())
+    def _check_versions(self, graph: DependencyGraph, versions: _TensorVersions) -> None:
+        """Reject changes to live tensor bindings, gradient flags or tracked values."""
+        bindings = dict(graph.tensor_bindings())
         for ref, old, version, requires_grad in versions:
             current = bindings[ref]
             if (

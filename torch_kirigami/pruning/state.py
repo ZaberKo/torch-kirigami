@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import replace
 from math import prod
+from typing import Protocol
 
 import torch
 from torch import nn
@@ -12,18 +14,62 @@ from ..bindings import AttributeEdit, reference_edits, reference_signature, stor
 from ..configuration import attributes as configuration_attributes
 from ..configuration import forward_hook_paths, freeze, has_registration_hooks, thaw
 from .recipes import compact_stride, validate_recipe
-from .types import ExecutionError, ModelStructure, ModuleState, ParameterReport, TensorState
+from .types import (
+    AnalysisSummary,
+    AttributeRecipe,
+    ExecutionError,
+    ModelStructure,
+    ModuleState,
+    ParameterReport,
+    SelectionReport,
+    TensorRecipe,
+    TensorState,
+)
 
 STRUCTURE_ATTRIBUTE = "_kirigami_structure"
 
 
-def attribute(model, path):
+class _PlanContract(Protocol):
+    """Structural plan fields required for independent validation."""
+
+    @property
+    def before(self) -> ModelStructure:
+        """Return original structural preconditions."""
+        ...
+
+    @property
+    def after(self) -> ModelStructure:
+        """Return expected compact structure."""
+        ...
+
+    @property
+    def analysis(self) -> AnalysisSummary:
+        """Return the portable dependency analysis."""
+        ...
+
+    @property
+    def recipes(self) -> tuple[TensorRecipe, ...]:
+        """Return tensor replacement descriptions."""
+        ...
+
+    @property
+    def attributes(self) -> tuple[AttributeRecipe, ...]:
+        """Return attribute replacement descriptions."""
+        ...
+
+    @property
+    def selection_report(self) -> SelectionReport | ParameterReport:
+        """Return the completed selection and budget report."""
+        ...
+
+
+def attribute(model: nn.Module, path: str) -> tuple[nn.Module, str]:
     """Resolve a registered or declared attribute to its original owner."""
     parent, _, name = path.rpartition(".")
     return model.get_submodule(parent) if parent else model, name
 
 
-def snapshot(model, *, guarded=()):
+def snapshot(model: nn.Module, *, guarded: tuple[str, ...] = ()) -> ModelStructure:
     """Read structural state; ordinary weight updates do not change this record."""
     modules = {}
     for path, module in model.named_modules(remove_duplicate=False):
@@ -83,7 +129,11 @@ def snapshot(model, *, guarded=()):
     return ModelStructure(tuple(module_states), tuple(tensors), reference_signature(model))
 
 
-def transformed(before, recipes, attributes):
+def transformed(
+    before: ModelStructure,
+    recipes: tuple[TensorRecipe, ...],
+    attributes: tuple[AttributeRecipe, ...],
+) -> ModelStructure:
     """Derive the final structural state from validated declarative modifications."""
     replacements = {r.tensor.paths[0]: r for r in recipes}
     known = {p for state in before.tensors for p in state.paths}
@@ -128,7 +178,7 @@ def transformed(before, recipes, attributes):
     return ModelStructure(tuple(modules), tuple(tensors), before.references)
 
 
-def validate_plan(plan):
+def validate_plan(plan: _PlanContract) -> None:
     """Check recipe consistency independently of issuance identity or live Impact."""
     if not isinstance(plan.before, ModelStructure) or not isinstance(plan.after, ModelStructure):
         raise ValueError("Plan requires structural preconditions and postconditions")
@@ -175,7 +225,7 @@ def validate_plan(plan):
             )
 
 
-def check_structure(model, expected):
+def check_structure(model: nn.Module, expected: ModelStructure) -> None:
     """Reject detectable type, binding, mode, configuration, or layout changes."""
     hooks = forward_hook_paths(model)
     if hooks:
@@ -185,7 +235,14 @@ def check_structure(model, expected):
         raise ExecutionError("Model structure/mode/configuration does not match plan preconditions")
 
 
-def commit(model, replacements, attributes, record, *, expected):
+def commit(
+    model: nn.Module,
+    replacements: Sequence[tuple[TensorState, torch.Tensor, torch.Tensor]],
+    attributes: Iterable[AttributeRecipe | AttributeEdit],
+    record: dict[str, object],
+    *,
+    expected: ModelStructure,
+) -> None:
     """Commit prepared tensor bindings and attributes, restoring ordinary failures.
 
     Args:
@@ -281,7 +338,9 @@ def commit(model, replacements, attributes, record, *, expected):
         ) from error
 
 
-def managed_record(model, structure, attribute_paths=()):
+def managed_record(
+    model: nn.Module, structure: ModelStructure, attribute_paths: Iterable[str] = ()
+) -> dict[str, object]:
     """Track managed structure without retaining weights, runtime graphs, or history."""
     previous = getattr(model, STRUCTURE_ATTRIBUTE, {})
     paths = set(previous.get("attributes", ())) | set(attribute_paths)
@@ -299,7 +358,7 @@ def managed_record(model, structure, attribute_paths=()):
     }
 
 
-def validate_managed(model, structure):
+def validate_managed(model: nn.Module, structure: ModelStructure) -> None:
     """Detect external structural changes while allowing training and device moves."""
     previous = getattr(model, STRUCTURE_ATTRIBUTE, None)
     if previous is not None and previous != managed_record(model, structure):

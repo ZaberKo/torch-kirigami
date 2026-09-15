@@ -1,17 +1,23 @@
 """One candidate universe for planning, budget accounting and sparse training."""
 
 from collections import defaultdict, deque
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from typing import cast
 
-from ..contracts import Fixed
+from torch import nn
+
+from ..contracts import Constraint, Fixed
+from ..graph import DependencyGraph
+from ..operation import CandidateAxis, OperationContext
 from ..relations import AxisRelation, BlockMap, BroadcastRelation, ReshapeRelation
-from ..selection import AxisRef
+from ..selection import AxisRef, TensorRef
 from .groups import ParameterGroup, unique_groups
 from .types import Candidate, PlanningError
 
 
-def interface_constraints(graph, preserve_io):
+def interface_constraints(graph: DependencyGraph, preserve_io: bool) -> tuple[Fixed, ...]:
     """Return the standard protection of every external tensor axis."""
     return (
         tuple(Fixed(ref.axis(d)) for ref in graph.interfaces() for d in range(len(ref.shape)))
@@ -20,9 +26,12 @@ def interface_constraints(graph, preserve_io):
     )
 
 
-def discover(graph, operations):
+def discover(
+    graph: DependencyGraph, operations: tuple[OperationContext, ...]
+) -> tuple[CandidateAxis, ...]:
     """Collect logical domains before instantiating individual candidate requests."""
-    domains, keys = {}, {}
+    domains: dict[AxisRef, CandidateAxis] = {}
+    keys: dict[str, tuple[TensorRef | AxisRef, int, int]] = {}
     for op in operations:
         for domain in graph.operator_spec(op).candidates:
             axis, block = domain.axis, domain.block_size
@@ -44,7 +53,8 @@ def discover(graph, operations):
     return tuple(domains.values())
 
 
-def _candidates(domain):
+def _candidates(domain: CandidateAxis) -> Iterator[Candidate]:
+    """Yield stable candidate keys for the domain's original channel blocks."""
     axis, block = domain.axis, domain.block_size
     for start in range(0, axis.tensor.shape[axis.dim], block):
         yield Candidate(
@@ -52,19 +62,19 @@ def _candidates(domain):
         )
 
 
-def _protected_equal_axes(graph, defaults):
+def _protected_equal_axes(graph: DependencyGraph, defaults: tuple[Fixed, ...]) -> set[AxisRef]:
     """Prove full IO protection through unscoped identity axis relationships.
 
     Keep axes distinct: removing an entire tensor would accidentally couple its
     otherwise independent row/column domains. Other maps use per-candidate proof.
     """
     protected = {c.axis for c in defaults}
-    edges = []
+    edges: list[tuple[AxisRef, AxisRef]] = []
     for relation in graph.relations:
         if isinstance(relation, (ReshapeRelation, BroadcastRelation)):
-            left, right = relation.refs
-            if left.shape == right.shape:
-                edges.extend((left.axis(d), right.axis(d)) for d in range(len(left.shape)))
+            source, target = relation.refs
+            if source.shape == target.shape:
+                edges.extend((source.axis(d), target.axis(d)) for d in range(len(source.shape)))
             continue
         if not isinstance(relation, AxisRelation):
             continue
@@ -77,10 +87,10 @@ def _protected_equal_axes(graph, defaults):
             and relation.maps == (BlockMap(0, 0, width),)
         ):
             edges.append((left.axis, right.axis))
-    adjacent = defaultdict(set)
-    for left, right in edges:
-        adjacent[left].add(right)
-        adjacent[right].add(left)
+    adjacent: defaultdict[AxisRef, set[AxisRef]] = defaultdict(set)
+    for left_axis, right_axis in edges:
+        adjacent[left_axis].add(right_axis)
+        adjacent[right_axis].add(left_axis)
     pending = deque(protected)
     while pending:
         for axis in adjacent[pending.popleft()] - protected:
@@ -103,7 +113,7 @@ class CandidateSpace:
     protected_channel_axes: tuple[AxisRef, ...] = ()
     exclusions: tuple[tuple[str, str], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         candidates = tuple(self.candidates)
         if any(not isinstance(c, Candidate) for c in candidates):
             raise TypeError("CandidateSpace requires Candidate records")
@@ -121,7 +131,9 @@ class CandidateSpace:
         object.__setattr__(self, "exclusions", exclusions)
 
 
-def discover_candidates(graph, defaults, targets):
+def discover_candidates(
+    graph: DependencyGraph, defaults: tuple[Fixed, ...], targets: Iterable[str] | None
+) -> CandidateSpace:
     """Filter declared domains before freezing widths and creating seeds."""
     graph.validate()
     operations = graph.operations()
@@ -174,7 +186,12 @@ def discover_candidates(graph, defaults, targets):
     )
 
 
-def parameter_groups(graph, candidates, constraints, parameter_filter):
+def parameter_groups(
+    graph: DependencyGraph,
+    candidates: Iterable[Candidate],
+    constraints: tuple[Constraint, ...],
+    parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None,
+) -> tuple[ParameterGroup, ...]:
     """Extract complete groups without requiring individual feasibility."""
     result = []
     for candidate in candidates:
@@ -187,7 +204,7 @@ def parameter_groups(graph, candidates, constraints, parameter_filter):
         selections = []
         for selection in impact.parameters:
             if parameter_filter is None or parameter_filter(
-                selection.tensor, graph.tensor(selection.tensor)
+                selection.tensor, cast(nn.Parameter, graph.tensor(selection.tensor))
             ):
                 selections.append(selection)
             graph.validate()

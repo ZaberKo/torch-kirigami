@@ -1,15 +1,18 @@
 """Scalar sparse penalties with a single autograd-based differentiation path."""
 
+from __future__ import annotations
+
 import math
 
 import torch
 
+from ..graph import DependencyGraph
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
-from ..selection import Selection, full_region
+from ..selection import Selection, TensorRef, full_region
 from .values import group_penalty, group_values, reduction_plan, squared_norm, stable_norm
 
 
-def coefficients_for(count, coefficients):
+def coefficients_for(count: int, coefficients: tuple[int | float, ...] | None) -> tuple[float, ...]:
     """Validate fixed nonnegative weights without differentiating through them."""
     values = (1.0,) * count if coefficients is None else tuple(coefficients)
     if len(values) != count or any(
@@ -38,7 +41,12 @@ class GroupLasso:
     penalties support first-order autograd only; double backward is unsupported.
     """
 
-    def __init__(self, groups, *, coefficients=None):
+    def __init__(
+        self,
+        groups: tuple[ParameterGroup, ...],
+        *,
+        coefficients: tuple[int | float, ...] | None = None,
+    ) -> None:
         groups = tuple(groups)
         weights = coefficients_for(len(groups), coefficients)
         unique, unique_weights = [], []
@@ -53,7 +61,7 @@ class GroupLasso:
         with torch.no_grad():
             group_values(self.groups)
 
-    def __call__(self):
+    def __call__(self) -> torch.Tensor:
         """Return a differentiable scalar using current parameter values."""
         native = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}
         # Exact types keep the optimized path from bypassing a subclass penalty().
@@ -87,7 +95,7 @@ class GroupLasso:
             raise ValueError("Sparse penalty is nonfinite")
         return result
 
-    def penalty(self, values):
+    def penalty(self, values: torch.Tensor) -> torch.Tensor:
         """Return the unweighted penalty for one flattened group."""
         return stable_norm(values)
 
@@ -95,7 +103,7 @@ class GroupLasso:
 class GroupSquaredL2(GroupLasso):
     """Return half of sum(a_g * ||W_g||_2**2); see GroupLasso bindings."""
 
-    def penalty(self, values):
+    def penalty(self, values: torch.Tensor) -> torch.Tensor:
         """Return half the squared norm, whose gradient is the group itself."""
         return squared_norm(values)
 
@@ -110,7 +118,7 @@ class ScaleL1(GroupLasso):
     No normalization/gate selection policy is inferred from the model.
     """
 
-    def __init__(self, graph, parameters):
+    def __init__(self, graph: DependencyGraph, parameters: tuple[str | TensorRef, ...]) -> None:
         refs = tuple(graph.parameter(p) if isinstance(p, str) else p for p in parameters)
         if any(len(ref.shape) != 1 for ref in refs):
             raise ValueError("ScaleL1 requires one-dimensional scale parameters")
@@ -122,6 +130,6 @@ class ScaleL1(GroupLasso):
             )
         )
 
-    def penalty(self, values):
+    def penalty(self, values: torch.Tensor) -> torch.Tensor:
         """Return L1 with autograd's zero subgradient at zero."""
         return values.abs().sum()

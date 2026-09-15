@@ -3,7 +3,9 @@
 import argparse
 import json
 import math
+from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import torch
 from imagenet_data import evaluate, load_images
@@ -16,9 +18,11 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
+    Candidate,
     Granularity,
     Greedy,
     ParameterBudget,
+    PlanningContext,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -26,7 +30,7 @@ from torch_kirigami.pruning import (
 from torch_kirigami.sparsity import ChannelGate, ScaleL1, register_gate_operators
 
 
-def insert_gates(model, layers):
+def insert_gates(model: nn.Module, layers: Iterable[str]) -> nn.Module:
     """Insert identity-initialized gates after loading the original model weights."""
     for layer in layers:
         block = model.get_submodule(layer)
@@ -37,7 +41,7 @@ def insert_gates(model, layers):
     return model
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse options for gate training, gate-ranked removal and optional fine-tuning."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--model", choices=tuple(MODELS), default="resnet18")
@@ -109,7 +113,8 @@ def parse_args():
     return options
 
 
-def main():
+def main() -> None:
+    """Train identity gates, prune channels and fine-tune the compact model."""
     options = parse_args()
     torch.manual_seed(options.seed)
     model = make_model(options.model)
@@ -155,10 +160,11 @@ def main():
         gated=True,
         max_params=budget.max_params,
     )
-    records = []
+    records: list[dict[str, Any]] = []
     options.output.mkdir(parents=True, exist_ok=True)
 
-    def record(stage, **extra):
+    def record(stage: str, **extra: object) -> None:
+        """Evaluate the current model and persist this stage's measurements."""
         accuracy = evaluate(model, val_loader, options.device, description=f"{stage} evaluation")
         baseline = records[0]["top1"] if records else accuracy["top1"]
         row = {
@@ -201,7 +207,7 @@ def main():
                 images, labels = images.to(options.device), labels.to(options.device)
                 optimizer.zero_grad(set_to_none=True)
                 task_loss = F.cross_entropy(model(images), labels)
-                sparse_loss = regularizer()
+                sparse_loss = cast(ScaleL1, regularizer)()
                 loss = task_loss + options.strength * sparse_loss
                 loss.backward()
                 optimizer.step()
@@ -250,7 +256,8 @@ def main():
     if not all(math.isfinite(score) for score in scores.values()):
         raise ValueError("Nonfinite gate score")
 
-    def score(context, batch):
+    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
+        """Look up learned gate scores for this candidate batch."""
         return [scores[c.key] for c in batch]
 
     plan = pruner.plan(

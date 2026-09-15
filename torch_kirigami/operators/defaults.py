@@ -1,7 +1,10 @@
 """Assemble exact built-in matches from independently defined operator families."""
 
+from __future__ import annotations
+
 import builtins
 import operator
+from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 
@@ -10,7 +13,13 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..contracts import ArgumentRef
-from ..operation import OperatorRule, OperatorSpec, OutputContract
+from ..operation import (
+    OperationContext,
+    OperatorRegistrar,
+    OperatorRule,
+    OperatorSpec,
+    OutputContract,
+)
 from .attention import register_attention
 from .effects import native_effects
 from .extended import register_extended
@@ -37,11 +46,14 @@ from .native import (
 from .shapes import CallArgumentConstraint, expression_for
 
 
-def register_defaults(registry):
+def register_defaults(registry: OperatorRegistrar) -> None:
     """Populate a local registry with exact built-in operation matches."""
 
-    def native(rule, fresh):
-        def analyze(ctx):
+    def native(rule: Callable[[OperationContext], OperatorSpec], fresh: bool) -> OperatorRule:
+        """Wrap a rule with shape-expression handling and native effects."""
+
+        def analyze(ctx: OperationContext) -> OperatorSpec:
+            """Analyze one captured operation using the wrapped rule."""
             expression = expression_for(ctx)
             if expression is not None and not ctx.outputs:
                 constraints = ()
@@ -69,15 +81,27 @@ def register_defaults(registry):
             analyze, evaluate_on_meta=True, effects=partial(native_effects, fresh_output=fresh)
         )
 
-    def modules(types, rule, *, fresh):
+    def modules(
+        types: list[type[nn.Module]],
+        rule: Callable[[OperationContext], OperatorSpec],
+        *,
+        fresh: bool,
+    ) -> None:
+        """Register one rule for each listed module class."""
         for target in types:
             registry.register(target, native(rule, fresh))
 
-    def functions(targets, rule, *, fresh):
+    def functions(
+        targets: list[object], rule: Callable[[OperationContext], OperatorSpec], *, fresh: bool
+    ) -> None:
+        """Register one rule for each listed function target."""
         for target in targets:
             registry.register(target, native(rule, fresh), opaque=False)
 
-    def methods(names, rule, *, fresh):
+    def methods(
+        names: list[str], rule: Callable[[OperationContext], OperatorSpec], *, fresh: bool
+    ) -> None:
+        """Register one rule for each listed method name."""
         for name in names:
             registry.register_method(name, native(rule, fresh))
 

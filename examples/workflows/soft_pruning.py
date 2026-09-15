@@ -3,30 +3,37 @@
 import argparse
 import json
 import math
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
 from model_metrics import measure_model
+from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
+    Candidate,
+    CandidateSpace,
     Granularity,
     Greedy,
     ParameterBudget,
     ParameterGroup,
+    PlanningContext,
     Pruner,
+    PruningPlan,
     load_checkpoint,
     save_checkpoint,
 )
 from torch_kirigami.sparsity import GroupLasso, set_group_norms_, zero_groups_
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse soft-projection settings and ImageNet execution options."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--model", choices=tuple(MODELS), default="resnet18")
@@ -106,7 +113,7 @@ def parse_args():
     return options
 
 
-def make_plan(pruner, space, budget):
+def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) -> PruningPlan:
     """Score producer channels and enforce alignment before soft projection."""
     scores = {}
     for axis in space.channel_axes:
@@ -120,25 +127,26 @@ def make_plan(pruner, space, budget):
     if not all(math.isfinite(score) for score in scores.values()):
         raise ValueError("Nonfinite pruning score")
 
-    def score(context, batch):
+    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
+        """Look up the producer scores for this candidate batch."""
         return [scores[c.key] for c in batch]
 
     return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
 def train_epoch(
-    model,
-    loader,
-    optimizer,
-    device,
+    model: nn.Module,
+    loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
+    optimizer: torch.optim.Optimizer,
+    device: torch.device | str,
     *,
-    groups=(),
-    operation=None,
-    initial_norm=0.0,
-    projection_epoch=0,
-    projection_epochs=1,
-    description="Training",
-):
+    groups: Sequence[ParameterGroup] = (),
+    operation: str | None = None,
+    initial_norm: float = 0.0,
+    projection_epoch: int = 0,
+    projection_epochs: int = 1,
+    description: str = "Training",
+) -> None:
     """Take SGD steps, optionally projecting the selected union after each step.
 
     Momentum is deliberately retained. An unprojected epoch between cycles
@@ -170,7 +178,8 @@ def train_epoch(
     print(json.dumps({"task_loss": total / count, "projection": operation}), flush=True)
 
 
-def main():
+def main() -> None:
+    """Train with soft group projection, then physically prune the selected groups."""
     options = parse_args()
     torch.manual_seed(options.seed)
     model = make_model(options.model).to(options.device).eval()
@@ -208,9 +217,10 @@ def main():
         weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
     )
     options.output.mkdir(parents=True, exist_ok=True)
-    records = []
+    records: list[dict[str, Any]] = []
 
-    def record(stage, **extra):
+    def record(stage: str, **extra: object) -> None:
+        """Evaluate the current model and persist this stage's measurements."""
         accuracy = evaluate(model, val_loader, options.device, description=f"{stage} evaluation")
         baseline = records[0]["top1"] if records else accuracy["top1"]
         row = {

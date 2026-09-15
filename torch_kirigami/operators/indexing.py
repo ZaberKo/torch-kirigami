@@ -1,5 +1,8 @@
 """Axis, partition, and block-coordinate families without activation label tensors."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import replace
 from math import prod
 
@@ -9,7 +12,7 @@ from torch.nn import functional as F
 
 from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
 from ..errors import UnsupportedOperation
-from ..operation import OperatorSpec, OutputContract
+from ..operation import OperationContext, OperatorSpec, OutputContract
 from ..relations import (
     AxisPort,
     AxisRelation,
@@ -23,7 +26,7 @@ from .coordinates import narrow_index
 from .native import equal, one, split
 
 
-def stack(ctx):
+def stack(ctx: OperationContext) -> OperatorSpec:
     """Align every stacked input and protect the newly introduced port axis."""
     items, y = ctx.argument("tensors", 0), one(ctx.output)
     dim = ctx.argument("dim", 1, 0) % len(y.shape)
@@ -41,7 +44,7 @@ def stack(ctx):
     )
 
 
-def chunk(ctx):
+def chunk(ctx: OperationContext) -> OperatorSpec:
     """Describe captured chunk ports and retain their original coordinate identity."""
     x = one(ctx.argument("input", 0))
     dim = ctx.argument("dim", 2, 0) % len(x.shape)
@@ -54,7 +57,7 @@ def chunk(ctx):
     return replace(result, requirements=requirements)
 
 
-def narrow(ctx):
+def narrow(ctx: OperationContext) -> OperatorSpec:
     """Map a fixed contiguous interval and verify it after upstream compaction."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     dim, start, length = ctx.argument("dim", 1), ctx.argument("start", 2), ctx.argument("length", 3)
@@ -77,7 +80,7 @@ def narrow(ctx):
     )
 
 
-def repeat(ctx):
+def repeat(ctx: OperationContext) -> OperatorSpec:
     """Map repeated positions through compressed block relations."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     target = ctx.node.target
@@ -151,7 +154,7 @@ def repeat(ctx):
     return OperatorSpec(tuple(relations), tuple(constraints))
 
 
-def index_select(ctx):
+def index_select(ctx: OperationContext) -> OperatorSpec:
     """Map captured constant indices and guard their values for portable replay."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     dim = ctx.argument("dim", 1)
@@ -201,7 +204,7 @@ def index_select(ctx):
     )
 
 
-def glu(ctx):
+def glu(ctx: OperationContext) -> OperatorSpec:
     """Tie both gate halves to the same compact output positions."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     dim = (ctx.module.dim if ctx.module is not None else ctx.argument("dim", 1, -1)) % len(x.shape)
@@ -218,7 +221,7 @@ def glu(ctx):
     return OperatorSpec(tuple(relations))
 
 
-def channel_shuffle(ctx):
+def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
     """Represent shuffle as a channel permutation with fixed group partitions."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     groups = ctx.module.groups if ctx.module is not None else ctx.argument("groups", 1)
@@ -260,7 +263,7 @@ def channel_shuffle(ctx):
     )
 
 
-def pixel_shuffle(ctx):
+def pixel_shuffle(ctx: OperationContext) -> OperatorSpec:
     """Connect complete channel blocks while fixing spatial coordinates."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     inverse = type(ctx.module) is nn.PixelUnshuffle or ctx.node.target in (
@@ -294,7 +297,7 @@ def pixel_shuffle(ctx):
     )
 
 
-def unfold_fold(ctx):
+def unfold_fold(ctx: OperationContext) -> OperatorSpec:
     """Connect complete im2col channel blocks; spatial/kernel coordinates stay fixed."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     fold = type(ctx.module) is nn.Fold or ctx.node.target is F.fold
@@ -329,7 +332,9 @@ def unfold_fold(ctx):
     return OperatorSpec(relations, constraints)
 
 
-def register_indexing(modules, functions, methods):
+def register_indexing(
+    modules: Callable[..., None], functions: Callable[..., None], methods: Callable[..., None]
+) -> None:
     """Register exact indexing-family API spellings."""
     functions([torch.stack], stack, fresh=True)
     functions([torch.chunk], chunk, fresh=False)

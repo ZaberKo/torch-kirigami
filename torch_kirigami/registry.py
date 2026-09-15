@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from torch import nn
+from torch import fx, nn
 
 from .operation import OperatorRule
 from .operators.defaults import register_defaults
@@ -26,13 +26,13 @@ class OperatorRegistry:
     opaque_functions: set[Callable] = field(default_factory=set)
 
     @classmethod
-    def default(cls):
+    def default(cls) -> OperatorRegistry:
         """Create a fresh registry containing the built-in operation rules."""
         registry = cls()
         register_defaults(registry)
         return registry
 
-    def copy(self):
+    def copy(self) -> OperatorRegistry:
         """Copy registration tables and leaf sets without cloning rule callables."""
         return OperatorRegistry(
             dict(self.modules),
@@ -42,7 +42,9 @@ class OperatorRegistry:
             set(self.opaque_functions),
         )
 
-    def register(self, target, rule: OperatorRule, *, opaque: bool = True):
+    def register(
+        self, target: type[nn.Module] | Callable, rule: OperatorRule, *, opaque: bool = True
+    ) -> OperatorRegistry:
         """Register semantics for an exact module type or function.
 
         Args:
@@ -60,21 +62,22 @@ class OperatorRegistry:
         if not isinstance(rule, OperatorRule):
             raise TypeError("Register an OperatorRule instance")
         if isinstance(target, type) and issubclass(target, nn.Module):
-            table = self.modules
-            opaque_set = self.opaque_modules if opaque else None
+            if target in self.modules:
+                raise ValueError(f"Rule already registered for {target}")
+            self.modules[target] = rule
+            if opaque:
+                self.opaque_modules.add(target)
         elif callable(target):
-            table = self.functions
-            opaque_set = self.opaque_functions if opaque else None
+            if target in self.functions:
+                raise ValueError(f"Rule already registered for {target}")
+            self.functions[target] = rule
+            if opaque:
+                self.opaque_functions.add(target)
         else:
             raise TypeError("Register an exact nn.Module type or function object")
-        if target in table:
-            raise ValueError(f"Rule already registered for {target}")
-        table[target] = rule
-        if opaque_set is not None:
-            opaque_set.add(target)
         return self
 
-    def register_method(self, name: str, rule: OperatorRule):
+    def register_method(self, name: str, rule: OperatorRule) -> OperatorRegistry:
         """Register semantics for a captured Tensor method.
 
         Args:
@@ -95,7 +98,7 @@ class OperatorRegistry:
         self.methods[name] = rule
         return self
 
-    def lookup(self, node, module):
+    def lookup(self, node: fx.Node, module: nn.Module | None) -> OperatorRule | None:
         """Return the exact matching rule for a captured operation, or None."""
         if node.op == "call_module":
             return self.modules.get(type(module))

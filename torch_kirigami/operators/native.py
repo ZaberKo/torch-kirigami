@@ -18,7 +18,14 @@ from ..contracts import (
     Requirement,
 )
 from ..errors import UnsupportedOperation
-from ..operation import CandidateAxis, OperatorSpec, OutputContract, PartitionedLayout, tensors
+from ..operation import (
+    CandidateAxis,
+    OperationContext,
+    OperatorSpec,
+    OutputContract,
+    PartitionedLayout,
+    tensors,
+)
 from ..relations import (
     AxisPort,
     AxisRelation,
@@ -32,19 +39,27 @@ from ..selection import IndexSet, Region, TensorRef, full_region
 from .shapes import has_known_provenance, shape_expression
 
 
-def one(value):
+def one(value: object) -> TensorRef:
     """Require one tensor reference instead of a container or scalar argument."""
     if not isinstance(value, TensorRef):
         raise UnsupportedOperation("Expected a single tensor")
     return value
 
 
-def equal(a, da, b, db, reason):
+def equal(a: TensorRef, da: int, b: TensorRef, db: int, reason: str) -> AxisRelation:
     """Build an identity relation between two specified tensor axes."""
     return AxisRelation.equal(a.axis(da), b.axis(db), reason)
 
 
-def requirement(ctx, name, tensor, dim, *, kind="attribute", position=None):
+def requirement(
+    ctx: OperationContext,
+    name: str,
+    tensor: TensorRef,
+    dim: int,
+    *,
+    kind: str = "attribute",
+    position: int | None = None,
+) -> Requirement:
     """Bind an axis change to a module attribute or functional operator argument."""
     target = f"{ctx.module_path}.{name}".lstrip(".") if ctx.module is not None else ctx.node.name
     return Requirement(
@@ -59,12 +74,14 @@ def requirement(ctx, name, tensor, dim, *, kind="attribute", position=None):
     )
 
 
-def bind(ctx, name, position, default=None):
+def bind(
+    ctx: OperationContext, name: str, position: int, default: object = None
+) -> TensorRef | None:
     """Resolve a module-local binding or a normalized functional argument."""
     return ctx.binding(name) if ctx.module is not None else ctx.argument(name, position, default)
 
 
-def _identity(ctx):
+def _identity(ctx: OperationContext) -> OperatorSpec:
     """Preserve tensor coordinates for a shape-preserving operation."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     if x.shape != y.shape:
@@ -72,7 +89,7 @@ def _identity(ctx):
     return OperatorSpec((ReshapeRelation(x, y, ctx.node.name),))
 
 
-def pointwise(ctx):
+def pointwise(ctx: OperationContext) -> OperatorSpec:
     """Connect broadcast-compatible inputs to an elementwise output."""
     y = one(ctx.output)
     relations = []
@@ -84,17 +101,19 @@ def pointwise(ctx):
     return OperatorSpec(tuple(relations))
 
 
-def layout(ctx, tensor, ports=()):
+def layout(
+    ctx: OperationContext, tensor: TensorRef, ports: tuple[object, ...] = ()
+) -> LayoutConstraint:
     """Declare the compact layouts accepted by a particular tensor use."""
     return LayoutConstraint(tensor, tuple(ports), node=ctx.node.name)
 
 
-def affine_layouts(ctx):
+def affine_layouts(ctx: OperationContext) -> tuple[LayoutConstraint, ...]:
     """Require ordinary axis compaction for each input and bound affine tensor."""
     return tuple(layout(ctx, ref) for ref in dict.fromkeys((*ctx.inputs, *ctx.bindings.values())))
 
 
-def linear(ctx):
+def linear(ctx: OperationContext) -> OperatorSpec:
     """Connect Linear feature axes, batch dimensions, weight, and bias."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
@@ -121,7 +140,7 @@ def linear(ctx):
     )
 
 
-def convolution(ctx):
+def convolution(ctx: OperationContext) -> OperatorSpec:
     """Describe ordinary/transposed groups once for mapping, channel counting, and packing."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
@@ -245,7 +264,7 @@ def convolution(ctx):
     )
 
 
-def batch_norm(ctx):
+def batch_norm(ctx: OperationContext) -> OperatorSpec:
     """Connect channel positions to affine parameters and running statistics."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     relations = [ReshapeRelation(x, y, ctx.node.name)]
@@ -263,7 +282,7 @@ def batch_norm(ctx):
     )
 
 
-def layer_norm(ctx):
+def layer_norm(ctx: OperationContext) -> OperatorSpec:
     """Connect normalized axes and record normalized-shape attribute changes."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     normalized = (
@@ -304,7 +323,7 @@ def layer_norm(ctx):
     return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), requirements)
 
 
-def group_norm(ctx):
+def group_norm(ctx: OperationContext) -> OperatorSpec:
     """Connect normalization channels and preserve fixed group balance."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     groups = ctx.module.num_groups if ctx.module is not None else ctx.argument("num_groups", 1)
@@ -330,7 +349,7 @@ def group_norm(ctx):
     )
 
 
-def matmul(ctx):
+def matmul(ctx: OperationContext) -> OperatorSpec:
     """Connect contracting, free, and broadcast batch axes of matrix products."""
     a = one(ctx.argument("input", 0))
     b = one(ctx.argument("other", 1, ctx.kwargs.get("mat2")))
@@ -356,7 +375,7 @@ def matmul(ctx):
     return OperatorSpec(tuple(relations), (layout(ctx, a), layout(ctx, b), layout(ctx, y)))
 
 
-def permute(ctx):
+def permute(ctx: OperationContext) -> OperatorSpec:
     """Normalize static transpose and permutation forms into one axis relation."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     target = ctx.node.target
@@ -388,7 +407,7 @@ def permute(ctx):
     return OperatorSpec((PermuteRelation(x, y, dims, ctx.node.name),))
 
 
-def reshape(ctx):
+def reshape(ctx: OperationContext) -> OperatorSpec:
     """Map reshape coordinates and record dimension-source update requirements."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     if prod(x.shape) != prod(y.shape):
@@ -449,7 +468,7 @@ def reshape(ctx):
     return OperatorSpec((relation,))
 
 
-def concatenate(ctx):
+def concatenate(ctx: OperationContext) -> OperatorSpec:
     """Connect each input to its original offset region in the concatenation."""
     items = ctx.argument("tensors", 0)
     y = one(ctx.output)
@@ -464,7 +483,7 @@ def concatenate(ctx):
     return OperatorSpec(tuple(relations))
 
 
-def split(ctx):
+def split(ctx: OperationContext) -> OperatorSpec:
     """Connect static split or unbind outputs to their source partitions."""
     x = one(ctx.argument("input", 0))
     dim = ctx.argument("dim", 2, 0) % len(x.shape)
@@ -511,7 +530,7 @@ def split(ctx):
     return OperatorSpec(tuple(relations), tuple(constraints), (requirement_,))
 
 
-def getitem(ctx):
+def getitem(ctx: OperationContext) -> OperatorSpec:
     """Normalize container access and supported basic tensor indexing."""
     source, index = ctx.args
     if not isinstance(source, TensorRef):
@@ -570,7 +589,7 @@ def getitem(ctx):
     )
 
 
-def reduction(ctx):
+def reduction(ctx: OperationContext) -> OperatorSpec:
     """Connect retained axes while recording changes to the reduction domain."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     dims = ctx.argument("dim", 1)
@@ -600,7 +619,7 @@ def reduction(ctx):
     return OperatorSpec(tuple(relations), constraints, (req,))
 
 
-def getattr_rule(ctx):
+def getattr_rule(ctx: OperationContext) -> OperatorSpec:
     """Handle supported tensor attributes and the transpose property."""
     name = ctx.args[1]
     if name == "T":
@@ -613,12 +632,12 @@ def getattr_rule(ctx):
     raise UnsupportedOperation(f"Tensor attribute {name} has no structural rule")
 
 
-def shape_only(ctx):
+def shape_only(ctx: OperationContext) -> OperatorSpec:
     """Leave supported dimension-only operations without tensor relationships."""
     return OperatorSpec()
 
 
-def softmax(ctx):
+def softmax(ctx: OperationContext) -> OperatorSpec:
     """Preserve coordinates and record changes to the normalization domain."""
     result = pointwise(ctx)
     x = one(ctx.argument("input", 0))

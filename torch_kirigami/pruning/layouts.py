@@ -1,7 +1,9 @@
 """Shape proofs valid independently of execution backend and tensor strides."""
 
 
-def view_preserves_stride_boundaries(source_shape, target_shape):
+def view_preserves_stride_boundaries(
+    source_shape: tuple[int, ...], target_shape: tuple[int, ...]
+) -> bool:
     """Prove a view valid without knowing any stride values.
 
     Singleton axes may be inserted or removed. Each remaining source axis may
@@ -12,7 +14,7 @@ def view_preserves_stride_boundaries(source_shape, target_shape):
 
     Args:
         source_shape: Positive, concrete input dimensions.
-        target_shape: Positive, concrete output dimensions, with ``-1`` resolved.
+        target_shape: Positive, concrete output dimensions, with `-1` resolved.
 
     Returns:
         Whether the transformation is valid for every legal input stride.

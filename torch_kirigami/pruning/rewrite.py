@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
+from collections.abc import Sequence
 from dataclasses import replace
 
 import torch
@@ -9,17 +11,20 @@ from torch import nn
 
 from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
+from ..contracts import Impact
 from ..errors import CaptureError
+from ..graph import DependencyGraph
+from ..operation import OperationContext
 from ..operators.coordinates import retained_indices as _keep
 from ..operators.shapes import evaluate
 from ..operators.shapes import reevaluate as _reevaluate
-from ..selection import IndexSet, Region
+from ..selection import IndexSet, Region, Selection
 from .recipes import compact_stride, memory_format, same_mapping, validate_recipe
 from .types import AttributeRecipe, PlanningError, RewriteContext, RewriteResult, TensorRecipe
 from .validation import check_forward
 
 
-def ordinary_recipe(selection):
+def ordinary_recipe(selection: Selection) -> TensorRecipe:
     """Describe a single Cartesian compaction, or reject its nonrectangular layout."""
     if selection.compact_shape() is None:
         raise PlanningError(
@@ -39,7 +44,7 @@ def ordinary_recipe(selection):
     )
 
 
-def lower_spec(ctx):
+def lower_spec(ctx: RewriteContext) -> RewriteResult:
     """Lower shared layouts and bound attributes without dispatching on operators."""
     op, impact = ctx.operation, ctx.impact
     recipes, attributes, notes = [], [], []
@@ -107,7 +112,13 @@ def lower_spec(ctx):
     return RewriteResult(tuple(recipes), tuple(attributes), ctx.requirements, tuple(notes))
 
 
-def compile_recipes(graph, operations, impact, *, attribute_checks=None):
+def compile_recipes(
+    graph: DependencyGraph,
+    operations: Sequence[OperationContext],
+    impact: Impact,
+    *,
+    attribute_checks: OrderedDict[tuple[tuple[str, object], ...], str | None] | None = None,
+) -> tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]]:
     """Prove all affected requirements and combine per-use recipes without weights."""
     if impact.status != "resolved":
         raise PlanningError("; ".join(map(str, impact.diagnostics)))

@@ -4,28 +4,35 @@ import argparse
 import json
 import math
 import time
+from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import Any, cast
 
 import torch
-from imagenet_data import evaluate, load_images
+from imagenet_data import TrainingImages, evaluate, load_images
 from imagenet_models import MODELS, make_model
 from model_metrics import measure_model
+from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
+    Candidate,
+    CandidateSpace,
     Granularity,
     Greedy,
     ParameterBudget,
+    PlanningContext,
     Pruner,
+    PruningPlan,
     load_checkpoint,
     save_checkpoint,
 )
 
 
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """Parse options for one pruning pass and optional fine-tuning."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--model", choices=tuple(MODELS), default="resnet18")
@@ -96,7 +103,11 @@ def parse_args():
     return options
 
 
-def collect_task_gradients(model, loader, device):
+def collect_task_gradients(
+    model: nn.Module,
+    loader: Iterable[tuple[torch.Tensor, torch.Tensor]] | None,
+    device: torch.device | str,
+) -> None:
     """Collect task-only gradients without updating weights, BN statistics or modes."""
     if loader is None:
         raise ValueError("Taylor requires a separate ImageNet training batch")
@@ -117,7 +128,9 @@ def collect_task_gradients(model, loader, device):
             module.training = training
 
 
-def make_plan(pruner, space, budget, metric):
+def make_plan(
+    pruner: Pruner, space: CandidateSpace, budget: ParameterBudget, metric: str
+) -> PruningPlan:
     """Score producer channels; Greedy enforces joint constraints and alignment."""
     scores = {}
     for axis in space.channel_axes:
@@ -139,13 +152,15 @@ def make_plan(pruner, space, budget, metric):
     if not all(math.isfinite(score) for score in scores.values()):
         raise ValueError("Nonfinite pruning score")
 
-    def score(context, batch):
+    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
+        """Look up the producer scores for this candidate batch."""
         return [scores[c.key] for c in batch]
 
     return pruner.plan(space, budget=budget, strategy=Greedy(score))
 
 
-def main():
+def main() -> None:
+    """Evaluate, prune and optionally fine-tune a pretrained ImageNet model."""
     options = parse_args()
     torch.manual_seed(options.seed)
     model = make_model(options.model).to(options.device).eval()
@@ -183,7 +198,7 @@ def main():
         validation, batch_size=options.val_batch_size, num_workers=options.val_workers
     )
     example = torch.zeros(1, 3, 224, 224, device=options.device)
-    records = []
+    records: list[dict[str, Any]] = []
     budget = ParameterBudget.from_ratio(model, options.pruning_ratio)
     config = {
         key: str(value) if isinstance(value, Path) else value
@@ -194,7 +209,8 @@ def main():
     )
     options.output.mkdir(parents=True, exist_ok=True)
 
-    def record(stage, **extra):
+    def record(stage: str, **extra: object) -> None:
+        """Evaluate the current model and persist this stage's measurements."""
         print(f"[{stage}] Evaluating {len(validation)} images on {options.device}", flush=True)
         started = time.perf_counter()
         accuracy = evaluate(model, val_loader, options.device, description=f"{stage} evaluation")
@@ -255,7 +271,7 @@ def main():
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     for epoch in range(options.finetune_epochs):
         print(
-            f"Fine-tuning epoch {epoch + 1}: {len(train)} images on {options.device}; "
+            f"Fine-tuning epoch {epoch + 1}: {len(cast(TrainingImages, train))} images on {options.device}; "
             "training data decoded in the main process",
             flush=True,
         )

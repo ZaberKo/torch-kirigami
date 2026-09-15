@@ -253,7 +253,7 @@ class ModelComplexity:
     unsupported_ops: tuple[str, ...] = ()
 
 
-def _to_device(value, device, memo):
+def _to_device(value: object, device: torch.device, memo: dict[object, object]) -> object:
     """Move one jointly isolated input tree, preserving repeated object identity."""
     if id(value) in memo:
         return memo[id(value)]
@@ -284,7 +284,13 @@ def _to_device(value, device, memo):
 
 
 @contextmanager
-def _evaluation(target, input_args, input_kwargs, device) -> Iterator[tuple]:
+def _evaluation(
+    target: nn.Module,
+    input_args: Any,
+    input_kwargs: dict[str, Any] | None,
+    device: torch.device | str | None,
+) -> Iterator[tuple[tuple[object, ...], dict[str, object], torch.device]]:
+    """Prepare an isolated model/input pair on one supported execution device."""
     if not isinstance(target, nn.Module):
         raise TypeError("Measurement requires an nn.Module")
     tensors = (*target.parameters(), *target.buffers())
@@ -427,7 +433,8 @@ def measure_module_latency(
         raise ValueError("compile_kwargs requires compile=True")
     with _evaluation(target, input_args, input_kwargs, device) as (args, kwargs, device):
 
-        def call(*args, **kwargs):
+        def call(*args: object, **kwargs: object) -> object:
+            """Invoke the target through a wrapper that avoids module mutation."""
             return target(*args, **kwargs)
 
         # Compiling a module can attach bookkeeping attributes to that module,

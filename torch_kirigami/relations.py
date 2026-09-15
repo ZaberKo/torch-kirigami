@@ -56,19 +56,19 @@ class AxisPort:
     axis: AxisRef
     scope: Region | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.axis, AxisRef):
             raise TypeError("Axis port requires an AxisRef")
         if self.scope is not None:
             Selection(self.tensor, (self.scope,))
 
     @property
-    def tensor(self):
+    def tensor(self) -> TensorRef:
         """Return the tensor containing this logical port."""
         return self.axis.tensor
 
     @property
-    def region(self):
+    def region(self) -> Region:
         """Return the explicit partition scope or the full tensor region."""
         return self.scope or full_region(self.tensor.shape)
 
@@ -107,7 +107,7 @@ class BlockMap:
     require_full_source: bool = False
     require_full_target: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name in ("source_start", "target_start", "count", "source_block", "target_block"):
             value = getattr(self, name)
             minimum = 1 if name.endswith("block") else 0
@@ -172,7 +172,7 @@ class AxisRelation:
     maps: tuple[BlockMap, ...]
     reason: str = "axis correspondence"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.left, AxisPort) or not isinstance(self.right, AxisPort):
             raise TypeError("Axis relations require AxisPort endpoints")
         maps = tuple(self.maps)
@@ -189,7 +189,9 @@ class AxisRelation:
         object.__setattr__(self, "maps", maps)
 
     @classmethod
-    def equal(cls, left: AxisRef, right: AxisRef, reason: str = "axis correspondence"):
+    def equal(
+        cls, left: AxisRef, right: AxisRef, reason: str = "axis correspondence"
+    ) -> AxisRelation:
         """Construct an identity mapping between equally sized axes.
 
         Args:
@@ -209,11 +211,11 @@ class AxisRelation:
         return cls(AxisPort(left), AxisPort(right), (BlockMap(0, 0, size),), reason)
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensor endpoints of this relation."""
         return (self.left.tensor, self.right.tensor)
 
-    def propagate(self, source: Selection):
+    def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Map full scoped cross sections in both applicable directions."""
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
@@ -225,7 +227,7 @@ class AxisRelation:
             if source.tensor != origin.tensor:
                 continue
             indices = origin.fully_selected_indices(source)
-            intervals = []
+            intervals: list[tuple[int, int]] = []
             for relation in self.maps:
                 intervals.extend(relation.map(indices, reverse).intervals)
                 # Bound temporary storage while amortizing normalization across
@@ -251,7 +253,7 @@ class BroadcastRelation:
     big: TensorRef
     reason: str = "broadcast correspondence"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         offset = len(self.big.shape) - len(self.small.shape)
         if offset < 0 or any(
             size not in (1, self.big.shape[offset + dim])
@@ -260,11 +262,11 @@ class BroadcastRelation:
             raise ValueError("Incompatible broadcast shapes")
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensor endpoints of this relation."""
         return (self.small, self.big)
 
-    def propagate(self, source: Selection):
+    def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Expand regions or require complete broadcast fibers in reverse."""
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
@@ -303,16 +305,16 @@ class ReshapeRelation:
     right: TensorRef
     reason: str = "row-major reshape"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if prod(self.left.shape) != prod(self.right.shape):
             raise ValueError("Reshape endpoints must have equal element counts")
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensor endpoints of this relation."""
         return (self.left, self.right)
 
-    def propagate(self, source: Selection):
+    def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Map regions while retaining common leading dimensions symbolically."""
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
@@ -324,7 +326,7 @@ class ReshapeRelation:
             if left != right:
                 break
             prefix += 1
-        regions = []
+        regions: list[Region] = []
         for region in source.regions:
             offsets = linear_indices(Region(region.axes[prefix:]), source.tensor.shape[prefix:])
             regions.extend(
@@ -350,7 +352,7 @@ class PermuteRelation:
     dims: tuple[int, ...]
     reason: str = "dimension permutation"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         dims = tuple(self.left.axis(dim).dim for dim in self.dims)
         if sorted(dims) != list(range(len(self.left.shape))):
             raise ValueError("Permutation must contain each axis exactly once")
@@ -359,11 +361,11 @@ class PermuteRelation:
         object.__setattr__(self, "dims", dims)
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensor endpoints of this relation."""
         return (self.left, self.right)
 
-    def propagate(self, source: Selection):
+    def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Permute region axes, using the inverse order for reverse propagation."""
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
@@ -379,7 +381,7 @@ class PermuteRelation:
         )
 
 
-def _stride_map(indices: IndexSet, start: int, step: int, reverse: bool):
+def _stride_map(indices: IndexSet, start: int, step: int, reverse: bool) -> IndexSet:
     """Translate index sets between a positive-stride slice and its source."""
     if step == 1:
         return indices.shift(-start if reverse else start)
@@ -417,11 +419,12 @@ class SliceRelation:
     index: tuple[int | slice, ...]
     reason: str = "static slice"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         index = tuple(self.index)
         if len(index) != len(self.big.shape):
             raise ValueError("Basic indexing requires one entry per source axis")
-        normalized, shape = [], []
+        normalized: list[int | slice] = []
+        shape: list[int] = []
         for item, size in zip(index, self.big.shape, strict=True):
             if isinstance(item, int) and not isinstance(item, bool):
                 if not -size <= item < size:
@@ -441,11 +444,11 @@ class SliceRelation:
         object.__setattr__(self, "index", tuple(normalized))
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensor endpoints of this relation."""
         return (self.big, self.small)
 
-    def propagate(self, source: Selection):
+    def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Clip source regions into a slice or inject slice coordinates back."""
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")

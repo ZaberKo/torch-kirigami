@@ -1,13 +1,19 @@
 """Cumulative channel accounting independent of round selection and training."""
 
+from __future__ import annotations
+
 import math
 
+from ..graph import DependencyGraph
+from ..pruning.candidates import CandidateSpace
+from ..pruning.plan import PruningResult
 from ..pruning.serialization import decode, encode
 from ..pruning.state import check_structure, snapshot, validate_plan
 from ..pruning.types import ChannelCount, ModelStructure
 
 
-def _domains(graph, space, axes=None):
+def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None = None) -> tuple:
+    """Return stable parameter-domain descriptors for cumulative accounting."""
     graph.validate()
     axes = space.channel_axes if axes is None else axes
     for axis in (*axes, *space.protected_channel_axes):
@@ -34,7 +40,9 @@ class CumulativeChannelBudget:
     count as progress. State can be rebound to an equivalent restored model.
     """
 
-    def __init__(self, graph, space, *, scope="local"):
+    def __init__(
+        self, graph: DependencyGraph, space: CandidateSpace, *, scope: str = "local"
+    ) -> None:
         if scope not in ("local", "global"):
             raise ValueError("scope must be local or global")
         self.scope = scope
@@ -43,7 +51,16 @@ class CumulativeChannelBudget:
         self._current = self._initial
         self._structure = snapshot(graph.model, guarded=graph.constant_guards())
 
-    def _validate_space(self, graph, space, structure, widths, *, domains=None):
+    def _validate_space(
+        self,
+        graph: DependencyGraph,
+        space: CandidateSpace,
+        structure: ModelStructure,
+        widths: tuple[int, ...],
+        *,
+        domains: tuple | None = None,
+    ) -> tuple:
+        """Validate that a rebuilt graph preserves recorded domains and widths."""
         domains = self._domains if domains is None else domains
         try:
             axes = tuple(graph.parameter(paths[0]).axis(dim) for paths, dim, _ in domains)
@@ -63,7 +80,9 @@ class CumulativeChannelBudget:
         check_structure(graph.model, structure)
         return axes
 
-    def budget(self, graph, space, ratio):
+    def budget(
+        self, graph: DependencyGraph, space: CandidateSpace, ratio: int | float
+    ) -> ChannelCount:
         """Return this round's cap for a cumulative ratio of original widths."""
         if type(ratio) not in (int, float) or not math.isfinite(ratio) or not 0 <= ratio < 1:
             raise ValueError("ratio must be finite and in [0, 1)")
@@ -80,7 +99,7 @@ class CumulativeChannelBudget:
         )
         return ChannelCount(counts, axes)
 
-    def update(self, result, graph, space):
+    def update(self, result: PruningResult, graph: DependencyGraph, space: CandidateSpace) -> None:
         """Accept an applied result and rebuilt space; reject inconsistent transitions."""
         validate_plan(result.plan)
         if result.plan.before != self._structure or result.structure != result.plan.after:
@@ -92,7 +111,7 @@ class CumulativeChannelBudget:
         self._validate_space(graph, space, result.structure, expected)
         self._current, self._structure = expected, result.structure
 
-    def state_dict(self):
+    def state_dict(self) -> dict[str, object]:
         """Return portable baseline, observed widths and structural preconditions."""
         return {
             "scope": self.scope,
@@ -102,7 +121,9 @@ class CumulativeChannelBudget:
             "structure": encode(self._structure),
         }
 
-    def load_state_dict(self, state, graph, space):
+    def load_state_dict(
+        self, state: dict[str, object], graph: DependencyGraph, space: CandidateSpace
+    ) -> None:
         """Restore against a fresh space, validating before changing any state."""
         if (
             set(state) != {"scope", "domains", "initial", "current", "structure"}

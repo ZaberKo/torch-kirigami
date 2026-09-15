@@ -9,7 +9,8 @@ from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, Pruner, WeightTaylor
 
 
-def main():
+def main() -> None:
+    """Run two pruning rounds with explicit training and dependency rebuilding."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--device", default="cpu", choices=("cpu", "cuda"))
     options = parser.parse_args()

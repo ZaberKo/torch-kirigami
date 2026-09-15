@@ -1,15 +1,19 @@
 """Explicit parameter operations, independent of optimizer and regularizer policy."""
 
+from __future__ import annotations
+
 import math
 
 import torch
 
 from ..bindings import storage_key
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
+from ..regions import Region
 from .values import group_bindings, group_values, scaled_product
 
 
-def _write(tensor, region, values):
+def _write(tensor: torch.Tensor, region: Region, values: torch.Tensor) -> None:
+    """Write values into a tensor at one Cartesian region."""
     if not region.axes:
         tensor.copy_(values)
     else:
@@ -17,7 +21,8 @@ def _write(tensor, region, values):
         tensor[torch.meshgrid(*indices, indexing="ij")] = values
 
 
-def _commit_values(groups, vectors):
+def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]) -> None:
+    """Validate and atomically commit prepared group vectors."""
     graph = groups[0].graph
     bindings = dict(graph.tensor_bindings())
     storage = {}
@@ -60,7 +65,7 @@ def _commit_values(groups, vectors):
 
 
 @torch.no_grad()
-def scale_groups_(groups, factor):
+def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> None:
     """Scale a union once, keeping optimizer state and gradients untouched.
 
     Args:
@@ -85,13 +90,13 @@ def scale_groups_(groups, factor):
     _commit_values((union,), (values.to(torch.float64) * factor,))
 
 
-def zero_groups_(groups):
+def zero_groups_(groups: tuple[ParameterGroup, ...]) -> None:
     """Zero regions once; no persistent mask or optimizer-state edits are installed."""
     scale_groups_(groups, 0.0)
 
 
 @torch.no_grad()
-def set_group_norms_(groups, targets):
+def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | float, ...]) -> None:
     """Rescale disjoint groups to explicit nonnegative L2 norms.
 
     Equivalent groups with identical targets count once; other overlaps are

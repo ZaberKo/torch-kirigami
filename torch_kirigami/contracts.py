@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
@@ -31,12 +31,12 @@ class Diagnostic:
     tensors: tuple[str, ...] = ()
     complete: bool = True
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Render the category, available operation location, and actionable message."""
         location = f" at {self.node}" if self.node else ""
         return f"{self.code}{location}: {self.message}"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.severity not in ("unresolved", "conflict"):
             raise ValueError("Invalid diagnostic severity")
         if not isinstance(self.complete, bool):
@@ -65,7 +65,7 @@ class Constraint(Protocol):
         ...
 
 
-def chosen(selections, tensor):
+def chosen(selections: Mapping[str, Selection], tensor: TensorRef) -> Selection:
     """Return a tensor's accumulated selection, or an empty selection."""
     selection = selections.get(tensor.id)
     if selection is None:
@@ -82,11 +82,11 @@ class NonEmpty:
     axis: AxisRef
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Report a conflict if the entire axis would disappear."""
         selection = chosen(selections, self.axis.tensor)
         indices = selection.fully_selected_indices(self.axis.dim)
@@ -107,11 +107,11 @@ class Fixed:
     axis: AxisRef
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Check that the protected structural axis is preserved."""
         selection = chosen(selections, self.axis.tensor)
         if selection.fully_selected_indices(self.axis.dim):
@@ -150,7 +150,7 @@ class Balanced:
     partitions: tuple[IndexSet, ...]
     nonempty: bool = True
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         partitions = tuple(self.partitions)
         bounds = IndexSet.span(0, self.axis.tensor.shape[self.axis.dim])
         seen = IndexSet()
@@ -165,11 +165,11 @@ class Balanced:
         object.__setattr__(self, "partitions", partitions)
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Check partition counts without choosing a balancing completion."""
         selection = chosen(selections, self.axis.tensor)
         if selection and selection.compact_shape() is None:
@@ -212,7 +212,7 @@ class BlockBalance:
     block_size: int
     node: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.block_size, int) or isinstance(self.block_size, bool):
             raise ValueError("Block size must be a positive integer")
         if self.block_size <= 0 or (
@@ -222,11 +222,11 @@ class BlockBalance:
             raise ValueError("Member axis must consist of equally sized group blocks")
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.groups.tensor, self.members.tensor)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Check member counts in surviving groups without completing the request."""
         removed_groups = chosen(selections, self.groups.tensor).fully_selected_indices(
             self.groups.dim
@@ -263,16 +263,16 @@ class Divisible:
     axis: AxisRef
     factor: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.factor, int) or isinstance(self.factor, bool) or self.factor <= 0:
             raise ValueError("Divisibility factor must be a positive integer")
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Check divisibility of the retained logical axis length."""
         selection = chosen(selections, self.axis.tensor)
         if selection and selection.compact_shape() is None:
@@ -302,10 +302,10 @@ class Barrier:
     node: str | None = None
     code: str = "unsupported"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "refs", tuple(self.refs))
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Report the barrier only if a referenced tensor is affected."""
         if any(chosen(selections, ref) for ref in self.refs):
             return Diagnostic(
@@ -327,11 +327,11 @@ class AxisBarrier:
     node: str | None = None
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Report the barrier only if full positions on this axis are affected."""
         if chosen(selections, self.axis.tensor).fully_selected_indices(self.axis.dim):
             return Diagnostic(
@@ -362,18 +362,18 @@ class LayoutConstraint:
     ports: tuple[AxisPort, ...] = ()
     node: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         ports = tuple(self.ports)
         if any(not isinstance(port, AxisPort) or port.tensor != self.tensor for port in ports):
             raise ValueError("LayoutConstraint ports must belong to the layout tensor")
         object.__setattr__(self, "ports", ports)
 
     @property
-    def refs(self):
+    def refs(self) -> tuple[TensorRef, ...]:
         """Return the tensors whose selections this constraint inspects."""
         return (self.tensor,)
 
-    def check(self, selections):
+    def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
         """Check that all selected regions fit this use's supported packing."""
         selection = chosen(selections, self.tensor)
         if not selection:
@@ -423,7 +423,7 @@ class ShapeExpr:
     value: Any = None
     args: tuple[ShapeExpr, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         args = tuple(self.args)
         if any(not isinstance(arg, ShapeExpr) for arg in args):
             raise TypeError("Shape operands must be ShapeExpr instances")
@@ -462,7 +462,7 @@ class ShapeExpr:
     @property
     def refs(self) -> tuple[TensorRef, ...]:
         """Return unique tensor sources without retaining capture state."""
-        own = ()
+        own: tuple[TensorRef, ...] = ()
         if isinstance(self.value, TensorRef):
             own = (self.value,)
         elif self.kind == "dimension":
@@ -470,7 +470,7 @@ class ShapeExpr:
         return tuple(dict.fromkeys(own + tuple(ref for arg in self.args for ref in arg.refs)))
 
 
-def _requirement_value(value, depth=0):
+def _requirement_value(value: object, depth: int = 0) -> object:
     """Detach nested payload sequences, rejecting mutable opaque state."""
     if depth > 50:
         raise ValueError("Requirement data is cyclic or too deeply nested")
@@ -502,7 +502,7 @@ class ArgumentRef:
     position: int
     variadic: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
             raise ValueError("Argument name must be a nonempty string")
         if type(self.position) is not int or self.position < 0:
@@ -538,7 +538,7 @@ class Requirement:
     data: tuple[tuple[str, Any], ...] = ()
     arguments: tuple[ArgumentRef, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.kind, str) or not self.kind or not isinstance(self.target, str):
             raise ValueError("Requirement kind and target must be strings")
         data = tuple(tuple(item) for item in self.data)
@@ -562,7 +562,8 @@ class Requirement:
     def refs(self) -> tuple[TensorRef, ...]:
         """Include sources embedded in payloads for graph ownership validation."""
 
-        def visit(value):
+        def visit(value: object) -> Iterator[TensorRef]:
+            """Yield tensor references embedded in a requirement payload."""
             if isinstance(value, TensorRef):
                 yield value
             elif isinstance(value, AxisRef):
@@ -623,7 +624,7 @@ class Impact:
     constraints: tuple[Constraint, ...] = field(repr=False)
     tensors: Mapping[str, TensorRef] = field(repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.status not in ("resolved", "unresolved", "conflict"):
             raise ValueError("Invalid impact status")
         for name in (
@@ -639,7 +640,7 @@ class Impact:
         object.__setattr__(self, "tensors", MappingProxyType(dict(self.tensors)))
 
     @property
-    def complete(self):
+    def complete(self) -> bool:
         """Whether the influence range is known, independently of constraint validity."""
         return all(d.complete for d in self.diagnostics)
 
@@ -650,11 +651,11 @@ class Impact:
         return chosen(self.selections, tensor)
 
     @property
-    def parameters(self):
+    def parameters(self) -> tuple[Selection, ...]:
         """Return affected parameter selections, deduplicated by object identity."""
         return tuple(s for s in self.selections.values() if s.tensor.kind == "parameter")
 
     @property
-    def buffers(self):
+    def buffers(self) -> tuple[Selection, ...]:
         """Return affected registered-buffer selections."""
         return tuple(s for s in self.selections.values() if s.tensor.kind == "buffer")

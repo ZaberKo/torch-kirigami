@@ -1,5 +1,8 @@
 """Matrix contractions and attention expressed with reusable axis/block relations."""
 
+from __future__ import annotations
+
+from collections.abc import Callable
 from dataclasses import replace
 
 import torch
@@ -8,13 +11,13 @@ from torch.nn import functional as F
 
 from ..contracts import AxisBarrier, Balanced, BlockBalance, Requirement, ShapeExpr
 from ..errors import UnsupportedOperation
-from ..operation import CandidateAxis, OperatorSpec, OutputContract, tensors
+from ..operation import CandidateAxis, OperationContext, OperatorSpec, OutputContract, tensors
 from ..relations import AxisPort, AxisRelation, BlockMap, BroadcastRelation
 from ..selection import IndexSet
 from .native import equal, layout, matmul, one, requirement
 
 
-def addmm(ctx):
+def addmm(ctx: OperationContext) -> OperatorSpec:
     """Share matrix-product relations and connect the broadcast additive operand."""
     additive = one(ctx.argument("input", 0))
     a = ctx.argument("batch1" if ctx.node.target in (torch.baddbmm, "baddbmm") else "mat1", 1)
@@ -26,7 +29,7 @@ def addmm(ctx):
     )
 
 
-def einsum(ctx):
+def einsum(ctx: OperationContext) -> OperatorSpec:
     """Map explicit einsum labels, including right-aligned broadcast ellipses."""
     equation = ctx.argument("equation", 0)
     if not isinstance(equation, str) or "->" not in equation:
@@ -44,7 +47,8 @@ def einsum(ctx):
     )
     extra = [f"@{i}" for i in range(ellipsis)]
 
-    def expand(label, rank):
+    def expand(label: str, rank: int) -> list[str]:
+        """Expand an einsum ellipsis into right-aligned synthetic labels."""
         count = rank - len(label.replace("...", ""))
         before, marker, after = label.partition("...")
         result = [*before, *(extra[ellipsis - count :] if marker else ()), *after]
@@ -78,7 +82,7 @@ def einsum(ctx):
     )
 
 
-def sdpa(ctx):
+def sdpa(ctx: OperationContext) -> OperatorSpec:
     """Bind Q/K contractions, V features, masks, and optional grouped-query heads."""
     q, k, v = (one(ctx.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
     y = one(ctx.output)
@@ -155,7 +159,7 @@ def sdpa(ctx):
     )
 
 
-def multihead_attention(ctx):
+def multihead_attention(ctx: OperationContext) -> OperatorSpec:
     """Shrink native MHA width with fixed heads and explicitly tied projection axes.
 
     Batch/sequence/token pruning is excluded. Packed and separate projections
@@ -270,7 +274,9 @@ def multihead_attention(ctx):
     )
 
 
-def register_attention(modules, functions, methods):
+def register_attention(
+    modules: Callable[..., None], functions: Callable[..., None], methods: Callable[..., None]
+) -> None:
     """Register matrix and attention APIs without extending the executor registry."""
     functions([torch.addmm, torch.baddbmm], addmm, fresh=True)
     methods(["addmm", "baddbmm"], addmm, fresh=True)

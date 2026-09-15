@@ -40,7 +40,7 @@ class PruningPlan:
     before: ModelStructure
     after: ModelStructure
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name, cls in (
             ("recipes", TensorRecipe),
             ("attributes", AttributeRecipe),
@@ -51,18 +51,18 @@ class PruningPlan:
             if any(not isinstance(value, cls) for value in values):
                 raise TypeError(f"Invalid plan {name}")
             object.__setattr__(self, name, values)
-        for name, cls in (
+        for name, expected_record in (
             ("analysis", AnalysisSummary),
             ("selection_report", (SelectionReport, ParameterReport)),
             ("before", ModelStructure),
             ("after", ModelStructure),
         ):
-            if not isinstance(getattr(self, name), cls):
+            if not isinstance(getattr(self, name), expected_record):
                 raise TypeError(f"Invalid plan {name}")
         if len(set(self.selected)) != len(self.selected):
             raise ValueError("Duplicate selected candidate keys")
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
         """Export basic data suitable for weights-only torch loading."""
         return {
             "format": "torch-kirigami.plan",
@@ -70,7 +70,7 @@ class PruningPlan:
         }
 
     @classmethod
-    def from_dict(cls, data) -> PruningPlan:
+    def from_dict(cls, data: object) -> PruningPlan:
         """Load and validate a portable plan without importing model classes."""
         if not isinstance(data, dict) or set(data) != {"format", "plan"}:
             raise ValueError("Invalid plan envelope")
@@ -122,7 +122,7 @@ class PruningResult:
     coordinate_maps: Mapping[TensorRef, tuple[CoordinateSegment, ...]]
     report: tuple[str, ...]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "parameter_map", MappingProxyType(dict(self.parameter_map)))
         object.__setattr__(
             self,

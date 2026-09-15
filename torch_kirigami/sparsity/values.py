@@ -1,15 +1,20 @@
 """Live sparse parameter access below losses and mutation operations."""
 
+from __future__ import annotations
+
 import math
 
 import torch
-from torch.autograd.function import once_differentiable
+from torch.autograd.function import FunctionCtx, once_differentiable
 
 from ..pruning.groups import ParameterGroup
 from ..regions import gather_region
+from ..selection import IndexSet, TensorRef
 
 
-def group_bindings(groups):
+def group_bindings(
+    groups: tuple[ParameterGroup, ...],
+) -> tuple[dict[object, torch.Tensor], torch.dtype]:
     """Validate live group ownership, device and dtype without gathering weights."""
     groups = tuple(groups)
     if not groups or any(not isinstance(g, ParameterGroup) for g in groups):
@@ -27,7 +32,9 @@ def group_bindings(groups):
     return bindings, dtype
 
 
-def _gather_group(group, bindings, dtype):
+def _gather_group(
+    group: ParameterGroup, bindings: dict[object, torch.Tensor], dtype: torch.dtype
+) -> torch.Tensor:
     """Read one group from bindings already validated for this operation."""
     return torch.cat(
         [
@@ -38,7 +45,7 @@ def _gather_group(group, bindings, dtype):
     )
 
 
-def group_values(groups):
+def group_values(groups: tuple[ParameterGroup, ...]) -> tuple[torch.Tensor, ...]:
     """Gather current dense real values on one device, preserving autograd.
 
     All groups belong to one graph. Distributed/sharded parameter gathering is
@@ -52,7 +59,7 @@ def group_values(groups):
     return result
 
 
-def scaled_product(*factors, divide=()):
+def scaled_product(*factors: torch.Tensor, divide: tuple[torch.Tensor, ...] = ()) -> torch.Tensor:
     """Combine floating factors without losing range in intermediate products.
 
     Mantissas stay near one; only the final exponent determines output range.
@@ -70,7 +77,9 @@ def scaled_product(*factors, divide=()):
     return torch.where(mantissa == 0, torch.zeros_like(result), result)
 
 
-def _norm_divisors(values, dimensions):
+def _norm_divisors(
+    values: torch.Tensor, dimensions: tuple[int, ...]
+) -> tuple[torch.Tensor, torch.Tensor]:
     """Return the nonzero scale and normalized length used by norm backward."""
     scale = values.detach().abs().amax(dim=dimensions, keepdim=True)
     divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
@@ -84,7 +93,10 @@ class _StableNorm(torch.autograd.Function):
     """Differentiate normalized directions without tiny scaled intermediates."""
 
     @staticmethod
-    def forward(ctx, values, dimensions, coefficient):
+    def forward(
+        ctx: FunctionCtx, values: torch.Tensor, dimensions: tuple[int, ...], coefficient: float
+    ) -> torch.Tensor:
+        """Evaluate normalized L2 magnitudes while saving backward inputs."""
         ctx.save_for_backward(values)
         ctx.dimensions = dimensions
         ctx.coefficient = coefficient
@@ -100,7 +112,10 @@ class _StableNorm(torch.autograd.Function):
 
     @staticmethod
     @once_differentiable
-    def backward(ctx, gradient):
+    def backward(
+        ctx: FunctionCtx, gradient: torch.Tensor
+    ) -> tuple[torch.Tensor | None, None, None]:
+        """Propagate the stable L2 gradient through saved values."""
         (values,) = ctx.saved_tensors
         scale, length = _norm_divisors(values, ctx.dimensions)
         for dimension in sorted(ctx.dimensions):
@@ -114,12 +129,15 @@ class _StableNorm(torch.autograd.Function):
         )
 
 
-def stable_norm(values, *, coefficient=1.0):
+def stable_norm(values: torch.Tensor, *, coefficient: float = 1.0) -> torch.Tensor:
     """Compute scaled L2 with a stable gradient, including nonzero subnormals."""
     return _StableNorm.apply(values, tuple(range(values.ndim)), coefficient)
 
 
-def _scaled_segments(values, owner, count):
+def _scaled_segments(
+    values: torch.Tensor, owner: torch.Tensor, count: int
+) -> tuple[torch.Tensor, ...]:
+    """Compute stable per-owner scales and squared magnitudes."""
     zero = values.new_zeros(count)
     scales = zero.scatter_reduce(0, owner, values.detach(), reduce="amax")
     divisors = torch.where(scales == 0, torch.ones_like(scales), scales)
@@ -133,7 +151,10 @@ class _SegmentNorm(torch.autograd.Function):
     """Stable norms and directions for ragged groups of batched row norms."""
 
     @staticmethod
-    def forward(ctx, values, owner, count):
+    def forward(
+        ctx: FunctionCtx, values: torch.Tensor, owner: torch.Tensor, count: int
+    ) -> torch.Tensor:
+        """Evaluate stable norms for ragged owner groups."""
         ctx.save_for_backward(values, owner)
         ctx.count = count
         _, root, divisors, nonzero = _scaled_segments(values, owner, count)
@@ -141,7 +162,8 @@ class _SegmentNorm(torch.autograd.Function):
 
     @staticmethod
     @once_differentiable
-    def backward(ctx, gradient):
+    def backward(ctx: FunctionCtx, gradient: torch.Tensor) -> tuple[torch.Tensor, None, None]:
+        """Propagate gradients to each ragged group's source values."""
         values, owner = ctx.saved_tensors
         scaled, root, _, _ = _scaled_segments(values, owner, ctx.count)
         return gradient[owner] * (scaled / root[owner]), None, None
@@ -151,18 +173,20 @@ class _HalfSquared(torch.autograd.Function):
     """Half squares without a spurious square overflow or half-gradient underflow."""
 
     @staticmethod
-    def forward(ctx, values):
+    def forward(ctx: FunctionCtx, values: torch.Tensor) -> torch.Tensor:
+        """Evaluate half squares without an intermediate square operation."""
         ctx.save_for_backward(values)
         return (values * 0.5) * values
 
     @staticmethod
     @once_differentiable
-    def backward(ctx, gradient):
+    def backward(ctx: FunctionCtx, gradient: torch.Tensor) -> torch.Tensor:
+        """Return the exact first derivative of half squares."""
         (values,) = ctx.saved_tensors
         return gradient * values
 
 
-def half_squared(values):
+def half_squared(values: torch.Tensor) -> torch.Tensor:
     """Return elementwise half squares, differentiating as gradient * values."""
     return _HalfSquared.apply(values)
 
@@ -171,7 +195,10 @@ class _SquaredNorm(torch.autograd.Function):
     """Aggregate weighted squares and preserve original factors for first derivatives."""
 
     @staticmethod
-    def forward(ctx, coefficients, *values):
+    def forward(
+        ctx: FunctionCtx, coefficients: tuple[float, ...], *values: torch.Tensor
+    ) -> torch.Tensor:
+        """Evaluate a weighted squared norm from concatenated group values."""
         ctx.save_for_backward(*values)
         ctx.coefficients = coefficients
         scaled = torch.cat(
@@ -185,7 +212,8 @@ class _SquaredNorm(torch.autograd.Function):
 
     @staticmethod
     @once_differentiable
-    def backward(ctx, gradient):
+    def backward(ctx: FunctionCtx, gradient: torch.Tensor) -> tuple[torch.Tensor | None, ...]:
+        """Propagate weighted squared-norm gradients to each group tensor."""
         return (
             None,
             *(
@@ -199,13 +227,15 @@ class _SquaredNorm(torch.autograd.Function):
         )
 
 
-def squared_norm(*values, coefficients=None):
+def squared_norm(
+    *values: torch.Tensor, coefficients: tuple[float, ...] | None = None
+) -> torch.Tensor:
     """Return half the weighted squared norm without per-element square underflow."""
     weights = (1.0,) * len(values) if coefficients is None else coefficients
     return _SquaredNorm.apply(weights, *values)
 
 
-def _axis_sections(group):
+def _axis_sections(group: ParameterGroup) -> list[tuple[TensorRef, int, IndexSet]] | None:
     """Return whole-axis sections, or None when any region needs general gathering."""
     sections = []
     for selection in group.selections:
@@ -227,13 +257,14 @@ def _axis_sections(group):
     return sections
 
 
-def reduction_plan(groups):
+def reduction_plan(groups: tuple[ParameterGroup, ...]) -> tuple[tuple, tuple[int, ...]]:
     """Batch whole-axis sections; retain the region path for irregular groups.
 
     The plan holds original-coordinate indices only. Each parameter/axis is
     reduced once, then small axis vectors are shared by all participating groups.
     """
-    batches, fallback = {}, []
+    batches: dict[tuple[TensorRef, int], list[tuple[int, int]]] = {}
+    fallback: list[int] = []
     for number, group in enumerate(groups):
         sections = _axis_sections(group)
         if sections is None:
@@ -249,17 +280,18 @@ def reduction_plan(groups):
     )
 
 
-def _row_norm(values, dimensions):
+def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor:
     """Stable vector norms along axes, with zero subgradients at all-zero rows."""
     if not dimensions:
         return values.abs()
     return _StableNorm.apply(values, dimensions, 1.0)
 
 
-def group_penalty(groups, kind, plan):
+def group_penalty(groups: tuple[ParameterGroup, ...], kind: str, plan: tuple) -> torch.Tensor:
     """Evaluate the scalar batched L1/L2/squared-L2 objective."""
     bindings, dtype = group_bindings(groups)
-    contributions, owners = [], []
+    contributions: list[torch.Tensor] = []
+    owners: list[int] = []
     tiny_squares = []
     batches, fallback = plan
     for ref, axis, entries in batches:

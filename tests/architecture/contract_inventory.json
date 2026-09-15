@@ -1,6 +1,48 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.operation.OperatorRegistrar",
+      "contracts": [
+        {
+          "behavior": "Type-only registration contract keeps built-in rules independent of the concrete registry.",
+          "tests": [
+            "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic",
+            "tests/architecture/test_coverage_inventory.py::test_registered_entry_inventory_has_no_missing_or_obsolete_targets"
+          ],
+          "conditions": "Static protocol; concrete registration is exercised by the default registry inventory.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.types.MetricContext",
+      "contracts": [
+        {
+          "behavior": "Metrics consume graph and impact queries without importing the planner implementation.",
+          "tests": [
+            "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic",
+            "tests/pruning/test_metrics.py::test_metric_union_formula_and_precision"
+          ],
+          "conditions": "Static protocol; concrete metric execution is checked on CPU and CUDA.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.state._PlanContract",
+      "contracts": [
+        {
+          "behavior": "Validation reads immutable plan fields without importing the plan implementation.",
+          "tests": [
+            "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic",
+            "tests/integration/test_measurement.py::test_actual_compilation_and_remeasurement_after_pruning"
+          ],
+          "conditions": "Static protocol; a real plan is validated and applied through the public API.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.IndexSet",
       "contracts": [
         {

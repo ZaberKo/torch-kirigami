@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from typing import cast
 
 import torch
 
 from ..regions import gather_region
-from .types import PlanningError
+from ..selection import TensorRef
+from .types import Candidate, MetricContext, PlanningError
 
 
 class Magnitude:
@@ -19,13 +22,20 @@ class Magnitude:
             Bias and normalization parameters are included by default.
     """
 
-    def __init__(self, p=2, *, parameter_filter=None):
+    def __init__(
+        self,
+        p: int = 2,
+        *,
+        parameter_filter: Callable[[TensorRef, torch.Tensor], bool] | None = None,
+    ) -> None:
         if p not in (1, 2):
             raise ValueError("Magnitude supports p=1 or p=2")
         self.p = p
         self.parameter_filter = parameter_filter
 
-    def __call__(self, context, candidate_batch):
+    def __call__(
+        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
+    ) -> list[float]:
         """Return aligned scores without changing gradients or retaining graphs."""
         return _scores(self, context, candidate_batch)
 
@@ -42,27 +52,37 @@ class WeightTaylor:
         parameter_filter: Optional (TensorRef, Parameter) predicate.
     """
 
-    def __init__(self, mode="elementwise_abs", *, parameter_filter=None):
+    def __init__(
+        self,
+        mode: str = "elementwise_abs",
+        *,
+        parameter_filter: Callable[[TensorRef, torch.Tensor], bool] | None = None,
+    ) -> None:
         if mode not in ("elementwise_abs", "joint_abs"):
             raise ValueError("Unknown Taylor mode")
         self.mode = mode
         self.parameter_filter = parameter_filter
 
-    def __call__(self, context, candidate_batch):
+    def __call__(
+        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
+    ) -> list[float]:
         """Return aligned scores; missing or nonfinite statistics are errors."""
         return _scores(self, context, candidate_batch)
 
 
-def _scores(metric, context, batch):
+def _scores(
+    metric: Magnitude | WeightTaylor, context: MetricContext, batch: tuple[Candidate, ...]
+) -> list[float]:
+    """Compute detached region scores for a candidate batch."""
     result = [0.0] * len(batch)
-    device_scores = {}
+    device_scores: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
     l2 = isinstance(metric, Magnitude) and metric.p == 2
     bindings = dict(context.graph.tensor_bindings())
     with torch.no_grad():
         for index, candidate in enumerate(batch):
             impact = context.impact(candidate.remove)
             context.require_complete(impact)
-            totals = {}
+            totals: dict[torch.device, torch.Tensor] = {}
             for selection in impact.parameters:
                 weight = bindings[selection.tensor]
                 if metric.parameter_filter is not None:
@@ -88,7 +108,7 @@ def _scores(metric, context, batch):
                         values = values.to(torch.float64) * gather_region(
                             weight.grad.detach(), region
                         ).to(torch.float64)
-                        if metric.mode == "elementwise_abs":
+                        if cast(WeightTaylor, metric).mode == "elementwise_abs":
                             values = values.abs()
                     elif l2:
                         # Scale before squaring, including float64 extremes. Real

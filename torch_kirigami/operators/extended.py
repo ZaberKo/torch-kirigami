@@ -1,6 +1,9 @@
 """Common channel, normalization, embedding, and elementwise operator families."""
 
+from __future__ import annotations
+
 import operator
+from collections.abc import Callable
 from dataclasses import replace
 from functools import partial
 
@@ -10,7 +13,14 @@ from torch.nn import functional as F
 
 from ..contracts import AxisBarrier, Requirement
 from ..errors import CaptureError, UnsupportedOperation
-from ..operation import CandidateAxis, OperatorRule, OperatorSpec, OutputContract
+from ..operation import (
+    CandidateAxis,
+    OperationContext,
+    OperatorRegistrar,
+    OperatorRule,
+    OperatorSpec,
+    OutputContract,
+)
 from ..relations import ReshapeRelation
 from ..selection import TensorRef
 from .effects import native_effects
@@ -27,7 +37,7 @@ from .native import (
 )
 
 
-def channel_operator(ctx):
+def channel_operator(ctx: OperationContext) -> OperatorSpec:
     """Preserve batch/channel coordinates while protecting spatial transformations."""
     x = one(ctx.argument("input", 0))
     outputs = ctx.outputs
@@ -64,7 +74,7 @@ def channel_operator(ctx):
     )
 
 
-def padding(ctx):
+def padding(ctx: OperationContext) -> OperatorSpec:
     """Preserve only axes untouched by padding, independently of their names/size."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     pad = ctx.module.padding if ctx.module is not None else ctx.argument("pad", 1)
@@ -87,7 +97,7 @@ def padding(ctx):
     )
 
 
-def instance_norm(ctx):
+def instance_norm(ctx: OperationContext) -> OperatorSpec:
     """Bind affine/statistic channels for batched and unbatched InstanceNorm."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     if ctx.module is None:
@@ -106,7 +116,7 @@ def instance_norm(ctx):
     return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), requirements)
 
 
-def prelu(ctx):
+def prelu(ctx: OperationContext) -> OperatorSpec:
     """Bind per-channel PReLU weights; leave the shared scalar slope unchanged."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     weight = one(bind(ctx, "weight", 1))
@@ -124,7 +134,7 @@ def prelu(ctx):
     return OperatorSpec(tuple(relations), tuple(constraints), tuple(requirements))
 
 
-def embedding_preflight(node, module):
+def embedding_preflight(node: torch.fx.Node, module: nn.Module | None) -> None:
     """Reject Embedding renormalization before it can modify original parameters."""
     max_norm = (
         module.max_norm
@@ -135,7 +145,7 @@ def embedding_preflight(node, module):
         raise CaptureError(f"{node.name}: Embedding max_norm writes parameters during forward")
 
 
-def embedding(ctx):
+def embedding(ctx: OperationContext) -> OperatorSpec:
     """Expose embedding feature width while fixing vocabulary IDs and row positions."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     weight = one(bind(ctx, "weight", 1))
@@ -157,7 +167,7 @@ def embedding(ctx):
     )
 
 
-def normalize(ctx):
+def normalize(ctx: OperationContext) -> OperatorSpec:
     """Preserve coordinates while recomputing the norm over the compact domain."""
     result = pointwise(ctx)
     x = one(ctx.argument("input", 0))
@@ -174,7 +184,7 @@ def normalize(ctx):
     )
 
 
-def cast(ctx):
+def cast(ctx: OperationContext) -> OperatorSpec:
     """Preserve input coordinates; a dtype/device reference contributes no axes."""
     x, y = one(ctx.argument("input", 0)), one(ctx.output)
     copy_output = False
@@ -191,7 +201,12 @@ def cast(ctx):
     )
 
 
-def register_extended(registry, modules, functions, methods):
+def register_extended(
+    registry: OperatorRegistrar,
+    modules: Callable[..., None],
+    functions: Callable[..., None],
+    methods: Callable[..., None],
+) -> None:
     """Register common exact public API spellings through the unified interface."""
     modules([nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d], instance_norm, fresh=True)
     functions([F.instance_norm], instance_norm, fresh=True)

@@ -1,9 +1,13 @@
 """Live parameter regions shared by structural selection and sparse training."""
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import cast
+
+from torch import nn
 
 from ..graph import DependencyGraph
-from ..selection import Selection
+from ..selection import Selection, TensorRef
 
 
 @dataclass(frozen=True, eq=False)
@@ -20,9 +24,9 @@ class ParameterGroup:
     selections: tuple[Selection, ...]
     key: str = ""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.graph.validate()
-        merged = {}
+        merged: dict[TensorRef, Selection] = {}
         for selection in self.selections:
             self.graph.metadata(selection.tensor)
             if selection.tensor.kind != "parameter":
@@ -36,7 +40,7 @@ class ParameterGroup:
             self, "selections", tuple(sorted(merged.values(), key=lambda s: s.tensor.paths))
         )
 
-    def equivalent(self, other):
+    def equivalent(self, other: object) -> bool:
         """Compare coordinates and graph identity, independently of group labels."""
         return (
             isinstance(other, ParameterGroup)
@@ -44,13 +48,13 @@ class ParameterGroup:
             and self.selections == other.selections
         )
 
-    def bindings(self):
+    def bindings(self) -> tuple[tuple[nn.Parameter, Selection], ...]:
         """Return current (Parameter, Selection) pairs after freshness validation."""
         bindings = dict(self.graph.tensor_bindings())
-        return tuple((bindings[s.tensor], s) for s in self.selections)
+        return tuple((cast(nn.Parameter, bindings[s.tensor]), s) for s in self.selections)
 
 
-def group_equivalence_classes(groups):
+def group_equivalence_classes(groups: Iterable[ParameterGroup]) -> tuple[tuple[int, ...], ...]:
     """Return original indices partitioned by geometric group equality.
 
     Element counts and axis bounds are decomposition-independent bucket keys,
@@ -59,7 +63,8 @@ def group_equivalence_classes(groups):
     Exact comparison still resolves bucket collisions.
     """
     groups = tuple(groups)
-    buckets, classes = {}, []
+    buckets: dict[tuple[object, ...], list[int]] = {}
+    classes: list[list[int]] = []
     for index, group in enumerate(groups):
         if not isinstance(group, ParameterGroup):
             raise TypeError("Expected ParameterGroup")
@@ -91,7 +96,7 @@ def group_equivalence_classes(groups):
     return tuple(tuple(indices) for indices in classes)
 
 
-def unique_groups(groups):
+def unique_groups(groups: Iterable[ParameterGroup]) -> tuple[ParameterGroup, ...]:
     """Canonicalize equivalent groups without merging partially overlapping groups."""
     groups = tuple(groups)
     return tuple(groups[indices[0]] for indices in group_equivalence_classes(groups))

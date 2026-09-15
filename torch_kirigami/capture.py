@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -29,7 +30,7 @@ from .operators.effects import named_inplace
 from .registry import OperatorRegistry
 
 
-def tree_map(fn, value):
+def tree_map(fn: Callable[[Any], Any], value: Any) -> Any:
     """Apply a function to leaves of nested tuple, list, and dict containers."""
     if isinstance(value, tuple):
         return tuple(tree_map(fn, item) for item in value)
@@ -40,14 +41,14 @@ def tree_map(fn, value):
     return fn(value)
 
 
-def tensor_leaves(value):
+def tensor_leaves(value: object) -> list[torch.Tensor]:
     """Collect tensor leaves from supported input containers."""
     result = []
     tree_map(lambda item: result.append(item) if isinstance(item, torch.Tensor) else None, value)
     return result
 
 
-def fingerprint(model):
+def fingerprint(model: nn.Module) -> tuple[object, ...]:
     """Record detectable structural properties without hashing parameter values.
 
     Args:
@@ -91,7 +92,17 @@ def fingerprint(model):
 
 
 @contextmanager
-def isolated_execution(model, args, kwargs):
+def isolated_execution(
+    model: nn.Module, args: tuple[object, ...], kwargs: dict[str, object]
+) -> Generator[
+    tuple[
+        tuple[object, ...],
+        dict[str, object],
+        dict[int, torch.Tensor],
+    ],
+    None,
+    None,
+]:
     """Isolate example inputs and buffers while preserving supported shared storage.
 
     Args:
@@ -141,7 +152,7 @@ def isolated_execution(model, args, kwargs):
         # Normal clones retain mutation counters even when capture is requested
         # inside inference mode. Execution itself preserves the caller's mode.
         with torch.inference_mode(False):
-            memo = {}
+            memo: dict[int, Any] = {}
             copied_args, copied_kwargs, copies, related_copies = copy.deepcopy(
                 (args, kwargs, [b[2] for b in buffers], related), memo
             )
@@ -183,7 +194,9 @@ def isolated_execution(model, args, kwargs):
             object.__setattr__(module, "training", mode)
 
 
-def _metadata_fact(func, args, kwargs, result):
+def _metadata_fact(
+    func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any], result: Any
+) -> tuple[str, object, object]:
     """Normalize an eager metadata observation into immutable read-specific facts.
 
     Size and stride dimensions remain explicit. Reading a complete shape cannot
@@ -191,7 +204,7 @@ def _metadata_fact(func, args, kwargs, result):
     """
     name = getattr(func, "__name__", "")
     if name == "__get__":
-        name = func.__self__.__name__
+        name = getattr(getattr(func, "__self__", None), "__name__", "")
     # These are known native Tensor methods. Their descriptors can lack a
     # __module__, so use the method name to reuse FX's dim/axis normalization.
     dimension = call_argument(args, kwargs, "dim", 1, target=name)
@@ -223,14 +236,21 @@ class _TraceDataGuard(TorchFunctionMode):
     FX provenance and cannot silently select Python control flow.
     """
 
-    def __init__(self, registered):
+    def __init__(self, registered: dict[int, torch.Tensor]) -> None:
         super().__init__()
-        self.computed = {}
+        self.computed: dict[int, torch.Tensor] = {}
         self.registered = registered
-        self.metadata_reads = set()
+        self.metadata_reads: set[tuple[Any, ...]] = set()
 
-    def __torch_function__(self, func, types, args=(), kwargs=None):
-        leaves = []
+    def __torch_function__(
+        self,
+        func: Callable[..., Any],
+        types: tuple[type, ...],
+        args: tuple[object, ...] = (),
+        kwargs: dict[str, object] | None = None,
+    ) -> object:
+        """Record tensor metadata and reject data-dependent eager decisions."""
+        leaves: list[Any] = []
         tree_map(leaves.append, (args, kwargs or {}))
         if any(isinstance(value, fx.Proxy) for value in leaves):
             # FX records this call; normal graph effect validation owns it.
@@ -240,7 +260,7 @@ class _TraceDataGuard(TorchFunctionMode):
         if (
             inputs
             and name == "__get__"
-            and getattr(func.__self__, "__name__", "")
+            and getattr(getattr(func, "__self__", None), "__name__", "")
             not in {
                 "shape",
                 "ndim",
@@ -306,18 +326,18 @@ class _TraceDataGuard(TorchFunctionMode):
 class _LeafTracer(fx.Tracer):
     """Extend only the public FX leaf policy and function autowrap configuration."""
 
-    def __init__(self, registry):
+    def __init__(self, registry: OperatorRegistry) -> None:
         super().__init__(autowrap_functions=tuple(registry.opaque_functions))
         self.registry = registry
 
-    def is_leaf_module(self, module, module_qualified_name):
+    def is_leaf_module(self, module: nn.Module, module_qualified_name: str) -> bool:
         """Preserve explicitly registered opaque modules and standard FX leaves."""
         return type(module) in self.registry.opaque_modules or super().is_leaf_module(
             module, module_qualified_name
         )
 
 
-def _root_graph(model, signature):
+def _root_graph(model: nn.Module, signature: inspect.Signature) -> fx.GraphModule:
     """Represent an opaque root through a single public FX call_module node."""
     graph = fx.Graph()
     args, kwargs = [], {}
@@ -334,7 +354,7 @@ def _root_graph(model, signature):
     return fx.GraphModule({"_root": model}, graph)
 
 
-def _tensor_version(tensor):
+def _tensor_version(tensor: torch.Tensor) -> int | None:
     """Return a mutation counter where PyTorch exposes one."""
     try:
         return tensor._version
@@ -342,7 +362,7 @@ def _tensor_version(tensor):
         return None
 
 
-def _same_tensor_values(left, right):
+def _same_tensor_values(left: torch.Tensor, right: torch.Tensor) -> bool:
     """Compare values exactly, treating corresponding NaNs as unchanged."""
     if left.shape != right.shape or left.dtype != right.dtype or left.device != right.device:
         return False
@@ -357,7 +377,9 @@ def _same_tensor_values(left, right):
     )
 
 
-def trace_module(model, registry, *, buffer_sources):
+def trace_module(
+    model: nn.Module, registry: OperatorRegistry, *, buffer_sources: dict[int, torch.Tensor]
+) -> fx.GraphModule:
     """Trace without leaking generated constants or silently executing buffer writes."""
     tracer = _LeafTracer(registry)
     if tracer.is_leaf_module(model, ""):
@@ -429,13 +451,13 @@ def trace_module(model, registry, *, buffer_sources):
             m._non_persistent_buffers_set.update(nonpersistent)
 
 
-def capture_signature(gm, model):
+def capture_signature(gm: fx.GraphModule, model: nn.Module) -> tuple[object, ...]:
     """Record computation and actual binding facts, ignoring FX-generated names.
 
     Registered tensors use aliases and metadata. Only unregistered constants are
     copied by value; no parameter snapshots or intermediate activations are held.
     """
-    bindings = {}
+    bindings: dict[int, tuple[str, list[str]]] = {}
     for kind, entries in (
         ("parameter", model.named_parameters(remove_duplicate=False)),
         ("buffer", model.named_buffers(remove_duplicate=False)),
@@ -444,7 +466,8 @@ def capture_signature(gm, model):
             bindings.setdefault(id(tensor), (kind, []))[1].append(path)
     ordinals = {node: i for i, node in enumerate(gm.graph.nodes)}
 
-    def encode(value):
+    def encode(value: object) -> object:
+        """Encode captured values into stable structural signature records."""
         if isinstance(value, fx.Node):
             return ("node", ordinals[value])
         if isinstance(value, torch.Tensor):
@@ -472,7 +495,12 @@ def capture_signature(gm, model):
     return (*result, ("static_metadata", gm.meta.get("kirigami_static_metadata", ())))
 
 
-def validate_attribute_changes(model, registry, original_signature, updates):
+def validate_attribute_changes(
+    model: nn.Module,
+    registry: OperatorRegistry,
+    original_signature: object,
+    updates: Iterable[tuple[str, object]],
+) -> None:
     """Reject attribute edits that change the captured Python computation.
 
     Trace an isolated configuration copy with proposed attributes, sharing the
@@ -483,7 +511,8 @@ def validate_attribute_changes(model, registry, original_signature, updates):
     if not updates:
         return
 
-    def same(left, right):
+    def same(left: object, right: object) -> bool:
+        """Compare values while treating tensors by structural metadata."""
         if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
             return (
                 isinstance(left, torch.Tensor)
@@ -492,13 +521,13 @@ def validate_attribute_changes(model, registry, original_signature, updates):
             )
         if type(left) is not type(right):
             return False
-        if isinstance(left, (tuple, list)):
+        if isinstance(left, (tuple, list)) and isinstance(right, (tuple, list)):
             return len(left) == len(right) and all(
                 same(a, b) for a, b in zip(left, right, strict=True)
             )
-        if isinstance(left, dict):
+        if isinstance(left, dict) and isinstance(right, dict):
             return left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
-        if isinstance(left, slice):
+        if isinstance(left, slice) and isinstance(right, slice):
             return same((left.start, left.stop, left.step), (right.start, right.stop, right.step))
         return left is right or left == right
 
@@ -528,7 +557,9 @@ def validate_attribute_changes(model, registry, original_signature, updates):
         ) from error
 
 
-def _reject_parameter_writes(gm, registry, isolated_buffers):
+def _reject_parameter_writes(
+    gm: fx.GraphModule, registry: OperatorRegistry, isolated_buffers: set[int]
+) -> set[int]:
     """Reject parameter or unisolated constant writes before metadata execution."""
     tainted = set()
     aliases, written = {}, set()
@@ -580,23 +611,26 @@ def _reject_parameter_writes(gm, registry, isolated_buffers):
 class _MetadataPropagator(ShapeProp):
     """Execute ShapeProp while retaining facts instead of intermediate activations."""
 
-    def __init__(self, module, bound):
+    def __init__(self, module: fx.GraphModule, bound: dict[str, object]) -> None:
         super().__init__(module)
         self.bound = bound
-        self.facts = {}
+        self.facts: dict[fx.Node, Any] = {}
 
-    def placeholder(self, target, args, kwargs):
+    def placeholder(
+        self, target: str, args: tuple[object, ...], kwargs: dict[str, object]
+    ) -> object:
         """Resolve a placeholder from the bound original forward signature."""
         name = target.lstrip("*")
         if name not in self.bound:
             raise CaptureError(f"No bound input for FX placeholder {target}")
         return self.bound[name]
 
-    def run_node(self, node):
+    def run_node(self, node: fx.Node) -> object:
         """Execute one node and save only supported metadata leaves."""
         result = super().run_node(node)
 
-        def facts(value):
+        def facts(value: object) -> object:
+            """Extract detached tensor facts from a propagated metadata value."""
             if isinstance(value, torch.Tensor):
                 storage_key(value)
                 if value.numel() == 0:
@@ -638,7 +672,10 @@ class CaptureResult:
 
 
 def capture(
-    model: nn.Module, args: tuple, kwargs: dict, registry: OperatorRegistry
+    model: nn.Module,
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    registry: OperatorRegistry,
 ) -> CaptureResult:
     """Trace and execute metadata under the library's state-isolation contract.
 

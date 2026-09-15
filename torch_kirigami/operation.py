@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Generic, Literal, Protocol, TypeVar, cast
 
 import torch
 from torch import fx, nn
@@ -31,6 +31,20 @@ class TensorFacts:
     device: torch.device
 
 
+class OperatorRegistrar(Protocol):
+    """Minimal registry surface required while assembling built-in rules."""
+
+    def register(
+        self, target: type[nn.Module] | Callable, rule: OperatorRule, *, opaque: bool = True
+    ) -> object:
+        """Register a module type or callable rule."""
+        ...
+
+    def register_method(self, name: str, rule: OperatorRule) -> object:
+        """Register a Tensor method rule."""
+        ...
+
+
 _KEYWORD_ALIASES = {
     "dim": ("axis",),
     "keepdim": ("keepdims",),
@@ -42,7 +56,15 @@ _KEYWORD_ALIASES = {
 }
 
 
-def argument_locations(args, kwargs, name, position, *, target=None, variadic=False):
+def argument_locations(
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+    name: str,
+    position: int,
+    *,
+    target: object = None,
+    variadic: bool = False,
+) -> tuple[tuple[str, str | int], ...]:
     """Locate one canonical parameter without conflating equal FX expression nodes."""
     namespace = getattr(target, "__module__", "")
     native = isinstance(target, str) or namespace == "torch" or namespace.startswith("torch.")
@@ -58,7 +80,16 @@ def argument_locations(args, kwargs, name, position, *, target=None, variadic=Fa
     )
 
 
-def argument(args, kwargs, name, position, default=None, *, target=None, variadic=False):
+def argument(
+    args: tuple[object, ...],
+    kwargs: Mapping[str, object],
+    name: str,
+    position: int,
+    default: object = None,
+    *,
+    target: object = None,
+    variadic: bool = False,
+) -> object:
     """Resolve canonical names, native aliases, and variadic positional arguments.
 
     FX/metadata execution has already checked the original call's signature.
@@ -69,14 +100,14 @@ def argument(args, kwargs, name, position, default=None, *, target=None, variadi
     """
     locations = argument_locations(args, kwargs, name, position, target=target, variadic=variadic)
     if locations and locations[0][0] == "kwargs":
-        value = kwargs[locations[0][1]]
+        value = kwargs[cast(str, locations[0][1])]
         return (value,) if variadic and not isinstance(value, (tuple, list, fx.Node)) else value
     if variadic:
         return args[position:]
     return args[position] if position < len(args) else default
 
 
-def tensors(value):
+def tensors(value: object) -> Iterator[TensorRef]:
     """Yield tensor references from nested tuples, lists, and dictionaries.
 
     Args:
@@ -126,16 +157,18 @@ class OperationContext:
     graph_id: str = ""
 
     @property
-    def inputs(self):
+    def inputs(self) -> tuple[TensorRef, ...]:
         """Return tensor arguments in flattened container traversal order."""
         return tuple(tensors((self.args, self.kwargs)))
 
     @property
-    def outputs(self):
+    def outputs(self) -> tuple[TensorRef, ...]:
         """Return tensor results in flattened container traversal order."""
         return tuple(tensors(self.output))
 
-    def argument(self, name: str, position: int, default=None, *, variadic=False):
+    def argument(
+        self, name: str, position: int, default: object = None, *, variadic: bool = False
+    ) -> object:
         """Resolve an argument supplied by keyword or position.
 
         Args:
@@ -157,7 +190,9 @@ class OperationContext:
             variadic=variadic,
         )
 
-    def raw_argument(self, name, position, default=None, *, variadic=False):
+    def raw_argument(
+        self, name: str, position: int, default: object = None, *, variadic: bool = False
+    ) -> object:
         """Resolve the original FX operand using the same public-name aliases."""
         return argument(
             self.node.args,
@@ -194,7 +229,7 @@ class CandidateAxis:
     binding: TensorRef | None = None
     alignment_axis: AxisRef | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key or not isinstance(self.axis, AxisRef):
             raise ValueError("Candidate domain requires a stable key and an AxisRef")
         if (
@@ -228,7 +263,7 @@ class PartitionedLayout:
     partitions: tuple[Region, ...]
     concat_dim: int = 0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         partitions = tuple(self.partitions)
         dim = self.tensor.axis(self.concat_dim).dim
         if not partitions:
@@ -265,10 +300,10 @@ class OutputContract:
     Shape argument permissions are described separately by requirements.
 
     Attributes:
-        output_layout: ``backend_dependent`` always leaves output strides unknown;
-            ``unknown`` propagates input uncertainty through meta execution.
-            ``contiguous`` establishes layout independently of input strides;
-            ``cast`` additionally normalizes conversion arguments.
+        output_layout: `backend_dependent` always leaves output strides unknown;
+            `unknown` propagates input uncertainty through meta execution.
+            `contiguous` establishes layout independently of input strides;
+            `cast` additionally normalizes conversion arguments.
         copy_output: A cast explicitly requests a new tensor even without a dtype
             change. Conversion rules normalize the public overloads into this fact.
     """
@@ -281,7 +316,7 @@ class OutputContract:
     ] = "unknown"
     copy_output: bool = False
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if type(self.copy_output) is not bool:
             raise TypeError("Output copy contract must be boolean")
         if self.output_layout not in (
@@ -317,7 +352,7 @@ class OperatorSpec:
     expression: ShapeExpr | None = None
     constants: tuple[TensorRef, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name in (
             "relations",
             "constraints",
@@ -360,12 +395,18 @@ class CallEffects:
     fresh_output: bool = False
 
 
-class OperatorRule:
+_LowerContext = TypeVar("_LowerContext")
+_LowerResult = TypeVar("_LowerResult")
+
+
+class OperatorRule(Generic[_LowerContext, _LowerResult]):
     """One definition for capture checks, structural analysis, and lowering.
 
     Args:
         analyze: Pure callback producing an OperatorSpec from capture metadata.
         lower: Optional pure callback producing declarative rewrite descriptions.
+            Its context/result types are supplied by the execution layer; the
+            dependency core does not import that layer.
         preflight: Optional callback accepting an FX node and its called module
             before metadata execution. Raise CaptureError for recognized writes.
         effects: Optional callback with the same arguments, returning CallEffects.
@@ -374,12 +415,18 @@ class OperatorRule:
     """
 
     def __init__(
-        self, analyze=None, *, lower=None, preflight=None, effects=None, evaluate_on_meta=False
-    ):
-        self._analyze = analyze
+        self,
+        analyze: Callable[[OperationContext], OperatorSpec] | None = None,
+        *,
+        lower: Callable[[_LowerContext], _LowerResult] | None = None,
+        preflight: Callable[[fx.Node, nn.Module | None], None] | None = None,
+        effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = None,
+        evaluate_on_meta: bool = False,
+    ) -> None:
+        self._analyze: Callable[[OperationContext], OperatorSpec] | None = analyze
         self._lower = lower
-        self._preflight = preflight
-        self._effects = effects
+        self._preflight: Callable[[fx.Node, nn.Module | None], None] | None = preflight
+        self._effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = effects
         self.evaluate_on_meta = evaluate_on_meta
 
     def analyze(self, context: OperationContext) -> OperatorSpec:
@@ -388,16 +435,16 @@ class OperatorRule:
             raise NotImplementedError("Implement OperatorRule.analyze")
         return self._analyze(context)
 
-    def preflight(self, node, module) -> None:
+    def preflight(self, node: fx.Node, module: nn.Module | None) -> None:
         """Check effects using call arguments and configuration, before ShapeProp."""
         if self._preflight is not None:
             self._preflight(node, module)
 
-    def effects(self, node, module) -> CallEffects:
+    def effects(self, node: fx.Node, module: nn.Module | None) -> CallEffects:
         """Describe writes/copies without requiring output metadata."""
         return self._effects(node, module) if self._effects is not None else CallEffects()
 
-    def lower(self, context):
+    def lower(self, context: _LowerContext) -> _LowerResult | None:
         """Return custom recipes, or None for the shared descriptor compiler.
 
         Default compilation belongs to pruning. Declaring standard structural

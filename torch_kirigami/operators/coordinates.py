@@ -1,16 +1,19 @@
 """Shared original/compact coordinate normalization for operator contracts."""
 
-from ..selection import IndexSet
+from __future__ import annotations
+
+from ..contracts import Impact
+from ..selection import AxisRef, IndexSet
 
 
-def retained_indices(impact, axis):
+def retained_indices(impact: Impact, axis: AxisRef) -> IndexSet:
     """Return retained original axis coordinates without reordering."""
     return IndexSet.span(0, axis.tensor.shape[axis.dim]).subtract(
         impact.selection(axis.tensor).fully_selected_indices(axis.dim)
     )
 
 
-def narrow_index(shape, dim, start, length):
+def narrow_index(shape: tuple[int, ...], dim: int, start: int, length: int) -> tuple[slice, ...]:
     """Convert narrow's signed start into an equivalent positive Python slice."""
     dim %= len(shape)
     if start < 0:

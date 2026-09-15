@@ -7,6 +7,7 @@ from types import MappingProxyType
 from torch import nn
 
 from ..contracts import Divisible
+from ..graph import DependencyGraph
 from .types import PlanningError
 
 
@@ -29,7 +30,7 @@ class Granularity:
     by_type: Mapping[type[nn.Module], int] = field(default_factory=dict)
     by_path: Mapping[str, int] = field(default_factory=dict)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         types, paths = dict(self.by_type), dict(self.by_path)
         if any(not isinstance(t, type) or not issubclass(t, nn.Module) for t in types):
             raise TypeError("Granularity by_type requires Module types")
@@ -43,7 +44,9 @@ class Granularity:
         object.__setattr__(self, "by_path", MappingProxyType(paths))
 
 
-def alignment_constraints(graph, config):
+def alignment_constraints(
+    graph: DependencyGraph, config: Granularity
+) -> tuple[tuple[Divisible, ...], tuple[str, ...]]:
     """Resolve aliases before deduplication; return constraints and readable notes."""
     if not isinstance(config, Granularity):
         raise TypeError("Expected a Granularity configuration")

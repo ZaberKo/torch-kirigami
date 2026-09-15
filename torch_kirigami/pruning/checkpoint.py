@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import replace
+from os import PathLike
+from typing import IO
 
 import torch
 from torch import nn
@@ -26,10 +29,11 @@ from .state import (
     snapshot,
     validate_managed,
 )
-from .types import AttributeRecipe, ExecutionError, ModelStructure
+from .types import AttributeRecipe, ExecutionError, ModelStructure, TensorState
 
 
-def _check_state_contract(model):
+def _check_state_contract(model: nn.Module) -> None:
+    """Reject module hooks and extra-state registrations unsupported by checkpoints."""
     # This format saves raw registered slots, not the output of state_dict codecs.
     # Hooks may maintain additional external state and are explicitly unsupported.
     for path, module in model.named_modules():
@@ -59,7 +63,8 @@ def _check_state_contract(model):
             raise ExecutionError(f"Checkpoint state_dict hooks are unsupported: {path or '<root>'}")
 
 
-def _check_nonoverlap(state):
+def _check_nonoverlap(state: TensorState) -> None:
+    """Prove that a tensor's recorded shape and strides do not overlap."""
     # Sufficient proof for dense/permuted/strided-with-gaps layouts using public
     # size/stride facts. No private overlap checker or elementwise index table.
     span = 1
@@ -71,7 +76,8 @@ def _check_nonoverlap(state):
         span += (size - 1) * stride
 
 
-def _same_values(left, right):
+def _same_values(left: torch.Tensor, right: torch.Tensor) -> bool:
+    """Compare tensor metadata and values while treating matching NaNs as equal."""
     if (
         left.shape == right.shape
         and left.stride() == right.stride()
@@ -92,7 +98,9 @@ def _same_values(left, right):
     return torch.equal(left, right)
 
 
-def _validate_extra_state(model, values, extra_keys):
+def _validate_extra_state(
+    model: nn.Module, values: dict[str, object], extra_keys: set[str]
+) -> None:
     """Accept only weights-only data without hidden registered storage references."""
     tensors = (
         *model.parameters(),
@@ -106,7 +114,10 @@ def _validate_extra_state(model, values, extra_keys):
     registered_ids = {id(t) for t in tensors}
     registered = {storage_key(t) for t in tensors if t.numel()}
 
-    def visit(value, active=(), *, allow_registered=False):
+    def visit(
+        value: object, active: tuple[int, ...] = (), *, allow_registered: bool = False
+    ) -> None:
+        """Validate one node in the extra-state acyclic data tree."""
         if len(active) > 50:
             raise ExecutionError("Checkpoint extra state is too deeply nested")
         if value is None or type(value) in (
@@ -155,7 +166,12 @@ def _validate_extra_state(model, values, extra_keys):
             visit(value, allow_registered=True)
 
 
-def _validate_payload(model, structure, values, buffers):
+def _validate_payload(
+    model: nn.Module,
+    structure: ModelStructure,
+    values: dict[str, object],
+    buffers: dict[str, object],
+) -> None:
     """Validate raw tensor slots, entity aliases, and canonical extra-state keys."""
     if not isinstance(values, dict) or not isinstance(buffers, dict):
         raise ExecutionError("Checkpoint requires state dictionaries")
@@ -195,7 +211,7 @@ def _validate_payload(model, structure, values, buffers):
             raise ExecutionError(f"Conflicting values for shared aliases: {state.paths}")
 
 
-def save_checkpoint(model, path):
+def save_checkpoint(model: nn.Module, path: str | PathLike[str] | IO[bytes]) -> None:
     """Save final structure and current values, without retaining pruning history.
 
     Args:
@@ -245,7 +261,12 @@ def save_checkpoint(model, path):
 
 
 @torch.inference_mode(False)
-def load_checkpoint(model, path, *, map_location=None):
+def load_checkpoint(
+    model: nn.Module,
+    path: str | PathLike[str] | IO[bytes],
+    *,
+    map_location: str | torch.device | dict[str, str | torch.device] | Callable | None = None,
+) -> nn.Module:
     """Restore final tensor sizes, sharing, configuration, and values into a skeleton.
 
     Args:
@@ -284,7 +305,8 @@ def load_checkpoint(model, path, *, map_location=None):
         )
     mapped_devices = {}
 
-    def relocate(storage, location):
+    def relocate(storage: torch.UntypedStorage, location: str) -> torch.UntypedStorage:
+        """Map one serialized storage to its requested destination device."""
         # Observe PyTorch's actual device spelling, including implicit CUDA indices
         # and storages present only in extra state. One source has one destination.
         destination = (
@@ -325,7 +347,8 @@ def load_checkpoint(model, path, *, map_location=None):
     ):
         raise ExecutionError("Checkpoint requires ordinary parameters and buffers")
 
-    def skeleton(s):
+    def skeleton(s: ModelStructure) -> nn.Module:
+        """Build an isolated module shell matching the recorded structure."""
         return tuple((m.paths, m.type_name, m.slots) for m in s.modules)
 
     if skeleton(original) != skeleton(structure):

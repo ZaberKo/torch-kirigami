@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from itertools import product
 from math import prod
@@ -25,7 +25,7 @@ class IndexSet:
 
     intervals: tuple[tuple[int, int], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         merged: list[tuple[int, int]] = []
         for lo, hi in sorted(self.intervals):
             if (
@@ -73,13 +73,13 @@ class IndexSet:
         """Construct the half-open interval [start, stop)."""
         return cls(((start, stop),))
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return bool(self.intervals)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return sum(b - a for a, b in self.intervals)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[int]:
         for a, b in self.intervals:
             yield from range(a, b)
 
@@ -128,7 +128,7 @@ class IndexSet:
         """Translate interval bounds, rejecting any resulting negative indices."""
         return IndexSet(tuple((a + offset, b + offset) for a, b in self.intervals))
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return "IndexSet(" + ", ".join(f"{a}:{b}" for a, b in self.intervals) + ")"
 
 
@@ -143,14 +143,14 @@ class Region:
 
     axes: tuple[IndexSet, ...]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         axes = tuple(self.axes)
         if any(not isinstance(axis, IndexSet) for axis in axes):
             raise TypeError("Region axes must be IndexSet instances")
         object.__setattr__(self, "axes", axes)
 
     @property
-    def empty(self):
+    def empty(self) -> bool:
         """Return whether any axis makes the Cartesian product empty."""
         return any(not a for a in self.axes)
 
@@ -252,7 +252,7 @@ class TensorRef:
     kind: str = "value"
     paths: tuple[str, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         shape, paths = tuple(self.shape), tuple(self.paths)
         if not isinstance(self.id, str) or not self.id:
             raise ValueError("Tensor identity must be a nonempty string")
@@ -296,7 +296,7 @@ class TensorRef:
         return Selection(self, tuple(regions))
 
 
-def resolve_reference(query, references):
+def resolve_reference(query: str | TensorRef, references: Iterable[TensorRef]) -> TensorRef:
     """Resolve compatible portable labels; distinguish unknown from unaffected.
 
     Raises:
@@ -320,20 +320,21 @@ class TensorRefMap(Mapping):
 
     entries: tuple
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         entries = tuple((ref, tuple(value)) for ref, value in self.entries)
         if len({ref.portable().id for ref, _ in entries}) != len(entries):
             raise ValueError("Duplicate tensor mapping labels")
         object.__setattr__(self, "entries", entries)
 
-    def __getitem__(self, query):
+    def __getitem__(self, query: str | TensorRef) -> TensorRef:
+        """Resolve a live or portable tensor label through this mapping."""
         ref = resolve_reference(query, self)
         return next(value for key, value in self.entries if key == ref)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[TensorRef]:
         return (ref for ref, _ in self.entries)
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.entries)
 
 
@@ -349,7 +350,7 @@ class AxisRef:
     tensor: TensorRef
     dim: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.tensor, TensorRef):
             raise TypeError("Axis owner must be a TensorRef")
         if not isinstance(self.dim, int) or isinstance(self.dim, bool):
@@ -409,7 +410,7 @@ class Selection:
     tensor: TensorRef
     regions: tuple[Region, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         regions = tuple(self.regions)
         bounds = full_region(self.tensor.shape)
         for region in regions:
@@ -421,7 +422,7 @@ class Selection:
 
     __hash__ = None
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, Selection):
             return NotImplemented
         if self.tensor != other.tensor:
@@ -447,11 +448,11 @@ class Selection:
                     return True
         return False
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         return bool(self.regions)
 
     @property
-    def count(self):
+    def count(self) -> int:
         """Return the number of selected tensor elements without overlap."""
         return sum(prod(len(a) for a in r.axes) for r in self.regions)
 
@@ -468,7 +469,7 @@ class Selection:
             pending = tuple(p for r in pending for p in r.subtract(region))
         return Selection(self.tensor, pending)
 
-    def _same(self, other):
+    def _same(self, other: Selection) -> None:
         """Reject operations combining different tensor references."""
         if self.tensor != other.tensor:
             raise ValueError("Selections refer to different tensors")
@@ -538,7 +539,7 @@ def linear_indices(region: Region, shape: tuple[int, ...]) -> IndexSet:
     if count * len(region.axes[last].intervals) > MAX_PARTS:
         raise AnalysisLimitError("Reshape selection needs too many offset intervals")
     strides = [prod(shape[i + 1 :]) for i in range(last)]
-    parts = []
+    parts: list[tuple[int, int]] = []
     for prefix in product(*(iter(a) for a in region.axes[:last])):
         offset = sum(i * stride for i, stride in zip(prefix, strides, strict=False))
         parts.extend(
@@ -558,7 +559,8 @@ def offset_regions(indices: IndexSet, shape: tuple[int, ...]) -> tuple[Region, .
         A disjoint region representation with aligned blocks kept symbolic.
     """
 
-    def visit(start, stop, dims):
+    def visit(start: int, stop: int, dims: tuple[int, ...]) -> list[Region]:
+        """Recursively split flat offsets into Cartesian regions."""
         if not dims:
             return [Region(())] if start < stop else []
         stride = prod(dims[1:])
@@ -570,7 +572,7 @@ def offset_regions(indices: IndexSet, shape: tuple[int, ...]) -> tuple[Region, .
                 Region((IndexSet.span(first, first + 1), *r.axes))
                 for r in visit(start % stride, (stop - 1) % stride + 1, dims[1:])
             ]
-        result = []
+        result: list[Region] = []
         middle_start = first
         if start % stride:
             result.extend(

@@ -16,16 +16,20 @@ from torch_kirigami import (
 
 
 class FusedProjection(nn.Module):
-    def __init__(self):
+    """Combine a projection and activation behind a single opaque module."""
+
+    def __init__(self) -> None:
         super().__init__()
         self.weight = nn.Parameter(torch.randn(6, 4))
         self.output_width = 6
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Project the last input dimension and apply GELU."""
         return F.gelu(F.linear(x, self.weight))
 
 
 def fused_rule(ctx: OperationContext) -> OperatorSpec:
+    """Bind projection axes and the module's explicit output-width attribute."""
     x, y, weight = ctx.inputs[0], ctx.outputs[0], ctx.binding("weight")
     assert ctx.metadata[weight.id].dtype == torch.float32
     return OperatorSpec(

@@ -1,9 +1,15 @@
 """Cartesian region shapes and tensor access shared across analysis and execution."""
 
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 import torch
 
+from .selection import Region
 
-def concatenated_shape(regions, dim):
+
+def concatenated_shape(regions: Sequence[Region], dim: int) -> tuple[int, ...]:
     """Compute a concatenation shape from retained Cartesian regions.
 
     Regions must have equal ranks and matching sizes on every non-concatenated
@@ -40,7 +46,7 @@ def concatenated_shape(regions, dim):
     return tuple(result)
 
 
-def gather_region(tensor, region):
+def gather_region(tensor: torch.Tensor, region: Region) -> torch.Tensor:
     """Gather a region without a full-tensor mask, preserving autograd."""
     # Shrink the most selective axis first to bound intermediate allocation.
     order = sorted(range(tensor.ndim), key=lambda d: len(region.axes[d]) / max(1, tensor.shape[d]))

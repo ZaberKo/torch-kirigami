@@ -2,12 +2,13 @@
 
 import torch
 
+from ..contracts import Impact
 from ..regions import concatenated_shape
 from ..selection import IndexSet, Region, Selection, full_region
-from .types import CoordinateSegment, PlanningError
+from .types import CoordinateSegment, PlanningError, TensorRecipe
 
 
-def compact_stride(shape, memory_format):
+def compact_stride(shape: tuple[int, ...], memory_format: str) -> tuple[int, ...]:
     """Calculate supported dense strides without allocating a tensor."""
     if memory_format == "contiguous":
         order = tuple(reversed(range(len(shape))))
@@ -24,7 +25,7 @@ def compact_stride(shape, memory_format):
     return tuple(result)
 
 
-def memory_format(tensor):
+def memory_format(tensor: torch.Tensor) -> str:
     """Preserve an unambiguous channels-last layout; gather other layouts densely."""
     if not tensor.is_contiguous():
         if tensor.ndim == 4 and tensor.is_contiguous(memory_format=torch.channels_last):
@@ -34,7 +35,7 @@ def memory_format(tensor):
     return "contiguous"
 
 
-def validate_recipe(recipe, impact):
+def validate_recipe(recipe: TensorRecipe, impact: Impact) -> None:
     """Verify retained regions against the complete original-coordinate selection."""
     ref = recipe.tensor
     if ref.kind not in ("parameter", "buffer") or not recipe.segments:
@@ -60,7 +61,7 @@ def validate_recipe(recipe, impact):
         raise PlanningError("Recipe segments cannot concatenate") from error
 
 
-def coordinate_mapping(recipe):
+def coordinate_mapping(recipe: TensorRecipe) -> tuple[CoordinateSegment, ...]:
     """Describe each retained segment in original and compact coordinates."""
     offset, result = 0, []
     for region in recipe.segments:
@@ -72,7 +73,7 @@ def coordinate_mapping(recipe):
     return tuple(result)
 
 
-def same_mapping(left, right):
+def same_mapping(left: TensorRecipe, right: TensorRecipe) -> bool:
     """Compare position mappings independently of segment boundaries."""
     # Different segment boundaries can encode the same mapping. Compare each
     # overlap's per-axis rank offsets, never just the removed set or output shape.

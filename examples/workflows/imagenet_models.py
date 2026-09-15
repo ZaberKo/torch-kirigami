@@ -14,6 +14,7 @@ from torchvision.models import (
     vit_b_16,
     vit_b_32,
 )
+from torchvision.models.vision_transformer import VisionTransformer
 
 MODELS = {
     "resnet18": (resnet18, ResNet18_Weights.IMAGENET1K_V1),
@@ -31,14 +32,15 @@ class TraceableViT(nn.Module):
     width, attention heads and the classifier remain fixed.
     """
 
-    def __init__(self, official):
+    def __init__(self, official: VisionTransformer) -> None:
         super().__init__()
         self.conv_proj = official.conv_proj
         self.class_token = official.class_token
         self.encoder = official.encoder
         self.heads = official.heads
 
-    def forward(self, images):
+    def forward(self, images: torch.Tensor) -> torch.Tensor:
+        """Classify an image batch using the original pretrained submodules."""
         tokens = self.conv_proj(images).flatten(2).transpose(1, 2)
         tokens = torch.cat((self.class_token.expand(images.shape[0], -1, -1), tokens), dim=1)
         tokens = self.encoder.dropout(tokens + self.encoder.pos_embedding)
@@ -52,7 +54,7 @@ class TraceableViT(nn.Module):
         return self.heads(self.encoder.ln(tokens)[:, 0])
 
 
-def make_model(name, *, pretrained=True):
+def make_model(name: str, *, pretrained: bool = True) -> nn.Module:
     """Load official weights or construct the original checkpoint skeleton.
 
     Gate insertion, candidate definitions and dependency capture belong to the

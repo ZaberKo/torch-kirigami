@@ -1,11 +1,16 @@
 """Comparable model measurements shared by the workflow examples."""
 
+from argparse import Namespace
+
 import torch
+from torch import nn
 
 from torch_kirigami.measurement import calculate_model_complexity, measure_module_latency
 
 
-def measure_model(model, example, options):
+def measure_model(
+    model: nn.Module, example: torch.Tensor, options: Namespace
+) -> dict[str, int | float | str | bool | tuple[str, ...] | tuple[int, ...]]:
     """Use an identical inference batch for baseline and compact-model measurements."""
     inputs = example[:1].expand(options.val_batch_size, *example.shape[1:]).contiguous()
     print(f"Counting model complexity on {inputs.device}", flush=True)

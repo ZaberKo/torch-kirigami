@@ -43,7 +43,7 @@ RECORD_TYPES = MappingProxyType(
 )
 
 
-def encode(value, *, record_types=RECORD_TYPES):
+def encode(value: object, *, record_types: MappingProxyType = RECORD_TYPES) -> object:
     """Convert approved records to basic data without retaining arbitrary objects."""
     if value is None or type(value) in (str, int, float, bool):
         return value
@@ -60,7 +60,9 @@ def encode(value, *, record_types=RECORD_TYPES):
     raise TypeError(f"Nonportable plan value: {type(value).__name__}")
 
 
-def decode(value, *, record_types=RECORD_TYPES, _depth=0):
+def decode(
+    value: object, *, record_types: MappingProxyType = RECORD_TYPES, _depth: int = 0
+) -> object:
     """Validate a closed data schema and reconstruct only approved record types."""
     if _depth > 100:
         raise ValueError("Pruning data nesting limit exceeded")

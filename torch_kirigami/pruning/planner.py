@@ -4,18 +4,29 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from collections.abc import Callable, Mapping, Sequence
+from typing import cast
 
 import torch
 
-from ..contracts import Balanced, Divisible
+from ..contracts import Balanced, Constraint, Divisible, Impact
+from ..graph import DependencyGraph
+from ..operation import OperationContext
+from ..regions import Region
+from ..selection import AxisRef, IndexSet, Selection, TensorRef
 from .metrics import Magnitude, WeightTaylor
 from .rewrite import compile_recipes
 from .types import (
+    AttributeRecipe,
+    Candidate,
     ChannelCount,
+    ChannelRatio,
+    Metric,
     ParameterBudget,
     ParameterReport,
     PlanningError,
     SelectionReport,
+    TensorRecipe,
     channel_targets,
 )
 
@@ -31,7 +42,15 @@ class PlanningContext:
     compilation caches, and callback boundaries still validate state.
     """
 
-    def __init__(self, graph, operations, candidates, budget, channel_axes, constraints):
+    def __init__(
+        self,
+        graph: DependencyGraph,
+        operations: tuple[OperationContext, ...],
+        candidates: tuple[Candidate, ...],
+        budget: ChannelCount | ChannelRatio | ParameterBudget,
+        channel_axes: tuple[AxisRef, ...],
+        constraints: tuple[Constraint, ...],
+    ) -> None:
         self._graph, self._operations = graph, tuple(operations)
         self._candidates = tuple(candidates)
         self._budget, self._channel_axes = budget, tuple(dict.fromkeys(channel_axes))
@@ -46,53 +65,63 @@ class PlanningContext:
             math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"
         )
         self.trials, self.limit_reached = 0, False
-        self.exclusions = []
-        self._cache = OrderedDict()
-        self._compiled = OrderedDict()
-        self._attribute_checks = OrderedDict()
-        self._compile_versions = None
+        self.exclusions: list[tuple[str, str]] = []
+        self._cache: OrderedDict[tuple[tuple[TensorRef, tuple[Region, ...]], ...], Impact] = (
+            OrderedDict()
+        )
+        self._compiled: OrderedDict[
+            int,
+            tuple[
+                Impact,
+                tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]],
+            ],
+        ] = OrderedDict()
+        self._attribute_checks: OrderedDict[tuple[tuple[str, object], ...], str | None] = (
+            OrderedDict()
+        )
+        self._compile_versions: tuple[tuple[int, int | None], ...] | None = None
 
     @property
-    def graph(self):
+    def graph(self) -> DependencyGraph:
         """Return the source dependency snapshot."""
         return self._graph
 
     @property
-    def operations(self):
+    def operations(self) -> tuple[OperationContext, ...]:
         """Return captured calls used for recipe compilation."""
         return self._operations
 
     @property
-    def candidates(self):
+    def candidates(self) -> tuple[Candidate, ...]:
         """Return the fixed candidate universe."""
         return self._candidates
 
     @property
-    def budget(self):
+    def budget(self) -> ChannelCount | ChannelRatio | ParameterBudget:
         """Return the caller's immutable budget."""
         return self._budget
 
     @property
-    def channel_axes(self):
+    def channel_axes(self) -> tuple[AxisRef, ...]:
         """Return unique original logical channel axes."""
         return self._channel_axes
 
     @property
-    def constraints(self):
+    def constraints(self) -> tuple[Constraint, ...]:
         """Return fixed analysis premises; callbacks must not mutate constraints."""
         return self._constraints
 
     @property
-    def widths(self):
+    def widths(self) -> tuple[int, ...]:
         """Return logical axis widths, used only by channel budgets."""
         return self._widths
 
     @property
-    def targets(self):
+    def targets(self) -> tuple[int, ...]:
         """Return channel removal caps; empty for a parameter budget."""
         return self._targets
 
-    def impact(self, remove):
+    def impact(self, remove: tuple[Selection, ...]) -> Impact:
         """Analyze joint original-coordinate seeds without executing the model."""
         remove = tuple(remove)
         for selection in remove:
@@ -107,20 +136,20 @@ class PlanningContext:
             self._cache.move_to_end(key)
         return self._cache[key]
 
-    def require_complete(self, impact):
+    def require_complete(self, impact: Impact) -> None:
         """Reject incomplete influence ranges while allowing repairable constraints."""
         incomplete = [d for d in impact.diagnostics if not d.complete]
         if incomplete:
             raise PlanningError("Incomplete scoring influence: " + "; ".join(map(str, incomplete)))
 
-    def score(self, metric, candidate_batch):
+    def score(self, metric: Metric, candidate_batch: tuple[Candidate, ...]) -> tuple[float, ...]:
         """Call the metric on a batch, including temporary combined candidates."""
         batch = tuple(candidate_batch)
         for candidate in batch:
             self.require_complete(self.impact(candidate.remove))
         return self._score_complete(metric, batch)
 
-    def _score_complete(self, metric, batch):
+    def _score_complete(self, metric: Metric, batch: tuple[Candidate, ...]) -> tuple[float, ...]:
         """Score a batch whose influence was already checked by this context.
 
         Greedy checks completeness while collecting axis-removal summaries.
@@ -146,14 +175,14 @@ class PlanningContext:
             raise PlanningError("Metric returned nonfinite scores or an incorrect batch length")
         return values
 
-    def counts(self, impact):
+    def counts(self, impact: Impact) -> tuple[int, ...]:
         """Measure actual full-axis removals, counting each logical axis once."""
         self.graph.validate_impact(impact)
         return tuple(
             len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.channel_axes
         )
 
-    def admissible(self, impact):
+    def admissible(self, impact: Impact) -> bool:
         """Check intermediate removal caps, allowing progress toward a resource target.
 
         Structural/execution validity is checked separately by compile(). A
@@ -162,7 +191,7 @@ class PlanningContext:
         """
         return _within_targets(self, self.counts(impact))
 
-    def parameter_count(self, impact):
+    def parameter_count(self, impact: Impact) -> int:
         """Count final unique Parameter elements using verified joint recipes."""
         recipes, _, _ = self.compile(impact)
         return self._parameter_count - sum(
@@ -171,13 +200,13 @@ class PlanningContext:
             if r.tensor.kind == "parameter"
         )
 
-    def within_budget(self, impact):
+    def within_budget(self, impact: Impact) -> bool:
         """Check the final budget, including an absolute parameter target if given."""
         if isinstance(self.budget, ParameterBudget):
             return self.parameter_count(impact) <= self.budget.max_params
         return self.admissible(impact)
 
-    def require_budget(self, impact):
+    def require_budget(self, impact: Impact) -> None:
         """Reject an unmet final target with actual counts and bounded-search diagnostics."""
         if self.within_budget(impact):
             return
@@ -192,7 +221,9 @@ class PlanningContext:
             )
         raise PlanningError(_budget_reason(self, self.counts(impact)))
 
-    def compile(self, impact):
+    def compile(
+        self, impact: Impact
+    ) -> tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]]:
         """Return (tensor recipes, attribute recipes, notes), without new weights."""
         self.graph.validate()
         self.graph.validate_impact(impact)
@@ -223,7 +254,7 @@ class PlanningContext:
             self._compiled.move_to_end(key)
         return self._compiled[key][1]
 
-    def report(self, impact):
+    def report(self, impact: Impact) -> ParameterReport | SelectionReport:
         """Freeze the measured budget and strategy diagnostics."""
         if isinstance(self.budget, ParameterBudget):
             return ParameterReport(
@@ -246,7 +277,7 @@ class PlanningContext:
         )
 
 
-def _within_targets(context, counts):
+def _within_targets(context: PlanningContext, counts: tuple[int, ...]) -> bool:
     """Apply the same caps to exact counts and proven lower bounds."""
     if isinstance(context.budget, ParameterBudget):
         return True
@@ -257,17 +288,21 @@ def _within_targets(context, counts):
     )
 
 
-def _axis_removals(impact, axes):
+def _axis_removals(impact: Impact, axes: tuple[AxisRef, ...]) -> dict[AxisRef, IndexSet]:
     """Retain compact index sets, without retaining candidate impacts."""
     return {a: impact.selection(a.tensor).fully_selected_indices(a.dim) for a in axes}
 
 
-def _combined_counts(context, current, addition):
+def _combined_counts(
+    context: PlanningContext,
+    current: Mapping[AxisRef, IndexSet],
+    addition: Mapping[AxisRef, IndexSet],
+) -> tuple[int, ...]:
     """Bound joint removals below using monotonicity; overlap counts only once."""
     return tuple(len(current[a].union(addition[a])) for a in context.channel_axes)
 
 
-def _repair_partitions(repair, before):
+def _repair_partitions(repair: Balanced, before: IndexSet) -> tuple[IndexSet, ...]:
     """Return partitions that must lose more positions to equalize retained counts."""
     if not isinstance(repair, Balanced):
         return ()
@@ -275,9 +310,18 @@ def _repair_partitions(repair, before):
     return tuple(p for p, n in zip(repair.partitions, counts, strict=True) if n > min(counts))
 
 
-def _completion_order(ranked, removals, axis, before, partitions, *, known_only=False):
+def _completion_order(
+    ranked: Sequence[Candidate],
+    removals: Mapping[str, Mapping[AxisRef, IndexSet]],
+    axis: AxisRef,
+    before: IndexSet,
+    partitions: tuple[IndexSet, ...],
+    *,
+    known_only: bool = False,
+) -> tuple[Candidate, ...]:
     """Prefer known contributions, retaining a fallback for joint-only effects."""
-    preferred, remaining = [], []
+    preferred: list[Candidate] = []
+    remaining: list[Candidate] = []
     for candidate in ranked:
         delta = removals[candidate.key][axis].subtract(before)
         helps = bool(delta) and (not partitions or any(delta.intersect(p) for p in partitions))
@@ -285,7 +329,11 @@ def _completion_order(ranked, removals, axis, before, partitions, *, known_only=
     return tuple(preferred) if known_only else (*preferred, *remaining)
 
 
-def _balance_deficit(constraints, current, addition):
+def _balance_deficit(
+    constraints: tuple[Balanced, ...],
+    current: Mapping[AxisRef, IndexSet],
+    addition: Mapping[AxisRef, IndexSet],
+) -> float:
     """Estimate further removals needed for balance, solely as a selection heuristic.
 
     Overlapping constraints can count the same work twice. This value orders
@@ -301,7 +349,14 @@ def _balance_deficit(constraints, current, addition):
     return deficit
 
 
-def _propose_batch(context, initial, committed_removals, ranked, removals, constraints):
+def _propose_batch(
+    context: PlanningContext,
+    initial: list[Candidate],
+    committed_removals: Mapping[AxisRef, IndexSet],
+    ranked: Sequence[Candidate],
+    removals: Mapping[str, Mapping[AxisRef, IndexSet]],
+    constraints: tuple[Constraint, ...],
+) -> list[Candidate]:
     """Construct a count-feasible batch before querying joint dependencies.
 
     Axis summaries are lower bounds, not full selections. Reuse the constraints'
@@ -318,6 +373,8 @@ def _propose_batch(context, initial, committed_removals, ranked, removals, const
     while True:
         repair = None
         for constraint in constraints:
+            if not isinstance(constraint, (Balanced, Divisible)):
+                continue
             axis = constraint.axis
             diagnostic = constraint.check({axis.tensor.id: axis.select(predicted[axis])})
             if diagnostic is not None:
@@ -334,7 +391,7 @@ def _propose_batch(context, initial, committed_removals, ranked, removals, const
             removals,
             repair.axis,
             before,
-            _repair_partitions(repair, before),
+            _repair_partitions(repair, before) if isinstance(repair, Balanced) else (),
             known_only=True,
         ):
             if extra.key in used:
@@ -356,10 +413,13 @@ def _propose_batch(context, initial, committed_removals, ranked, removals, const
         used.add(best.key)
 
 
-def _budget_reason(context, counts, *, lower_bound=False):
+def _budget_reason(
+    context: PlanningContext, counts: tuple[int, ...], *, lower_bound: bool = False
+) -> str:
     """Describe an exceeded cap, distinguishing exact counts from lower bounds."""
     qualifier = "at least " if lower_bound else ""
-    if context.budget.scope == "global":
+    budget = cast(ChannelCount | ChannelRatio, context.budget)
+    if budget.scope == "global":
         return (
             f"Joint request exceeds the global channel budget: "
             f"{qualifier}{sum(counts)} removals > {context.targets[0]} allowed"
@@ -373,7 +433,14 @@ def _budget_reason(context, counts, *, lower_bound=False):
     return "Joint request exceeds the local channel budget: " + "; ".join(details)
 
 
-def _complete_trial(context, trial, ranked, removals, axes, attempt):
+def _complete_trial(
+    context: PlanningContext,
+    trial: list[Candidate],
+    ranked: Sequence[Candidate],
+    removals: Mapping[str, Mapping[AxisRef, IndexSet]],
+    axes: tuple[AxisRef, ...],
+    attempt: Callable[[list[Candidate]], Impact | None],
+) -> tuple[list[Candidate], Impact]:
     """Validate a batch and complete constraints revealed by actual joint effects."""
     impact = attempt(trial)
     if impact is None:
@@ -401,7 +468,7 @@ def _complete_trial(context, trial, ranked, removals, axes, attempt):
             )
         axis = repair.axis
         before = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
-        partitions = _repair_partitions(repair, before)
+        partitions = _repair_partitions(repair, before) if isinstance(repair, Balanced) else ()
         trial_keys = {c.key for c in trial}
         trial_removals = _axis_removals(impact, axes)
         added, last_blocker = False, ""
@@ -450,7 +517,7 @@ class Greedy:
             attempt. Rejected candidates may be retried after a commitment.
     """
 
-    def __init__(self, metric, *, max_trials=10_000):
+    def __init__(self, metric: Metric, *, max_trials: int = 10_000) -> None:
         if not isinstance(max_trials, int) or isinstance(max_trials, bool) or max_trials < 0:
             raise ValueError("max_trials must be a nonnegative integer")
         if not callable(metric):
@@ -458,9 +525,9 @@ class Greedy:
         self.metric = metric
         self.max_trials = max_trials
 
-    def __call__(self, context):
+    def __call__(self, context: PlanningContext) -> tuple[str, ...]:
         """Verify joint selections; tolerate channel underfill, require resource targets."""
-        committed = []
+        committed: list[Candidate] = []
         committed_impact = context.impact(())
         empty_error = ""
         # Keep only the latest attempt per candidate. A revision identifies the
@@ -503,7 +570,8 @@ class Greedy:
         ):
             context.exclusions.extend((c.key, "Zero channel budget") for c in context.candidates)
             return ()
-        eligible, scores = [], []
+        eligible: list[Candidate] = []
+        scores: list[float] = []
         repair_constraints = tuple(
             c for c in committed_impact.constraints if isinstance(c, (Balanced, Divisible))
         )
@@ -533,7 +601,7 @@ class Greedy:
                     removals[candidate.key] = _axis_removals(individual, axes)
                     batch.append(candidate)
             if batch:
-                scores.extend(context._score_complete(self.metric, batch))
+                scores.extend(context._score_complete(self.metric, tuple(batch)))
                 eligible.extend(batch)
         ranked = [
             c
@@ -542,12 +610,13 @@ class Greedy:
             )
         ]
 
-        def attempt(keys):
+        def attempt(keys: list[Candidate]) -> Impact | None:
+            """Evaluate one proposed key set and return its complete impact."""
             if context.trials >= self.max_trials:
                 context.limit_reached = True
                 return None
             context.trials += 1
-            return context.impact(s for c in keys for s in c.remove)
+            return context.impact(tuple(s for c in keys for s in c.remove))
 
         while True:
             progress = False

@@ -1,7 +1,11 @@
 """Registered tensor references in supported ordinary Python containers."""
 
+from __future__ import annotations
+
 import copy
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from typing import cast
 
 import torch
 from torch import nn
@@ -12,7 +16,7 @@ from .errors import CaptureError
 _MODULE_FIELDS = frozenset(vars(nn.Module())) | {"_kirigami_structure"}
 
 
-def storage_key(tensor):
+def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:
     """Identify nonempty dense storage for conservative alias checks.
 
     Args:
@@ -29,7 +33,7 @@ def storage_key(tensor):
     return (str(tensor.device), tensor.untyped_storage().data_ptr()) if tensor.numel() else None
 
 
-def has_tensor_hooks(tensor):
+def has_tensor_hooks(tensor: torch.Tensor) -> bool:
     """Report Tensor hooks that would be silently lost by physical replacement."""
     return bool(tensor._backward_hooks or tensor._post_accumulate_grad_hooks)
 
@@ -43,12 +47,12 @@ class AttributeEdit:
     delete: bool = False
 
 
-def ordinary_attributes(module):
+def ordinary_attributes(module: nn.Module) -> Iterator[tuple[str, object]]:
     """Yield user-owned attributes, excluding PyTorch registration/hook tables."""
     return ((k, v) for k, v in object_attributes(module).items() if k not in _MODULE_FIELDS)
 
 
-def copy_module_state(original, shell, memo):
+def copy_module_state(original: nn.Module, shell: nn.Module, memo: dict[int, object]) -> None:
     """Copy dictionary and slot state into a preallocated, memoized module shell."""
     object.__setattr__(shell, "__dict__", copy.deepcopy(vars(original), memo))
     for name, value in object_attributes(original).items():
@@ -56,7 +60,9 @@ def copy_module_state(original, shell, memo):
             object.__setattr__(shell, name, copy.deepcopy(value, memo))
 
 
-def _reference_nodes(value, seen=None, *, include_containers=False):
+def _reference_nodes(
+    value: object, seen: set[int] | None = None, *, include_containers: bool = False
+) -> Iterator[object]:
     """Yield supported objects, stopping cycles within each container path."""
     if isinstance(value, torch.Tensor):
         yield value
@@ -67,7 +73,11 @@ def _reference_nodes(value, seen=None, *, include_containers=False):
         seen = seen | {id(value)}
         if include_containers:
             yield value
-        entries = value.items() if type(value) is dict else enumerate(value)
+        entries: Iterable[tuple[object, object]]
+        if type(value) is dict:
+            entries = cast(dict[object, object], value).items()
+        else:
+            entries = enumerate(cast(tuple[object, ...] | list[object], value))
         for key, item in entries:
             # Validate keys even when values contain no tensors: a Tensor or
             # Module key can itself hide a binding used by the original forward.
@@ -78,19 +88,19 @@ def _reference_nodes(value, seen=None, *, include_containers=False):
             yield from _reference_nodes(item, seen, include_containers=include_containers)
 
 
-def reference_nodes(value):
+def reference_nodes(value: object) -> tuple[object, ...]:
     """Return supported Tensor and container objects, including empty containers."""
     return tuple(_reference_nodes(value, include_containers=True))
 
 
-def ordinary_tensors(model):
+def ordinary_tensors(model: nn.Module) -> Iterator[torch.Tensor]:
     """Yield Tensor leaves of supported ordinary model attributes."""
     for module in model.modules():
         for _, value in ordinary_attributes(module):
             yield from _reference_nodes(value)
 
 
-def reference_signature(model):
+def reference_signature(model: nn.Module) -> tuple[object, ...]:
     """Record tensor aliases and ordinary-constant premises; reject storage views.
 
     Plain lists, tuples, dictionaries, and direct Tensor attributes are supported.
@@ -105,7 +115,8 @@ def reference_signature(model):
     result = []
     modules = {id(m): path for path, m in model.named_modules()}
 
-    def describe(value, active=()):
+    def describe(value: object, active: tuple[int, ...] = ()) -> tuple[object, bool]:
+        """Encode a supported ordinary value and whether it contains references."""
         if id(value) in registered:
             return ("tensor", registered[id(value)][0]), True
         if id(value) in modules:
@@ -127,7 +138,15 @@ def reference_signature(model):
         if type(value) in (tuple, list, dict):
             if id(value) in active:
                 return ("cycle", active.index(id(value))), False
-            entries = value.items() if type(value) is dict else enumerate(value)
+            if type(value) is dict:
+                entries = cast(
+                    Iterator[tuple[object, object]], cast(dict[object, object], value).items()
+                )
+            else:
+                entries = cast(
+                    Iterator[tuple[object, object]],
+                    enumerate(cast(tuple[object, ...] | list[object], value)),
+                )
             items = [(key, *describe(item, (*active, id(value)))) for key, item in entries]
             contains = any(found for _, _, found in items)
             try:
@@ -145,6 +164,7 @@ def reference_signature(model):
     for path, module in model.named_modules():
         for name, value in ordinary_attributes(module):
             for tensor in _reference_nodes(value):
+                tensor = cast(torch.Tensor, tensor)
                 binding = registered.get(id(tensor))
                 if binding is None and (
                     tensor.layout == torch.strided
@@ -160,12 +180,12 @@ def reference_signature(model):
     return tuple(result)
 
 
-def reference_edits(model, replacements):
+def reference_edits(model: nn.Module, replacements: dict[int, object]) -> tuple[AttributeEdit, ...]:
     """Prepare container rebinding with one memo, preserving shared containers."""
     memo = {id(m): m for m in model.modules()}
     memo.update((id(t), t) for t in (*model.parameters(), *model.buffers()))
     memo.update(replacements)
-    edits = []
+    edits: list[AttributeEdit] = []
     for path, module in model.named_modules():
         for name, value in ordinary_attributes(module):
             nodes = reference_nodes(value)
@@ -181,7 +201,7 @@ def reference_edits(model, replacements):
     return tuple(edits)
 
 
-def final_state_edits(model, prepared):
+def final_state_edits(model: nn.Module, prepared: nn.Module) -> tuple[AttributeEdit, ...]:
     """Transfer ordinary data from validated shells without replacing modules.
 
     Checkpoint preparation has already verified that every registered module and
@@ -190,7 +210,7 @@ def final_state_edits(model, prepared):
     """
     memo = {id(prepared.get_submodule(path)): module for path, module in model.named_modules()}
     memo.update((id(t), t) for t in (*prepared.parameters(), *prepared.buffers()))
-    edits = []
+    edits: list[AttributeEdit] = []
     for path, module in model.named_modules():
         restored = prepared.get_submodule(path)
         old, new = dict(ordinary_attributes(module)), dict(ordinary_attributes(restored))
@@ -205,7 +225,7 @@ def final_state_edits(model, prepared):
     return tuple(edits)
 
 
-def reference_devices_match(expected, actual, devices):
+def reference_devices_match(expected: object, actual: object, devices: dict[str, str]) -> bool:
     """Compare ordinary references under a deterministic source/device mapping."""
     if isinstance(expected, tuple) and isinstance(actual, tuple):
         if len(expected) != len(actual):

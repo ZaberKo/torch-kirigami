@@ -3,20 +3,30 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import torch
+from torch import nn
 
 from ..configuration import thaw
-from ..operation import argument
+from ..contracts import Impact
+from ..graph import DependencyGraph
+from ..operation import OperationContext, argument
 from ..operators.coordinates import narrow_index, retained_indices
 from ..operators.shapes import evaluate, reevaluate
 from ..selection import TensorRef
 from .layouts import view_preserves_stride_boundaries
 from .recipes import compact_stride
-from .types import PlanningError, require_compact_shape
+from .types import (
+    AttributeRecipe,
+    PlanningError,
+    RewriteContext,
+    TensorRecipe,
+    require_compact_shape,
+)
 
 
-def _check_slice_coordinates(ctx, new_index):
+def _check_slice_coordinates(ctx: RewriteContext, new_index: object) -> None:
     """Reject slices that select different original coordinates after compaction."""
     op, impact = ctx.operation, ctx.impact
     x, y = op.inputs[0], op.outputs[0]
@@ -46,14 +56,19 @@ def _check_slice_coordinates(ctx, new_index):
             out_dim += 1
 
 
-def _meta_module(operation, attributes, tensor):
+def _meta_module(
+    operation: OperationContext,
+    attributes: Mapping[str, AttributeRecipe],
+    tensor: Callable[[TensorRef], torch.Tensor],
+) -> nn.Module:
     """Copy a built-in module structure with compact meta bindings and attributes.
 
     Parameters and buffers are resolved from analysis metadata, never copied from
     live weights. Registered containers are copied before changing any binding.
     """
 
-    def clone(original, prefix=""):
+    def clone(original: nn.Module, prefix: str = "") -> nn.Module:
+        """Copy a module subtree while replacing registered tensor bindings."""
         result = copy.copy(original)
         for field in ("_parameters", "_buffers"):
             bindings = {}
@@ -75,16 +90,26 @@ def _meta_module(operation, attributes, tensor):
     return clone(operation.module)
 
 
-def check_forward(graph, operations, active, impact, recipes, attributes, strides):
+def check_forward(
+    graph: DependencyGraph,
+    operations: Sequence[OperationContext],
+    active: Iterable[tuple[RewriteContext, bool]],
+    impact: Impact,
+    recipes: Mapping[str, TensorRecipe],
+    attributes: Mapping[str, AttributeRecipe],
+    strides: Mapping[str, tuple[int, ...]],
+) -> None:
     """Verify declared call contracts using compact metadata and original coordinates."""
     active_by_name = {ctx.operation.node.name: (ctx, builtin) for ctx, builtin in active}
     operations_by_name = {op.node.name: op for op in operations}
     values, uncertain = {}, set()
 
-    def shape(ref):
+    def shape(ref: TensorRef) -> tuple[int, ...]:
+        """Return the compact shape for one tensor reference."""
         return recipes[ref.id].shape if ref.id in recipes else require_compact_shape(impact, ref)
 
-    def tensor(ref):
+    def tensor(ref: TensorRef) -> torch.Tensor:
+        """Materialize metadata-only tensor facts for one reference."""
         if ref.id not in values:
             facts = graph.metadata(ref)
             size = shape(ref)
@@ -104,7 +129,8 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
                 uncertain.add(ref.id)  # Caller-changed input strides are not specified.
         return values[ref.id]
 
-    def tree(value):
+    def tree(value: object) -> object:
+        """Replace tensor references recursively inside call arguments."""
         if isinstance(value, TensorRef):
             return tensor(value)
         if isinstance(value, tuple):
@@ -115,7 +141,8 @@ def check_forward(graph, operations, active, impact, recipes, attributes, stride
             return {k: tree(v) for k, v in value.items()}
         return value
 
-    def record(refs, output, shape_hint):
+    def record(refs: object, output: object, shape_hint: str) -> None:
+        """Record and validate outputs from a compact metadata forward call."""
         if isinstance(refs, TensorRef):
             if not isinstance(output, torch.Tensor) or tuple(output.shape) != shape(refs):
                 raise PlanningError(

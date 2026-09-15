@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import copy
 from collections import defaultdict, deque
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
+from typing import Any, cast
 from uuid import uuid4
 
 import torch
@@ -16,6 +18,7 @@ from .capture import capture, fingerprint, tree_map
 from .capture import validate_attribute_changes as _validate_attribute_changes
 from .contracts import (
     Barrier,
+    Constraint,
     Diagnostic,
     Impact,
     LayoutConstraint,
@@ -25,10 +28,10 @@ from .contracts import (
     ShapeExpr,
 )
 from .errors import AnalysisLimitError, StaleGraphError, UnsupportedOperation
-from .operation import OperationContext, OperatorSpec, TensorFacts, tensors
+from .operation import OperationContext, OperatorRule, OperatorSpec, TensorFacts, tensors
 from .operators.shapes import CallArgumentConstraint, dependencies
 from .registry import OperatorRegistry
-from .relations import AxisRelation
+from .relations import AxisRelation, Relation
 from .selection import Selection, TensorRef
 
 
@@ -48,16 +51,16 @@ class CallRef:
     inputs: tuple[TensorRef, ...]
     outputs: tuple[TensorRef, ...]
 
-    def input(self, index=0):
+    def input(self, index: int = 0) -> TensorRef:
         """Return the tensor at the given flattened input index."""
         return self.inputs[index]
 
-    def output(self, index=0):
+    def output(self, index: int = 0) -> TensorRef:
         """Return the tensor at the given flattened output index."""
         return self.outputs[index]
 
 
-def _attribute(module, path):
+def _attribute(module: nn.Module, path: str) -> object:
     """Resolve a dotted FX attribute path on a module."""
     for component in path.split("."):
         module = getattr(module, component)
@@ -71,10 +74,43 @@ class DependencyGraph:
     weights. Rebuild after structural changes or changes to capture assumptions.
     """
 
+    id: str
+    _model: nn.Module
+    _registry: OperatorRegistry
+    _fingerprint: tuple[object, ...]
+    context: Mapping[str, object]
+    _refs: dict[str, TensorRef]
+    _tensor_facts: dict[str, TensorFacts]
+    _parameters: dict[str, TensorRef]
+    _buffers: dict[str, TensorRef]
+    _fx_graph: fx.Graph
+    _capture_signature: tuple[object, ...]
+    _values: dict[fx.Node, Any]
+    _expressions: dict[fx.Node, ShapeExpr]
+    _literal_values: dict[str, tuple[int, ...]]
+    # Construction accumulates lists; finalization freezes them before queries.
+    _relations: list[Relation] | tuple[Relation, ...]
+    _constraints: list[Constraint] | tuple[Constraint, ...]
+    _requirements: list[Requirement] | tuple[Requirement, ...]
+    _diagnostics: list[Diagnostic] | tuple[Diagnostic, ...]
+    _calls: list[CallRef] | tuple[CallRef, ...]
+    _operations: dict[str, OperationContext]
+    _specs: dict[str, OperatorSpec]
+    _adjacency: defaultdict[str, list[Relation]]
+    _constant_refs: tuple[TensorRef, ...]
+    _valid: bool
+    _interfaces: set[str]
+    _unused: set[str]
+
     @classmethod
     def build(
-        cls, model: nn.Module, *, args=(), kwargs=None, operators: OperatorRegistry | None = None
-    ):
+        cls,
+        model: nn.Module,
+        *,
+        args: tuple[object, ...] = (),
+        kwargs: dict[str, object] | None = None,
+        operators: OperatorRegistry | None = None,
+    ) -> DependencyGraph:
         """Capture a module and build its structural dependency relationships.
 
         Args:
@@ -279,7 +315,7 @@ class DependencyGraph:
         self._fx_graph.owning_module = None
         return self
 
-    def _analyze_operation(self, ctx, paths):
+    def _analyze_operation(self, ctx: OperationContext, paths: tuple[str, ...]) -> None:
         """Validate one call's semantics and collect its structural facts.
 
         Unsupported calls become barriers on their data dependencies. Other calls
@@ -347,7 +383,7 @@ class DependencyGraph:
         for constraint in result.constraints:
             self._unused.difference_update(r.id for r in constraint.refs)
 
-    def _finalize_analysis(self):
+    def _finalize_analysis(self) -> None:
         """Complete cross-call constraints and freeze the records used by queries.
 
         All calls must be analyzed before deriving tensor layout restrictions,
@@ -391,11 +427,12 @@ class DependencyGraph:
             dict.fromkeys(ref for spec in self._specs.values() for ref in spec.constants)
         )
 
-    def _make_values(self, node, facts):
+    def _make_values(self, node: fx.Node, facts: object) -> object:
         """Replace tensor facts with references while preserving the result tree."""
         counter = [0]
 
-        def make(value):
+        def make(value: object) -> object:
+            """Replace captured tensor leaves with graph-local references."""
             if isinstance(value, TensorFacts):
                 ref = TensorRef(
                     f"{self.id}:value:{node.name}:{counter[0]}",
@@ -410,13 +447,13 @@ class DependencyGraph:
 
         return tree_map(make, facts)
 
-    def _resolve(self, value):
+    def _resolve(self, value: object) -> object:
         """Replace FX node arguments with their recorded values or references."""
         return tree_map(
             lambda item: self._values[item] if isinstance(item, fx.Node) else item, value
         )
 
-    def _ancestor_refs(self, node):
+    def _ancestor_refs(self, node: fx.Node) -> tuple[TensorRef, ...]:
         """Collect upstream tensor references for conservative scalar barriers."""
         pending, visited, result = list(node.all_input_nodes), set(), []
         while pending:
@@ -429,31 +466,31 @@ class DependencyGraph:
         return result
 
     @property
-    def fx_graph(self):
+    def fx_graph(self) -> fx.Graph:
         """Return an inspection copy of the captured FX graph."""
         return copy.deepcopy(self._fx_graph)
 
     @property
-    def relations(self):
+    def relations(self) -> tuple[Relation, ...]:
         """Return the structural relations recorded by operation rules."""
-        return self._relations
+        return cast(tuple[Relation, ...], self._relations)
 
     @property
-    def constraints(self):
+    def constraints(self) -> tuple[Constraint, ...]:
         """Return the constraints checked after propagation reaches a fixed point."""
-        return self._constraints
+        return cast(tuple[Constraint, ...], self._constraints)
 
     @property
-    def diagnostics(self):
+    def diagnostics(self) -> tuple[Diagnostic, ...]:
         """Return build-time diagnostics, including unsupported captured operations."""
-        return self._diagnostics
+        return cast(tuple[Diagnostic, ...], self._diagnostics)
 
     @property
-    def shape_expressions(self):
+    def shape_expressions(self) -> dict[fx.Node, ShapeExpr]:
         """Return shape provenance indexed by FX node name."""
         return MappingProxyType({node.name: expr for node, expr in self._expressions.items()})
 
-    def parameter(self, path):
+    def parameter(self, path: str) -> TensorRef:
         """Find a parameter using an original model path.
 
         Args:
@@ -467,7 +504,7 @@ class DependencyGraph:
         """
         return self._parameters[path]
 
-    def buffer(self, path):
+    def buffer(self, path: str) -> TensorRef:
         """Return the buffer reference for an original path, or raise KeyError."""
         return self._buffers[path]
 
@@ -483,7 +520,7 @@ class DependencyGraph:
             Aliases do not identify which Python attribute spelling each call used.
         """
         return (
-            self._calls
+            cast(tuple[CallRef, ...], self._calls)
             if module_path is None
             else tuple(call for call in self._calls if module_path in call.module_paths)
         )
@@ -503,12 +540,12 @@ class DependencyGraph:
         self._validate_ref(tensor)
         return self._tensor_facts[tensor.id]
 
-    def _validate_ref(self, tensor):
+    def _validate_ref(self, tensor: TensorRef) -> None:
         """Check complete reference identity, without rescanning model state."""
         if not isinstance(tensor, TensorRef) or self._refs.get(tensor.id) != tensor:
             raise ValueError("Tensor belongs to another graph or has altered metadata")
 
-    def _validate_spec(self, spec):
+    def _validate_spec(self, spec: OperatorSpec) -> None:
         """Reject extension descriptors referring outside the captured snapshot."""
         refs = [ref for item in (*spec.relations, *spec.constraints) for ref in item.refs]
         refs.extend(ref for item in spec.requirements for ref in item.refs)
@@ -531,11 +568,11 @@ class DependencyGraph:
         return tuple(self._refs.values())
 
     @property
-    def model(self):
+    def model(self) -> nn.Module:
         """Return the original module owning this snapshot."""
         return self._model
 
-    def validate_attribute_changes(self, updates) -> None:
+    def validate_attribute_changes(self, updates: dict[str, object]) -> None:
         """Check (path, value) edits against the captured Python computation.
 
         Args:
@@ -561,15 +598,15 @@ class DependencyGraph:
             raise ValueError("Graph belongs to a different model")
         self._check_fresh()
 
-    def invalidate(self):
+    def invalidate(self) -> None:
         """Invalidate this snapshot after an external structural mutation."""
         self._valid = False
 
-    def interfaces(self):
+    def interfaces(self) -> tuple[TensorRef, ...]:
         """Return unique external input and output tensor references."""
         return tuple(ref for ref in self._refs.values() if ref.id in self._interfaces)
 
-    def tensor(self, ref):
+    def tensor(self, ref: TensorRef) -> torch.Tensor:
         """Return the original registered tensor for a parameter or buffer reference."""
         self._check_fresh()
         self.metadata(ref)
@@ -577,7 +614,7 @@ class DependencyGraph:
             raise ValueError("Only registered tensors have persistent bindings")
         return _attribute(self._model, ref.paths[0])
 
-    def tensor_bindings(self):
+    def tensor_bindings(self) -> tuple[tuple[TensorRef, torch.Tensor], ...]:
         """Validate once and return all registered (reference, tensor) bindings.
 
         The caller must revalidate after user callbacks or other possible model
@@ -590,7 +627,7 @@ class DependencyGraph:
             if ref.kind in ("parameter", "buffer")
         )
 
-    def bindings(self, ref):
+    def bindings(self, ref: TensorRef) -> tuple[tuple[nn.Module, str], ...]:
         """Return unique registered (owner module, attribute name) binding slots."""
         self.tensor(ref)
         result = []
@@ -603,7 +640,7 @@ class DependencyGraph:
                 seen.add((id(owner), name))
         return tuple(result)
 
-    def constants(self):
+    def constants(self) -> tuple[tuple[TensorRef, str], ...]:
         """Return (reference, FX attribute path) pairs without original registered bindings.
 
         FX can lift ordinary tensor attributes or closed-over tensors into its
@@ -617,17 +654,17 @@ class DependencyGraph:
             if ref.kind not in ("parameter", "buffer")
         )
 
-    def operator_spec(self, operation):
+    def operator_spec(self, operation: OperationContext) -> OperatorSpec:
         """Return shared structural descriptors for a captured operation."""
         operation = self._canonical_operation(operation)
         return self._specs.get(operation.node.name, OperatorSpec())
 
-    def operator_rule(self, operation):
+    def operator_rule(self, operation: OperationContext) -> OperatorRule | None:
         """Return the exact operator definition used during capture."""
         operation = self._canonical_operation(operation)
         return self._registry.lookup(operation.node, operation.module)
 
-    def _canonical_operation(self, operation):
+    def _canonical_operation(self, operation: OperationContext) -> OperationContext:
         """Accept inspection copies only when their captured call identity matches."""
         if not isinstance(operation, OperationContext) or operation.graph_id != self.id:
             raise ValueError("Operation belongs to another graph")
@@ -642,17 +679,17 @@ class DependencyGraph:
             raise ValueError("Operation identity was altered")
         return original
 
-    def constant_guards(self):
+    def constant_guards(self) -> tuple[str, ...]:
         """Return registered integer tensors whose values are analysis preconditions."""
         return tuple(ref.paths[0] for ref in self._constant_refs)
 
-    def affected_operations(self, impact):
+    def affected_operations(self, impact: Impact) -> frozenset[str]:
         """Include size-expression consumers even without removed tensor regions."""
         self.validate_impact(impact)
 
         return self._affected_operations(impact.selections)
 
-    def _affected_operations(self, selections):
+    def _affected_operations(self, selections: dict[str, Selection]) -> frozenset[str]:
         """Find data and dimension consumers using one activation rule."""
         affected = set()
         for op in self._operations.values():
@@ -689,7 +726,7 @@ class DependencyGraph:
             for ctx in self._operations.values()
         )
 
-    def _check_fresh(self):
+    def _check_fresh(self) -> None:
         """Reject detectable structural changes without comparing weight values."""
         if not self._valid or fingerprint(self._model) != self._fingerprint:
             raise StaleGraphError("Model structure/mode/configuration changed; rebuild the graph")
@@ -698,7 +735,9 @@ class DependencyGraph:
             if tuple(value.detach().cpu().reshape(-1).tolist()) != self._literal_values[ref.id]:
                 raise StaleGraphError("An integer tensor used as a structural constant changed")
 
-    def propagate(self, *, remove, constraints=()) -> Impact:
+    def propagate(
+        self, *, remove: Iterable[Selection], constraints: Iterable[Constraint] = ()
+    ) -> Impact:
         """Compute the structural closure of joint removal requests.
 
         Args:
@@ -721,7 +760,8 @@ class DependencyGraph:
         current, queue, queued = {}, deque(), set()
         provenance, diagnostics = [], []
 
-        def add(selection):
+        def add(selection: Selection) -> Selection:
+            """Merge a seed or propagated selection into the work queue."""
             self._validate_ref(selection.tensor)
             old = current.get(selection.tensor.id, Selection(selection.tensor))
             delta = selection.subtract(old)
@@ -805,7 +845,7 @@ class DependencyGraph:
         if not isinstance(impact, Impact) or impact.graph_id != self.id:
             raise ValueError("Impact belongs to another graph")
 
-    def explain(self, impact):
+    def explain(self, impact: Impact) -> str:
         """Format the selected regions, propagation reasons, and remaining requirements.
 
         Args:

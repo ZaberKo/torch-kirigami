@@ -12,6 +12,7 @@ from torch_kirigami import (
     BlockMap,
     CandidateAxis,
     DependencyGraph,
+    OperationContext,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
@@ -31,7 +32,7 @@ from torch_kirigami.pruning import (
 class FusedGQA(nn.Module):
     """A fused projection/attention block with explicit whole-KV-group pruning."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self.q_heads, self.kv_heads, self.head_dim = 4, 2, 4
         self.q = nn.Linear(8, 16, bias=False)
@@ -39,7 +40,8 @@ class FusedGQA(nn.Module):
         self.v = nn.Linear(8, 8, bias=False)
         self.out = nn.Linear(16, 8, bias=False)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Apply grouped-query attention to a batch of token sequences."""
         q = self.q(x).reshape(x.size(0), x.size(1), self.q_heads, self.head_dim).transpose(1, 2)
         k = self.k(x).reshape(x.size(0), x.size(1), self.kv_heads, self.head_dim).transpose(1, 2)
         v = self.v(x).reshape(x.size(0), x.size(1), self.kv_heads, self.head_dim).transpose(1, 2)
@@ -47,7 +49,7 @@ class FusedGQA(nn.Module):
         return self.out(y.transpose(1, 2).reshape(x.size(0), x.size(1), -1))
 
 
-def fused_gqa(ctx):
+def fused_gqa(ctx: OperationContext) -> OperatorSpec:
     """Declare group linkage and attribute bindings once; no rewrite/save callback."""
     x, y = ctx.inputs[0], ctx.outputs[0]
     q, k, v, out = (ctx.binding(f"{name}.weight") for name in ("q", "k", "v", "out"))
@@ -107,7 +109,8 @@ def fused_gqa(ctx):
     )
 
 
-def main():
+def main() -> None:
+    """Prune whole KV groups and verify checkpoint reconstruction."""
     model = FusedGQA()
     x = torch.randn(2, 3, 8)
     operators = OperatorRegistry.default().register(FusedGQA, OperatorRule(fused_gqa))

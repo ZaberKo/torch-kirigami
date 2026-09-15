@@ -1,12 +1,16 @@
 """Capture-time call effects, also used by compact-forward validation."""
 
+from __future__ import annotations
+
 import inspect
 import operator
+
+from torch import fx, nn
 
 from ..operation import CallEffects
 
 
-def named_inplace(node):
+def named_inplace(node: fx.Node) -> bool:
     """Recognize mutating API names without confusing Python keyword escapes."""
     if node.op not in ("call_function", "call_method"):
         return False
@@ -37,7 +41,7 @@ def named_inplace(node):
     return name.endswith("_") and not name.endswith("__")
 
 
-def native_effects(node, module, *, fresh_output):
+def native_effects(node: fx.Node, module: nn.Module | None, *, fresh_output: bool) -> CallEffects:
     """Declare public in-place arguments and guaranteed allocations in one place."""
     target = node.target
     mutates = named_inplace(node)

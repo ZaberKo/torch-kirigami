@@ -1,17 +1,24 @@
 """Shared local ImageNet loading, label alignment and held-out evaluation."""
 
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from pathlib import Path
+from typing import Any
 
 import torch
+from datasets import Dataset as HFDataset
+from datasets import IterableDataset as HFIterableDataset
 from datasets import load_dataset
 from huggingface_hub import snapshot_download
+from PIL.Image import Image
 from pyarrow.parquet import read_metadata
+from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset, IterableDataset
+from torchvision.models import WeightsEnum
 from tqdm.auto import tqdm
 
 
-def label_mapping(names, categories):
+def label_mapping(names: Sequence[str], categories: Sequence[str]) -> tuple[int, ...]:
     """Check HF labels against the pretrained weights' sorted ImageNet classes."""
     if len(names) != 1000 or len(categories) != 1000:
         raise ValueError("Expected the original 1000 ImageNet classes")
@@ -28,37 +35,51 @@ def label_mapping(names, categories):
     return tuple(range(1000))
 
 
-class Images(Dataset):
+class Images(Dataset[tuple[torch.Tensor, int]]):
     """Decode validation images lazily with the selected weights' preprocessing."""
 
-    def __init__(self, rows, transform, mapping):
+    def __init__(
+        self, rows: HFDataset, transform: Callable[[Image], torch.Tensor], mapping: Sequence[int]
+    ) -> None:
         self.rows, self.transform, self.mapping = rows, transform, mapping
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.rows)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         row = self.rows[int(index)]
         return self.transform(row["image"].convert("RGB")), self.mapping[row["label"]]
 
 
-class TrainingImages(IterableDataset):
+class TrainingImages(IterableDataset[tuple[torch.Tensor, int]]):
     """Stream the full shuffled split or an explicitly limited subset."""
 
-    def __init__(self, rows, transform, mapping, size):
+    def __init__(
+        self,
+        rows: HFIterableDataset,
+        transform: Callable[[Image], torch.Tensor],
+        mapping: Sequence[int],
+        size: int,
+    ) -> None:
         self.rows, self.transform, self.mapping, self.size = rows, transform, mapping, size
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.size
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[tuple[torch.Tensor, int]]:
         for row in self.rows:
             yield self.transform(row["image"].convert("RGB")), self.mapping[row["label"]]
 
 
 def load_images(
-    weights, data_dir=None, *, need_train=False, train_samples=0, val_samples=0, seed=7
-):
+    weights: WeightsEnum,
+    data_dir: str | Path | None = None,
+    *,
+    need_train: bool = False,
+    train_samples: int = 0,
+    val_samples: int = 0,
+    seed: int = 7,
+) -> tuple[TrainingImages | None, Images, dict[str, Any]]:
     """Read local HF ImageNet shards; never download data during an experiment."""
     if train_samples < 0 or val_samples < 0:
         raise ValueError("Sample limits must be nonnegative")
@@ -111,7 +132,13 @@ def load_images(
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, *, description="Evaluation"):
+def evaluate(
+    model: nn.Module,
+    loader: Iterable[tuple[torch.Tensor, torch.Tensor]],
+    device: torch.device | str,
+    *,
+    description: str = "Evaluation",
+) -> dict[str, int | float]:
     """Measure sample-weighted CE/top-1/top-5 with batch progress and restore modes."""
     modes = [(module, module.training) for module in model.modules()]
     loss, top1, top5, count = 0.0, 0, 0, 0

@@ -1,14 +1,19 @@
 """Explicit activation gates and their structural/importance adapters."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 
 import torch
-from torch import nn
+from torch import fx, nn
 
 from ..contracts import Requirement
 from ..graph import DependencyGraph
-from ..operation import CallEffects, OperatorRule, OperatorSpec
+from ..operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
+from ..pruning.pruner import Pruner
+from ..pruning.types import Candidate, MetricContext
 from ..regions import gather_region
+from ..registry import OperatorRegistry
 from ..relations import AxisRelation
 
 
@@ -25,7 +30,7 @@ class ChannelGate(nn.Module):
     Register gate operators explicitly before building a dependency graph.
     """
 
-    def __init__(self, size, axis, trainable=True):
+    def __init__(self, size: int, axis: int, trainable: bool = True) -> None:
         super().__init__()
         if type(size) is not int or size <= 0 or type(axis) is not int:
             raise ValueError("Gate requires a positive size and integer axis")
@@ -35,7 +40,7 @@ class ChannelGate(nn.Module):
         self.weight = nn.Parameter(torch.ones(size), requires_grad=trainable)
         self.register_buffer("mask", torch.ones(size))
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Apply the scale without changing rank or choosing a pruning policy."""
         if not -x.ndim <= self.axis < x.ndim or x.shape[self.axis] != self.size:
             raise ValueError("Gate activation axis has an incompatible width")
@@ -44,7 +49,7 @@ class ChannelGate(nn.Module):
         return x * (self.weight * self.mask).reshape(shape)
 
     @torch.no_grad()
-    def set_mask(self, mask):
+    def set_mask(self, mask: torch.Tensor) -> None:
         """Validate and replace the binary mask outside a live backward graph."""
         value = torch.as_tensor(mask, device=self.mask.device)
         if value.shape != self.mask.shape or not ((value == 0) | (value == 1)).all():
@@ -52,7 +57,8 @@ class ChannelGate(nn.Module):
         self.mask.copy_(value)
 
 
-def _gate_rule(ctx):
+def _gate_rule(ctx: OperationContext) -> OperatorSpec:
+    """Describe coordinate and width requirements for a ChannelGate call."""
     x, y = ctx.inputs[0], ctx.outputs[0]
     weight, mask = ctx.binding("weight"), ctx.binding("mask")
     relations = [AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape))]
@@ -76,13 +82,14 @@ def _gate_rule(ctx):
     )
 
 
-def _gate_effects(node, module):
+def _gate_effects(node: fx.Node, module: nn.Module | None) -> CallEffects:
+    """Declare that gate multiplication always produces a fresh activation."""
     # Multiplication always allocates, even when every scale equals one. This
     # lets an immediate in-place activation prove its input is not an alias.
     return CallEffects(fresh_output=True)
 
 
-def register_gate_operators(operators):
+def register_gate_operators(operators: OperatorRegistry) -> OperatorRegistry:
     """Register ChannelGate as an explicit leaf without adding a logical candidate axis."""
     return operators.register(ChannelGate, OperatorRule(analyze=_gate_rule, effects=_gate_effects))
 
@@ -99,13 +106,15 @@ class GateBinding:
     graph: DependencyGraph
     path: str
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.graph.validate()
         if type(self.graph.model.get_submodule(self.path)) is not ChannelGate:
             raise ValueError("GateBinding requires a ChannelGate module")
         self.graph.parameter(f"{self.path}.weight".lstrip("."))
 
-    def candidates(self, pruner, candidates):
+    def candidates(
+        self, pruner: Pruner, candidates: tuple[Candidate, ...]
+    ) -> tuple[Candidate, ...]:
         """Return candidates whose closure removes at least one gate parameter."""
         if pruner.graph is not self.graph:
             raise ValueError("Gate and candidate space belong to different graphs")
@@ -131,13 +140,15 @@ class GateMagnitude:
             candidates are rejected rather than silently receiving score zero.
     """
 
-    def __init__(self, bindings):
+    def __init__(self, bindings: tuple[GateBinding, ...]) -> None:
         self.bindings = tuple(dict.fromkeys(bindings))
         if not self.bindings or any(not isinstance(b, GateBinding) for b in self.bindings):
             raise ValueError("GateMagnitude requires nonempty GateBindings")
 
     @torch.no_grad()
-    def __call__(self, context, candidate_batch):
+    def __call__(
+        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
+    ) -> list[float]:
         """Return finite scores without modifying any model or training state."""
         scores = []
         for candidate in candidate_batch:

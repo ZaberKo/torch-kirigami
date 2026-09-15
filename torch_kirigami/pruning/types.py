@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeVar
 
 import torch
 
@@ -19,7 +20,7 @@ from ..regions import concatenated_shape
 from ..selection import AxisRef, Region, Selection, TensorRef, resolve_reference
 
 
-def _static(value, depth=0):
+def _static(value: object, depth: int = 0) -> object:
     """Freeze static record trees without retaining arbitrary mutable objects."""
     if depth > 100:
         raise ValueError("Structural configuration nesting limit exceeded")
@@ -38,7 +39,7 @@ def _static(value, depth=0):
     raise TypeError("Structural configuration must contain static data")
 
 
-def _paths(values):
+def _paths(values: tuple[str, ...]) -> tuple[str, ...]:
     """Normalize a nonempty set of unique registered paths in declared order."""
     values = tuple(values)
     if not values or any(not isinstance(p, str) for p in values) or len(set(values)) != len(values):
@@ -62,7 +63,7 @@ class Candidate:
     remove: tuple[Selection, ...]
     axis: AxisRef | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not isinstance(self.key, str) or not self.key:
             raise ValueError("Candidate key must be a nonempty string")
         object.__setattr__(self, "remove", tuple(self.remove))
@@ -83,7 +84,7 @@ class ParameterBudget:
 
     max_params: int
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if type(self.max_params) is not int or self.max_params < 0:
             raise ValueError("max_params must be a nonnegative integer")
 
@@ -123,7 +124,7 @@ class ChannelRatio:
     ratio: float
     scope: str = "local"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if not math.isfinite(self.ratio) or not 0 <= self.ratio < 1:
             raise ValueError("ratio must be finite and in [0, 1)")
         if self.scope not in ("local", "global"):
@@ -144,7 +145,7 @@ class ChannelCount:
     channel_axes: tuple[AxisRef, ...]
     scope: str = "local"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         channel_axes = tuple(self.channel_axes)
         if any(not isinstance(a, AxisRef) for a in channel_axes) or len(set(channel_axes)) != len(
             channel_axes
@@ -167,7 +168,9 @@ class ChannelCount:
             object.__setattr__(self, "counts", counts)
 
 
-def channel_targets(budget, widths):
+def channel_targets(
+    budget: ChannelRatio | ChannelCount, widths: tuple[int, ...]
+) -> tuple[int, ...]:
     """Resolve ratio or integer caps using one planner-independent definition."""
     if isinstance(budget, ChannelRatio):
         return (
@@ -185,16 +188,38 @@ def channel_targets(budget, widths):
 class Metric(Protocol):
     """Score an aligned candidate batch; lower scores are selected first."""
 
-    def __call__(self, context, candidate_batch):
+    def __call__(
+        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
+    ) -> Iterable[float] | torch.Tensor:
         """Return a finite one-dimensional score per candidate."""
         ...
 
 
-class Strategy(Protocol):
+_StrategyContext = TypeVar("_StrategyContext", contravariant=True)
+
+
+class Strategy(Protocol[_StrategyContext]):
     """Select registered candidate keys using a shared PlanningContext."""
 
-    def __call__(self, context):
+    def __call__(self, context: _StrategyContext) -> Iterable[str]:
         """Return registered keys; the framework verifies the combined result."""
+        ...
+
+
+class MetricContext(Protocol):
+    """Minimal planner contract required by scoring metrics."""
+
+    def impact(self, remove: tuple[Selection, ...]) -> Impact:
+        """Return dependency impact for candidate selections."""
+        ...
+
+    def require_complete(self, impact: Impact) -> None:
+        """Reject incomplete dependency influence."""
+        ...
+
+    @property
+    def graph(self) -> DependencyGraph:
+        """Return the dependency graph used for scoring."""
         ...
 
 
@@ -211,7 +236,7 @@ class TensorRecipe:
     concat_dim: int = 0
     memory_format: str = "contiguous"
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         segments = tuple(self.segments)
         if not segments or not isinstance(self.tensor, TensorRef):
             raise ValueError("Tensor recipe requires a tensor and nonempty segments")
@@ -237,7 +262,7 @@ class TensorRecipe:
         object.__setattr__(self, "segments", segments)
 
     @property
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
         """Return the resulting tensor shape without allocating tensor data."""
         return concatenated_shape(self.segments, self.concat_dim)
 
@@ -250,8 +275,9 @@ class AttributeRecipe:
     old: Any
     new: Any
 
-    def __post_init__(self):
-        def frozen(value):
+    def __post_init__(self) -> None:
+        def frozen(value: object) -> object:
+            """Freeze supported configuration values for portable storage."""
             if isinstance(value, (dict, FrozenDict, list, FrozenList, FrozenScalar, torch.Size)):
                 return freeze(thaw(value))
             if isinstance(value, tuple):
@@ -273,7 +299,7 @@ class CoordinateSegment:
     source: Region
     destination: Region
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if (
             not isinstance(self.source, Region)
             or not isinstance(self.destination, Region)
@@ -293,7 +319,7 @@ class ParameterReport:
     limit_reached: bool = False
     exclusions: tuple[tuple[str, str], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if (
             any(
                 type(n) is not int or n < 0
@@ -311,7 +337,7 @@ class ParameterReport:
             raise ValueError("Parameter exclusions require key/reason pairs")
 
     @property
-    def target_met(self):
+    def target_met(self) -> bool:
         """Whether the final model meets the requested absolute cap."""
         return self.after_params <= self.max_params
 
@@ -329,7 +355,7 @@ class SelectionReport:
     limit_reached: bool = False
     exclusions: tuple[tuple[str, str], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name in ("channel_axes", "widths", "removed", "targets"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         object.__setattr__(self, "exclusions", tuple(tuple(item) for item in self.exclusions))
@@ -365,7 +391,7 @@ class SelectionReport:
             raise ValueError("Selection exclusions require key/reason pairs")
 
     @property
-    def shortfall(self):
+    def shortfall(self) -> int:
         """Return the unfilled channel target, counting coupled logical axes separately."""
         return max(0, sum(self.targets) - sum(self.removed))
 
@@ -380,7 +406,7 @@ class AnalysisSummary:
     reasons: tuple[str, ...]
     tensors: tuple[TensorRef, ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.status not in ("resolved", "unresolved", "conflict"):
             raise ValueError("Invalid analysis status")
         for name in ("requested", "selections", "reasons", "tensors"):
@@ -404,7 +430,7 @@ class AnalysisSummary:
             except KeyError as error:
                 raise ValueError("Analysis selection is absent from the tensor catalog") from error
 
-    def selection(self, tensor):
+    def selection(self, tensor: TensorRef) -> Selection:
         """Query compatible labels; unknown references raise instead of appearing empty."""
         ref = resolve_reference(tensor, self.tensors)
         return next((s for s in self.selections if s.tensor == ref), Selection(ref))
@@ -419,7 +445,7 @@ class ModuleState:
     attributes: tuple[tuple[str, object], ...]
     slots: tuple[tuple[str, str, bool], ...]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "paths", _paths(self.paths))
         object.__setattr__(self, "attributes", _static(self.attributes))
         slots = tuple(tuple(slot) for slot in self.slots)
@@ -458,7 +484,7 @@ class TensorState:
     type_name: str
     values: tuple[int, ...] | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "paths", _paths(self.paths))
         for name in ("shape", "stride", "persistent", "storage_aliases"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
@@ -491,7 +517,7 @@ class ModelStructure:
     tensors: tuple[TensorState, ...]
     references: tuple = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         object.__setattr__(self, "modules", tuple(self.modules))
         object.__setattr__(self, "tensors", tuple(self.tensors))
         object.__setattr__(self, "references", _static(self.references))
@@ -520,7 +546,7 @@ class RewriteContext:
     impact: Impact
     requirements: tuple[Requirement, ...]
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         requirements = tuple(self.requirements)
         if any(not isinstance(item, Requirement) for item in requirements):
             raise TypeError("Rewrite requirements must be Requirement records")
@@ -550,7 +576,7 @@ class RewriteResult:
     notes: tuple[str, ...] = ()
     output_strides: tuple[tuple[TensorRef, tuple[int, ...]], ...] = ()
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         for name, cls in (
             ("tensors", TensorRecipe),
             ("attributes", AttributeRecipe),
