@@ -22,7 +22,13 @@ from .bindings import (
     reference_signature,
     storage_key,
 )
-from .configuration import attributes, forward_hook_paths, has_registration_hooks
+from .configuration import (
+    attributes,
+    forward_hook_paths,
+    has_registration_hooks,
+    object_attributes,
+    slot_names,
+)
 from .errors import CaptureError
 from .operation import CallEffects, TensorFacts
 from .operation import argument as call_argument
@@ -79,16 +85,28 @@ def fingerprint(model: nn.Module) -> tuple[object, ...]:
         for name, t in entries
     )
 
-    modules = tuple(
-        (
-            name,
-            id(m),
-            type(m),
-            attributes(m),
-        )
-        for name, m in model.named_modules(remove_duplicate=False)
+    # Configuration and ordinary tensor aliases inspect the same module state.
+    # Share only this call's raw reads; the next freshness check reads everything
+    # again, including newly initialized/deleted slots and class descriptor changes.
+    slots_by_type: dict[type, tuple[str, ...]] = {}
+    raw_by_module: dict[int, dict[str, object]] = {}
+    configuration_by_module: dict[int, tuple[tuple[str, object], ...]] = {}
+    modules = []
+    for name, module in model.named_modules(remove_duplicate=False):
+        identity, cls = id(module), type(module)
+        if identity not in raw_by_module:
+            if cls not in slots_by_type:
+                slots_by_type[cls] = slot_names(cls)
+            raw = object_attributes(module, slots=slots_by_type[cls])
+            raw_by_module[identity] = raw
+            configuration_by_module[identity] = attributes(module, raw_attributes=raw)
+        modules.append((name, identity, cls, configuration_by_module[identity]))
+    return (
+        tensor_state,
+        tuple(modules),
+        forward_hook_paths(model),
+        reference_signature(model, module_attributes=raw_by_module),
     )
-    return tensor_state, modules, forward_hook_paths(model), reference_signature(model)
 
 
 @contextmanager

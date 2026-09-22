@@ -311,6 +311,33 @@ closure, so they continue to receive actual joint selections. This is an interna
 optimization of the existing strategy, with no additional public candidate-space
 or constraint-solving interface.
 
+Completion visits ranked candidates lazily: a caller that finds an acceptable
+partner need not scan the remaining candidates. Known contributors retain their
+score order; candidates with only potential joint effects remain available in
+the fallback pass. This does not pack adjacent channels into fixed candidates or
+change the selected sequence.
+
+Candidate axis summaries store only nonempty effects. An axis-to-candidate index
+narrows the helpful pass without removing any candidate from the complete ranked
+fallback. Parameter budgets skip channel-cap arithmetic and retain recipe-based
+whole-model accounting. These indexes propose work; they never certify a joint
+request independently of propagation and execution checks.
+
+Recipe compilation validates model state at entry and exit. Each custom lowering
+callback also retains an immediate state check, including on exceptions. Exact
+`OperatorRule` instances using only default declarative lowering do not repeat a
+whole-model fingerprint after every operation. Coordinate, layout, original-call,
+shared-binding and attribute checks still run, followed by independent final
+plan validation and the usual application preconditions. Downstream execution
+checks are not truncated merely because output dimensions stay unchanged.
+
+Requirements are indexed by call and owning module path within each compilation,
+preserving declaration order, repeated calls and descendant attribute ownership.
+Compact shapes are memoized only within one forward validation, using explicit
+partitioned recipes where present. Model fingerprints share raw property and
+slot reads within one validation; they do not reuse that readout across queries.
+No shape-only execution-proof cache or global validation bypass is introduced.
+
 Monotone propagation also makes the union of current and individual axis removals
 a lower bound on joint removals. A proven budget excess can therefore be rejected
 without a joint query; overlapping positions count once. Already-covered seeds

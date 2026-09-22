@@ -85,10 +85,20 @@ class IndexSet:
 
     def union(self, other: IndexSet) -> IndexSet:
         """Return indices contained in either set."""
+        if type(self) is type(other) is IndexSet:
+            if not self.intervals or self.intervals == other.intervals:
+                return other
+            if not other.intervals:
+                return self
         return IndexSet(self.intervals + other.intervals)
 
     def intersect(self, other: IndexSet) -> IndexSet:
         """Return indices contained in both sets."""
+        if type(self) is type(other) is IndexSet:
+            if not self.intervals or self.intervals == other.intervals:
+                return self
+            if not other.intervals:
+                return other
         result, i, j = [], 0, 0
         while i < len(self.intervals) and j < len(other.intervals):
             a, b = self.intervals[i]
@@ -103,6 +113,11 @@ class IndexSet:
 
     def subtract(self, other: IndexSet) -> IndexSet:
         """Return indices in this set that are absent from other."""
+        if type(self) is type(other) is IndexSet:
+            if not self.intervals or not other.intervals:
+                return self
+            if self.intervals == other.intervals:
+                return IndexSet()
         result = []
         right = 0
         for lo, hi in self.intervals:
@@ -412,11 +427,31 @@ class Selection:
 
     def __post_init__(self) -> None:
         regions = tuple(self.regions)
-        bounds = full_region(self.tensor.shape)
+        if not regions and type(self.tensor) is TensorRef:
+            object.__setattr__(self, "regions", ())
+            return
+        if type(self.tensor) is not TensorRef:
+            # Extensions may supply their own shape behavior; retain the full
+            # interval construction and subtraction used for their validation.
+            bounds = full_region(self.tensor.shape)
+            for region in regions:
+                if len(region.axes) != len(bounds.axes):
+                    raise ValueError("Selection rank does not match tensor")
+                if any(a.subtract(b) for a, b in zip(region.axes, bounds.axes, strict=True)):
+                    raise IndexError(f"Selection outside {self.tensor.shape}")
+            object.__setattr__(self, "regions", normalize(regions))
+            return
         for region in regions:
-            if len(region.axes) != len(bounds.axes):
+            if len(region.axes) != len(self.tensor.shape):
                 raise ValueError("Selection rank does not match tensor")
-            if any(a.subtract(b) for a, b in zip(region.axes, bounds.axes, strict=False)):
+            # Canonical intervals are nonnegative and sorted, so their last end
+            # is enough to check the bound. Preserve extension method behavior.
+            if any(
+                (indices.intervals and indices.intervals[-1][1] > size)
+                if type(indices) is IndexSet
+                else indices.subtract(IndexSet.span(0, size))
+                for indices, size in zip(region.axes, self.tensor.shape, strict=True)
+            ):
                 raise IndexError(f"Selection outside {self.tensor.shape}")
         object.__setattr__(self, "regions", normalize(regions))
 
@@ -486,6 +521,18 @@ class Selection:
             imply that the corresponding physical axis position can be removed.
         """
         dim = self.tensor.axis(dim).dim
+        if not self and scope is None:
+            return IndexSet()
+        if scope is None and len(self.regions) == 1:
+            # A single Cartesian region contains complete fibers precisely when
+            # every other axis spans its full original extent. Normalization and
+            # bounds checks already establish the interval representation.
+            axes = self.regions[0].axes
+            complete = all(
+                axis == dim or indices.intervals == ((0, size),)
+                for axis, (indices, size) in enumerate(zip(axes, self.tensor.shape, strict=True))
+            )
+            return IndexSet(axes[dim].intervals) if complete else IndexSet()
         scope = scope or full_region(self.tensor.shape)
         scoped = Selection(self.tensor, (scope,))
         if not self:
@@ -503,6 +550,30 @@ class Selection:
             Remaining dimensions, or None if partition-specific packing is needed.
             None does not by itself mean that the selection is structurally invalid.
         """
+        if not self:
+            return self.tensor.shape
+        if (
+            type(self) is Selection
+            and type(self.tensor) is TensorRef
+            and len(self.regions) == 1
+            and type(self.regions[0]) is Region
+            and all(type(axis) is IndexSet for axis in self.regions[0].axes)
+        ):
+            axes = self.regions[0].axes
+            if not axes:
+                return None  # A removed scalar has no surviving tensor shape.
+            partial = [
+                dim
+                for dim, (indices, size) in enumerate(zip(axes, self.tensor.shape, strict=True))
+                if indices.intervals != ((0, size),)
+            ]
+            if not partial:
+                return (0,) * len(axes)
+            if len(partial) == 1:
+                sizes = list(self.tensor.shape)
+                sizes[partial[0]] -= len(axes[partial[0]])
+                return tuple(sizes)
+            return None
         covered = Selection(self.tensor)
         sizes = []
         for dim, size in enumerate(self.tensor.shape):
@@ -510,6 +581,66 @@ class Selection:
             covered = covered.union(self.tensor.axis(dim).select(indices))
             sizes.append(size - len(indices))
         return tuple(sizes) if not self.subtract(covered) else None
+
+
+def coalesce_selections(selections: tuple[Selection, ...]) -> tuple[Selection, ...]:
+    """Batch simple same-axis seeds without changing intermediate limit failures.
+
+    Only exact built-in records consisting of one rectangle per seed qualify.
+    A group's rectangles must differ on at most one axis, and the combined
+    interval count must fit even before normalization. Otherwise the original
+    request order is retained for the ordinary incremental union algorithm.
+    The caller must first verify that all references belong to its snapshot,
+    so matching tensor identities have identical metadata.
+    """
+    groups: dict[str, list[Selection]] = {}
+    for selection in selections:
+        if (
+            type(selection) is not Selection
+            or type(selection.tensor) is not TensorRef
+            or len(selection.regions) > 1
+            or any(
+                type(region) is not Region
+                or any(type(axis) is not IndexSet for axis in region.axes)
+                for region in selection.regions
+            )
+        ):
+            return selections
+        if selection:
+            groups.setdefault(selection.tensor.id, []).append(selection)
+    # Eligibility is checked for every group before constructing anything. This
+    # keeps generic-path validation/limit failures in their original order.
+    recipes = []
+    for group in groups.values():
+        first = group[0]
+        axes = first.regions[0].axes
+        different = {
+            dim
+            for item in group[1:]
+            for dim, (left, right) in enumerate(zip(axes, item.regions[0].axes, strict=True))
+            if left != right
+        }
+        if len(different) > 1 or MAX_PARTS < 2:
+            return selections
+        dim = next(iter(different), None)
+        if (
+            dim is not None
+            and sum(len(item.regions[0].axes[dim].intervals) for item in group) > MAX_PARTS
+        ):
+            return selections
+        recipes.append((group, dim))
+    result = []
+    for group, dim in recipes:
+        first = group[0]
+        if dim is None:
+            result.append(first)
+            continue
+        axes = list(first.regions[0].axes)
+        axes[dim] = IndexSet(
+            tuple(interval for item in group for interval in item.regions[0].axes[dim].intervals)
+        )
+        result.append(Selection(first.tensor, (Region(tuple(axes)),)))
+    return tuple(result)
 
 
 def linear_indices(region: Region, shape: tuple[int, ...]) -> IndexSet:

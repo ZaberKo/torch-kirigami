@@ -17,9 +17,14 @@ from .bindings import storage_key
 from .capture import capture, fingerprint, tree_map
 from .capture import validate_attribute_changes as _validate_attribute_changes
 from .contracts import (
+    AxisBarrier,
+    Balanced,
     Barrier,
+    BlockBalance,
     Constraint,
     Diagnostic,
+    Divisible,
+    Fixed,
     Impact,
     LayoutConstraint,
     NonEmpty,
@@ -32,7 +37,21 @@ from .operation import OperationContext, OperatorRule, OperatorSpec, TensorFacts
 from .operators.shapes import CallArgumentConstraint, dependencies
 from .registry import OperatorRegistry
 from .relations import AxisRelation, Relation
-from .selection import Selection, TensorRef
+from .selection import Selection, TensorRef, coalesce_selections
+
+# Only these immutable built-ins inspect exactly the selections named by `refs`.
+# Extensions and subclasses may inspect other selections or state, so they must
+# still run for every query, even when all their declared references are untouched.
+_LOCAL_CONSTRAINT_TYPES = (
+    AxisBarrier,
+    Balanced,
+    Barrier,
+    BlockBalance,
+    Divisible,
+    Fixed,
+    LayoutConstraint,
+    NonEmpty,
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +116,12 @@ class DependencyGraph:
     _operations: dict[str, OperationContext]
     _specs: dict[str, OperatorSpec]
     _adjacency: defaultdict[str, list[Relation]]
+    _tensor_operations: dict[str, tuple[str, ...]]
+    _operation_successors: dict[str, tuple[str, ...]]
+    _dynamic_expression_consumers: tuple[tuple[str, ShapeExpr], ...]
+    _constraint_index: dict[str, tuple[int, ...]]
+    _unindexed_constraints: tuple[int, ...]
+    _empty_constraint_diagnostics: dict[int, Diagnostic]
     _constant_refs: tuple[TensorRef, ...]
     _valid: bool
     _interfaces: set[str]
@@ -426,6 +451,90 @@ class DependencyGraph:
         self._constant_refs = tuple(
             dict.fromkeys(ref for spec in self._specs.values() for ref in spec.constants)
         )
+        self._index_constraints()
+        self._index_operations()
+
+    def _index_operations(self) -> None:
+        """Index direct tensor/size consumers and immediate FX successors."""
+        direct: defaultdict[str, set[str]] = defaultdict(set)
+        successors: defaultdict[str, set[str]] = defaultdict(set)
+        dynamic = []
+
+        def immutable(expression: ShapeExpr) -> bool:
+            """Exclude extension properties anywhere inside an expression tree."""
+            return type(expression) is ShapeExpr and all(immutable(arg) for arg in expression.args)
+
+        for name, operation in self._operations.items():
+            for ref in (*operation.inputs, *operation.outputs, *operation.bindings.values()):
+                direct[ref.id].add(name)
+            for node in operation.node.all_input_nodes:
+                successors[node.name].add(name)
+                expression = self._expressions.get(node)
+                if expression is None:
+                    continue
+                if not immutable(expression):
+                    dynamic.append((name, expression))
+                elif expression:
+                    for ref in expression.refs:
+                        direct[ref.id].add(name)
+        self._tensor_operations = {key: tuple(sorted(names)) for key, names in direct.items()}
+        self._operation_successors = {
+            key: tuple(sorted(names)) for key, names in successors.items()
+        }
+        self._dynamic_expression_consumers = tuple(dynamic)
+
+    def _index_constraints(self) -> None:
+        """Index local built-ins and retain their possibly invalid empty states."""
+        by_tensor: defaultdict[str, list[int]] = defaultdict(list)
+        unindexed = []
+        self._empty_constraint_diagnostics = {}
+        empty = MappingProxyType({})
+        for index, constraint in enumerate(self._constraints):
+            if type(constraint) not in _LOCAL_CONSTRAINT_TYPES:
+                unindexed.append(index)
+                continue
+            for ref in constraint.refs:
+                by_tensor[ref.id].append(index)
+            diagnostic = self._check_constraint(constraint, empty)
+            if diagnostic is not None:
+                self._empty_constraint_diagnostics[index] = diagnostic
+        self._constraint_index = {key: tuple(indices) for key, indices in by_tensor.items()}
+        self._unindexed_constraints = tuple(unindexed)
+
+    def _check_constraint(
+        self, constraint: Constraint, selections: Mapping[str, Selection]
+    ) -> Diagnostic | None:
+        """Validate constraint ownership and preserve analysis-limit diagnostics."""
+        for ref in constraint.refs:
+            self._validate_ref(ref)
+        try:
+            return constraint.check(selections)
+        except AnalysisLimitError as error:
+            return Diagnostic("analysis_limit", str(error), complete=False)
+
+    def _constraint_diagnostics(
+        self, selections: Mapping[str, Selection], extra: tuple[Constraint, ...]
+    ) -> tuple[Diagnostic, ...]:
+        """Check touched built-ins and every extension, keeping declaration order."""
+        active = set(self._unindexed_constraints)
+        for identity in selections:
+            active.update(self._constraint_index.get(identity, ()))
+        results = dict(self._empty_constraint_diagnostics)
+        readonly = MappingProxyType(selections)
+        for index in sorted(active):
+            diagnostic = self._check_constraint(self._constraints[index], readonly)
+            if diagnostic is None:
+                results.pop(index, None)
+            else:
+                results[index] = diagnostic
+        diagnostics = [results[index] for index in sorted(results)]
+        # Caller-supplied constraints may change between queries; do not retain
+        # them or their diagnostics in the immutable graph's index.
+        for constraint in extra:
+            diagnostic = self._check_constraint(constraint, readonly)
+            if diagnostic is not None:
+                diagnostics.append(diagnostic)
+        return tuple(diagnostics)
 
     def _make_values(self, node: fx.Node, facts: object) -> object:
         """Replace tensor facts with references while preserving the result tree."""
@@ -689,21 +798,36 @@ class DependencyGraph:
 
         return self._affected_operations(impact.selections)
 
-    def _affected_operations(self, selections: dict[str, Selection]) -> frozenset[str]:
+    def _affected_operations(self, selections: Mapping[str, Selection]) -> frozenset[str]:
         """Find data and dimension consumers using one activation rule."""
-        affected = set()
-        for op in self._operations.values():
-            # Execution validation follows value/layout effects, including edges
-            # with unchanged shape and no removed coordinates (slice, reduction).
-            if any(n.name in affected for n in op.node.all_input_nodes):
-                affected.add(op.node.name)
-            if any(r.id in selections for r in (*op.inputs, *op.outputs, *op.bindings.values())):
-                affected.add(op.node.name)
-            for node in op.node.all_input_nodes:
-                expr = self._expressions.get(node)
-                if expr and any(r.id in selections for r in expr.refs):
-                    affected.add(op.node.name)
+        affected = {
+            name for identity in selections for name in self._tensor_operations.get(identity, ())
+        }
+        # Extension subclasses can compute refs or truthiness from external
+        # state. Keep their original query-time behavior, including nested ones.
+        for name, expression in self._dynamic_expression_consumers:
+            if expression and any(ref.id in selections for ref in expression.refs):
+                affected.add(name)
+        pending = deque(affected)
+        while pending:
+            # Include value/layout consumers even when their shape and selected
+            # coordinates are unchanged, as with reductions and static slices.
+            for name in self._operation_successors.get(pending.popleft(), ()):
+                if name not in affected:
+                    affected.add(name)
+                    pending.append(name)
         return frozenset(affected)
+
+    def _seed_selections(self, requested: tuple[Selection, ...]) -> tuple[Selection, ...]:
+        """Coalesce safe seeds while retaining ordered failures for invalid input."""
+        if not all(
+            type(selection) is Selection
+            and type(selection.tensor) is TensorRef
+            and self._refs.get(selection.tensor.id) == selection.tensor
+            for selection in requested
+        ):
+            return requested
+        return coalesce_selections(requested)
 
     def operations(self) -> tuple[OperationContext, ...]:
         """Return inspection contexts with copied FX nodes and argument containers.
@@ -772,7 +896,7 @@ class DependencyGraph:
                     queued.add(selection.tensor.id)
             return delta
 
-        for selection in requested:
+        for selection in self._seed_selections(requested):
             add(selection)
         disabled = set()
         while queue:
@@ -799,16 +923,9 @@ class DependencyGraph:
                             complete=False,
                         )
                     )
-        all_constraints = (*self._constraints, *tuple(constraints))
-        for constraint in all_constraints:
-            for ref in constraint.refs:
-                self._validate_ref(ref)
-            try:
-                diagnostic = constraint.check(MappingProxyType(current))
-            except AnalysisLimitError as error:
-                diagnostic = Diagnostic("analysis_limit", str(error), complete=False)
-            if diagnostic is not None:
-                diagnostics.append(diagnostic)
+        extra_constraints = tuple(constraints)
+        all_constraints = (*self._constraints, *extra_constraints)
+        diagnostics.extend(self._constraint_diagnostics(current, extra_constraints))
         affected = self._affected_operations(current)
         activated = {
             id(req)

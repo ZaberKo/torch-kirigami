@@ -208,6 +208,15 @@ The queue processes accumulated selections, not isolated deltas. Two paths may j
 
 A relation that exceeds the exact representation limit is disabled for that query and contributes an incomplete diagnostic. Constraints are checked after the fixed point; they do not add removals. Choosing balancing channels belongs to the planner.
 
+Graph-owned constraints of audited, exact built-in types are indexed by their
+tensor references. Each query rechecks those reached by the closure and preserves
+the initial diagnostics of untouched constraints. An empty request can therefore
+remain invalid, for example when the original width violates `Divisible`.
+Custom constraints, subclasses, and caller-supplied constraints are checked on
+every query. Indexing changes neither diagnostic order nor the complete
+constraint list retained by `Impact`; freshness and reference checks remain in
+place.
+
 ### `Diagnostic`
 
 A frozen explanation with `code`, `message`, optional FX `node`, involved tensor IDs, `severity`, and `complete`. Severity is `unresolved` when a condition needs proof or additional choices, and `conflict` when a required condition is violated. `complete=False` means the influence range is not fully known.
@@ -230,6 +239,24 @@ The immutable result of a dependency query: graph identity, original requests, c
 | `complete` | Every diagnostic says the influence range is known; independent of validity. |
 
 An unbalanced grouped request can be complete but unresolved. A protected-axis violation can be complete but conflicting. Reaching an unknown operator can make the result incomplete. A resolved impact still requires executable lowering and does not imply numerical equivalence between dense and compact models.
+
+### Query implementation and performance boundaries
+
+Simple initial selections on the same tensor and varying axis can be coalesced
+before entering the existing incremental work queue. Original requests remain in
+`Impact.requested`; coordinate limits, closure and provenance remain unchanged.
+Complex regions and extension types use the general merge path. Independent
+closures are never unioned as a substitute for a joint query.
+
+Graph construction indexes direct tensor-to-call effects, shape-expression
+sources and call-to-consumer edges. Queries walk these direct edges to determine
+affected execution scope, including downstream calls whose shapes stay unchanged.
+The index is linear in the recorded graph edges, rather than an all-pairs
+reachability cache. Canonical interval bounds and simple Cartesian selections
+also admit direct checks without general region subtraction.
+
+See [planning performance notes in Chinese](cn/planning-performance.md) for the
+complete optimization scope and validation boundaries.
 
 ## 7. Constraint classes
 

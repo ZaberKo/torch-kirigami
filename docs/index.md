@@ -15,6 +15,7 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 | Save plans or compact models | [Persistence](persistence.md) | [Pruning design](pruning-design.md) |
 | Measure the resulting model | [Measurement](measurement.md) | [Verification guide](testing-coverage.md) |
 | Contribute a change | [Development and testing](testing.md) | [Verification guide](testing-coverage.md) |
+| Review planning performance changes in Chinese | [剪枝规划性能优化](cn/planning-performance.md) | [中文目录](cn/index.md) |
 
 ## Terms used throughout the documentation
 

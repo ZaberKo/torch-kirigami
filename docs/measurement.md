@@ -115,7 +115,7 @@ Forward execution must not modify parameter values. Arbitrary Python side effect
 
 Use identical input shapes, batch size, dtype, device, thread count, compilation options, warmup, and repetitions for the baseline and compact model. MACs and latency are batch-level quantities; report batch size alongside them. Lower parameter count or theoretical MACs does not guarantee lower latency because kernel choices, shape alignment, launch overhead, and hardware utilization also change.
 
-The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. `--val_batch_size` sets both the accuracy loader batch and the fixed synthetic inference batch used for MACs and latency. `--train_batch_size` controls training separately. Inspect unsupported operations before interpreting MAC reduction.
+The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. Each workflow supplies a batch=1 example to `measure_model()`, which passes it unchanged to both measurement APIs. Saved `input_shape` describes the input for both MACs and latency. `--val_batch_size` controls only the accuracy loader batch; `--train_batch_size` controls training separately. Both measurement APIs operate on the entire example supplied by their caller. Inspect unsupported operations before interpreting MAC reduction.
 
 From `examples/workflows`, after installing its requirements and downloading the required data:
 

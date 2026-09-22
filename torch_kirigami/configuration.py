@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MemberDescriptorType
 from typing import cast
@@ -32,13 +33,27 @@ class FrozenDict:
     items: tuple[tuple[object, object], ...]
 
 
-def object_attributes(value: object) -> dict[str, object]:
-    """Read instance dictionary and initialized Python slots without properties."""
+def slot_names(cls: type) -> tuple[str, ...]:
+    """List slot descriptors in the same base-to-derived order as attribute reads."""
+    return tuple(
+        name
+        for base in reversed(cls.__mro__)
+        for name, descriptor in vars(base).items()
+        if isinstance(descriptor, MemberDescriptorType)
+    )
+
+
+def object_attributes(value: object, *, slots: tuple[str, ...] | None = None) -> dict[str, object]:
+    """Read instance dictionary and initialized slots, optionally reusing slot names.
+
+    Supplied slot names must describe the current exact type. Callers may reuse
+    them within one inspection, but must not cache mutable class state across
+    model freshness checks.
+    """
     result = dict(vars(value))
-    for cls in reversed(type(value).__mro__):
-        for name, descriptor in vars(cls).items():
-            if isinstance(descriptor, MemberDescriptorType) and hasattr(value, name):
-                result[name] = getattr(value, name)
+    for name in slot_names(type(value)) if slots is None else slots:
+        if hasattr(value, name):
+            result[name] = getattr(value, name)
     return result
 
 
@@ -95,10 +110,13 @@ def thaw(value: object) -> object:
     return value
 
 
-def attributes(module: torch.nn.Module) -> tuple[tuple[str, object], ...]:
-    """Collect the same immutable configuration for graph and portable guards."""
+def attributes(
+    module: torch.nn.Module, *, raw_attributes: Mapping[str, object] | None = None
+) -> tuple[tuple[str, object], ...]:
+    """Freeze module configuration, optionally sharing a current attribute readout."""
     result = []
-    for name, value in sorted(object_attributes(module).items()):
+    values = object_attributes(module) if raw_attributes is None else raw_attributes
+    for name, value in sorted(values.items()):
         if name == "_kirigami_structure":
             continue
         try:

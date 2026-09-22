@@ -11,18 +11,18 @@ from torch_kirigami.measurement import calculate_model_complexity, measure_modul
 def measure_model(
     model: nn.Module, example: torch.Tensor, options: Namespace
 ) -> dict[str, int | float | str | bool | tuple[str, ...] | tuple[int, ...]]:
-    """Use an identical inference batch for baseline and compact-model measurements."""
-    inputs = example[:1].expand(options.val_batch_size, *example.shape[1:]).contiguous()
-    print(f"Counting model complexity on {inputs.device}", flush=True)
-    complexity = calculate_model_complexity(model, inputs, device=options.device)
+    """Measure complexity and latency using the supplied example unchanged."""
+    print(f"Counting model complexity on {example.device}; batch={example.shape[0]}", flush=True)
+    complexity = calculate_model_complexity(model, example, device=options.device)
     print(
-        f"Measuring latency on {inputs.device}; compile={options.compile_latency}. "
+        f"Measuring latency on {example.device}; batch={example.shape[0]}; "
+        f"compile={options.compile_latency}. "
         "Initial compilation runs before timing and can keep the CPU busy.",
         flush=True,
     )
     latency = measure_module_latency(
         model,
-        inputs,
+        example,
         device=options.device,
         compile=options.compile_latency,
         warmup=options.latency_warmup,
@@ -33,9 +33,9 @@ def measure_model(
         "#MACs": complexity.macs,
         "latency_ms": latency,
         "unsupported_ops": complexity.unsupported_ops,
-        "device": str(inputs.device),
-        "dtype": str(inputs.dtype),
-        "input_shape": tuple(inputs.shape),
+        "device": str(example.device),
+        "dtype": str(example.dtype),
+        "input_shape": tuple(example.shape),
         "compiled": options.compile_latency,
         "warmup": options.latency_warmup,
         "repetitions": options.latency_repetitions,

@@ -103,10 +103,17 @@ def check_forward(
     active_by_name = {ctx.operation.node.name: (ctx, builtin) for ctx, builtin in active}
     operations_by_name = {op.node.name: op for op in operations}
     values, uncertain = {}, set()
+    shapes: dict[TensorRef, tuple[int, ...]] = {}
 
     def shape(ref: TensorRef) -> tuple[int, ...]:
         """Return the compact shape for one tensor reference."""
-        return recipes[ref.id].shape if ref.id in recipes else require_compact_shape(impact, ref)
+        if ref not in shapes:
+            # Recipes can pack partitioned selections that have no ordinary
+            # compact shape. Both recipes and the Impact stay fixed in this call.
+            shapes[ref] = (
+                recipes[ref.id].shape if ref.id in recipes else require_compact_shape(impact, ref)
+            )
+        return shapes[ref]
 
     def tensor(ref: TensorRef) -> torch.Tensor:
         """Materialize metadata-only tensor facts for one reference."""

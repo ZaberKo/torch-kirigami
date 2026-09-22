@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -47,9 +47,12 @@ class AttributeEdit:
     delete: bool = False
 
 
-def ordinary_attributes(module: nn.Module) -> Iterator[tuple[str, object]]:
-    """Yield user-owned attributes, excluding PyTorch registration/hook tables."""
-    return ((k, v) for k, v in object_attributes(module).items() if k not in _MODULE_FIELDS)
+def ordinary_attributes(
+    module: nn.Module, *, raw_attributes: Mapping[str, object] | None = None
+) -> Iterator[tuple[str, object]]:
+    """Yield user-owned attributes, optionally sharing a current attribute readout."""
+    values = object_attributes(module) if raw_attributes is None else raw_attributes
+    return ((k, v) for k, v in values.items() if k not in _MODULE_FIELDS)
 
 
 def copy_module_state(original: nn.Module, shell: nn.Module, memo: dict[int, object]) -> None:
@@ -100,11 +103,15 @@ def ordinary_tensors(model: nn.Module) -> Iterator[torch.Tensor]:
             yield from _reference_nodes(value)
 
 
-def reference_signature(model: nn.Module) -> tuple[object, ...]:
+def reference_signature(
+    model: nn.Module, *, module_attributes: Mapping[int, Mapping[str, object]] | None = None
+) -> tuple[object, ...]:
     """Record tensor aliases and ordinary-constant premises; reject storage views.
 
     Plain lists, tuples, dictionaries, and direct Tensor attributes are supported.
     Arbitrary custom objects are not traversed and must not hide tensor bindings.
+    A caller inspecting configuration in the same check may supply freshly read
+    module attributes keyed by identity; no attributes persist between checks.
     """
     registered = {id(t): (p, t) for p, t in (*model.named_parameters(), *model.named_buffers())}
     storages = {
@@ -162,7 +169,8 @@ def reference_signature(model: nn.Module) -> tuple[object, ...]:
             return ("opaque", type(value).__module__, type(value).__qualname__), False
 
     for path, module in model.named_modules():
-        for name, value in ordinary_attributes(module):
+        raw_attributes = None if module_attributes is None else module_attributes[id(module)]
+        for name, value in ordinary_attributes(module, raw_attributes=raw_attributes):
             for tensor in _reference_nodes(value):
                 tensor = cast(torch.Tensor, tensor)
                 binding = registered.get(id(tensor))

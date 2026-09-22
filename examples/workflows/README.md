@@ -83,7 +83,7 @@ All multiword workflow options use underscores. The CLI accepts complete option 
 | `--train_samples` | `0` | Available training images per dataset traversal; `0` makes the full split available. Taylor reads one batch; stability search may stop before completing a traversal |
 | `--val_samples` | `0` | Validation images per recorded stage; `0` evaluates the complete validation split |
 | `--train_batch_size` | `256` | Training batch size; also the Taylor calibration batch size |
-| `--val_batch_size` | `256` | Accuracy-evaluation batch size and the fixed synthetic inference batch for MAC/latency measurement |
+| `--val_batch_size` | `256` | Accuracy-evaluation batch size; independent of MAC/latency measurement |
 | `--train_workers` | `8` | Training/Taylor DataLoader worker processes; `0` performs loading in the main process |
 | `--val_workers` | `8` | Validation DataLoader worker processes; `0` performs loading in the main process |
 | `--seed` | `7` | Model/training RNG and shuffled data selection seed |
@@ -151,7 +151,7 @@ Both splits default to full data. Explicit sample limits enable small checks wit
 
 ## End-to-end workflows
 
-Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, Taylor calibration reads one batch, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. Latency measurement uses the same validation batch size.
+Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, Taylor calibration reads one batch, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. MACs and latency use the single-image example supplied by each workflow.
 
 The commands use the default HF cache, data-loader settings, seed, and latency iteration counts. To use a separate snapshot, append `--data_dir /absolute/path/to/snapshot`. Each command enables `--compile_latency` to measure compiled inference; allow compilation time at each recorded stage. Training and accuracy evaluation remain eager.
 
@@ -316,7 +316,9 @@ python prune_finetune.py \
 
 Each stage records validation cross-entropy, top-1/top-5 accuracy, change from
 baseline in percentage points, parameter count, MACs, and `latency_ms`. MACs and
-latency describe the **whole configured validation batch**, not one image.
+latency describe **one image (batch=1)**. Each workflow passes a batch=1 example
+to the shared measurement helper, which uses it unchanged for both measurements.
+`input_shape` records their common input shape.
 Baseline and compact measurements use identical batch size, dtype, device, and
 compilation settings. Check `unsupported_ops` before treating MAC counts as
 complete. Neither MACs nor latency is a pruning target in these workflows.

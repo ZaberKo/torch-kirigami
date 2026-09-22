@@ -111,6 +111,35 @@ parameter/buffer bindings and registered aliases versus independent copies.
 
 ## Maintainability regressions
 
+Algorithmic planning optimizations also have independent reference checks:
+[selection invariants](../tests/core/test_selection_invariants.py) enumerate
+small Cartesian domains and malformed/fragmented boundaries;
+[graph query indexes](../tests/integration/test_graph_query_indexes.py) compare
+affected-call traversal and seed aggregation with exhaustive query behavior;
+[sparse planning](../tests/pruning/test_sparse_planning.py) covers multi-axis
+completion, parameter caps, replay and independent compact numerical results.
+[Fingerprint reads](../tests/integration/test_fingerprint_reads.py) count shared
+reads within each validation while checking slot, alias, mode and configuration
+mutations between validations. [Requirement indexes](../tests/pruning/test_requirement_index.py)
+check declaration order, root/descendant ownership, repeated opaque calls and
+per-validation shape arithmetic. See the [Chinese performance notes](cn/planning-performance.md)
+for the optimization scope and deliberately excluded shortcuts.
+
+Planning performance regressions compare indexed constraint queries with an
+exhaustive reference through public plan/apply on parallel, grouped and depthwise
+models ([constraint queries](../tests/integration/test_constraint_queries.py)).
+They retain unrelated initial constraint failures and custom callback behavior.
+[Completion-order tests](../tests/pruning/test_completion_order.py) exhaustively
+compare lazy traversal with an independent set-based ranking reference, including
+joint-only fallbacks. [Extension tests](../tests/integration/test_extensions.py)
+check lowering mutation boundaries and constant whole-model validation counts
+as the number of default operations grows. Performance assertions count work;
+they do not impose hardware-dependent timing thresholds.
+Single-region selection queries use independent Cartesian-coordinate enumeration
+to verify complete axis coverage, including fragmented indices, empty dimensions,
+explicit scopes and invalid arguments
+([region queries](../tests/core/test_single_region_selection.py)).
+
 The [maintainability review](maintainability-review.md) records the refactors and
 optimization tradeoffs. Public regressions check one effect query per captured
 call, conflicting shared-attribute edits (including no-ops) before mutation, and

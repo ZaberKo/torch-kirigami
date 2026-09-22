@@ -66,11 +66,23 @@ def test_rule_callbacks_receive_exact_context_and_defaults_are_readonly():
     rule.preflight(node, module)
     assert isinstance(rule.analyze(context), OperatorSpec)
     assert rule.lower(context) is lowered
+    assert not rule.uses_default_lowering
     assert rule.effects(node, module) == CallEffects(fresh_output=True)
     assert events == ["preflight", "analyze"]
     default = OperatorRule(analyze)
     assert default.preflight(node, module) is None
     assert default.lower(context) is None and default.effects(node, module) == CallEffects()
+    assert default.uses_default_lowering
     assert not default.evaluate_on_meta
     with pytest.raises(NotImplementedError):
         OperatorRule().analyze(context)
+
+
+def test_subclass_and_instance_lowering_overrides_are_extension_boundaries():
+    class DelegatingRule(OperatorRule):
+        pass
+
+    assert not DelegatingRule().uses_default_lowering
+    rule = OperatorRule()
+    rule.lower = lambda _: None
+    assert not rule.uses_default_lowering

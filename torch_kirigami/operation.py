@@ -429,6 +429,16 @@ class OperatorRule(Generic[_LowerContext, _LowerResult]):
         self._effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = effects
         self.evaluate_on_meta = evaluate_on_meta
 
+    @property
+    def uses_default_lowering(self) -> bool:
+        """Whether lowering uses only the shared structural descriptors.
+
+        Subclasses and instance overrides remain extension boundaries even when
+        they currently delegate to the default method. This permits the executor
+        to avoid repeated state checks only when no custom lowering can run.
+        """
+        return type(self) is OperatorRule and self._lower is None and "lower" not in self.__dict__
+
     def analyze(self, context: OperationContext) -> OperatorSpec:
         """Produce shared structural facts without modifying model state."""
         if self._analyze is None:

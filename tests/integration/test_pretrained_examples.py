@@ -1020,25 +1020,30 @@ def test_readme_workflow_commands_match_the_cli(monkeypatch):
 
 
 @pytest.mark.parametrize("compiled", [False, True])
-def test_measurement_uses_validation_batch_and_compiles_only_latency(monkeypatch, compiled):
+@pytest.mark.parametrize("val_batch_size", [None, 7])
+@pytest.mark.parametrize("example_batch_size", [1, 2])
+def test_measurement_uses_supplied_example_for_complexity_and_latency(
+    monkeypatch, compiled, val_batch_size, example_batch_size
+):
     model = nn.Sequential(nn.Flatten(), nn.Linear(12, 6))
     options = SimpleNamespace(
-        val_batch_size=7,
-        train_batch_size=3,
         device="cpu",
         compile_latency=compiled,
         latency_warmup=2,
         latency_repetitions=4,
     )
+    if val_batch_size is not None:
+        options.val_batch_size = val_batch_size
     observed = []
+    calculate_complexity = model_metrics.calculate_model_complexity
 
     def complexity(target, inputs, *, device):
-        assert target is model and inputs.shape == (7, 3, 2, 2)
+        assert target is model and inputs is example
         observed.append("complexity")
-        return SimpleNamespace(params=78, macs=504, unsupported_ops=())
+        return calculate_complexity(target, inputs, device=device)
 
     def latency(target, inputs, **kwargs):
-        assert target is model and inputs.shape == (7, 3, 2, 2)
+        assert target is model and inputs is example
         assert kwargs == {"device": "cpu", "compile": compiled, "warmup": 2, "repetitions": 4}
         observed.append("latency")
         return 1.25
@@ -1049,12 +1054,17 @@ def test_measurement_uses_validation_batch_and_compiles_only_latency(monkeypatch
     monkeypatch.setattr(torch, "compile", no_compile)
     monkeypatch.setattr(model_metrics, "calculate_model_complexity", complexity)
     monkeypatch.setattr(model_metrics, "measure_module_latency", latency)
-    example = torch.randn(1, 3, 2, 2)
+    example = torch.randn(example_batch_size, 3, 2, 2)
     report = model_metrics.measure_model(model, example, options)
-    accuracy = imagenet.evaluate(model, [(example, torch.tensor([0]))], "cpu")
+    accuracy = imagenet.evaluate(
+        model, [(example, torch.zeros(example_batch_size, dtype=torch.long))], "cpu"
+    )
     assert observed == ["complexity", "latency"]
-    assert report["input_shape"][0] == 7 and report["compiled"] is compiled
-    assert accuracy["samples"] == 1
+    assert report["#MACs"] == example_batch_size * 12 * 6
+    assert report["#Params"] == 12 * 6 + 6
+    assert report["input_shape"] == tuple(example.shape)
+    assert report["compiled"] is compiled
+    assert accuracy["samples"] == example_batch_size
 
 
 @pytest.mark.parametrize("name", tuple(imagenet_models.MODELS))

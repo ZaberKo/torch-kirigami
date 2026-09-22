@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
         "--val_batch_size",
         type=int,
         default=256,
-        help="Accuracy evaluation and latency measurement batch size",
+        help="Accuracy evaluation batch size",
     )
     parser.add_argument(
         "--train_workers",

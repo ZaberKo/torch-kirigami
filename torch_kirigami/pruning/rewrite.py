@@ -11,7 +11,7 @@ from torch import nn
 
 from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
-from ..contracts import Impact
+from ..contracts import Impact, Requirement
 from ..errors import CaptureError
 from ..graph import DependencyGraph
 from ..operation import OperationContext
@@ -112,6 +112,33 @@ def lower_spec(ctx: RewriteContext) -> RewriteResult:
     return RewriteResult(tuple(recipes), tuple(attributes), ctx.requirements, tuple(notes))
 
 
+def _requirements_by_operation(
+    operations: Sequence[OperationContext], requirements: Sequence[Requirement]
+) -> dict[str, tuple[Requirement, ...]]:
+    """Index call and descendant-attribute requirements in declaration order."""
+    by_name: dict[str, list[Requirement]] = {op.node.name: [] for op in operations}
+    by_path: dict[str, list[str]] = {}
+    for op in operations:
+        if op.module is not None:
+            by_path.setdefault(op.module_path or "", []).append(op.node.name)
+    for requirement in requirements:
+        if requirement.kind == "metadata_layout":
+            continue
+        names = {requirement.target} if requirement.target in by_name else set()
+        if requirement.kind == "attribute":
+            # An opaque module owns requirements for its descendants too. Root
+            # modules use the empty path; repeated calls must all receive them.
+            path = requirement.target.rpartition(".")[0]
+            while True:
+                names.update(by_path.get(path, ()))
+                if not path:
+                    break
+                path = path.rpartition(".")[0]
+        for name in names:
+            by_name[name].append(requirement)
+    return {name: tuple(items) for name, items in by_name.items()}
+
+
 def compile_recipes(
     graph: DependencyGraph,
     operations: Sequence[OperationContext],
@@ -138,33 +165,28 @@ def compile_recipes(
     active = []
     attribute_bindings = {}
     affected = graph.affected_operations(impact)
+    requirements = _requirements_by_operation(
+        tuple(op for op in operations if op.node.name in affected), impact.requirements
+    )
     for op in operations:
         if op.node.name not in affected:
             continue
-        reqs = tuple(
-            r
-            for r in impact.requirements
-            if r.kind != "metadata_layout"
-            and (
-                r.target == op.node.name
-                or (
-                    op.module is not None
-                    and r.kind == "attribute"
-                    and (
-                        r.target.rpartition(".")[0] == (op.module_path or "")
-                        or r.target.startswith(f"{op.module_path}." if op.module_path else "")
-                    )
-                )
-            )
-        )
+        reqs = requirements[op.node.name]
         rule = graph.operator_rule(op)
         if rule is None:
             raise PlanningError(f"No execution rule for {op.node.target}")
         ctx = RewriteContext(graph, op, impact, reqs)
-        result = rule.lower(ctx)
-        if result is None:
+        if rule.uses_default_lowering:
             result = lower_spec(ctx)
-        graph.validate()  # Lowering is an extension boundary, despite its pure contract.
+        else:
+            try:
+                result = rule.lower(ctx)
+            finally:
+                # User lowering remains a state boundary, including when it
+                # rejects a candidate that the strategy might otherwise skip.
+                graph.validate()
+            if result is None:
+                result = lower_spec(ctx)
         if not isinstance(result, RewriteResult):
             raise PlanningError("Rewrite rule must return RewriteResult")
         if any(r not in result.handled for r in reqs):
@@ -259,4 +281,7 @@ def compile_recipes(
                 attribute_checks.popitem(last=False)
         if error is not None:
             raise PlanningError(error)
+    # tensor_bindings() checked entry state; check exit even when the cached
+    # attribute proof avoided re-tracing. Generic lowering needs no per-call scan.
+    graph.validate()
     return tuple(recipes.values()), tuple(attributes.values()), tuple(dict.fromkeys(notes))

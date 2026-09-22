@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import cast
 
 import torch
@@ -31,6 +31,7 @@ from .types import (
 )
 
 _IMPACT_CACHE_SIZE = 32
+_EMPTY_INDICES = IndexSet()
 
 
 class PlanningContext:
@@ -189,6 +190,9 @@ class PlanningContext:
         parameter target cannot reject intermediate requests merely because they
         still leave too many parameters.
         """
+        if isinstance(self.budget, ParameterBudget):
+            self.graph.validate_impact(impact)
+            return True
         return _within_targets(self, self.counts(impact))
 
     def parameter_count(self, impact: Impact) -> int:
@@ -289,8 +293,23 @@ def _within_targets(context: PlanningContext, counts: tuple[int, ...]) -> bool:
 
 
 def _axis_removals(impact: Impact, axes: tuple[AxisRef, ...]) -> dict[AxisRef, IndexSet]:
-    """Retain compact index sets, without retaining candidate impacts."""
-    return {a: impact.selection(a.tensor).fully_selected_indices(a.dim) for a in axes}
+    """Retain only nonempty axis contributions, without retaining candidate impacts."""
+    removals = {}
+    for axis in axes:
+        indices = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
+        if indices:
+            removals[axis] = indices
+    return removals
+
+
+def _merge_axis_removals(
+    current: Mapping[AxisRef, IndexSet], addition: Mapping[AxisRef, IndexSet]
+) -> dict[AxisRef, IndexSet]:
+    """Union sparse summaries without materializing absent axes."""
+    combined = dict(current)
+    for axis, indices in addition.items():
+        combined[axis] = current.get(axis, _EMPTY_INDICES).union(indices)
+    return combined
 
 
 def _combined_counts(
@@ -298,8 +317,24 @@ def _combined_counts(
     current: Mapping[AxisRef, IndexSet],
     addition: Mapping[AxisRef, IndexSet],
 ) -> tuple[int, ...]:
-    """Bound joint removals below using monotonicity; overlap counts only once."""
-    return tuple(len(current[a].union(addition[a])) for a in context.channel_axes)
+    """Bound channel removals below; parameter budgets impose no channel caps."""
+    if isinstance(context.budget, ParameterBudget):
+        return ()
+    return tuple(
+        len(current.get(a, _EMPTY_INDICES).union(addition.get(a, _EMPTY_INDICES)))
+        for a in context.channel_axes
+    )
+
+
+def _ranked_axis_candidates(
+    ranked: Sequence[Candidate], removals: Mapping[str, Mapping[AxisRef, IndexSet]]
+) -> dict[AxisRef, list[Candidate]]:
+    """Index known axis contributors, preserving the global score/key order."""
+    by_axis: dict[AxisRef, list[Candidate]] = {}
+    for candidate in ranked:
+        for axis in removals[candidate.key]:
+            by_axis.setdefault(axis, []).append(candidate)
+    return by_axis
 
 
 def _repair_partitions(repair: Balanced, before: IndexSet) -> tuple[IndexSet, ...]:
@@ -317,16 +352,25 @@ def _completion_order(
     before: IndexSet,
     partitions: tuple[IndexSet, ...],
     *,
+    contributors: Sequence[Candidate],
     known_only: bool = False,
-) -> tuple[Candidate, ...]:
-    """Prefer known contributions, retaining a fallback for joint-only effects."""
-    preferred: list[Candidate] = []
-    remaining: list[Candidate] = []
-    for candidate in ranked:
+) -> Iterator[Candidate]:
+    """Yield known contributions first, retaining joint-only effects as fallback.
+
+    Completion often accepts the first helpful candidate. Inspect the rest only
+    if the caller continues; ranking within both preference classes stays intact.
+    """
+    helpful = set()
+    for candidate in contributors:
         delta = removals[candidate.key][axis].subtract(before)
         helps = bool(delta) and (not partitions or any(delta.intersect(p) for p in partitions))
-        (preferred if helps else remaining).append(candidate)
-    return tuple(preferred) if known_only else (*preferred, *remaining)
+        if helps:
+            helpful.add(candidate.key)
+            yield candidate
+    if not known_only:
+        # Include every non-helpful candidate, not just those absent from the
+        # index: covered or partition-irrelevant contributions may help jointly.
+        yield from (candidate for candidate in ranked if candidate.key not in helpful)
 
 
 def _balance_deficit(
@@ -341,7 +385,9 @@ def _balance_deficit(
     """
     deficit = 0
     for constraint in constraints:
-        removed = current[constraint.axis].union(addition[constraint.axis])
+        removed = current.get(constraint.axis, _EMPTY_INDICES).union(
+            addition.get(constraint.axis, _EMPTY_INDICES)
+        )
         remaining = [len(p.subtract(removed)) for p in constraint.partitions]
         if constraint.nonempty and min(remaining) == 0:
             return math.inf
@@ -355,6 +401,7 @@ def _propose_batch(
     committed_removals: Mapping[AxisRef, IndexSet],
     ranked: Sequence[Candidate],
     removals: Mapping[str, Mapping[AxisRef, IndexSet]],
+    ranked_by_axis: Mapping[AxisRef, Sequence[Candidate]],
     constraints: tuple[Constraint, ...],
 ) -> list[Candidate]:
     """Construct a count-feasible batch before querying joint dependencies.
@@ -368,7 +415,7 @@ def _propose_batch(
     trial = list(initial)
     used = {c.key for c in trial}
     seed = removals[trial[-1].key]
-    predicted = {a: indices.union(seed[a]) for a, indices in committed_removals.items()}
+    predicted = _merge_axis_removals(committed_removals, seed)
     balances = tuple(c for c in constraints if isinstance(c, Balanced))
     while True:
         repair = None
@@ -376,7 +423,9 @@ def _propose_batch(
             if not isinstance(constraint, (Balanced, Divisible)):
                 continue
             axis = constraint.axis
-            diagnostic = constraint.check({axis.tensor.id: axis.select(predicted[axis])})
+            diagnostic = constraint.check(
+                {axis.tensor.id: axis.select(predicted.get(axis, _EMPTY_INDICES))}
+            )
             if diagnostic is not None:
                 if diagnostic.severity == "conflict":
                     return initial
@@ -384,7 +433,7 @@ def _propose_batch(
                 break
         if repair is None:
             return trial
-        before = predicted[repair.axis]
+        before = predicted.get(repair.axis, _EMPTY_INDICES)
         best, best_deficit = None, math.inf
         for extra in _completion_order(
             ranked,
@@ -392,6 +441,7 @@ def _propose_batch(
             repair.axis,
             before,
             _repair_partitions(repair, before) if isinstance(repair, Balanced) else (),
+            contributors=ranked_by_axis.get(repair.axis, ()),
             known_only=True,
         ):
             if extra.key in used:
@@ -408,7 +458,7 @@ def _propose_batch(
             # Joint-only effects can satisfy a condition that these summaries
             # cannot predict. Let the normal joint analysis inspect the seed.
             return initial
-        predicted = {a: indices.union(removals[best.key][a]) for a, indices in predicted.items()}
+        predicted = _merge_axis_removals(predicted, removals[best.key])
         trial.append(best)
         used.add(best.key)
 
@@ -438,6 +488,7 @@ def _complete_trial(
     trial: list[Candidate],
     ranked: Sequence[Candidate],
     removals: Mapping[str, Mapping[AxisRef, IndexSet]],
+    ranked_by_axis: Mapping[AxisRef, Sequence[Candidate]],
     axes: tuple[AxisRef, ...],
     attempt: Callable[[list[Candidate]], Impact | None],
 ) -> tuple[list[Candidate], Impact]:
@@ -472,7 +523,14 @@ def _complete_trial(
         trial_keys = {c.key for c in trial}
         trial_removals = _axis_removals(impact, axes)
         added, last_blocker = False, ""
-        for extra in _completion_order(ranked, removals, axis, before, partitions):
+        for extra in _completion_order(
+            ranked,
+            removals,
+            axis,
+            before,
+            partitions,
+            contributors=ranked_by_axis.get(axis, ()),
+        ):
             if extra.key in trial_keys:
                 continue
             counts = _combined_counts(context, trial_removals, removals[extra.key])
@@ -578,7 +636,8 @@ class Greedy:
         # Subclasses may inspect the full dependency closure in check(). Only
         # exact built-ins can be checked against an isolated projected axis.
         count_constraints = tuple(c for c in repair_constraints if type(c) in (Balanced, Divisible))
-        axes = tuple(dict.fromkeys((*context.channel_axes, *(c.axis for c in repair_constraints))))
+        counted_axes = () if parameter_target else context.channel_axes
+        axes = tuple(dict.fromkeys((*counted_axes, *(c.axis for c in repair_constraints))))
         removals = {}
         committed_removals = _axis_removals(committed_impact, axes)
         # Only our exact built-in metrics promise batch-independent scores.
@@ -609,6 +668,7 @@ class Greedy:
                 zip(scores, eligible, strict=True), key=lambda item: (item[0], item[1].key)
             )
         ]
+        ranked_by_axis = _ranked_axis_candidates(ranked, removals)
 
         def attempt(keys: list[Candidate]) -> Impact | None:
             """Evaluate one proposed key set and return its complete impact."""
@@ -632,7 +692,13 @@ class Greedy:
                     continue
                 initial = [*committed, seed]
                 batch = _propose_batch(
-                    context, initial, committed_removals, ranked, removals, count_constraints
+                    context,
+                    initial,
+                    committed_removals,
+                    ranked,
+                    removals,
+                    ranked_by_axis,
+                    count_constraints,
                 )
                 # A count-feasible batch can fail a different constraint or its
                 # execution checks. Revisit the seed through actual propagation
@@ -642,7 +708,7 @@ class Greedy:
                     attempts_before = context.trials
                     try:
                         trial, impact = _complete_trial(
-                            context, trial, ranked, removals, axes, attempt
+                            context, trial, ranked, removals, ranked_by_axis, axes, attempt
                         )
                     except PlanningError as error:
                         # Exhausting the limit before a query must not replace
