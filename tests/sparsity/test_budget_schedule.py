@@ -5,6 +5,7 @@ import pytest
 import torch
 from torch import nn
 
+from tests.support.pruning import KeyStrategy, StaticMetric
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
     CandidateSpace,
@@ -76,7 +77,7 @@ def test_underfill_and_unrecorded_structure_do_not_advance_budget():
     _, result = Pruner(model, graph=graph).prune(
         Pruner(model, graph=graph).discover_candidates(),
         budget=budget,
-        strategy=lambda ctx: (ctx.candidates[0].key,),
+        strategy=KeyStrategy(lambda ctx: (ctx.candidates[0].key,)),
     )
     new_graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))
     new = Pruner(model, graph=new_graph).discover_candidates()
@@ -126,7 +127,9 @@ def test_count_budget_local_global_constraints_and_validation():
             channel_axes=axes,
         ),
         budget=ChannelCount(2, axes, "global"),
-        strategy=Greedy(lambda ctx, batch: [0 if c.axis == axes[0] else 1 for c in batch]),
+        strategy=Greedy(
+            StaticMetric(lambda ctx, batch: [0 if c.axis == axes[0] else 1 for c in batch])
+        ),
     )
     assert global_plan.selection_report.removed == (2, 0)
     protected = pruner.plan(

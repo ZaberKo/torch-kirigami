@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.pruning import StaticMetric
 from torch_kirigami import DependencyGraph, IndexSet, Region, Selection
 from torch_kirigami.pruning import (
     ChannelRatio,
@@ -179,7 +180,7 @@ def test_zero_budget_uses_explicit_space_without_rediscovery_or_scoring(
     plan = pruner.plan(
         space,
         budget=ChannelRatio(0),
-        strategy=Greedy(unexpected),
+        strategy=Greedy(StaticMetric(unexpected)),
     )
     assert plan.selection_report.widths == (1024,) and plan.selection_report.removed == (0,)
     before = tuple(model.parameters())

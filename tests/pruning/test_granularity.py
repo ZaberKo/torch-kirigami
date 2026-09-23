@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.pruning import KeyStrategy, StaticMetric
 from torch_kirigami import (
     AxisRelation,
     CandidateAxis,
@@ -66,6 +67,7 @@ def test_nonadjacent_alignment_roundtrip_and_independent_compact_reference(execu
     space = pruner.discover_candidates(targets=("0",))
     assert len(space.candidates) == 10  # Alignment does not package adjacent channels.
 
+    @StaticMetric
     def score(context, batch):
         return [0 if set(c.remove[0].fully_selected_indices(0)) <= {1, 7} else 1 for c in batch]
 
@@ -107,7 +109,11 @@ def test_alignment_cannot_exceed_budget_or_be_bypassed_by_manual_or_custom_strat
     with pytest.raises(PlanningError, match="indivisible"):
         pruner.plan_remove(space.candidates[0].remove)
     with pytest.raises(PlanningError, match="indivisible"):
-        pruner.plan(space, budget=ChannelRatio(0.2), strategy=lambda ctx: [ctx.candidates[0].key])
+        pruner.plan(
+            space,
+            budget=ChannelRatio(0.2),
+            strategy=KeyStrategy(lambda ctx: [ctx.candidates[0].key]),
+        )
     assert all(p is old for p, old in zip(model.parameters(), before, strict=True))
     plan = pruner.plan_remove((graph.parameter("0.weight").axis(0).select([0, 2]),))
     pruner.apply(plan)
@@ -209,7 +215,9 @@ def test_space_is_explicit_immutable_and_checks_graph_identity_and_axis_order():
         CumulativeChannelBudget(other_graph, space)
     axis = space.channel_axes[0]
     custom = CandidateSpace([Candidate("pair", (axis.select([0, 3]),))], [axis, axis])
-    plan = pruner.plan(custom, budget=ChannelRatio(0.25), strategy=lambda ctx: ["pair"])
+    plan = pruner.plan(
+        custom, budget=ChannelRatio(0.25), strategy=KeyStrategy(lambda ctx: ["pair"])
+    )
     assert plan.selection_report.widths == (8,) and plan.selection_report.removed == (2,)
 
 
@@ -289,7 +297,7 @@ def test_grouped_consumer_alignment_uses_logical_width_after_partitioned_input_r
         plan = pruner.plan(
             space,
             budget=ChannelCount((2, 4 if shrink_output else 0), axes),
-            strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+            strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
         )
         assert plan.selected == ("pair",) and plan.selection_report.shortfall == 0
     else:

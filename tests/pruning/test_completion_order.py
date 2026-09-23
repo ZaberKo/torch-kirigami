@@ -6,7 +6,7 @@ import pytest
 
 from torch_kirigami import IndexSet, TensorRef
 from torch_kirigami.pruning import Candidate
-from torch_kirigami.pruning.planner import _completion_order, _ranked_axis_candidates
+from torch_kirigami.pruning.strategies import _completion_order, _ranked_axis_candidates
 
 
 @pytest.mark.parametrize("known_only", [False, True])

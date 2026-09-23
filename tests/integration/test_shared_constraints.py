@@ -4,7 +4,7 @@ import torch
 from torch import nn
 
 from tests.support.graph_helpers import indices
-from tests.support.pruning import build
+from tests.support.pruning import StaticMetric, build
 from torch_kirigami import (
     DependencyGraph,
 )
@@ -137,6 +137,7 @@ def test_joint_rows_columns_greedy_grouped_chain(execution_device):
     x = torch.randn(2, 4, 5)
     _graph, pruner = build(model, x)
 
+    @StaticMetric
     def metric(ctx, batch):
         return [
             (0 if c.key.startswith("0.") else 10)

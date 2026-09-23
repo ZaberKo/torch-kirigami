@@ -6,7 +6,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.support.pruning import build
+from tests.support.pruning import KeyStrategy, build
 from torch_kirigami import (
     DependencyGraph,
 )
@@ -117,11 +117,12 @@ def test_magnitude_low_precision_accumulation_and_filter(dtype):
     axis = graph.parameter("weight").axis(0)
     candidates = [Candidate("one", (axis.select([0]),))]
 
+    @KeyStrategy
     def strategy(ctx):
         expected = (4 * 200**2 + 10**2) ** 0.5
         assert ctx.score(Magnitude(), ctx.candidates)[0] == pytest.approx(expected)
         filtered = Magnitude(parameter_filter=lambda ref, param: ref.paths[0] == "weight")
-        assert filtered(ctx, ctx.candidates) == [400.0]
+        assert ctx.score(filtered, ctx.candidates) == (400.0,)
         return ["one"]
 
     Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(

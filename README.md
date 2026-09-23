@@ -45,7 +45,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import Greedy, Magnitude, ParameterBudget, Pruner
+from torch_kirigami.pruning import Greedy, GroupMagnitude, ParameterBudget, Pruner
 
 device = "cuda"
 model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3)).to(device).eval()
@@ -57,7 +57,7 @@ space = pruner.discover_candidates()
 model, result = pruner.prune(
     space,
     budget=ParameterBudget(max_params=51),
-    strategy=Greedy(Magnitude(p=2)),
+    strategy=Greedy(GroupMagnitude(p=2)),
 )
 
 assert model[0].out_features == model[2].in_features == 6
@@ -70,6 +70,11 @@ External input/output dimensions are protected by default. Here the whole model
 shrinks from 67 to 51 parameters, removing two of eight hidden features.
 For another pruning round, rebuild the graph. Create a new optimizer if training
 afterward, because physical pruning replaces parameters.
+
+`Greedy` scores once. `DynamicGreedy` rescores after each accepted change using
+the selected joint impact; it costs more and does not run training or refresh
+gradients. Metrics and strategies have explicit extension methods for
+model-specific policies. See the [scoring API](docs/pruning-design.md#scoring-and-strategy-contracts).
 
 For a whole-model parameter reduction fraction, use
 `budget=ParameterBudget.from_ratio(model, pruning_ratio=0.05)`. This counts the
@@ -136,19 +141,23 @@ numerical equivalence to the unpruned model.
 
 ## Pretrained ImageNet workflows
 
-The [workflow guide](examples/workflows/README.md) provides seven standalone scripts using torchvision's pretrained **ResNet-18/34/50** or **ViT-B/16/32**, with ImageNet training and validation kept separate. Each script considers supported pruning positions across the whole model. The documented commands use full-data defaults with separate training and validation batches of 256, and enable compiled inference for latency measurement:
+The [workflow guide](examples/workflows/README.md) provides eleven standalone scripts using torchvision's pretrained **ResNet-18/34/50**, **ViT-B/16/32**, or **ConvNeXt-Tiny**, with ImageNet training and validation kept separate. Basic and iterative pruning target every block's internal widths; the ViT head example adds independently prunable attention heads; Isomorphic uses broader graph-declared candidates; reconstruction methods discover structurally eligible chains. Sparse-training examples declare their BN/gate or regularization scopes. Model choices are method-specific: VBP demonstrates ViT or ConvNeXt MLPs; BN sparsity uses ResNets. The documented commands use full-data defaults with separate training and validation batches of 256, and enable compiled inference for latency measurement:
 
 | Workflow | Purpose |
 | --- | --- |
-| Basic pruning | Magnitude or task-gradient Taylor selection, pruning, optional fine-tuning |
+| Basic pruning | Static/dynamic magnitude or Taylor selection; static FPGM filter-distance criterion |
 | Iterative pruning | Repeated selection toward a final absolute parameter limit |
 | BN sparsity | L1 regularization of ResNet batch-normalization scales |
 | Dependency-group sparsity | Group Lasso or increasing squared-L2 regularization |
 | Soft pruning | Repeated zeroing or gradual norm reduction before physical deletion |
 | Gate pruning | Train explicit channel scales, then prune using their magnitudes |
 | Stability-driven pruning | Monitor retained-channel selections while increasing regularization |
+| Variance-Based Pruning | Calibrate MLP activation variance, prune and compensate the consumer bias; optional fine-tuning |
+| Isomorphic Pruning | Rank independently within structural families and search their common channel ratio for the parameter target |
+| OSSCAR | Sequential dense-teacher reconstruction, grouped quadratic deletion, local swaps and weight refitting |
+| ViT heads and FFN | Explicit attention conversion, whole-head and FFN candidates, static group magnitude, fixed residual width |
 
-Each workflow reports validation accuracy before and after pruning, optional fine-tuning results, parameter counts, MACs, and latency. These are compact algorithm examples, not reproductions of published benchmark results.
+Each workflow reports validation accuracy before and after pruning, optional fine-tuning results, parameter counts, MACs, and latency. These are compact algorithm examples, not reproductions of published benchmark results. [Method selection and adaptations](docs/workflow-methods.md) explains the paper/repository comparisons and the implemented scope.
 
 ## Documentation
 

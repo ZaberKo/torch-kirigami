@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from tests.support.graph_helpers import indices
-from tests.support.pruning import build
+from tests.support.pruning import StaticMetric, build
 from torch_kirigami import (
     DependencyGraph,
 )
@@ -184,6 +184,7 @@ def test_automatic_group_balance_selects_different_local_positions():
     model = nn.Conv1d(6, 6, 1, groups=2)
     graph, pruner = build(model, torch.randn(2, 6, 4))
 
+    @StaticMetric
     def metric(ctx, batch):
         ranking = {0: 0, 4: 1, 1: 2, 2: 3, 3: 4, 5: 5}
         return [ranking[int(c.key.rsplit(":", 1)[1])] for c in batch]

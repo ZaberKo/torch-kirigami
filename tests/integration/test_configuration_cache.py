@@ -4,6 +4,7 @@ import pytest
 import torch
 from torch import fx, nn
 
+from tests.support.pruning import KeyStrategy
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import ChannelRatio, ExecutionError, PlanningError, Pruner
 
@@ -32,6 +33,7 @@ def test_same_width_configuration_checks_are_shared(dependent, monkeypatch, exec
 
     monkeypatch.setattr(fx.Tracer, "trace", counted)
 
+    @KeyStrategy
     def strategy(context):
         for candidate in context.candidates:
             impact = context.impact(candidate.remove)
@@ -65,6 +67,7 @@ def test_configuration_cache_invalidates_after_tensor_write(monkeypatch, executi
 
     monkeypatch.setattr(fx.Tracer, "trace", counted)
 
+    @KeyStrategy
     def strategy(context):
         candidate = context.candidates[0]
         impact = context.impact(candidate.remove)

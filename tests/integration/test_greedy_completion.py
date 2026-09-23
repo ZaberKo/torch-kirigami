@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.pruning import StaticMetric
 from torch_kirigami import Balanced, DependencyGraph, Divisible, Fixed, IndexSet, Region
 from torch_kirigami.pruning import (
     Candidate,
@@ -61,6 +62,7 @@ def test_whole_model_alignment_completes_without_scanning_unrelated_branches(
 
     monkeypatch.setattr(graph, "propagate", counted)
 
+    @StaticMetric
     def interleaved(context, batch):
         batches.append(tuple(c.key for c in batch))
         return [next(iter(c.remove[0].fully_selected_indices(0))) for c in batch]
@@ -76,8 +78,9 @@ def test_whole_model_alignment_completes_without_scanning_unrelated_branches(
     # Check real dependency queries, not just the strategy's reported counter.
     # Scoring queries have one seed; joint queries must already contain whole batches.
     assert set(joint_sizes) == set(range(8, 65, 8))
-    assert len(batches) == 1 and set(batches[0]) == {c.key for c in space.candidates}
-    # A custom batch larger than the cache must not trigger a second eligibility scan.
+    assert all(len(batch) <= 32 for batch in batches)
+    assert {key for batch in batches for key in batch} == {c.key for c in space.candidates}
+    # Bounded batches must not trigger a second eligibility scan.
     assert len(individual_queries) == len(space.candidates)
     assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
     repeated = pruner.plan(
@@ -114,7 +117,7 @@ def test_constraints_construct_noncontiguous_batches_before_first_joint_trial(
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
         budget=ChannelRatio(count / width),
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     assert plan.selection_report.removed == (count,)
     assert plan.selection_report.trials == 1 and not plan.selection_report.limit_reached
@@ -143,7 +146,7 @@ def test_one_batch_satisfies_multiple_balance_and_alignment_constraints(executio
     plan = pruner.plan(
         pruner.discover_candidates(),
         budget=ChannelRatio(0.5),
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     removed = set(plan.analysis.selection(axis.tensor).fully_selected_indices(0))
     assert len(removed) == 6 and plan.selection_report.trials == 1
@@ -182,7 +185,7 @@ def test_grouped_convolution_batches_balance_different_local_input_columns(
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
         budget=budget,
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     assert len(plan.analysis.selection(axis.tensor).fully_selected_indices(0)) == 4
     assert plan.selection_report.trials == 1
@@ -213,7 +216,7 @@ def test_depthwise_candidate_blocks_keep_channel_denominator_and_batch_alignment
     plan = pruner.plan(
         space,
         budget=budget,
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=1),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     axis = graph.parameter("1.weight").axis(0)
     assert len(plan.analysis.selection(axis.tensor).fully_selected_indices(0)) == 4
@@ -246,7 +249,7 @@ def test_custom_constraint_subclass_receives_full_closure_not_axis_projection(ex
     plan = pruner.plan(
         pruner.discover_candidates(),
         budget=ChannelRatio(0.5),
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=2),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=2),
     )
     assert plan.selection_report.removed == (2,) and plan.selection_report.trials == 2
     pruner.apply(plan)
@@ -287,7 +290,7 @@ def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_reque
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
         budget=ChannelRatio(0.5),
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=limit),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit),
     )
     assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
     if limit == 1:
@@ -329,7 +332,7 @@ def test_completion_falls_back_to_candidate_with_only_joint_axis_effect(ratio, e
     )
     pruner = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 4)])
     space = CandidateSpace(candidates, (axis,))
-    strategy = Greedy(lambda context, batch: [0] * len(batch), max_trials=3)
+    strategy = Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=3)
     if ratio == 0.1:
         before = model.weight, model.bias
         with pytest.raises(PlanningError, match="empty request"):
@@ -360,7 +363,7 @@ def test_budget_prefilter_counts_overlapping_candidates_once(scope, execution_de
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
         budget=ChannelRatio(0.5, scope=scope),
-        strategy=Greedy(lambda context, batch: [0] * len(batch), max_trials=3),
+        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=3),
     )
     assert plan.selected == ("a", "b", "c")
     assert plan.selection_report.removed == (4,) and not plan.selection_report.limit_reached

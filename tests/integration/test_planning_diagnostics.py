@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.pruning import StaticMetric
 from torch_kirigami import AxisRef, DependencyGraph, Diagnostic, Divisible
 from torch_kirigami.pruning import (
     Candidate,
@@ -55,6 +56,7 @@ class RewriteExample(nn.Module):
         return y, self.good(x)
 
 
+@StaticMetric
 def ranked(context, batch):
     return [0 if c.key in ("bad", "early", "pair") else 1 for c in batch]
 

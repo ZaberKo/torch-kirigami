@@ -1,10 +1,10 @@
-"""Pretrained model -> magnitude/Taylor pruning -> optional ImageNet fine-tuning."""
+"""Pretrained model -> scored structural pruning -> optional ImageNet fine-tuning."""
 
 import argparse
 import json
 import math
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -15,21 +15,118 @@ from model_metrics import measure_model
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from torchvision.models.resnet import BasicBlock, Bottleneck
+from torchvision.models.vision_transformer import EncoderBlock
 from tqdm.auto import tqdm
 
-from torch_kirigami import DependencyGraph
+from torch_kirigami import AxisRef, DependencyGraph, Impact, Selection
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    DynamicGreedy,
     Granularity,
     Greedy,
+    GroupMagnitude,
+    MetricContext,
     ParameterBudget,
-    PlanningContext,
+    PlanningError,
     Pruner,
     PruningPlan,
+    WeightTaylor,
     load_checkpoint,
     save_checkpoint,
 )
+
+
+class GeometricMedian:
+    """Static output-filter redundancy scores using original signed weights.
+
+    Each filter receives the sum of Euclidean distances to every filter on the
+    same output axis. Low scores identify filters near the geometric median.
+    This uses the FPGM criterion (CVPR 2019), adapted to Conv/Linear candidates;
+    global parameter budgeting and one-shot removal are not the paper's full
+    layerwise soft-pruning training procedure. Unlike Torch-Pruning's variant,
+    the distances use signed weights, without an absolute-value or power transform.
+
+    Args:
+        graph: Graph whose current weights supply the fixed score snapshot.
+        axes: Explicit output-weight axes, normally `space.channel_axes`.
+        block_size: Maximum rows and columns of each pairwise-distance tile.
+
+    All scores are calculated once before planning. No weights or activations
+    are retained, and dynamic conditional scoring is deliberately unsupported.
+    Recreate this metric after changing weights or the model structure.
+    """
+
+    def __init__(
+        self, graph: DependencyGraph, axes: Iterable[AxisRef], *, block_size: int = 256
+    ) -> None:
+        if type(block_size) is not int or block_size <= 0:
+            raise ValueError("block_size must be a positive integer")
+        graph.validate()
+        bindings = dict(graph.tensor_bindings())
+        self.graph_id = graph.id
+        self.scores: dict[AxisRef, tuple[float, ...]] = {}
+        with torch.no_grad():
+            for axis in dict.fromkeys(axes):
+                if (
+                    axis.tensor.kind != "parameter"
+                    or axis.dim != 0
+                    or len(axis.tensor.shape) < 2
+                    or axis.tensor not in bindings
+                ):
+                    raise ValueError("GeometricMedian requires registered output-weight axes")
+                weight = bindings[axis.tensor]
+                if not weight.is_floating_point() or not torch.isfinite(weight).all():
+                    raise PlanningError("GeometricMedian requires finite real floating weights")
+                dtype = torch.float64 if weight.dtype == torch.float64 else torch.float32
+                rows = weight.detach().to(dtype=dtype).flatten(1)
+                scores = torch.zeros(rows.shape[0], dtype=dtype, device=rows.device)
+                for start in range(0, len(rows), block_size):
+                    current = rows[start : start + block_size]
+                    for other in range(0, len(rows), block_size):
+                        distances = torch.cdist(
+                            current,
+                            rows[other : other + block_size],
+                            p=2,
+                            compute_mode="donot_use_mm_for_euclid_dist",
+                        )
+                        scores[start : start + len(current)] += distances.sum(1)
+                if not torch.isfinite(scores).all():
+                    raise PlanningError("GeometricMedian produced nonfinite distance scores")
+                self.scores[axis] = tuple(scores.cpu().tolist())
+
+    def score(
+        self,
+        context: MetricContext,
+        candidates: tuple[Candidate, ...],
+        *,
+        selected: Impact,
+    ) -> list[float]:
+        """Sum unique output-row scores; reject partial slices and dynamic use."""
+        if context.graph.id != self.graph_id:
+            raise PlanningError("GeometricMedian scores belong to a different dependency graph")
+        context.require_complete(selected)
+        if selected.selections:
+            raise PlanningError("GeometricMedian supports static selection only")
+        values = []
+        for candidate in candidates:
+            axis = candidate.axis
+            if axis not in self.scores:
+                raise PlanningError("GeometricMedian candidate needs a scored output-weight axis")
+            selection = Selection(axis.tensor)
+            for seed in candidate.remove:
+                if seed.tensor != axis.tensor:
+                    raise PlanningError("GeometricMedian candidate must select one output axis")
+                selection = selection.union(seed)
+            indices = selection.fully_selected_indices(axis.dim)
+            if selection != axis.select(indices):
+                raise PlanningError("GeometricMedian requires complete output-filter selections")
+            value = math.fsum(self.scores[axis][index] for index in indices)
+            if not math.isfinite(value):
+                raise PlanningError("GeometricMedian candidate score must be finite")
+            values.append(value)
+        return values
 
 
 def parse_args() -> argparse.Namespace:
@@ -76,7 +173,18 @@ def parse_args() -> argparse.Namespace:
         help="Fraction of whole-model parameters to remove (default: 0.05); not a channel ratio",
     )
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
-    parser.add_argument("--metric", choices=("magnitude", "taylor"), default="magnitude")
+    parser.add_argument(
+        "--metric",
+        choices=("magnitude", "taylor", "geometric_median"),
+        default="magnitude",
+        help="Group magnitude, affected-weight Taylor, or static signed-filter redundancy scores",
+    )
+    parser.add_argument(
+        "--selection",
+        choices=("static", "dynamic"),
+        default="static",
+        help="Static ranking or rescoring after accepted deletions; Taylor retains the original gradients",
+    )
     parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--output", type=Path, default=Path("runs/prune_finetune"))
@@ -103,6 +211,8 @@ def parse_args() -> argparse.Namespace:
             parser.error(f"--{name} must be nonnegative")
     if not 0 <= options.pruning_ratio < 1 or not math.isfinite(options.lr) or options.lr <= 0:
         parser.error("Require 0 <= pruning_ratio < 1 and positive finite lr")
+    if options.metric == "geometric_median" and options.selection != "static":
+        parser.error("--metric geometric_median requires --selection static")
     if options.device == "cuda" and not torch.cuda.is_available():
         parser.error(
             "CUDA is unavailable; install a CUDA-enabled PyTorch build or pass --device cpu"
@@ -138,34 +248,27 @@ def collect_task_gradients(
 
 
 def make_plan(
-    pruner: Pruner, space: CandidateSpace, budget: ParameterBudget, metric: str
+    pruner: Pruner,
+    space: CandidateSpace,
+    budget: ParameterBudget,
+    metric: str,
+    selection: str = "static",
 ) -> PruningPlan:
-    """Score producer channels; Greedy enforces joint constraints and alignment."""
-    scores = {}
-    for axis in space.channel_axes:
-        weight = pruner.model.get_parameter(axis.tensor.paths[0])
-        if metric == "taylor":
-            if weight.grad is None:
-                raise ValueError("Collect task-only gradients before Taylor selection")
-            values = (
-                (weight.detach().float() * weight.grad.detach().float()).abs().flatten(1).sum(1)
-            )
-        else:
-            values = weight.detach().float().flatten(1).square().sum(1)
-        # Transfer all channel scores together; per-candidate .item() synchronizes CUDA.
-        values = values.cpu().tolist()
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(score) for score in scores.values()):
-        raise ValueError("Nonfinite pruning score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up the producer scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
-    return pruner.plan(space, budget=budget, strategy=Greedy(score))
+    """Select a feasible request; dynamic Taylor reuses its calibrated gradients."""
+    if selection not in ("static", "dynamic"):
+        raise ValueError("selection must be static or dynamic")
+    if metric == "geometric_median":
+        if selection != "static":
+            raise ValueError("geometric_median requires static selection")
+        score = GeometricMedian(pruner.graph, space.channel_axes)
+    elif metric == "taylor":
+        score = WeightTaylor(mode="elementwise_abs")
+    elif metric == "magnitude":
+        score = GroupMagnitude(p=2)
+    else:
+        raise ValueError(f"Unknown metric: {metric}")
+    strategy = Greedy(score) if selection == "static" else DynamicGreedy(score)
+    return pruner.plan(space, budget=budget, strategy=strategy)
 
 
 def main() -> None:
@@ -173,17 +276,19 @@ def main() -> None:
     options = parse_args()
     torch.manual_seed(options.seed)
     model = make_model(options.model).to(options.device).eval()
-    layers = (
-        tuple(
-            f"layer{stage}.{block}"
-            for stage in range(1, 5)
-            for block in range(len(getattr(model, f"layer{stage}")))
-        )
-        if options.model.startswith("resnet")
-        else tuple(f"encoder.layers.{name}" for name, _ in model.encoder.layers.named_children())
-    )
+    # Visit every block, but retain its external width and residual interface.
+    targets = []
+    for path, block in model.named_modules():
+        if type(block) is BasicBlock:
+            targets.append(f"{path}.conv1")
+        elif type(block) is Bottleneck:
+            targets.extend((f"{path}.conv1", f"{path}.conv2"))
+        elif type(block) is EncoderBlock:
+            targets.append(f"{path}.mlp.0")
+    if not targets:
+        raise PlanningError("No supported block-internal pruning positions were found")
     print(
-        f"Model: {options.model}; considering all {len(layers)} supported blocks; "
+        f"Model: {options.model}; {len(targets)} block-internal pruning axes; "
         f"parameters on {next(model.parameters()).device}",
         flush=True,
     )
@@ -228,7 +333,11 @@ def main() -> None:
         for key, value in vars(options).items()
     }
     config.update(
-        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+        weights=str(weights),
+        dataset=dataset_info,
+        max_params=budget.max_params,
+        pruning_scope="block_internal",
+        pruning_targets=targets,
     )
     options.output.mkdir(parents=True, exist_ok=True)
 
@@ -253,9 +362,6 @@ def main() -> None:
         )
 
     record("pretrained")
-    suffix = "conv1.weight" if options.model.startswith("resnet") else "mlp.0.weight"
-    paths = tuple(f"{layer}.{suffix}" for layer in layers)
-    targets = tuple(path.removesuffix(".weight") for path in paths)
     print(f"Capturing dependency graph; sample forward on {options.device}", flush=True)
     started = time.perf_counter()
     graph = DependencyGraph.build(model, args=(example,))
@@ -265,6 +371,13 @@ def main() -> None:
         granularity=Granularity(by_path=dict.fromkeys(targets, options.granularity)),
     )
     space = pruner.discover_candidates(targets=targets)
+    config["candidate_axes"] = [
+        {"parameter": axis.tensor.paths[0], "dim": axis.dim} for axis in space.channel_axes
+    ]
+    config["discovery_exclusions"] = space.exclusions
+    (options.output / "metrics.json").write_text(
+        json.dumps({"config": config, "stages": records}, indent=2) + "\n"
+    )
     print(
         f"Graph and {len(space.candidates)} candidates ready in {time.perf_counter() - started:.1f}s",
         flush=True,
@@ -273,7 +386,7 @@ def main() -> None:
         collect_task_gradients(model, train_loader, options.device)
     print("Planning pruning: dependency propagation and constraint search run on CPU", flush=True)
     started = time.perf_counter()
-    plan = make_plan(pruner, space, budget, options.metric)
+    plan = make_plan(pruner, space, budget, options.metric, selection=options.selection)
     print(
         f"Plan completed in {time.perf_counter() - started:.1f}s; "
         f"{plan.selection_report.trials} joint trials; applying on {options.device}",
@@ -295,7 +408,7 @@ def main() -> None:
     for epoch in range(options.finetune_epochs):
         print(
             f"Fine-tuning epoch {epoch + 1}: {len(cast(Images, train))} images on {options.device}; "
-            "training data decoded in the main process",
+            f"data loader workers: {options.train_workers}",
             flush=True,
         )
         model.train()
@@ -335,7 +448,7 @@ def main() -> None:
         {
             "optimizer": optimizer.state_dict(),
             "config": config,
-            "algorithm": {"metric": options.metric},
+            "algorithm": {"metric": options.metric, "selection": options.selection},
             "rng": torch.get_rng_state(),
             "data_rng": generator.get_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,

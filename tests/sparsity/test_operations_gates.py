@@ -6,9 +6,11 @@ from torch import nn
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
+    Candidate,
     CandidateSpace,
     ChannelCount,
     ChannelRatio,
+    DynamicGreedy,
     Greedy,
     ParameterGroup,
     PlanningContext,
@@ -163,6 +165,61 @@ def test_gate_and_scale_parameter_aliases_are_not_counted_twice():
     assert context.score(metric, space.candidates) == (2.0, 0.0, 3.0)
 
 
+def test_gate_metric_conditional_regions_and_dynamic_plan(execution_device):
+    class Parallel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gated = nn.Sequential(nn.Linear(2, 4), ChannelGate(4, -1), nn.Linear(4, 2))
+            self.plain = nn.Sequential(nn.Linear(2, 4), nn.Linear(4, 2))
+
+        def forward(self, x):
+            return self.gated(x) + self.plain(x)
+
+    model = Parallel().to(execution_device).eval()
+    with torch.no_grad():
+        model.gated[1].weight.copy_(model.gated[1].weight.new_tensor([2, 3, 5, 7]))
+    x = torch.randn(3, 2, device=execution_device)
+    graph = DependencyGraph.build(
+        model, args=(x,), operators=register_gate_operators(OperatorRegistry.default())
+    )
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("gated.0",))
+    budget = ChannelCount((2,), space.channel_axes)
+    context = PlanningContext(
+        graph, graph.operations(), space.candidates, budget, space.channel_axes, pruner.constraints
+    )
+    axis = graph.parameter("gated.0.weight").axis(0)
+    metric = GateMagnitude((GateBinding(graph, "gated.1"),))
+    selected = context.impact((axis.select([0]),))
+    overlap = Candidate("overlap", (axis.select([0, 1]),), axis)
+    duplicate = Candidate("duplicate", (axis.select([0]),), axis)
+    assert context.score(metric, (overlap, duplicate), selected=selected) == (3.0, 0.0)
+    ungated = graph.parameter("plain.0.weight").axis(0)
+    with pytest.raises(ValueError, match="no bound gate"):
+        context.score(
+            metric, (Candidate("ungated", (ungated.select([1]),), ungated),), selected=selected
+        )
+
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    plan = pruner.plan(space, budget=budget, strategy=DynamicGreedy(metric))
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name])
+    keep = [2, 3]
+    with torch.no_grad():
+        hidden = torch.nn.functional.linear(
+            x, model.gated[0].weight[keep], model.gated[0].bias[keep]
+        )
+        hidden *= model.gated[1].weight[keep] * model.gated[1].mask[keep]
+        reference = torch.nn.functional.linear(
+            hidden, model.gated[2].weight[:, keep], model.gated[2].bias
+        ) + model.plain(x)
+    pruner.apply(plan)
+    assert model.gated[1].size == 2
+    assert model.plain[0].out_features == 4
+    torch.testing.assert_close(model(x), reference)
+    model(x).sum().backward()
+
+
 @pytest.mark.parametrize("operation", ["scale", "zero", "norm"])
 @pytest.mark.parametrize("include_second", [False, True])
 def test_parameter_operations_reject_storage_aliases_atomically(
@@ -261,6 +318,12 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
             pruner.constraints,
         )
         assert context.score(GateMagnitude(order), space.candidates) == (1.0, 1.0, 2.0)
+        selected = context.impact(space.candidates[0].remove)
+        assert context.score(GateMagnitude(order), space.candidates, selected=selected) == (
+            0.0,
+            1.0,
+            2.0,
+        )
     # An actually inactive shared channel remains a valid physical alternative.
     model.g1.set_mask([0, 0, 1])
     model.g2.set_mask([0, 1, 1])

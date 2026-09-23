@@ -1,6 +1,6 @@
 # Pretrained ImageNet pruning workflows
 
-Seven standalone entries demonstrate structural pruning, sparse training, fine-tuning, and checkpoint restoration. Each file owns its CLI and training/pruning steps. Three infrastructure modules are shared: `imagenet_data.py` (data and accuracy), `imagenet_models.py` (official weights and the ViT adapter), and `model_metrics.py` (complexity and latency). Common CLI options have the same meaning across entries; they are documented below rather than hidden in a shared parser.
+Eleven standalone entries demonstrate structural pruning, sparse training, fine-tuning, and checkpoint restoration. Each file owns its CLI and training/pruning steps. Three infrastructure modules are shared: `imagenet_data.py` (data and accuracy), `imagenet_models.py` (official weights and the ViT adapter), and `model_metrics.py` (complexity and latency). Common CLI options have the same meaning across entries; they are documented below rather than hidden in a shared parser. See [method selection and adaptations](../../docs/workflow-methods.md) for the research sources and implemented scope.
 
 ## Environment, data, and weight caches
 
@@ -51,25 +51,77 @@ See the official [torchvision weight-loading documentation](https://docs.pytorch
 
 ## Supported models and pruning scope
 
-| `--model` | Official weights | Candidate channels |
-| --- | --- | --- |
-| `resnet18` (default) | `ResNet18_Weights.IMAGENET1K_V1` | Every BasicBlock's `conv1` output / `conv2` input |
-| `resnet34` | `ResNet34_Weights.IMAGENET1K_V1` | Every BasicBlock's `conv1` output / `conv2` input |
-| `resnet50` | `ResNet50_Weights.IMAGENET1K_V2` | Every Bottleneck's `conv1` output / `conv2` input |
-| `vit_b_16` | `ViT_B_16_Weights.IMAGENET1K_V1` | Every encoder block's FFN intermediate width |
-| `vit_b_32` | `ViT_B_32_Weights.IMAGENET1K_V1` | Every encoder block's FFN intermediate width |
+| `--model` | Official weights |
+| --- | --- |
+| `resnet18` (default) | `ResNet18_Weights.IMAGENET1K_V1` |
+| `resnet34` | `ResNet34_Weights.IMAGENET1K_V1` |
+| `resnet50` | `ResNet50_Weights.IMAGENET1K_V2` |
+| `vit_b_16` | `ViT_B_16_Weights.IMAGENET1K_V1` |
+| `vit_b_32` | `ViT_B_32_Weights.IMAGENET1K_V1` |
+| `convnext_tiny` (VBP only; its default) | `ConvNeXt_Tiny_Weights.IMAGENET1K_V1` |
 
-BN sparsity accepts the three ResNet models; the other entries accept all five. Residual output widths, ViT hidden width and attention heads, and the 1,000-class classifier remain fixed. ViT uses an explicit forward adapter preserving torchvision's weights and computation while exposing data flow to FX. Preprocessing comes from the selected weight enum; all listed configurations use 224 × 224 crops.
+BN sparsity accepts the three ResNet models. VBP accepts ConvNeXt-Tiny and both ViTs. Head pruning accepts both ViTs; the remaining entries accept the three ResNets and both ViTs.
 
-Every workflow enumerates supported pruning positions throughout the entire model. There is no layer-selection CLI and no first-layer default. Whole-model coverage means all positions in the table participate; protected dimensions and axes outside the method's scope remain unchanged. The dependency graph covers the entire model, and a selected channel can affect other parameters through dependencies.
+| Workflows | Candidate scope |
+| --- | --- |
+| Basic and iterative | Every BasicBlock's `conv1`, every Bottleneck's `conv1` and `conv2`, and every ViT EncoderBlock's `mlp.0`. Stem, block input/output widths, attention widths and classifier dimensions stay fixed. |
+| ViT head pruning | Complete attention heads and FFN hidden channels in every encoder block. Residual embedding width and per-head feature width stay fixed. |
+| Isomorphic | All graph-declared candidates, including residual-linked widths, subject to dependency and execution checks. |
+| VBP and OSSCAR | Chains satisfying the algorithm's mathematical requirements; excluded positions have explicit reasons. |
+| Sparse training | Each ResNet block's `conv1` output or each ViT block's FFN intermediate width; BN sparsity uses ResNet only. |
 
-Each entry passes every supported producer path to `Granularity` and
-`discover_candidates`. Granularity constrains retained widths; it does not package
+The basic examples use internal widths to keep block interfaces unchanged and
+make a controlled baseline. This is an experimental scope, not a restriction of
+the library's discovery API or a guarantee of better accuracy. An unmet parameter
+target does not silently expand that scope. Iterative pruning keeps it across
+every rebuild. Compare algorithms with matched candidate scopes, calibration and
+recovery settings, not just the same parameter ratio.
+
+All workflows preserve external input/output dimensions, including the classifier. ViT uses an explicit forward adapter preserving torchvision's weights and computation while exposing data flow to FX. Attention and hidden-width changes in broader scopes remain subject to their operator constraints and execution support; discovery is not a guarantee of executability. Preprocessing comes from the selected weight enum; all listed configurations use 224 × 224 crops.
+
+There is no layer-selection CLI or first-layer default. Every workflow examines its declared scope throughout the model; this does not mean that every parameter is eligible for every method. The dependency graph covers the entire model, and a selected channel can affect other parameters through dependencies.
+
+Granularity constrains retained widths in the chosen scope; it does not package
 adjacent channels. `--pruning_ratio` is a reduction fraction of the entire model's
 parameter count, including fixed parts, rather than a per-layer channel ratio.
 Whole-model ViT candidate spaces can take substantially longer to plan than
 ResNets; reducing dataset samples does not reduce dependency-planning work.
 Planning fails explicitly if bounded search cannot reach the parameter target.
+
+### Scoring and selection
+
+Ranking-based entries default to the library's static `Greedy`: scores are computed once per plan,
+then joint dependencies, constraints, and the parameter target determine which
+additions are accepted. Explicit training or pruning rounds produce fresh scores
+on the next planning call. None of these scripts silently recalibrates during
+selection. The basic entry additionally exposes `--selection dynamic` for
+magnitude/Taylor; the other entries retain their explicit static selection steps.
+Isomorphic uses independent family quotas and its own ratio search, not `Greedy`.
+OSSCAR uses its own quadratic deletion/swap search and submits exact selections
+through `plan_remove`; it is not a magnitude metric for `Greedy`.
+
+Magnitude-based entries use `GroupMagnitude(p=2)`. It includes affected recognized
+Conv, Linear, and normalization weights, excludes bias, and normalizes their
+combined squared magnitude by the average single-channel score in the declared
+channel domain. Shared parameter regions count once. This replaces the previous
+producer-weight-only formula; resulting selections can therefore differ.
+The head-pruning entry uses an explicit logical head axis, so its normalization
+compares complete heads within the same attention block. FFN channels are
+normalized within their own hidden axis. This heuristic does not guarantee
+comparable task sensitivity across attention and FFN.
+`WeightTaylor(mode="elementwise_abs")` instead sums `abs(weight * grad)` over the
+affected parameter union, including bias and normalization parameters. BN and
+gate training retain their algorithm-specific learned-scale signals:
+`Magnitude(p=1, parameter_filter=...)` and `GateMagnitude`, respectively.
+The basic entry also offers FPGM's signed-filter distance criterion. VBP uses
+post-activation variance and consumer-bias compensation. These two criteria are
+method-specific signals, rather than alternative implementations of magnitude.
+
+Custom model scoring implements `score(context, candidates, *, selected)`;
+`selected` is the already accepted dependency impact. The library also offers
+`DynamicGreedy`, which rescores after accepting each feasible addition. It updates
+conditional parameter-region scores, not the model's activations or gradients.
+Fresh task statistics require explicit execution and calibration between rounds.
 
 ## Common CLI options
 
@@ -77,20 +129,20 @@ All multiword workflow options use underscores. The CLI accepts complete option 
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--model` | `resnet18` | Model from the table above; BN sparsity restricts choices to ResNets |
+| `--model` | `resnet18`; VBP: `convnext_tiny`; head pruning: `vit_b_16` | Model choices depend on the method, as described above |
 | `--data_dir` | HF cache | Local dataset snapshot directory |
 | `--device` | `cuda` | Training, accuracy evaluation, graph capture, and measurement device |
-| `--train_samples` | `0` | Available training images per dataset traversal; `0` makes the full split available. Taylor reads one batch; stability search may stop before completing a traversal |
+| `--train_samples` | `0` | Available training images per dataset traversal; `0` makes the full split available. Taylor reads one batch; VBP/OSSCAR have calibration-batch limits; stability search may stop before completing a traversal |
 | `--val_samples` | `0` | Validation images per recorded stage; `0` evaluates the complete validation split |
-| `--train_batch_size` | `256` | Training batch size; also the Taylor calibration batch size |
+| `--train_batch_size` | `256` | Training and calibration batch size |
 | `--val_batch_size` | `256` | Accuracy-evaluation batch size; independent of MAC/latency measurement |
-| `--train_workers` | `8` | Training/Taylor DataLoader worker processes; `0` performs loading in the main process |
+| `--train_workers` | `8` | Training/calibration DataLoader worker processes; `0` performs loading in the main process |
 | `--val_workers` | `8` | Validation DataLoader worker processes; `0` performs loading in the main process |
 | `--seed` | `7` | Model/training RNG and shuffled data selection seed |
 | `--pruning_ratio` | `0.05` | Fraction of initial whole-model parameters to remove; includes fixed/frozen parameters and inserted gates. Iterative pruning uses the final cumulative reduction |
 | `--granularity` | `8` | Retained producer widths must be divisible by this factor; `1` adds no alignment constraint |
 | `--finetune_epochs` | `0` | Task-only epochs after physical pruning; iterative pruning applies this after every round |
-| `--lr` | `0.001` | SGD learning rate; momentum is `0.9` |
+| `--lr` | `0.001`; VBP: `0.000015` | SGD learning rate with momentum `0.9`; VBP uses AdamW and a cosine schedule |
 | `--compile_latency` | Disabled | Apply `torch.compile` **only to the forward used for latency measurement** |
 | `--latency_warmup` | `5` | Untimed inference warmup iterations; matches `measure_module_latency()` |
 | `--latency_repetitions` | `20` | Timed inference repetitions; matches `measure_module_latency()` |
@@ -133,8 +185,9 @@ It does not report DataLoader workers or compiler subprocesses.
 The magnitude/Taylor entry prints stage boundaries, actual parameter and input
 devices, planning duration, and training progress. Evaluation and measurement
 helpers also report their devices. Inspect the latest stage and the `device`
-field in `metrics.json` when diagnosing a slow run. Producer scores are transferred
-to the CPU once per axis, rather than synchronizing CUDA for each candidate.
+field in `metrics.json` when diagnosing a slow run. Library magnitude and Taylor
+metrics reduce parameter values on their device and transfer score batches to the
+CPU; dependency propagation and ranking remain Python work on the CPU.
 
 Every evaluation and training pass displays a `tqdm` progress bar on stderr,
 including sparse training, projection/recovery epochs, iterative fine-tuning,
@@ -151,7 +204,7 @@ Both splits default to full data. Explicit sample limits enable small checks wit
 
 ## End-to-end workflows
 
-Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, Taylor calibration reads one batch, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. MACs and latency use the single-image example supplied by each workflow.
+Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, Taylor calibration reads one batch, VBP calibration reads 16 batches, OSSCAR reads two batches per consumer by default, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. MACs and latency use the single-image example supplied by each workflow.
 
 The commands use the default HF cache, data-loader settings, seed, and latency iteration counts. To use a separate snapshot, append `--data_dir /absolute/path/to/snapshot`. Each command enables `--compile_latency` to measure compiled inference; allow compilation time at each recorded stage. Training and accuracy evaluation remain eager.
 
@@ -166,6 +219,10 @@ The commands use the default HF cache, data-loader settings, seed, and latency i
 | `gate_pruning.py` | 1 gate-training epoch | 0 epochs | Adds 1 fine-tuning epoch |
 | `soft_pruning.py` | 4 epochs: 1 warmup, 2 projection, 1 recovery | 0 epochs | Adds 1 fine-tuning epoch, for 5 total |
 | `stability_pruning.py` | Up to 1,000 optimizer updates, with early stopping | 0 epochs | Adds 1 fine-tuning epoch |
+| `variance_pruning.py` | Forward-only calibration on 16 training batches | 0 epochs | Prune-only ConvNeXt and ViT commands |
+| `isomorphic_pruning.py` | Static within-family magnitude rankings; no training | 0 epochs | Prune-only ResNet and ViT commands |
+| `osscar_pruning.py` | Two calibration batches per consumer, followed by quadratic reconstruction/search | 0 epochs | Prune-only ResNet and ViT commands |
+| `vit_head_pruning.py` | Static head/FFN group magnitude; no training | 0 epochs | Prune-only ViT command |
 
 These are bounded workflow demonstrations, not tuned accuracy-recovery recipes.
 The 5% parameter target, alignment of 8, SGD learning rate of `0.001`, and sparse-loss
@@ -177,7 +234,12 @@ explicit throughput setting, rather than adapting silently to each model or GPU.
 
 ### 1. Magnitude or Taylor pruning and fine-tuning
 
-`prune_finetune.py` ranks producer channels, prunes, and optionally fine-tunes. Taylor uses task-only gradients from one training batch in evaluation mode; it does not update weights or BN statistics. Change `--metric magnitude` to `--metric taylor` to check this path.
+`prune_finetune.py` ranks dependency-group magnitudes, prunes, and optionally fine-tunes. Taylor uses task-only gradients from one training batch in evaluation mode; it does not update weights or BN statistics. Change `--metric magnitude` to `--metric taylor` to check this path.
+
+`--selection static` is the default. `--selection dynamic` rescores the remaining
+candidates after every accepted feasible addition using conditional parameter
+regions; it can take considerably longer. It does not rerun the model or refresh
+Taylor gradients. Neither policy is universally more accurate.
 
 For a single magnitude-pruning pass **without training**:
 
@@ -211,6 +273,25 @@ python prune_finetune.py \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_prune_finetune
 ```
 
+For a classic redundancy-based alternative, FPGM (CVPR 2019) ranks each output
+filter by the sum of its Euclidean distances to the other filters in that layer.
+Distances use the original **signed** weights. The local `GeometricMedian` metric
+shows how to provide a model-specific signal through the library metric contract:
+
+```bash
+python prune_finetune.py \
+  --model resnet18 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 --metric geometric_median --selection static \
+  --finetune_epochs 0 --output runs/resnet18_geometric_median
+```
+
+`geometric_median` requires static selection. It also accepts ViT FFN rows as
+filters, but this extension and global parameter budgeting are adaptations;
+the original FPGM layerwise soft-pruning/training schedule is not reproduced.
+Pairwise distances require quadratic work in each layer's output width. The
+implementation bounds temporary distance matrices with tiles; it does not
+normalize away differences between layers or promise universally comparable scores.
+
 ### 2. Iterative pruning
 
 `iterative_pruning.py` interpolates absolute parameter caps from the initial model
@@ -241,7 +322,7 @@ python bn_sparsity.py \
 
 ### 4. Dependency-group sparse training
 
-`group_sparsity.py` regularizes each candidate channel's complete dependent parameter group. `--penalty lasso` (default) applies Group Lasso with a fixed `--sparse_loss_weight`. `--penalty squared` reselects low-magnitude groups before training and every `--selection_interval_steps` optimizer updates (default: `100`), and increases their squared-L2 penalty each update. Final selection uses producer-weight magnitude.
+`group_sparsity.py` regularizes each candidate channel's complete dependent parameter group. `--penalty lasso` (default) applies Group Lasso with a fixed `--sparse_loss_weight`. `--penalty squared` reselects low-magnitude groups before training and every `--selection_interval_steps` optimizer updates (default: `100`), and increases their squared-L2 penalty each update. Selection uses the library's normalized `GroupMagnitude` after any explicit training updates.
 
 For squared penalties, `--sparse_loss_weight` is the final coefficient (default: `1e-4`). With one-based optimizer step `s` and `T = sparse_epochs * len(train_loader)`, `--sparsity_schedule cosine` (default) uses `weight * (1 - cos(pi * s / T)) / 2`; `linear` uses `weight * s / T`. Cosine starts and ends more gradually; this is a scheduling choice, not a claim of better accuracy. Both counters continue across epoch boundaries and reselections. A one-batch run uses the final coefficient; zero sparse epochs skip the schedule. Schedule and reselection options apply only to `squared`.
 
@@ -272,7 +353,7 @@ python soft_pruning.py \
 
 ### 6. Gate training and pruning
 
-`gate_pruning.py` inserts unit-valued gates after ResNet `bn1` or the ViT FFN activation, regularizes their scales, and ranks channels by gate magnitude. Retained gate values and placements are preserved by checkpoint restoration.
+`gate_pruning.py` inserts unit-valued gates after ResNet `bn1` or the ViT FFN activation, trains the model with an L1 penalty on gate scales, and uses `GateMagnitude` to rank their affected regions. Both ordinary model weights and trainable gates participate in optimization. Final selection is static `Greedy`, separate from gate training. Retained gate values and placements are preserved by checkpoint restoration.
 
 ```bash
 python gate_pruning.py \
@@ -295,6 +376,194 @@ python stability_pruning.py \
   --max_selection_checks 11 --selection_interval_steps 100 --window 2 --threshold 0.99 \
   --sparse_loss_weight 0.0001 --sparsity_schedule cosine \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_stability_pruning
+```
+
+### 8. Variance-Based Pruning (ICCV 2025)
+
+`variance_pruning.py` implements VBP's activation-variance criterion and bias
+compensation for ViT and ConvNeXt MLPs. It records the input to each MLP's second
+Linear layer in evaluation mode, pools batch/token/spatial positions, and ranks
+hidden positions by their sample variance. Calibration uses the **training**
+split without labels or backward; validation is reserved for reporting accuracy.
+Streaming moments retain channel vectors, not complete activations.
+
+For each removed hidden position, its calibration mean multiplied by the old
+consumer weight column is added to that consumer's bias. This represents replacing
+the removed activation with its mean. It is not an assertion of equivalence to
+the original network. ResNet convolutions with spatial padding are deliberately
+outside this workflow: their missing mean contribution is generally not a spatially
+constant bias. The CNN example therefore uses ConvNeXt's dense MLPs.
+
+```bash
+python variance_pruning.py \
+  --model convnext_tiny --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 --calibration_batches 16 \
+  --finetune_epochs 0 --output runs/convnext_tiny_variance
+```
+
+```bash
+python variance_pruning.py \
+  --model vit_b_32 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 --calibration_batches 16 \
+  --finetune_epochs 0 --output runs/vit_b_32_variance
+```
+
+`--calibration_batches 16` reads up to 4,096 training images at the default batch
+size; `0` calibrates on the full training loader. This bounds example runtime and
+differs from the official full-loader default. `--train_samples` still defaults
+to the full Arrow-backed split; calibration does not change its cache policy.
+The report records the actual observation count for every MLP, including all
+ViT tokens. Calibration sample size affects the ranking and must be reported.
+
+Optional fine-tuning uses `--finetune_epochs`, AdamW with `--lr 0.000015`,
+`--weight_decay 0.01`, and a cosine schedule updated each optimizer step.
+Training is task-only; teacher distillation and the paper's full augmentation
+recipe are not included. The framework's whole-model parameter target and width
+alignment also differ from the paper's neuron-ratio experiments.
+
+The saved compact checkpoint includes corrected biases. A structural plan alone
+does **not** encode this value correction; replaying only that plan would omit
+part of VBP. Use the workflow's `model.pt` for restoration.
+
+### 9. Isomorphic Pruning
+
+`isomorphic_pruning.py` discovers graph-declared candidates and groups dependency
+structures by operator types, affected dimensions, connectivity and parameter
+sharing. It ranks magnitude scores independently within each family, then selects
+each family's least-important fraction. Scores from different families are not
+mixed into a global ranking. Equivalent dependency closures count once.
+
+An outer search increases the common channel ratio until a jointly executable
+proposal meets the whole-model parameter target. Retained widths round down to
+the configured granularity while preserving a nonempty domain. Actual removals
+may therefore exceed the unrounded family quotas. Rejected proposals do not
+mutate the model. A homogeneous candidate universe legitimately has one family;
+the example does not manufacture extra families from layer names or stages.
+`--max_trials` defaults to 10,000 ratio breakpoints, including repeated rounded
+requests; `planning_trials` separately counts actual joint attempts. A limit
+failure reports the recent blockers and does not apply a partial allocation.
+
+```bash
+python isomorphic_pruning.py \
+  --model resnet18 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 \
+  --finetune_epochs 0 --output runs/resnet18_isomorphic
+```
+
+```bash
+python isomorphic_pruning.py \
+  --model vit_b_32 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 \
+  --finetune_epochs 0 --output runs/vit_b_32_isomorphic
+```
+
+The example exercises the custom `Strategy` interface. Its metric is replaceable;
+magnitude scoring is not the paper's Taylor-calibrated experimental recipe.
+Optional fine-tuning is task-only. Family reports and exclusions describe the
+actual scope; attention pruning and arbitrary custom operators are not assumed
+supported merely because their candidates can be discovered.
+
+### 10. OSSCAR reconstruction and local search
+
+`osscar_pruning.py` first allocates aligned hidden widths using a common channel
+removal fraction that reaches the whole-model parameter cap. This allocation uses
+actual dependency plans and is separate from reconstruction-error optimization.
+It then processes each consumer in forward order: collect current-model inputs
+and original dense-teacher targets, solve grouped least squares, delete channels,
+try bounded remove/restore swaps, physically prune and copy reconstructed weights.
+The next consumer is calibrated against the already compacted model.
+
+```bash
+python osscar_pruning.py \
+  --model resnet18 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 \
+  --calibration_batches 2 --calibration_rows 4096 --damping 0.01 \
+  --prune_batch 8 --swap_steps 5 --finetune_epochs 0 \
+  --output runs/resnet18_osscar
+```
+
+```bash
+python osscar_pruning.py \
+  --model vit_b_32 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 \
+  --calibration_batches 2 --calibration_rows 4096 --damping 0.01 \
+  --prune_batch 8 --swap_steps 5 --finetune_epochs 0 \
+  --output runs/vit_b_32_osscar
+```
+
+Calibration uses the Arrow-backed training split without labels or backward.
+`--calibration_batches` is a **per-consumer** limit; `0` traverses the full loader
+for every consumer. `--calibration_rows` caps uniformly spaced spatial/token
+observations per batch and uses identical positions for student and teacher.
+The full image dataset remains available; this is not a replacement cache or a
+validation-data calibration. Statistics use float64; memory is quadratic in
+the consumer's input width times kernel area. Only one consumer's statistics are
+kept at a time, and convolution unfolding processes one image at a time.
+
+`--damping` regularizes toward original weights, with a default scale of 0.01
+times the average Gram diagonal. `--prune_batch` controls channels removed per
+search update; it is independent of retained-width `--granularity`.
+`--swap_steps` bounds attempts to exchange a retained and a removed channel;
+search stops early without an objective improvement. The reconstruction report
+records observations, retained indices, fixed-cardinality objective history and
+swap attempts. This is a bounded local optimizer, not a globally optimal solver.
+
+Eligible ordinary Conv2d and Linear chains are discovered from actual dataflow,
+including adjacent overlapping pairs; ResNet and ViT are test models, not path
+matching rules. Excluded producers and their reasons are saved in the report.
+Grouped/depthwise consumers and attention
+heads are outside this example. The CNN sequential teacher-target formulation
+is retained, while width allocation, sampling and search settings are explicit
+experimental adaptations. Optional task-only SGD fine-tuning uses the common
+`--finetune_epochs` and `--lr` options.
+
+The checkpoint contains **refitted weights**. Structural plans alone omit these
+value changes. Each layer is a separate validated apply operation; if a later
+layer fails, completed earlier layers remain changed in memory. Optimizers are
+created only after the full reconstruction sequence.
+
+### 11. ViT attention heads and FFN channels
+
+`vit_head_pruning.py` explicitly replaces torchvision's native self-attention
+with packed Q/K/V Linear projections, SDPA, and an output Linear projection.
+Before pruning, it preserves the original parameters and computation up to
+floating-point differences. This conversion is part of the example, not an
+automatic change to the library's native MultiheadAttention rule.
+
+Each attention candidate removes one complete head: the corresponding Q/K/V
+rows, their biases, and output-projection columns. Head count is inferred from
+the compact width; per-head width, attention scale, embedding width, residual
+connections and token positions remain unchanged. FFN candidates remove hidden
+neurons and their downstream input columns. `--granularity` applies only to FFN
+widths. At least one head and a nonempty FFN remain in every block.
+
+```bash
+python vit_head_pruning.py \
+  --model vit_b_16 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --granularity 8 \
+  --finetune_epochs 0 --output runs/vit_b_16_heads_and_ffn
+```
+
+Static Greedy ranks normalized group energy toward the whole-model
+parameter cap. Both kinds of candidate are available; no quota forces every
+layer or both kinds to shrink. `metrics.json` records actual head counts and FFN
+widths for every stage. This is an explicit magnitude baseline, not a paper
+reproduction or a demonstrated improvement over FFN-only pruning. Add
+`--finetune_epochs 1 --lr 0.001` for optional task-loss SGD recovery.
+
+The adapter implements unmasked ViT self-attention, not general cross-attention,
+GQA or token pruning. It preserves training-mode attention dropout. Restore using
+the same adapted skeleton, rather than the original native-MHA model:
+
+```python
+from imagenet_models import make_head_prunable_model
+from torch_kirigami.pruning import load_checkpoint
+
+model = load_checkpoint(
+    make_head_prunable_model("vit_b_16", pretrained=False),
+    "runs/vit_b_16_heads_and_ffn/model.pt",
+    map_location="cuda",
+).eval()
 ```
 
 ## Additional models
@@ -322,8 +591,10 @@ to the shared measurement helper, which uses it unchanged for both measurements.
 Baseline and compact measurements use identical batch size, dtype, device, and
 compilation settings. Check `unsupported_ops` before treating MAC counts as
 complete. Neither MACs nor latency is a pruning target in these workflows.
-Pruning stages report `max_params`, `before_params`, `after_params`, `target_met`,
-`planning_trials`, and `planning_limit_reached`. Counts include all unique
+Pruning stages report `max_params`, `before_params`, `after_params` and `target_met`.
+Greedy-based workflows also report `planning_trials` and `planning_limit_reached`;
+Isomorphic reports family quotas, ratio trials and rejected allocations; OSSCAR
+reports its per-consumer reconstruction history. Counts include all unique
 Parameters, including retained learned gates; buffers are excluded. Meeting the
 parameter cap does not imply a particular latency or accuracy improvement.
 
@@ -348,13 +619,18 @@ Each output directory contains:
 - `model.pt`: the compact model checkpoint.
 - `training.pt`: optimizer, algorithm, configuration, and RNG state; iterative pruning also saves initial and target parameter counts.
 
-A successful run ends with `Checkpoint verified; results: ...`. Restoration is checked against the in-memory compact model. Optimizers are recreated after parameter replacement. The saved training state is not a general resume CLI. These examples demonstrate component composition; their simple SGD, preprocessing, and regularization choices do not constitute complete paper reproductions or established accuracy/speedup claims.
+A successful run ends with a checkpoint-verification message. Restoration is checked against the in-memory compact model. Optimizers are recreated after parameter replacement. The saved training state is not a general resume CLI. These examples demonstrate component composition; their optimizer, preprocessing, and regularization choices do not constitute complete paper reproductions or established accuracy/speedup claims.
 
 For infrastructure and lifecycle regression tests, run from the repository root:
 
 ```bash
 uv pip install --group dev
-.venv/bin/pytest tests/integration/test_pretrained_examples.py --require-cuda -q
+.venv/bin/pytest tests/integration/test_pretrained_examples.py \
+  tests/integration/test_geometric_metric.py tests/integration/test_variance_workflow.py \
+  tests/integration/test_variance_operators.py \
+  tests/integration/test_isomorphic_workflow.py tests/integration/test_osscar_workflow.py \
+  tests/integration/test_vit_head_workflow.py \
+  --require-cuda -q
 ```
 
 These tests use local synthetic datasets and controlled model fixtures. The commands above additionally exercise installed pretrained weights and real ImageNet shards. Neither a short smoke run nor the test suite guarantees accuracy at an arbitrary pruning ratio.

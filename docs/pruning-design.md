@@ -226,7 +226,7 @@ Original aliases are resolved before deduplication. A path override configures t
 
 Alignment is a final-structure requirement, including unchanged and protected axes. Width 10 with factor 4 requires at least two removals; a budget allowing only one cannot produce a valid plan. Width 64 with factor 8 and a 20% deletion cap permits eight removals, leaving a shortfall of four. Manual requests and custom strategies cannot bypass these checks. Configuration resolution appears in plan notes; plans retain static recipes, not the configuration object.
 
-The default strategy uses these constraints before submitting a joint pruning
+The built-in greedy strategies use these constraints before submitting a joint pruning
 request. Candidate discovery retains independently selectable positions or
 operator-declared blocks; the strategy combines them into count-feasible batches.
 Alignment does not permanently bind adjacent channels or change the budget's
@@ -234,20 +234,76 @@ original-width denominator.
 
 ## Scoring and strategy contracts
 
-A `Metric` is a callable `metric(context, candidate_batch)` returning one finite real score per candidate. Lower scores are selected first by the default strategy. The batch may contain temporary combined candidates; custom metrics must not assume that a union's score is the sum of its parts.
+A `Metric` implements `score(context, candidates, *, selected)` and returns one
+finite real score per candidate. Lower scores are preferred. `selected` is the
+complete joint `Impact` of accepted requests; an initially unresolved count
+constraint does not make that influence incomplete. The planner supplies this
+argument explicitly, including the empty request for static scoring.
+
+Batching is computational only: a candidate's score must not depend on batch
+size, order, or other candidates in the batch. Use `context.candidates` for the
+original candidate universe and an explicitly declared logical axis when a
+normalization needs a population. A temporary `Candidate` can contain multiple
+selections for joint scoring; its score need not equal the sum of separate
+scores.
+
+For conditional scoring, built-in metrics propagate `selected.requested` together
+with the candidate's seeds, then subtract already selected parameter regions.
+Subtracting two scalar scores is incorrect for norms or signed Taylor sums.
+Subtracting from an isolated candidate's impact is also insufficient: a
+combination can activate dependencies absent from either isolated request.
 
 | Metric | Definition over the affected parameter-region union |
 | --- | --- |
 | `Magnitude(p=1)` | Sum of absolute parameter values |
 | `Magnitude(p=2)` | L2 norm, including the final square root |
+| `GroupMagnitude(p=1 or 2)` | Sum of absolute weights raised to `p`, divided by the mean single-position energy of the candidate's surviving logical axis |
 | `WeightTaylor(mode="elementwise_abs")` | Sum of `abs(weight * gradient)` |
 | `WeightTaylor(mode="joint_abs")` | Absolute value of the sum of signed `weight * gradient` products |
 
-Bias and normalization parameters are included unless `parameter_filter(ref, parameter)` excludes them. Regions and shared parameter bindings are deduplicated within each candidate's influence. Incomplete influence is rejected rather than scored as if missing parameters had zero importance.
+`Magnitude` and `WeightTaylor` include bias and normalization parameters unless
+`parameter_filter(ref, parameter)` excludes them. `GroupMagnitude` includes
+recognized Conv, Linear, BatchNorm and LayerNorm weight bindings, including their
+functional forms, and excludes biases and buffers. Its optional filter further
+restricts those weights. Regions and shared parameter bindings are deduplicated
+within each influence. Incomplete influence is rejected rather than scored as if
+missing parameters had zero importance.
+
+`GroupMagnitude` is the workflow baseline. Its per-axis normalization reduces
+scale differences between dependency groups; it is a heuristic, not a guarantee
+of task accuracy or a loss estimate. Every candidate must select full slices of
+its declared `axis`. The normalization covers all surviving positions of that
+axis, including positions absent from a supplied candidate subset; wrapping
+positions in blocks or changing scoring batches does not change the baseline.
+An all-zero domain scores zero. A nonzero combined influence with an all-zero
+single-position baseline requires a custom metric.
+
+Normalization requires complete influence for every surviving reference position,
+even when only a subset is offered for selection. If a reference position crosses
+an unsupported operation, choose an explicit metric with a provable reference
+domain; the library does not silently normalize against a partial population.
+
+This follows Torch-Pruning's mean-reduced, mean-normalized magnitude for fixed
+one-to-one group members. It deliberately deduplicates parameter regions, so it
+is not an exact reproduction where shared or many-to-one dependency roles would
+be counted repeatedly. It is not the DepGraph paper's complete sparse-training
+algorithm. Custom modules and model-specific relevance remain explicit metric
+extensions. The normalization cache is scoped to one planning context and keeps
+at most 32 axis entries: scalar normalization constants and one scalar score per
+original axis position, with no live tensors or full impacts. Ordinary weight
+version changes invalidate it. Singleton candidates reuse the exact scores
+already calculated for normalization; multi-position candidates still require
+joint scoring because their affected regions can overlap.
 
 `WeightTaylor` reads existing dense, real, unscaled gradients. The caller owns the task loss, loss reduction, calibration data, accumulation, and AMP unscaling. Collect task-only gradients if sparse regularization should not influence importance. This metric does not call `backward()` or estimate per-example Fisher information.
 
-A `Strategy` is a callable `strategy(context)` returning registered candidate keys. A strategy can omit a metric if it never requests scores. The final combined request is independently reanalyzed, budget checked, and compiled after the callback returns.
+A `Strategy` implements `select(context) -> StrategyResult`. The immutable result
+contains registered candidate `keys`, a `stop_reason` (`target_reached`,
+`exhausted`, or `trial_limit`), and `(key, reason)` exclusions. It does not assert
+resource counts or execution validity. A strategy can omit a metric if it never
+requests scores. The final combined request is independently reanalyzed, budget
+checked, and compiled after selection returns; reporting `target_reached` cannot
+bypass those checks.
 
 `PlanningContext` exposes:
 
@@ -256,19 +312,20 @@ A `Strategy` is a callable `strategy(context)` returning registered candidate ke
 | `graph`, `operations`, `candidates`, `budget`, `channel_axes`, `constraints` | Fixed planning inputs |
 | `widths`, `targets` | Frozen denominator and integer caps |
 | `impact(remove)` | Propagate joint original-coordinate seeds |
+| `attempt(remove)` | Propagate a search attempt and increment the read-only trial counter, including cache hits |
 | `require_complete(impact)` | Reject incomplete influence; repairable count constraints may remain |
-| `score(metric, candidate_batch)` | Invoke an explicit metric and validate the returned scores |
+| `score(metric, candidate_batch, *, selected=None)` | Score candidates relative to the supplied joint Impact; omitted selection means an empty request |
 | `counts(impact)` | Actual logical channel removals |
 | `admissible(impact)` | Intermediate removal caps; parameter targets allow progress above the final cap |
 | `parameter_count(impact)` | Whole-model count from executable joint recipes |
 | `within_budget(impact)`, `require_budget(impact)` | Final budget check, boolean or diagnostic exception |
 | `compile(impact)` | Verify tensor/attribute recipes without allocating compact weights |
-| `report(impact)` | Freeze measured counts and strategy diagnostics |
-| `trials`, `limit_reached`, `exclusions` | Strategy-owned diagnostic counters and reasons |
+| `report(impact, result)` | Combine measured counts with immutable strategy diagnostics |
+| `trials` | Read-only count of calls through `attempt()` |
 
 Callbacks must not mutate model state or structural premises. Planning checks graph freshness and tracked tensor identity, version, and `requires_grad` after callbacks; detected mutation raises an error. This check is not a transaction that reverses arbitrary user callback side effects.
 
-## Default greedy search
+## Static and dynamic greedy search
 
 `Greedy(metric, max_trials=10_000)` computes static candidate scores, breaking ties
 by candidate key. It constructs count-feasible batches before joint verification
@@ -276,13 +333,42 @@ and retains only verified, executable commitments. Previously rejected candidate
 may become feasible after another commitment. Committed choices are never
 retracted; the policy does not prove global optimality or infeasibility.
 
+`DynamicGreedy(metric, max_trials=10_000)` uses the same constraint completion,
+budget checks and recipe validation. After each accepted complete batch, it
+rescores remaining candidates against that accepted joint Impact and sorts
+again. It does not rescore halfway through constraint completion or physically
+prune a trial model. Dynamic ranking usually costs substantially more and does
+not guarantee better accuracy.
+
+A custom metric that deliberately ignores `selected` keeps its fixed ranking
+even when called repeatedly. Training learned importance values is an external
+statistics-collection step, not a third search protocol: its output can feed
+either strategy under the same metric contract.
+
+For `Magnitude` and `GroupMagnitude`, dynamic scoring accounts for weight regions
+already removed by earlier choices. `WeightTaylor` still uses caller-supplied
+gradients from the original model; it does not obtain post-pruning gradients.
+Activation- or calibration-based metrics likewise own their statistics. To
+refresh those statistics on a physically compact model, explicitly apply a plan,
+rebuild the graph, and collect them before another planning round.
+
+```python
+from torch_kirigami.pruning import DynamicGreedy, GroupMagnitude
+
+plan = pruner.plan(
+    space,
+    budget=ParameterBudget.from_ratio(model, pruning_ratio=0.05),
+    strategy=DynamicGreedy(GroupMagnitude(p=2)),
+)
+```
+
 The selection pipeline is:
 
 1. Analyze eligible individual candidates and score them. Retain compact axis
    index sets from these existing analyses; the full-impact cache remains bounded.
-   Custom metrics still receive the full eligible batch. Scores of combined
-   requests are not assumed additive. Greedy reuses its eligibility check when
-   invoking the metric, avoiding a second full propagation scan. Public
+   All metrics receive bounded batches under the same batch-independence contract.
+   Scores of combined requests are not assumed additive. The strategy reuses its
+   eligibility check when invoking the metric, avoiding a second full propagation scan. Public
    `PlanningContext.score()` still checks arbitrary temporary candidates; both
    paths validate model state and the returned score batch.
 2. Starting from the next ranked candidate and the committed selection, combine
@@ -292,7 +378,7 @@ The selection pipeline is:
    Width 64 with factor 8 normally submits eight removals together. Width 66 with
    factor 8 first requires two. Multiple factors on an axis participate together.
 3. For balancing completion, prefer additions that minimize estimated further
-   balancing work across all fixed partitions, then use the static score order.
+   balancing work across all fixed partitions, then use the current score order.
    This heuristic sums each balance condition's deficit from its smallest retained
    partition; overlapping conditions may double-count work. The estimate only
    orders candidates and never determines the budget or certifies feasibility.

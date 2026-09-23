@@ -12,6 +12,7 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 | Review dependency analysis | [Dependency graph design](dependency-graph-design.md) | [Operator support](operator-coverage.md) |
 | Add an operator or a pruning policy | [Operator support](operator-coverage.md) | [Pruning design](pruning-design.md), [Testing](testing.md) |
 | Assemble sparse training or iterative pruning | [Sparse training](sparse-training.md) | [ImageNet workflows](../examples/workflows/README.md) |
+| Compare workflow algorithms and their paper adaptations | [Workflow methods](workflow-methods.md) | [ImageNet workflows](../examples/workflows/README.md) |
 | Save plans or compact models | [Persistence](persistence.md) | [Pruning design](pruning-design.md) |
 | Measure the resulting model | [Measurement](measurement.md) | [Verification guide](testing-coverage.md) |
 | Contribute a change | [Development and testing](testing.md) | [Verification guide](testing-coverage.md) |

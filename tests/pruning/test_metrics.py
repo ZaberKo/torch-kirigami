@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.support.pruning import build
+from tests.support.pruning import KeyStrategy, build
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -28,6 +28,7 @@ def test_metric_union_formula_and_precision(metric, execution_device):
     ref = graph.parameter("weight")
     candidate = Candidate("joint", (ref.axis(0).select([1]), ref.axis(1).select([2])))
 
+    @KeyStrategy
     def strategy(ctx):
         score = ctx.score(metric, [candidate])[0]
         mask = torch.zeros_like(model.weight, dtype=torch.bool)

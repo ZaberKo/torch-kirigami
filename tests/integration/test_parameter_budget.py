@@ -7,6 +7,7 @@ import pytest
 import torch
 from torch import nn
 
+from tests.support.pruning import KeyStrategy, StaticMetric
 from torch_kirigami import DependencyGraph, Divisible
 from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
@@ -24,8 +25,10 @@ from torch_kirigami.pruning import (
 )
 
 
+@StaticMetric
 def ordered(context, batch):
-    return list(range(len(batch)))
+    order = {candidate.key: index for index, candidate in enumerate(context.candidates)}
+    return [order[candidate.key] for candidate in batch]
 
 
 @pytest.mark.parametrize("cap", [58, 51, 50, 24, 100])
@@ -124,7 +127,7 @@ def test_custom_strategy_must_reach_target_and_budget_types_coexist():
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates()
     with pytest.raises(PlanningError, match="58 remain"):
-        pruner.plan(space, budget=ParameterBudget(40), strategy=lambda ctx: ())
+        pruner.plan(space, budget=ParameterBudget(40), strategy=KeyStrategy(lambda ctx: ()))
     channel = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(ordered))
     parameter = pruner.plan(space, budget=ParameterBudget(44), strategy=Greedy(ordered))
     assert channel.recipes == parameter.recipes
@@ -154,6 +157,7 @@ def test_already_below_target_does_not_score_or_require_candidates():
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
     pruner = Pruner(model, graph=graph)
 
+    @StaticMetric
     def unexpected_score(context, batch):
         pytest.fail("A satisfied target must not invoke the metric")
 
@@ -186,9 +190,10 @@ def test_unsupported_branch_stays_fixed_and_counts_toward_parameter_limit(execut
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates()
 
+    @StaticMetric
     def metric(context, batch):
         assert all(c.axis.tensor != graph.parameter("a.weight") for c in batch)
-        return ordered(context, batch)
+        return ordered.score(context, batch, selected=context.impact(()))
 
     plan = pruner.plan(space, budget=ParameterBudget(46), strategy=Greedy(metric))
     assert plan.selection_report.before_params == 74 and plan.selection_report.after_params == 46

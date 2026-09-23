@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import torch
 from torch import fx, nn
 
-from ..contracts import Requirement
+from ..contracts import Impact, Requirement
 from ..graph import DependencyGraph
 from ..operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
 from ..pruning.pruner import Pruner
@@ -130,10 +130,12 @@ class GateBinding:
 
 
 class GateMagnitude:
-    """Score the union of affected effective gate scales using sum(abs(weight*mask)).
+    """Score newly affected effective gate scales using sum(abs(weight*mask)).
 
     Aliases sharing both weight and mask count once. Distinct masks paired with
     a shared weight contribute separately, independently of binding order.
+    Already selected gate regions contribute zero. Gate statistics remain those
+    supplied by the caller; scoring does not train or recalibrate them.
 
     Args:
         bindings: Explicit GateBindings from the planning graph. Ungated
@@ -146,13 +148,18 @@ class GateMagnitude:
             raise ValueError("GateMagnitude requires nonempty GateBindings")
 
     @torch.no_grad()
-    def __call__(
-        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
+    def score(
+        self,
+        context: MetricContext,
+        candidates: tuple[Candidate, ...],
+        *,
+        selected: Impact,
     ) -> list[float]:
-        """Return finite scores without modifying any model or training state."""
+        """Evaluate additions to a complete, possibly constrained selection."""
+        context.require_complete(selected)
         scores = []
-        for candidate in candidate_batch:
-            impact = context.impact(candidate.remove)
+        for candidate in candidates:
+            impact = context.impact(selected.requested + candidate.remove)
             context.require_complete(impact)
             score, found = 0.0, False
             seen = set()
@@ -165,7 +172,7 @@ class GateMagnitude:
                 if identity in seen:
                     continue
                 seen.add(identity)
-                selection = impact.selection(ref)
+                selection = impact.selection(ref).subtract(selected.selection(ref))
                 if not selection:
                     continue
                 found = True
@@ -174,6 +181,12 @@ class GateMagnitude:
                 values = gate.weight.to(dtype) * gate.mask.to(dtype)
                 score += sum(gather_region(values, r).abs().sum().item() for r in selection.regions)
             if not found:
-                raise ValueError("Candidate has no bound gate; restrict candidates explicitly")
+                # A previously selected gated candidate has zero marginal cost.
+                # An unrelated candidate must still be rejected, even if prior
+                # selections happen to include one of this metric's gates.
+                candidate_impact = context.impact(candidate.remove)
+                context.require_complete(candidate_impact)
+                if not any(candidate_impact.selection(ref) for ref, _mask in seen):
+                    raise ValueError("Candidate has no bound gate; restrict candidates explicitly")
             scores.append(score)
         return scores

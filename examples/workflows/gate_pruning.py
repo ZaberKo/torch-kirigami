@@ -3,7 +3,7 @@
 import argparse
 import json
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
 
@@ -18,16 +18,20 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
-    Candidate,
     Granularity,
     Greedy,
     ParameterBudget,
-    PlanningContext,
     Pruner,
     load_checkpoint,
     save_checkpoint,
 )
-from torch_kirigami.sparsity import ChannelGate, ScaleL1, register_gate_operators
+from torch_kirigami.sparsity import (
+    ChannelGate,
+    GateBinding,
+    GateMagnitude,
+    ScaleL1,
+    register_gate_operators,
+)
 
 
 def insert_gates(model: nn.Module, layers: Iterable[str]) -> nn.Module:
@@ -263,7 +267,6 @@ def main() -> None:
     if options.sparse_epochs:
         record("gate_trained")
 
-    axes = tuple(graph.parameter(path).axis(0) for path in paths)
     targets = tuple(path.removesuffix(".weight") for path in paths)
     pruner = Pruner(
         model,
@@ -271,26 +274,12 @@ def main() -> None:
         granularity=Granularity(by_path=dict.fromkeys(targets, options.granularity)),
     )
     space = pruner.discover_candidates(targets=targets)
-    scores = {}
-    for axis, path in zip(axes, gate_paths, strict=True):
-        gate = model.get_submodule(path)
-        values = (gate.weight.detach().float() * gate.mask.detach().float()).abs()
-        values = values.cpu().tolist()  # One device transfer per producer axis.
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(score) for score in scores.values()):
-        raise ValueError("Nonfinite gate score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up learned gate scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
+    # Training produces the gate statistics; planning only reads them.
+    metric = GateMagnitude(tuple(GateBinding(graph, path) for path in gate_paths))
     plan = pruner.plan(
         space,
         budget=budget,
-        strategy=Greedy(score),
+        strategy=Greedy(metric),
     )
     model, _ = pruner.apply(plan)
     record(

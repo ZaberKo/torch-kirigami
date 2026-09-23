@@ -3,7 +3,6 @@
 import argparse
 import json
 import math
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
@@ -17,11 +16,10 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    Candidate,
     Granularity,
     Greedy,
+    Magnitude,
     ParameterBudget,
-    PlanningContext,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -242,7 +240,6 @@ def main() -> None:
         record("sparse_trained")
 
     # Conv1 output removals propagate to its BN scales and the following conv2 inputs.
-    axes = tuple(graph.parameter(f"{layer}.conv1.weight").axis(0) for layer in layers)
     targets = tuple(f"{layer}.conv1" for layer in layers)
     pruner = Pruner(
         model,
@@ -250,25 +247,14 @@ def main() -> None:
         granularity=Granularity(by_path=dict.fromkeys(targets, options.granularity)),
     )
     space = pruner.discover_candidates(targets=targets)
-    scores = {}
-    for axis, path in zip(axes, scale_paths, strict=True):
-        values = model.get_parameter(path).detach().float().abs()
-        values = values.cpu().tolist()  # One device transfer per producer axis.
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(score) for score in scores.values()):
-        raise ValueError("Nonfinite BN scale score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up BN scale scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
+    # Learned BN scales are the importance signal: do not add Conv weights or
+    # normalize away the scale differences produced by sparse training.
+    scales = frozenset(graph.parameter(path) for path in scale_paths)
+    metric = Magnitude(p=1, parameter_filter=lambda ref, parameter: ref in scales)
     plan = pruner.plan(
         space,
         budget=budget,
-        strategy=Greedy(score),
+        strategy=Greedy(metric),
     )
     model, _ = pruner.apply(plan)
     record(

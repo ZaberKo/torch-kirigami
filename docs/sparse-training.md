@@ -143,7 +143,14 @@ model, result = Pruner(model, graph=graph).apply(plan)
 
 `register_gate_operators(operators)` adds a leaf rule linking input/output axes to the gate weight and mask, with a requirement to update `size`. It adds no logical candidate axis, so the gate does not inflate the denominator. Its multiplication produces fresh storage; this fact supports checks for an immediately following in-place activation without relaxing other alias or multiple-consumer constraints.
 
-`GateBinding(graph, path).candidates(space)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings)` scores the sum of `abs(weight * mask)` over affected scales. It rejects ungated candidates. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
+`GateBinding(graph, path).candidates(pruner, candidates)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings).score(context, candidates, selected=impact)` sums `abs(weight * mask)` over newly affected scales, excluding regions already covered by `selected`. It rejects ungated candidates, while a previously selected gated candidate has zero additional score. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
+
+`Greedy` scores once per plan. `DynamicGreedy` calls the same metric again after
+each accepted addition, passing the updated joint impact as `selected`. Neither
+strategy trains gates or recalibrates activations. For identical model values and
+`selected`, each candidate's score must be independent of scoring batch size and
+order; a batch is not a combined pruning request. Supply one multi-selection
+`Candidate` when a joint score is required.
 
 The library does not automatically insert gates or rewrite arbitrary networks. After physical pruning, retained gate values remain intact and need not equal one. Save and restore with a model factory containing the same gate placements; see [persistence](persistence.md).
 
@@ -183,7 +190,7 @@ sequenceDiagram
 ```
 
 ```python
-from torch_kirigami.pruning import Greedy, Magnitude
+from torch_kirigami.pruning import Greedy, GroupMagnitude
 from torch_kirigami.sparsity import CumulativeChannelBudget
 
 # Start a new accounting baseline at the model's current structure.
@@ -195,7 +202,7 @@ for ratio in (0.1, 0.2, 0.3):
     budget = account.budget(graph, space, ratio)
     # Keep the accounting baseline if an axis becomes wholly protected.
     round_space = CandidateSpace(space.candidates, budget.channel_axes)
-    plan = pruner.plan(round_space, budget=budget, strategy=Greedy(Magnitude()))
+    plan = pruner.plan(round_space, budget=budget, strategy=Greedy(GroupMagnitude()))
     model, result = pruner.apply(plan)
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
     pruner = Pruner(model, graph=graph)
@@ -230,6 +237,15 @@ Similarity thresholds, delayed regularization, progressive strengths, reselectio
 ## What the workflows demonstrate
 
 The standalone [workflow scripts](../examples/workflows/README.md) show magnitude/Taylor pruning, iterative budgets, BN scale L1, group Lasso and increasing squared L2, soft zeroing/norm decay, gate training, and stability-driven stage switching. Method-specific schedules and policies live in those scripts. They are component demonstrations, not complete reproductions of published training recipes or accuracy claims.
+
+Magnitude-based workflows use library `GroupMagnitude`, which normalizes the
+affected recognized weight energy within each logical channel domain. Learned
+BN scales use filtered `Magnitude(p=1)` without that normalization, and gate
+training uses `GateMagnitude`. All workflows use static `Greedy` selection;
+training statistics are obtained explicitly before planning. The gate workflow
+optimizes ordinary model weights as well as gate scales, then reads the learned
+scales during selection. Training a score does not make the subsequent selection
+loop dynamically rescore it.
 
 Final model checkpoints and training recovery state have different responsibilities. Save the compact model with the library checkpoint functions; save optimizer, progress, algorithm state, and RNG separately in the training application. See [persistence](persistence.md#training-state-is-caller-owned).
 

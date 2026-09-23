@@ -18,13 +18,12 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    Candidate,
     CandidateSpace,
     Granularity,
     Greedy,
+    GroupMagnitude,
     ParameterBudget,
     ParameterGroup,
-    PlanningContext,
     Pruner,
     PruningPlan,
     load_checkpoint,
@@ -121,24 +120,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) -> PruningPlan:
-    """Score producer channels and enforce alignment before soft projection."""
-    scores = {}
-    for axis in space.channel_axes:
-        weight = pruner.model.get_parameter(axis.tensor.paths[0])
-        values = weight.detach().float().flatten(1).square().sum(1)
-        values = values.cpu().tolist()  # One device transfer per producer axis.
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(score) for score in scores.values()):
-        raise ValueError("Nonfinite pruning score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up the producer scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
-    return pruner.plan(space, budget=budget, strategy=Greedy(score))
+    """Rank normalized dependency groups once before aligned soft projection."""
+    return pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude(p=2)))
 
 
 def train_epoch(

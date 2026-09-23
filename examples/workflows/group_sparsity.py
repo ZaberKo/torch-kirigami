@@ -3,7 +3,6 @@
 import argparse
 import json
 import math
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -17,12 +16,11 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
-    Candidate,
     CandidateSpace,
     Granularity,
     Greedy,
+    GroupMagnitude,
     ParameterBudget,
-    PlanningContext,
     Pruner,
     PruningPlan,
     load_checkpoint,
@@ -361,30 +359,8 @@ def main() -> None:
 
 
 def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) -> PruningPlan:
-    """Score producer channels and select a jointly aligned request."""
-    scores = {}
-    for axis in space.channel_axes:
-        values = (
-            pruner.model.get_parameter(axis.tensor.paths[0])
-            .detach()
-            .float()
-            .flatten(1)
-            .square()
-            .sum(1)
-        )
-        values = values.cpu().tolist()  # One device transfer per producer axis.
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(value) for value in scores.values()):
-        raise ValueError("Nonfinite pruning score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up the producer scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
-    return pruner.plan(space, budget=budget, strategy=Greedy(score))
+    """Rank normalized dependency groups after explicit sparse training."""
+    return pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude(p=2)))
 
 
 if __name__ == "__main__":

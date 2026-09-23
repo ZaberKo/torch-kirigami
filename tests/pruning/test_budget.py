@@ -4,7 +4,7 @@ import pytest
 import torch
 from torch import nn
 
-from tests.support.pruning import build
+from tests.support.pruning import StaticMetric, build
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -52,6 +52,7 @@ def test_global_budget_no_hidden_local_cap():
     model = Branches()
     _graph, pruner = build(model, torch.randn(2, 4))
 
+    @StaticMetric
     def metric(ctx, batch):
         return [0 if c.key.startswith("a.") else 100 for c in batch]
 

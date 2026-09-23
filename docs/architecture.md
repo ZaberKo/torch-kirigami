@@ -50,7 +50,30 @@ Repeated calls to a shared module remain separate calls. References to the same 
 
 `Pruner` owns the graph, interface protection, extra constraints and optional `Granularity` settings. Candidate discovery is explicit: `pruner.discover_candidates()` returns an immutable `CandidateSpace` containing candidates and logical `channel_axes`. The space retains no model, graph or policy. Automatic planning consumes it through `plan(space, budget=..., strategy=...)`; exact manual requests use `plan_remove(remove)`.
 
-`Granularity` resolves exact module types and paths into ordinary `Divisible` constraints. Strategies own metrics and request validated scores through `PlanningContext.score(metric, candidates)`. This keeps configuration, candidate data and selection responsibilities separate without introducing another dependency solver. See [alignment configuration](pruning-design.md#retained-width-alignment).
+`Granularity` resolves exact module types and paths into ordinary `Divisible` constraints. Strategies implement `select(context) -> StrategyResult` and own their scoring policy. Metrics implement `score(context, candidates, *, selected)`; `selected` is the accepted joint dependency impact. `PlanningContext.score()` validates scores and complete influence. See [alignment configuration](pruning-design.md#retained-width-alignment) and [scoring contracts](pruning-design.md#scoring-and-strategy-contracts).
+
+`Greedy` ranks once; `DynamicGreedy` rescores after each accepted complete change.
+Both share the same search verification and completion implementation. Metrics
+own model-specific statistics; planning neither trains nor calibrates a model.
+The workflow baseline is `GroupMagnitude`, which normalizes deduplicated
+dependency-region energy per logical channel axis. Learned gates and BN scales
+use explicit alternative metrics. The dependency graph and execution recipes
+remain independent of these policies.
+
+The research workflows exercise different upper-layer contracts. VBP supplies
+calibrated activation statistics through `Metric`; Isomorphic implements
+independent family selection through `Strategy`; OSSCAR solves reconstruction
+problems and submits exact selections through `plan_remove`. Neither a metric
+nor a custom strategy is required for a solver that already knows its selections.
+`PlanningContext` provides joint analysis, executable recipe checks and actual
+parameter counts without requiring a greedy search. Final strategy selections
+are independently verified by `Pruner.plan`.
+
+Calibration, bias compensation, weight reconstruction and optional training
+remain explicit workflow stages. Structural plans contain coordinate changes,
+not calibrated tensor values: save the resulting compact checkpoint after those
+value updates. These examples validate the API against distinct algorithms;
+they do not justify changing an algorithm to fit a particular built-in strategy.
 
 Relations grow the removal set until no new regions appear. Constraints inspect the resulting joint selection. A strategy can try additional candidates to satisfy a joint constraint; the dependency core does not rank those alternatives.
 

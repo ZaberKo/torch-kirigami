@@ -15,7 +15,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.pruning.types.MetricContext",
+      "object": "torch_kirigami.pruning.MetricContext",
       "contracts": [
         {
           "behavior": "Metrics consume graph and impact queries without importing the planner implementation.",
@@ -776,7 +776,7 @@
           "tests": [
             "tests/pruning/test_context.py::test_cache_hit_validates_full_reference_and_impact_owner",
             "tests/pruning/test_context.py::test_context_premises_are_readonly",
-            "tests/pruning/test_strategy.py::test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly"
+            "tests/pruning/test_strategy.py::test_custom_metric_uses_bounded_batches_and_shared_expressions_are_readonly"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -788,6 +788,52 @@
             "tests/integration/test_configuration_cache.py::test_same_width_configuration_checks_are_shared",
             "tests/integration/test_configuration_cache.py::test_configuration_cache_invalidates_after_tensor_write"
           ],
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.DynamicGreedy",
+      "contracts": [
+        {
+          "behavior": "Rescore only after a complete accepted joint change, preserving executable plans and read-only planning.",
+          "tests": [
+            "tests/pruning/test_dynamic_strategy.py::test_conditional_magnitude_changes_choice_and_matches_manual_model",
+            "tests/pruning/test_dynamic_strategy.py::test_dynamic_reranks_after_whole_constraint_completion",
+            "tests/pruning/test_dynamic_strategy.py::test_dynamic_score_failure_keeps_model_and_graph_usable"
+          ],
+          "conditions": "CPU and CUDA with public planning, portable plan replay, independent compact forward and backward.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.StrategyResult",
+      "contracts": [
+        {
+          "behavior": "Immutable registered-key selection diagnostics cannot override independent budget and execution checks.",
+          "tests": [
+            "tests/pruning/test_dynamic_strategy.py::test_greedy_options_and_result_are_immutable",
+            "tests/pruning/test_context.py::test_custom_strategy_result_is_checked_and_failure_preserves_model",
+            "tests/pruning/test_context.py::test_strategy_stop_reason_cannot_override_measured_budget"
+          ],
+          "conditions": "Invalid results and unmet targets preserve model bindings and graph usability.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.GroupMagnitude",
+      "contracts": [
+        {
+          "behavior": "Normalize deduplicated conditional weight energy over a fixed surviving logical axis independently of batch and candidate wrapping.",
+          "tests": [
+            "tests/pruning/test_conditional_metrics.py::test_group_magnitude_formula_includes_dependencies_and_affine_weights",
+            "tests/pruning/test_conditional_metrics.py::test_group_normalization_independent_of_batch_subset_and_block_wrapping",
+            "tests/pruning/test_conditional_metrics.py::test_group_dynamic_normalization_uses_surviving_rows_and_columns",
+            "tests/pruning/test_conditional_metrics.py::test_group_normalization_is_finite_at_extreme_scales"
+          ],
+          "conditions": "CPU and CUDA numerical references, recognized module and functional roles; no claim of task-loss accuracy.",
           "gaps": []
         }
       ]
@@ -858,7 +904,7 @@
       "object": "torch_kirigami.pruning.Metric",
       "contracts": [
         {
-          "behavior": "实现/第三方 callable：批量对齐、有限分数、falsey callable、返回决定重验",
+          "behavior": "Explicit score method: batch alignment, finite scores, falsey metric objects and independent final verification.",
           "tests": [
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
             "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",
@@ -873,7 +919,7 @@
       "object": "torch_kirigami.pruning.Strategy",
       "contracts": [
         {
-          "behavior": "实现/第三方 callable：批量对齐、有限分数、falsey callable、返回决定重验",
+          "behavior": "Explicit select method: registered keys, immutable diagnostics, falsey strategy objects and independent final verification.",
           "tests": [
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
             "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",

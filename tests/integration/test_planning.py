@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from tests.support.numerics import _assert_value_and_input_gradient, _initialize
-from tests.support.pruning import build
+from tests.support.pruning import StaticMetric, build
 from torch_kirigami import Balanced, Divisible, IndexSet
 from torch_kirigami.pruning import (
     Candidate,
@@ -48,11 +48,13 @@ def test_shared_budget_constraint_completion_preserves_opaque_branch_and_io(exec
     ]
     batches = []
 
+    @StaticMetric
     def metric(context, batch):
         batches.append(tuple(candidate.key for candidate in batch))
 
         # Reusing Greedy's eligibility checks must not let a metric bypass
         # completeness when it explicitly scores a different temporary request.
+        @StaticMetric
         def forbidden(context, batch):
             pytest.fail("An incomplete temporary candidate must not reach the metric")
 

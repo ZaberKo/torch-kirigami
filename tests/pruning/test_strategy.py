@@ -5,7 +5,7 @@ import torch
 from torch import nn
 
 from tests.support.models import Chain
-from tests.support.pruning import build
+from tests.support.pruning import KeyStrategy, StaticMetric, build
 from torch_kirigami import (
     Balanced,
     DependencyGraph,
@@ -44,7 +44,7 @@ def test_builtin_scoring_does_not_thrash_small_impact_cache(width, monkeypatch):
     assert count <= width + 12
 
 
-def test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly():
+def test_custom_metric_uses_bounded_batches_and_shared_expressions_are_readonly():
     class Model(nn.Module):
         def __init__(self):
             super().__init__()
@@ -64,17 +64,18 @@ def test_custom_metric_keeps_whole_batch_and_shared_expressions_are_readonly():
         operations[0].expressions[operations[0].node] = None
     batch_sizes = []
 
+    @StaticMetric
     def metric(context, batch):
         assert isinstance(batch, tuple)
         batch_sizes.append(len(batch))
-        return [len(batch)] * len(batch)
+        return [1.0] * len(batch)
 
     Pruner(model, graph=graph, preserve_io=False).plan(
         Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
         budget=ChannelRatio(0.2),
         strategy=Greedy(metric, max_trials=1),
     )
-    assert batch_sizes == [64]
+    assert batch_sizes == [32, 32]
 
 
 def test_greedy_initial_invalid_divisibility_and_limit():
@@ -105,6 +106,7 @@ def test_balanced_completion_multiple_constraints_and_stable_ties():
         Balanced(axis, tuple(IndexSet.span(i, i + n) for i in range(0, 12, n))) for n in (6, 4)
     ]
 
+    @StaticMetric
     def metric(ctx, batch):
         return [0.0] * len(batch)
 
@@ -130,15 +132,20 @@ def test_metric_errors_and_nonadditive_custom_scoring():
     common = {"budget": ChannelRatio(0.4)}
     with pytest.raises(PlanningError, match="gradients"):
         pruner.plan(space, strategy=Greedy(WeightTaylor()), **common)
-    for metric in (lambda c, b: [float("nan")] * len(b), lambda c, b: [1]):
+    for metric in (
+        StaticMetric(lambda c, b: [float("nan")] * len(b)),
+        StaticMetric(lambda c, b: [1]),
+    ):
         with pytest.raises(PlanningError, match=r"nonfinite|length"):
             pruner.plan(space, strategy=Greedy(metric), **common)
     seen = []
 
+    @StaticMetric
     def metric(ctx, batch):
         seen.extend(len(c.remove) for c in batch)
         return [float(len(c.remove) ** 2) for c in batch]
 
+    @KeyStrategy
     def strategy(ctx):
         a, b = ctx.candidates[:2]
         joint = Candidate("temporary", (*a.remove, *b.remove))
@@ -148,7 +155,7 @@ def test_metric_errors_and_nonadditive_custom_scoring():
     plan = pruner.plan(space, strategy=strategy, **common)
     assert seen == [2] and len(plan.selected) == 2
     with pytest.raises(PlanningError, match="unregistered"):
-        pruner.plan(space, strategy=lambda c: ["bad"], **common)
+        pruner.plan(space, strategy=KeyStrategy(lambda c: ["bad"]), **common)
 
 
 def test_default_zero_budget_avoids_candidate_scoring(monkeypatch):
@@ -161,6 +168,7 @@ def test_default_zero_budget_avoids_candidate_scoring(monkeypatch):
         calls.append(1)
         return original(self, **kwargs)
 
+    @StaticMetric
     def forbidden_metric(context, batch):
         raise AssertionError("Zero budget must not score candidates")
 
@@ -178,6 +186,7 @@ def test_zero_trial_strategy_skips_scoring_but_validates_empty(monkeypatch):
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
     calls = []
 
+    @StaticMetric
     def metric(context, batch):
         calls.append(batch)
         raise AssertionError("No score should be needed")

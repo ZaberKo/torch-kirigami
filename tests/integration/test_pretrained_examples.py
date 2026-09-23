@@ -21,9 +21,12 @@ from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    GroupMagnitude,
     ParameterBudget,
+    PlanningContext,
     PlanningError,
     Pruner,
+    WeightTaylor,
     load_checkpoint,
     save_checkpoint,
 )
@@ -43,7 +46,7 @@ from huggingface_hub import HfApi, constants
 from huggingface_hub.errors import LocalEntryNotFoundError
 from PIL import Image as PILImage
 from torchvision.models import ResNet18_Weights, resnet18, resnet34, resnet50
-from torchvision.models.resnet import BasicBlock
+from torchvision.models.resnet import BasicBlock, Bottleneck
 from torchvision.models.vision_transformer import VisionTransformer
 
 WORKFLOWS = (
@@ -54,6 +57,10 @@ WORKFLOWS = (
     "soft_pruning",
     "gate_pruning",
     "stability_pruning",
+    "variance_pruning",
+    "isomorphic_pruning",
+    "osscar_pruning",
+    "vit_head_pruning",
 )
 
 
@@ -89,12 +96,14 @@ def workflow_resnet():
         ("stability_pruning", "magnitude"),
     ],
 )
-def test_workflow_producer_scores_transfer_together(entry, metric, execution_device, monkeypatch):
-    model = nn.Sequential(nn.Linear(3, 6, bias=False), nn.Linear(6, 2))
+def test_workflows_use_library_dependency_scores(entry, metric, execution_device, monkeypatch):
+    model = nn.Sequential(nn.Linear(3, 6, bias=False), nn.Linear(6, 2)).to(execution_device)
     with torch.no_grad():
-        model[0].weight.copy_(torch.arange(-9, 9).reshape(6, 3))
-    model[0].weight.grad = torch.linspace(-1, 2, 18).reshape(6, 3)
-    graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
+        model[0].weight.copy_(torch.arange(-9, 9, device=execution_device).reshape(6, 3))
+        model[1].weight.copy_(torch.arange(1, 13, device=execution_device).reshape(2, 6) / 2.5)
+    model[0].weight.grad = torch.linspace(-1, 2, 18, device=execution_device).reshape(6, 3)
+    model[1].weight.grad = torch.linspace(-2, 1, 12, device=execution_device).reshape(2, 6)
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 3, device=execution_device),))
     pruner = Pruner(model, graph=graph)
     axis = graph.parameter("0.weight").axis(0)
     space = CandidateSpace(
@@ -106,21 +115,37 @@ def test_workflow_producer_scores_transfer_together(entry, metric, execution_dev
     )
 
     def inspect_scores(space, *, budget, strategy):
-        return strategy.metric(None, space.candidates)
+        expected_metric = WeightTaylor if metric == "taylor" else GroupMagnitude
+        assert isinstance(strategy.metric, expected_metric)
+        context = PlanningContext(
+            graph,
+            graph.operations(),
+            space.candidates,
+            budget,
+            space.channel_axes,
+            pruner.constraints,
+        )
+        return context.score(strategy.metric, space.candidates)
 
-    # Isolate score preparation from graph analysis. The workflow integration
-    # tests separately run the real plan/apply/train/save/load pipeline.
+    # Check the actual library score against both affected weight matrices.
+    # Other tests below run each complete plan/apply/train/save/load workflow.
     monkeypatch.setattr(pruner, "plan", inspect_scores)
     module = importlib.import_module(entry)
     args = ("taylor" if metric == "taylor" else "magnitude",) if entry == "prune_finetune" else ()
     budget = ParameterBudget(20)
-    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU]) as profile:
-        scores = module.make_plan(pruner, space, budget, *args)
-    assert not any(event.key == "aten::item" for event in profile.key_averages())
-    weight, grad = model[0].weight.detach().cpu(), model[0].weight.grad.cpu()
-    rows = (weight * grad).abs().sum(1) if metric == "taylor" else weight.square().sum(1)
+    scores = module.make_plan(pruner, space, budget, *args)
+    first, last = model[0].weight.detach().double().cpu(), model[1].weight.detach().double().cpu()
+    if metric == "taylor":
+        first_grad, last_grad = (
+            model[0].weight.grad.double().cpu(),
+            model[1].weight.grad.double().cpu(),
+        )
+        rows = (first * first_grad).abs().sum(1) + (last * last_grad).abs().sum(0)
+    else:
+        rows = first.square().sum(1) + last.square().sum(0)
+        rows /= rows.mean()
     expected = [float(rows[1]), float(rows[0]) + float(rows[3])]
-    assert scores == expected
+    assert scores == pytest.approx(expected)
 
 
 def test_imagenet_label_order_and_synonyms():
@@ -551,7 +576,15 @@ def test_pretrained_workflow(
         if model_name == "resnet18"
         else ["encoder.layers.encoder_layer_0", "encoder.layers.encoder_layer_1"]
     )
-    assert saved["config"]["layers"] == expected_layers
+    if recipe in ("prune_finetune", "iterative_pruning"):
+        axes = {item["parameter"] for item in saved["config"]["candidate_axes"]}
+        if model_name == "resnet18":
+            assert axes == {f"{path}.conv1.weight" for path in expected_layers}
+        else:
+            assert axes == {f"{path}.mlp.0.weight" for path in expected_layers}
+        assert saved["config"]["pruning_scope"] == "block_internal"
+    else:
+        assert saved["config"]["layers"] == expected_layers
     assert saved["config"]["train_batch_size"] == 2
     assert saved["config"]["val_batch_size"] == 1
     assert requested == [weights, None]
@@ -1128,6 +1161,103 @@ def test_workflow_unmet_parameter_target_stops_before_apply(monkeypatch, tmp_pat
     with pytest.raises(PlanningError, match=r"Parameter target not reached.*strategy trial limit"):
         module.main()
     saved = json.loads((tmp_path / "metrics.json").read_text())
-    assert len(saved["config"]["layers"]) == 5
+    assert "layer2.0.conv1.weight" in {
+        item["parameter"] for item in saved["config"]["candidate_axes"]
+    }
     assert [row["stage"] for row in saved["stages"]] == ["pretrained"]
     assert not (tmp_path / "model.pt").exists()
+
+
+@pytest.mark.parametrize("recipe", ["prune_finetune", "iterative_pruning"])
+@pytest.mark.parametrize("pruning_ratio", [0.4, 0.6])
+def test_basic_workflow_prunes_both_bottleneck_widths_and_preserves_interfaces(
+    monkeypatch, tmp_path, recipe, pruning_ratio, execution_device
+):
+    """Every bottleneck contributes both internal widths, even across rebuilds."""
+    module = importlib.import_module(recipe)
+    weights = module.MODELS["resnet50"][1]
+    models, snapshots = [], []
+
+    def factory(*, weights):
+        model = nn.Sequential(
+            nn.Conv2d(3, 24, 1),
+            Bottleneck(24, 6),
+            Bottleneck(24, 6),
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(24, 10),
+        )
+        models.append(model)
+        snapshots.append(
+            {name: value.detach().clone() for name, value in model.state_dict().items()}
+        )
+        return model
+
+    monkeypatch.setitem(module.MODELS, "resnet50", (factory, weights))
+    monkeypatch.setattr(module, "measure_model", lambda *args: {})
+    monkeypatch.setattr(
+        module,
+        "load_images",
+        lambda *args, **kwargs: (
+            None,
+            TensorDataset(torch.randn(2, 3, 16, 16), torch.tensor([0, 1])),
+            {},
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            recipe,
+            "--model",
+            "resnet50",
+            "--device",
+            execution_device,
+            "--val_workers",
+            "0",
+            "--pruning_ratio",
+            str(pruning_ratio),
+            "--granularity",
+            "3",
+            "--output",
+            str(tmp_path),
+            *(
+                ["--rounds", "2" if pruning_ratio == 0.4 else "1"]
+                if recipe == "iterative_pruning"
+                else []
+            ),
+        ],
+    )
+    with torch.device("cpu"):
+        if pruning_ratio == 0.6:
+            # Internal widths can remove less than half this model's weights.
+            # A larger target must fail, not include stem or residual widths.
+            with pytest.raises(PlanningError, match="Parameter target not reached"):
+                module.main()
+        else:
+            module.main()
+    if pruning_ratio == 0.6:
+        assert len(models) == 1
+        for name, expected in snapshots[0].items():
+            torch.testing.assert_close(models[0].state_dict()[name].cpu(), expected)
+        assert not (tmp_path / "model.pt").exists()
+        return
+    saved = json.loads((tmp_path / "metrics.json").read_text())
+    assert {item["parameter"] for item in saved["config"]["candidate_axes"]} == {
+        "1.conv1.weight",
+        "1.conv2.weight",
+        "2.conv1.weight",
+        "2.conv2.weight",
+    }
+    restored = load_checkpoint(
+        factory(weights=None), tmp_path / "model.pt", map_location=execution_device
+    ).eval()
+    # The protected classifier's width is deliberately not divisible by three.
+    assert restored[-1].out_features == 10
+    assert restored[0].out_channels == restored[-1].in_features == 24
+    for block in (restored[1], restored[2]):
+        assert block.conv1.in_channels == block.conv3.out_channels == 24
+        assert block.conv1.out_channels == block.conv2.in_channels == 3
+        assert block.conv2.out_channels == block.conv3.in_channels == 3
+    assert sum(p.numel() for p in restored.parameters()) <= saved["config"]["max_params"]
+    restored(torch.randn(1, 3, 16, 16, device=execution_device)).square().sum().backward()

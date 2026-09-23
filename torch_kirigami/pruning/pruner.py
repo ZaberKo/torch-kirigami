@@ -43,6 +43,7 @@ from .types import (
     PlanningError,
     SelectionReport,
     Strategy,
+    StrategyResult,
     TensorRecipe,
 )
 
@@ -184,7 +185,8 @@ class Pruner:
             space: Explicit CandidateSpace, constructed manually or discovered.
             budget: ParameterBudget for a final whole-model cap, or ChannelRatio /
                 ChannelCount for upper bounds on channel removals.
-            strategy: Callable returning registered keys; owns any scoring metric.
+            strategy: Implements `select(context)` returning a StrategyResult;
+                owns its scoring metric and any selection-specific settings.
 
         Returns:
             A portable static plan. No discovery, metric, or strategy is implicit.
@@ -206,9 +208,15 @@ class Pruner:
         context = PlanningContext(
             graph, self.operations, candidates, budget, axes, self.constraints
         )
-        context.exclusions.extend(space.exclusions)
-        keys = tuple(dict.fromkeys(strategy(context)))
-        if any(key not in registered for key in keys):
+        if not callable(getattr(strategy, "select", None)):
+            raise TypeError("Strategy must implement select(context) -> StrategyResult")
+        result = strategy.select(context)
+        if not isinstance(result, StrategyResult):
+            raise TypeError("Strategy.select must return StrategyResult")
+        keys = result.keys
+        if any(key not in registered for key in keys) or any(
+            key not in registered for key, _reason in result.exclusions
+        ):
             raise PlanningError("Strategy returned an unregistered candidate key")
         impact = graph.propagate(
             remove=(s for key in keys for s in registered[key].remove),
@@ -218,13 +226,19 @@ class Pruner:
         final_context = PlanningContext(
             graph, self.operations, candidates, budget, axes, self.constraints
         )
-        final_context.trials = context.trials
-        final_context.limit_reached = context.limit_reached
-        final_context.exclusions.extend(context.exclusions)
         recipes, attributes, notes = final_context.compile(impact)
-        final_context.require_budget(impact)
+        # Measurements are independently recomputed; diagnostics cannot make an
+        # infeasible selection executable or declare a resource target met.
+        final_context.require_budget(impact, result=result)
         return self._finish(
-            impact, recipes, attributes, keys, final_context.report(impact), notes, before, versions
+            impact,
+            recipes,
+            attributes,
+            keys,
+            context.report(impact, result, exclusions=space.exclusions),
+            notes,
+            before,
+            versions,
         )
 
     def _finish(

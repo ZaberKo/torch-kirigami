@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 
 import torch
 
@@ -186,13 +186,77 @@ def channel_targets(
 
 
 class Metric(Protocol):
-    """Score an aligned candidate batch; lower scores are selected first."""
+    """Score additional removals given a complete committed dependency closure.
 
-    def __call__(
-        self, context: MetricContext, candidate_batch: tuple[Candidate, ...]
-    ) -> Iterable[float] | torch.Tensor:
-        """Return a finite one-dimensional score per candidate."""
+    Lower finite scores are preferred. For the same model, statistics and
+    `selected`, a candidate's score must not depend on batch size, order or other
+    batch members. A batch is a computation convenience, not a joint removal;
+    use a multi-selection Candidate to request a joint score. Implementations
+    own calibration statistics and must not modify the model or run training.
+    """
+
+    def score(
+        self,
+        context: MetricContext,
+        candidates: tuple[Candidate, ...],
+        *,
+        selected: Impact,
+    ) -> Sequence[float] | torch.Tensor:
+        """Evaluate additions to `selected`, using original graph coordinates.
+
+        `selected` may violate repairable constraints when the empty request is
+        initially infeasible. Scoring requires complete influence, not an
+        executable intermediate model. Conditional scores are metric-specific;
+        subtracting two whole-set scores is not a general implementation.
+        """
         ...
+
+
+@dataclass(frozen=True)
+class StrategyResult:
+    """Candidate keys and diagnostics returned by a selection strategy.
+
+    The planner independently verifies keys, joint dependencies, execution and
+    budgets. Resource measurements and query counts are not strategy assertions.
+
+    Args:
+        keys: Distinct registered keys, in accepted order.
+        stop_reason: Target reached, no further accepted progress, or trial limit.
+        exclusions: Candidate key and reason pairs explaining rejected choices.
+    """
+
+    keys: tuple[str, ...]
+    stop_reason: Literal["target_reached", "exhausted", "trial_limit"] = "exhausted"
+    exclusions: tuple[tuple[str, str], ...] = ()
+
+    def __post_init__(self) -> None:
+        if isinstance(self.keys, (str, bytes)):
+            raise TypeError("Strategy keys require a sequence, not a bare string")
+        keys = tuple(self.keys)
+        if any(not isinstance(key, str) or not key for key in keys):
+            raise ValueError("Strategy keys must be nonempty strings")
+        if len(set(keys)) != len(keys):
+            raise ValueError("Strategy keys must be unique")
+        if self.stop_reason not in ("target_reached", "exhausted", "trial_limit"):
+            raise ValueError("Unknown strategy stop reason")
+        if isinstance(self.exclusions, (str, bytes)):
+            raise TypeError("Strategy exclusions require key/reason pairs, not a bare string")
+        entries = tuple(self.exclusions)
+        if any(isinstance(item, (str, bytes)) for item in entries):
+            raise TypeError("Each strategy exclusion must be a key/reason pair, not a string")
+        exclusions = tuple(tuple(item) for item in entries)
+        if any(
+            len(item) != 2 or any(not isinstance(s, str) or not s for s in item)
+            for item in exclusions
+        ):
+            raise ValueError("Strategy exclusions require nonempty string key/reason pairs")
+        excluded = {key for key, _ in exclusions}
+        if len(excluded) != len(exclusions):
+            raise ValueError("Strategy exclusion keys must be unique")
+        if excluded.intersection(keys):
+            raise ValueError("Strategy cannot both select and exclude the same key")
+        object.__setattr__(self, "keys", keys)
+        object.__setattr__(self, "exclusions", exclusions)
 
 
 _StrategyContext = TypeVar("_StrategyContext", contravariant=True)
@@ -201,8 +265,8 @@ _StrategyContext = TypeVar("_StrategyContext", contravariant=True)
 class Strategy(Protocol[_StrategyContext]):
     """Select registered candidate keys using a shared PlanningContext."""
 
-    def __call__(self, context: _StrategyContext) -> Iterable[str]:
-        """Return registered keys; the framework verifies the combined result."""
+    def select(self, context: _StrategyContext) -> StrategyResult:
+        """Return registered choices and diagnostics without modifying the model."""
         ...
 
 
@@ -215,6 +279,11 @@ class MetricContext(Protocol):
 
     def require_complete(self, impact: Impact) -> None:
         """Reject incomplete dependency influence."""
+        ...
+
+    @property
+    def candidates(self) -> tuple[Candidate, ...]:
+        """Return the original candidate universe, independent of scoring batches."""
         ...
 
     @property

@@ -3,7 +3,6 @@
 import argparse
 import json
 import math
-from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -13,17 +12,19 @@ from imagenet_models import MODELS, make_model
 from model_metrics import measure_model
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from torchvision.models.resnet import BasicBlock, Bottleneck
+from torchvision.models.vision_transformer import EncoderBlock
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
-    Candidate,
     CandidateSpace,
     Granularity,
     Greedy,
+    GroupMagnitude,
     ParameterBudget,
-    PlanningContext,
+    PlanningError,
     Pruner,
     PruningPlan,
     load_checkpoint,
@@ -117,16 +118,18 @@ def main() -> None:
     options = parse_args()
     torch.manual_seed(options.seed)
     model = make_model(options.model).to(options.device).eval()
-    layers = (
-        tuple(
-            f"layer{stage}.{block}"
-            for stage in range(1, 5)
-            for block in range(len(getattr(model, f"layer{stage}")))
-        )
-        if options.model.startswith("resnet")
-        else tuple(f"encoder.layers.{name}" for name, _ in model.encoder.layers.named_children())
-    )
-    print(f"Model: {options.model}; considering all {len(layers)} supported blocks", flush=True)
+    # Keep the same block-internal domains across all physical pruning rounds.
+    targets = []
+    for path, block in model.named_modules():
+        if type(block) is BasicBlock:
+            targets.append(f"{path}.conv1")
+        elif type(block) is Bottleneck:
+            targets.extend((f"{path}.conv1", f"{path}.conv2"))
+        elif type(block) is EncoderBlock:
+            targets.append(f"{path}.mlp.0")
+    if not targets:
+        raise PlanningError("No supported block-internal pruning positions were found")
+    print(f"Model: {options.model}; {len(targets)} block-internal pruning axes", flush=True)
     weights = MODELS[options.model][1]
     train, validation, dataset_info = load_images(
         weights,
@@ -166,7 +169,11 @@ def main() -> None:
         for key, value in vars(options).items()
     }
     config.update(
-        weights=str(weights), dataset=dataset_info, layers=layers, max_params=budget.max_params
+        weights=str(weights),
+        dataset=dataset_info,
+        max_params=budget.max_params,
+        pruning_scope="block_internal",
+        pruning_targets=targets,
     )
     options.output.mkdir(parents=True, exist_ok=True)
     records: list[dict[str, Any]] = []
@@ -189,13 +196,14 @@ def main() -> None:
         )
 
     record("pretrained")
-    suffix = "conv1.weight" if options.model.startswith("resnet") else "mlp.0.weight"
-    paths = tuple(f"{layer}.{suffix}" for layer in layers)
-    targets = tuple(path.removesuffix(".weight") for path in paths)
-    alignment = Granularity(by_path=dict.fromkeys(targets, options.granularity))
     graph = DependencyGraph.build(model, args=(example,))
+    alignment = Granularity(by_path=dict.fromkeys(targets, options.granularity))
     pruner = Pruner(model, graph=graph, granularity=alignment)
     space = pruner.discover_candidates(targets=targets)
+    config["candidate_axes"] = [
+        {"parameter": axis.tensor.paths[0], "dim": axis.dim} for axis in space.channel_axes
+    ]
+    config["discovery_exclusions"] = space.exclusions
     original_params = count_parameters(model)
     reduction = original_params - budget.max_params
 
@@ -278,30 +286,8 @@ def main() -> None:
 
 
 def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) -> PruningPlan:
-    """Score producer channels; enforce alignment within the remaining allowance."""
-    scores = {}
-    for axis in space.channel_axes:
-        values = (
-            pruner.model.get_parameter(axis.tensor.paths[0])
-            .detach()
-            .float()
-            .flatten(1)
-            .square()
-            .sum(1)
-        )
-        values = values.cpu().tolist()  # One device transfer per producer axis.
-        for candidate in space.candidates:
-            if candidate.axis == axis:
-                indices = candidate.remove[0].fully_selected_indices(0)
-                scores[candidate.key] = sum(values[i] for i in indices)
-    if not all(math.isfinite(value) for value in scores.values()):
-        raise ValueError("Nonfinite pruning score")
-
-    def score(context: PlanningContext, batch: Sequence[Candidate]) -> list[float]:
-        """Look up the producer scores for this candidate batch."""
-        return [scores[c.key] for c in batch]
-
-    return pruner.plan(space, budget=budget, strategy=Greedy(score))
+    """Recompute normalized group scores once for the current pruning round."""
+    return pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude(p=2)))
 
 
 if __name__ == "__main__":
