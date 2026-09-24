@@ -10,6 +10,7 @@ from typing import Literal
 from ..contracts import Balanced, Constraint, Divisible, Impact
 from ..selection import AxisRef, IndexSet
 from .planner import PlanningContext, _budget_reason, _within_targets
+from .ranking import IndependentRanking
 from .types import (
     Candidate,
     Metric,
@@ -464,9 +465,21 @@ def _select(
     counted_axes = () if parameter_target else context.channel_axes
     axes = tuple(dict.fromkeys((*counted_axes, *(c.axis for c in repair_constraints))))
     committed_removals = _axis_removals(committed_impact, axes)
-    ranked, removals = _rank_candidates(
-        context, metric, context.candidates, committed_impact, axes, exclusions
-    )
+    independent = IndependentRanking.build(context, metric)
+
+    def rank() -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
+        """Use proved independent statistics; retain ordinary joint scoring otherwise."""
+        nonlocal independent
+        if independent is not None:
+            result = independent.rank(committed_impact, axes)
+            if result is not None:
+                return result
+            independent = None
+        return _rank_candidates(
+            context, metric, context.candidates, committed_impact, axes, exclusions
+        )
+
+    ranked, removals = rank()
     ranked_by_axis = _ranked_axis_candidates(ranked, removals)
 
     def attempt(candidates: list[Candidate]) -> Impact | None:
@@ -522,9 +535,7 @@ def _select(
         if not progress or limited:
             break
         if dynamic:
-            ranked, removals = _rank_candidates(
-                context, metric, context.candidates, committed_impact, axes, exclusions
-            )
+            ranked, removals = rank()
             ranked_by_axis = _ranked_axis_candidates(ranked, removals)
     if not valid:
         detail = f". Empty request: {empty_error}"

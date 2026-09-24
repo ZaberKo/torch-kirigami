@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import weakref
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import cast
 
 import torch
@@ -209,14 +209,7 @@ class GroupMagnitude:
                 for position in surviving
             )
             norms = _scores(self, context, population, selected=selected, include=included)
-            scale = max(norms, default=0.0)
-            if not math.isfinite(scale):
-                raise PlanningError("GroupMagnitude normalization contains nonfinite weights")
-            mean = (
-                math.fsum((value / scale) ** self.p for value in norms) / len(norms)
-                if scale
-                else 0.0
-            )
+            scale, mean = _normalization(norms, self.p)
             # A singleton's normalization query is exactly its conditional score
             # query. Store scalar results instead of propagating/evaluating them
             # again when a later score batch visits the same axis positions.
@@ -290,6 +283,35 @@ def _weight_bindings(context: MetricContext) -> set[TensorRef]:
     return refs
 
 
+def _normalization(norms: Sequence[float], p: int) -> tuple[float, float]:
+    """Scale the mean energy without overflowing at extreme finite magnitudes."""
+    if not all(math.isfinite(value) for value in norms):
+        raise PlanningError("GroupMagnitude normalization contains nonfinite weights")
+    scale = max(norms, default=0.0)
+    mean = math.fsum((value / scale) ** p for value in norms) / len(norms) if scale else 0.0
+    return scale, mean
+
+
+def _magnitude_norm(values: torch.Tensor, p: int, *, batched: bool = False) -> torch.Tensor:
+    """Reduce regions or independent rows with the same overflow-safe formula."""
+    if p == 2:
+        dtype = (
+            torch.float64 if values.dtype in (torch.float64, torch.complex128) else torch.float32
+        )
+        values = torch.view_as_real(values.resolve_conj()) if values.is_complex() else values
+        values = values.to(dtype).abs()
+    else:
+        values = values.to(torch.complex128 if values.is_complex() else torch.float64).abs()
+    values = values.reshape(values.shape[0], -1) if batched else values.reshape(-1)
+    if p == 1:
+        return values.sum(-1, dtype=torch.float64)
+    scale = values.amax(-1)
+    divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
+    return (values / divisor.unsqueeze(-1)).square().sum(-1, dtype=torch.float64).sqrt() * scale.to(
+        torch.float64
+    )
+
+
 def _scores(
     metric: Magnitude | WeightTaylor | GroupMagnitude,
     context: MetricContext,
@@ -327,11 +349,6 @@ def _scores(
                     raise PlanningError(
                         "WeightTaylor requires real parameters and dense current gradients"
                     )
-                dtype = (
-                    torch.float64
-                    if weight.dtype in (torch.float64, torch.complex128)
-                    else torch.float32
-                )
                 for region in selection.regions:  # Selection normalizes to a disjoint union.
                     values = gather_region(weight.detach(), region)
                     if taylor:
@@ -342,26 +359,9 @@ def _scores(
                         ).to(torch.float64)
                         if cast(WeightTaylor, metric).mode == "elementwise_abs":
                             values = values.abs()
-                    elif l2:
-                        # Scale before squaring, including float64 extremes. Real
-                        # components avoid overflowing complex64 abs prematurely.
-                        values = (
-                            torch.view_as_real(values.resolve_conj())
-                            if values.is_complex()
-                            else values
-                        )
-                        values = values.to(dtype).abs()
-                        scale = values.amax()
-                        divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
-                        value = (values / divisor).square().sum(
-                            dtype=torch.float64
-                        ).sqrt() * scale.to(torch.float64)
-                    else:
-                        values = values.to(
-                            torch.complex128 if values.is_complex() else torch.float64
-                        ).abs()
-                    if not l2:
                         value = values.sum(dtype=torch.float64)
+                    else:
+                        value = _magnitude_norm(values, metric.p)
                     previous = totals.get(weight.device)
                     totals[weight.device] = (
                         value

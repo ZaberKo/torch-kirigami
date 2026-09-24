@@ -1,6 +1,24 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.pruning.ranking.IndependentRanking",
+      "contracts": [
+        {
+          "behavior": "Reuse independent axis statistics without changing dynamic scores, joint constraints, budgets or executable plans.",
+          "tests": [
+            "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring",
+            "tests/pruning/test_independent_ranking.py::test_batched_statistics_and_conditional_order_have_independent_reference",
+            "tests/pruning/test_independent_ranking.py::test_dynamic_propagations_follow_joint_trials_instead_of_candidate_count",
+            "tests/pruning/test_independent_ranking.py::test_unproved_candidates_use_generic_scoring",
+            "tests/pruning/test_independent_ranking.py::test_extensions_and_inference_tensors_do_not_reuse_statistics",
+            "tests/pruning/test_independent_ranking.py::test_last_position_and_weight_updates_disable_reuse"
+          ],
+          "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components. CPU and CUDA numerical and lifecycle references.",
+          "gaps": ["Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."]
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.operation.OperatorRegistrar",
       "contracts": [
         {

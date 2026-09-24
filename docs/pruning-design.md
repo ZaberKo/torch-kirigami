@@ -295,6 +295,24 @@ version changes invalidate it. Singleton candidates reuse the exact scores
 already calculated for normalization; multi-position candidates still require
 joint scoring because their affected regions can overlap.
 
+The built-in greedy strategies additionally reuse per-position weight norms when
+the complete candidate space consists of singleton requests on tensor-disjoint,
+one-to-one axis components. The proof uses declared index relations, including
+broadcasting along other dimensions and identity reshape relations; it does not
+infer execution support from shapes. Weight reductions run in batches on each
+parameter's device. Dynamic ranking recomputes normalization over the remaining
+positions and sorts again after each accepted change. No full impacts or copied
+weights are retained by this optimization.
+
+This path applies only to exact, unmodified `GroupMagnitude` without a parameter
+filter. Scoped/block mappings, intersecting row/column domains, custom relations
+or constraints, incomplete influences, inference tensors and last-position
+removal use ordinary joint scoring. Each accelerated axis is bounded by the
+existing index complexity limit. Model validation and tensor version checks
+guard reuse; every proposed combination still passes full propagation, budget
+accounting and recipe compilation. This changes neither the public API nor the
+mathematical score, apart from ordinary floating-point reduction roundoff.
+
 `WeightTaylor` reads existing dense, real, unscaled gradients. The caller owns the task loss, loss reduction, calibration data, accumulation, and AMP unscaling. Collect task-only gradients if sparse regularization should not influence importance. This metric does not call `backward()` or estimate per-example Fisher information.
 
 A `Strategy` implements `select(context) -> StrategyResult`. The immutable result
