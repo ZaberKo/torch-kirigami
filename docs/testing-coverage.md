@@ -132,8 +132,8 @@ completion, parameter caps, replay and independent compact numerical results.
 reads within each validation while checking slot, alias, mode and configuration
 mutations between validations. [Requirement indexes](../tests/pruning/test_requirement_index.py)
 check declaration order, root/descendant ownership, repeated opaque calls and
-per-validation shape arithmetic. See the [Chinese performance notes](cn/planning-performance.md)
-for the optimization scope and deliberately excluded shortcuts.
+per-validation shape arithmetic. The [performance development notes](dev-notes/planning-performance.md)
+record the historical investigations and deliberately excluded shortcuts.
 
 Planning performance regressions compare indexed constraint queries with an
 exhaustive reference through public plan/apply on parallel, grouped and depthwise
@@ -150,7 +150,7 @@ to verify complete axis coverage, including fragmented indices, empty dimensions
 explicit scopes and invalid arguments
 ([region queries](../tests/core/test_single_region_selection.py)).
 
-The [maintainability review](maintainability-review.md) records the refactors and
+The [maintainability development review](dev-notes/maintainability-review.md) records the refactors and
 optimization tradeoffs. Public regressions check one effect query per captured
 call, conflicting shared-attribute edits (including no-ops) before mutation, and
 mixed regular/irregular/scalar parameter groups without duplicate contributions

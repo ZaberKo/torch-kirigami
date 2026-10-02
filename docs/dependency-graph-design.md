@@ -263,8 +263,9 @@ inputs are remapped in full so that separate arrivals can complete blocks.
 Extensions and failed mappings are not cached; the cache stores coordinate
 records only and is bounded by the number of relation endpoints.
 
-See [planning performance notes in Chinese](cn/planning-performance.md) for the
-complete optimization scope and validation boundaries.
+The [planning performance development notes](dev-notes/planning-performance.md)
+record historical investigations and benchmarks; current analysis contracts are
+defined in this document.
 
 ## 7. Constraint classes
 

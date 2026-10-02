@@ -16,7 +16,6 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 | Save plans or compact models | [Persistence](persistence.md) | [Pruning design](pruning-design.md) |
 | Measure the resulting model | [Measurement](measurement.md) | [Verification guide](testing-coverage.md) |
 | Contribute a change | [Development and testing](testing.md) | [Verification guide](testing-coverage.md) |
-| Review planning performance changes in Chinese | [剪枝规划性能优化](cn/planning-performance.md) | [中文目录](cn/index.md) |
 
 ## Terms used throughout the documentation
 
@@ -43,3 +42,9 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 The first two are library contracts. The third requires evaluation on the real task and data. A resolved analysis result does not establish numerical equivalence or preserved accuracy.
 
 All source links refer to the current repository. Private classes are documented to support review; their inclusion is not a promise of a stable public API.
+
+## Development records
+
+[Development notes](dev-notes/index.md) contain temporary investigations, review
+records and historical benchmarks. They are separate from the formal
+documentation and do not define current API or support contracts.

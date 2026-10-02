@@ -1,5 +1,7 @@
 # 剪枝规划性能优化
 
+> 开发笔记，非正式 API 或支持契约。历史基准对应各节记录的实现阶段；当前契约见[剪枝设计](../pruning-design.md)与[依赖图设计](../dependency-graph-design.md)。
+
 本文说明依赖分析与 `Pruner.plan()` 的性能改造。历史性能优化不改变剪枝执行契约；当前预算已统一为剪枝后剩余量上限，评分接口为 `Metric.score(context, candidates, accepted_impact=...)`，其中 `accepted_impact` 表示已经接受的删除请求及其完整依赖影响，模型尚未执行物理剪枝。选择接口为 `Strategy.select(context)`。下文历史基准使用当时的静态评分，不能直接用于比较新评分或动态策略的耗时。
 
 ## 1. 问题与处理原则
