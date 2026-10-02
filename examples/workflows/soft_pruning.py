@@ -259,7 +259,8 @@ def main() -> None:
 
     for cycle in range(options.cycles):
         selection_plan = make_plan(pruner, space, budget)
-        selected = tuple(c for c in space.candidates if c.key in selection_plan.selected)
+        selected_keys = set(selection_plan.selected)
+        selected = tuple(c for c in space.candidates if c.key in selected_keys)
         # Project one union, not each candidate separately: their dependency
         # regions may overlap and must not be scaled multiple times.
         impact = pruner.impact(selected)

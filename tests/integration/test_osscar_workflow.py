@@ -120,6 +120,52 @@ def test_restoration_gains_match_independent_full_refits(group_size, execution_d
         torch.testing.assert_close(gains[index], before - after)
 
 
+def test_scalar_costs_preserve_divide_first_and_singular_failures(execution_device):
+    # Squaring 1e200 before division would overflow; the existing solve order
+    # divides first and returns a representable objective increase.
+    coefficients = torch.full((2, 1), 1e200, dtype=torch.float64)
+    inverse = torch.eye(2, dtype=torch.float64) * 1e200
+    costs = workflow.deletion_costs(coefficients, inverse, 1)
+    torch.testing.assert_close(costs, torch.full((2,), 5e199, dtype=torch.float64))
+    gram = torch.eye(2, dtype=torch.float64) * 1e200
+    cross = torch.full((2, 1), 1e200, dtype=torch.float64)
+    absent, gains = workflow.restoration_gains(
+        gram,
+        cross,
+        (0,),
+        torch.ones(1, 1, dtype=torch.float64),
+        torch.full((1, 1), 1e-200, dtype=torch.float64),
+        1,
+    )
+    assert absent == (1,)
+    torch.testing.assert_close(gains, torch.full((1,), 5e199, dtype=torch.float64))
+    with pytest.raises(torch.linalg.LinAlgError, match="Singular"):
+        workflow.deletion_costs(torch.ones(2, 1), torch.diag(torch.tensor([1.0, 0.0])), 1)
+    with pytest.raises(torch.linalg.LinAlgError, match="Singular"):
+        workflow.restoration_gains(
+            torch.diag(torch.tensor([1.0, 0.0])),
+            torch.ones(2, 1),
+            (0,),
+            torch.ones(1, 1),
+            torch.ones(1, 1),
+            1,
+        )
+
+
+def test_scalar_costs_keep_nonfinite_results_visible(execution_device):
+    costs = workflow.deletion_costs(torch.tensor([[float("nan")], [1.0]]), torch.eye(2), 1)
+    assert torch.isnan(costs[0]) and costs[1] == 0.5
+    absent, gains = workflow.restoration_gains(
+        torch.eye(2),
+        torch.tensor([[1.0], [float("nan")]]),
+        (0,),
+        torch.ones(1, 1),
+        torch.ones(1, 1),
+        1,
+    )
+    assert absent == (1,) and torch.isnan(gains[0])
+
+
 def test_local_swaps_improve_a_known_deletion_only_solution(execution_device):
     # CPU-generated fixture has a strict improving swap, independent of device RNG.
     generator = torch.Generator(device="cpu").manual_seed(2)
@@ -254,6 +300,89 @@ def test_sampled_feature_rows_reconstruct_actual_layer_outputs(kind, execution_d
     design = workflow.feature_rows(layer, inputs, rows)
     predicted = design @ layer.weight.flatten(1).T + layer.bias
     torch.testing.assert_close(predicted, expected[rows])
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        {"kernel_size": 3, "padding": 1},
+        {"kernel_size": 3, "padding": 2, "stride": 2, "dilation": 2},
+        {"kernel_size": 4, "padding": "same"},
+        {"kernel_size": (2, 3), "padding": "same", "dilation": (3, 2)},
+        {"kernel_size": 3, "padding": "valid"},
+        {"kernel_size": (2, 3), "padding": (1, 2), "stride": (2, 1)},
+    ],
+)
+def test_sampled_patches_match_independent_full_unfold(settings, execution_device):
+    layer = nn.Conv2d(2, 3, **settings).double()
+    inputs = torch.randn(3, 2, 18, 20, dtype=torch.float64)[..., ::2, ::2]
+    assert not inputs.is_contiguous()
+    output = layer(inputs)
+    locations = output.shape[-2] * output.shape[-1]
+    rows = torch.tensor([0, 0, 2, locations - 1, locations, 3 * locations - 1])
+    reference_inputs = inputs
+    padding = layer.padding
+    if padding == "same":
+        vertical, horizontal = (
+            (kernel - 1) * dilation
+            for kernel, dilation in zip(layer.kernel_size, layer.dilation, strict=True)
+        )
+        reference_inputs = F.pad(
+            inputs,
+            (
+                horizontal // 2,
+                horizontal - horizontal // 2,
+                vertical // 2,
+                vertical - vertical // 2,
+            ),
+        )
+        padding = 0
+    elif padding == "valid":
+        padding = 0
+    reference = (
+        F.unfold(
+            reference_inputs,
+            layer.kernel_size,
+            dilation=layer.dilation,
+            padding=padding,
+            stride=layer.stride,
+        )
+        .transpose(1, 2)
+        .reshape(3 * locations, -1)
+    )
+    sampled = workflow.feature_rows(layer, inputs, rows)
+    torch.testing.assert_close(sampled, reference[rows], rtol=0, atol=0)
+    torch.testing.assert_close(
+        sampled @ layer.weight.flatten(1).T + layer.bias,
+        output.movedim(1, -1).reshape(3 * locations, -1)[rows],
+    )
+
+
+@pytest.mark.parametrize("convolution", [False, True])
+@pytest.mark.parametrize("invalid", ["empty", "unsorted", "negative", "past_end", "float"])
+def test_invalid_sample_coordinates_have_a_valid_alternative(
+    convolution, invalid, execution_device
+):
+    layer = nn.Conv2d(2, 3, 3, padding=1) if convolution else nn.Linear(2, 3)
+    inputs = torch.randn((2, 2, 3, 4) if convolution else (2, 4, 2))
+    end = 24 if convolution else 8
+    rows = {
+        "empty": torch.empty(0, dtype=torch.long),
+        "unsorted": torch.tensor([1, 0]),
+        "negative": torch.tensor([-1, 0]),
+        "past_end": torch.tensor([0, end]),
+        "float": torch.tensor([0.0, 1.0]),
+    }[invalid]
+    before = inputs.clone()
+    with pytest.raises(ValueError):
+        workflow.feature_rows(layer, inputs, rows)
+    torch.testing.assert_close(inputs, before, rtol=0, atol=0)
+    valid = workflow.feature_rows(layer, inputs, torch.tensor([0, end - 1]))
+    outputs = layer(inputs)
+    reference = outputs.movedim(1, -1).reshape(end, 3) if convolution else outputs.reshape(end, 3)
+    torch.testing.assert_close(
+        valid @ layer.weight.flatten(1).T + layer.bias, reference[[0, end - 1]]
+    )
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -548,6 +677,88 @@ def test_width_allocation_noop_and_unreachable_target_are_read_only(execution_de
     for path, tensor in model.state_dict().items():
         torch.testing.assert_close(tensor, state[path])
     graph.validate()
+
+
+def test_width_allocation_checks_each_fraction_once_then_applies(monkeypatch, execution_device):
+    model = ResidualMLP().eval()
+    inputs = torch.randn(2, 5, 3)
+    graph = DependencyGraph.build(model, args=(inputs,))
+    pruner = Pruner(model, graph=graph, granularity=Granularity(by_path={"fc1": 2}))
+    original_plan_remove = pruner.plan_remove
+    calls = []
+
+    def observed(remove, **kwargs):
+        requests = tuple(remove)
+        calls.append(tuple(requests))
+        return original_plan_remove(requests, **kwargs)
+
+    monkeypatch.setattr(pruner, "plan_remove", observed)
+    budget = ParameterBudget.from_ratio(model, 0.1)
+    widths = workflow.allocate_widths(pruner, {"fc1": "fc2"}, budget, 2)
+    assert len(calls) == 3
+    assert all(call not in calls[:index] for index, call in enumerate(calls))
+    assert widths == {"fc1": 4}
+    plan = original_plan_remove([graph.parameter("fc1.weight").axis(0).select([0, 1])])
+    pruner.apply(plan)
+    assert sum(parameter.numel() for parameter in model.parameters()) <= budget.max_params
+    model(inputs).square().mean().backward()
+
+
+def test_sampled_even_kernel_reconstruction_matches_independent_fit_and_checkpoint(
+    tmp_path, execution_device
+):
+    model = (
+        nn.Sequential(nn.Conv2d(2, 6, 1), nn.GELU(), nn.Conv2d(6, 3, 4, padding="same"))
+        .double()
+        .eval()
+    )
+    original = copy.deepcopy(model)
+    inputs = torch.randn(2, 2, 5, 6, dtype=torch.float64)
+    moments = workflow.collect_reconstruction(
+        model, original, "2", [(inputs, torch.zeros(2))], execution_device, 1, 7
+    )
+    hidden = F.gelu(original[0](inputs))
+    dense_design = F.unfold(F.pad(hidden, (1, 2, 1, 2)), 4).transpose(1, 2).reshape(60, -1)
+    rows = torch.arange(7) * 60 // 7
+    features = dense_design[rows]
+    targets = (original[2](hidden) - model[2].bias[None, :, None, None]).movedim(1, -1)
+    targets = targets.reshape(60, 3)[rows]
+    torch.testing.assert_close(moments.gram, features.T @ features)
+    torch.testing.assert_close(moments.cross, features.T @ targets)
+    hessian, cross = moments.system(original[2].weight.flatten(1).T, 0.03)
+    solution = workflow.solve_osscar(hessian, cross, 6, 4, prune_batch=2, swap_steps=2)
+    ridge = 0.03 * features.square().sum(0).mean() / len(features)
+    augmented_x = torch.cat(
+        (features / len(features) ** 0.5, ridge.sqrt() * torch.eye(features.shape[1]))
+    )
+    augmented_y = torch.cat(
+        (targets / len(features) ** 0.5, ridge.sqrt() * original[2].weight.flatten(1).T)
+    )
+    independent, _ = reference_fit(augmented_x, augmented_y, solution.retained, 16)
+    torch.testing.assert_close(solution.coefficients, independent)
+    graph = DependencyGraph.build(model, args=(inputs,))
+    pruner = Pruner(model, graph=graph)
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    invalid = workflow.ReconstructionSolution(
+        solution.retained, torch.full_like(solution.coefficients, float("nan")), (0.0,), 0
+    )
+    with pytest.raises(ValueError, match="overflow"):
+        workflow.apply_reconstruction(pruner, "0", "2", invalid)
+    graph.validate()
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+    workflow.apply_reconstruction(pruner, "0", "2", solution)
+    expected = F.conv2d(
+        F.gelu(original[0](inputs))[:, solution.retained],
+        independent.T.reshape(3, 4, 4, 4),
+        original[2].bias,
+        padding="same",
+    )
+    torch.testing.assert_close(model(inputs), expected)
+    model(inputs).square().mean().backward()
+    save_checkpoint(model, tmp_path / "sampled.pt")
+    restored = load_checkpoint(original, tmp_path / "sampled.pt", map_location=execution_device)
+    torch.testing.assert_close(restored(inputs), expected)
 
 
 @pytest.mark.parametrize("invalid", ["unsorted", "duplicate", "out_of_range", "nonfinite"])

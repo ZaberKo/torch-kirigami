@@ -11,6 +11,7 @@ from torch import nn
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.contracts import AxisBarrier, Diagnostic, Divisible
+from torch_kirigami.errors import StaleGraphError
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -104,7 +105,10 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
     ]
     assert ranking.norms[0] == pytest.approx(expected, rel=1e-12, abs=0)
     selected = context.impact((axis.select([0]),))
-    actual, removals = ranking.rank(selected, (axis,))
+    scores_by_key, removals = ranking.score(selected, (axis,))
+    actual = sorted(
+        candidates[1:], key=lambda candidate: (scores_by_key[candidate.key], candidate.key)
+    )
     remaining = candidates[1:]
     scores = context.score(ReferenceMagnitude(p), remaining, accepted_impact=selected)
     assert actual == [
@@ -192,7 +196,14 @@ def test_unproved_candidates_use_generic_scoring(case: str) -> None:
     elif case == "barrier":
         constraints = (AxisBarrier(axis, "Opaque axis"),)
     context = context_for(graph, candidates, constraints)
-    assert IndependentRanking.build(context, GroupMagnitude()) is None
+    ranking = IndependentRanking.build(context, GroupMagnitude())
+    if case == "overlap":
+        assert ranking is not None
+        scores, _ = ranking.score(context.impact(()), context.channel_axes)
+        assert set(scores) == {"first"}
+        assert ranking.score(context.impact(candidates[1].remove), context.channel_axes) is None
+    else:
+        assert ranking is None
     if case == "custom":
         with pytest.raises(PlanningError, match="Unproved custom position"):
             context.score(GroupMagnitude(), candidates)
@@ -222,11 +233,65 @@ def test_last_position_and_weight_updates_disable_reuse() -> None:
     context = context_for(graph, candidates)
     ranking = IndependentRanking.build(context, GroupMagnitude())
     assert ranking is not None
-    assert ranking.rank(context.impact((axis.select([0, 1, 2]),)), (axis,)) is None
+    assert ranking.score(context.impact((axis.select([0, 1, 2]),)), (axis,)) is None
     empty = context.impact(())
     with torch.no_grad():
         model.weight.add_(1)
-    assert ranking.rank(empty, (axis,)) is None
+    assert ranking.score(empty, (axis,)) is None
+
+
+@pytest.mark.parametrize("change", ["invalidate", "attribute", "mode"])
+def test_cached_score_rejects_stale_graph(change, execution_device):
+    model = nn.Linear(3, 4, bias=False).eval()
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
+    axis = graph.parameter("weight").axis(0)
+    candidates = (Candidate("first", (axis.select([0]),), axis),)
+    context = context_for(graph, candidates)
+    ranking = IndependentRanking.build(context, GroupMagnitude())
+    accepted = context.impact(())
+    assert ranking is not None
+    if change == "invalidate":
+        graph.invalidate()
+    elif change == "attribute":
+        model.out_features = 5
+    else:
+        model.train()
+    with pytest.raises(StaleGraphError, match="changed"):
+        ranking.score(accepted, (axis,))
+
+
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_partial_reuse_with_cross_axis_acceptance_matches_public_generic_plan(
+    strategy_type, execution_device
+):
+    """Generic row deletions invalidate the cached column statistics dynamically."""
+    torch.manual_seed(47)
+    model = nn.Sequential(nn.Linear(4, 12), nn.ReLU(), nn.Linear(12, 10), nn.Linear(10, 2))
+    model = model.double().eval()
+    with torch.no_grad():
+        model[2].weight[:4].mul_(0.001)
+        model[3].weight[:, :4].mul_(0.001)
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 4, dtype=torch.float64)
+    plans = []
+    for current, metric in ((model, GroupMagnitude()), (reference, ReferenceMagnitude())):
+        graph = DependencyGraph.build(current, args=(x,))
+        pruner = Pruner(current, graph=graph, granularity=Granularity(by_path={"0": 2, "2": 2}))
+        space = pruner.discover_candidates(targets=("0", "2"))
+        plan = pruner.plan(
+            space,
+            budget=ParameterBudget.from_ratio(current, 0.4),
+            strategy=strategy_type(metric),
+        )
+        assert any(key.startswith("2.weight") for key in plan.selected)
+        plans.append(plan)
+        pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    assert plans[0].selected == plans[1].selected
+    assert plans[0].selection_report == plans[1].selection_report
+    for path, value in model.state_dict().items():
+        torch.testing.assert_close(value, reference.state_dict()[path], rtol=0, atol=0)
+    torch.testing.assert_close(model(x), reference(x), rtol=0, atol=0)
+    model(x).sum().backward()
 
 
 def test_initial_divisibility_violation_is_still_repaired() -> None:

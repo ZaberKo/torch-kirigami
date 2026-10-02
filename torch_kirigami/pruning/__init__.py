@@ -1,5 +1,6 @@
 """Plan and apply structural pruning on the original PyTorch Module."""
 
+from .axis_domains import IdentityAxisIndex
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
 from .granularity import Granularity
@@ -44,6 +45,7 @@ __all__ = [
     "Granularity",
     "Greedy",
     "GroupMagnitude",
+    "IdentityAxisIndex",
     "Magnitude",
     "Metric",
     "MetricContext",

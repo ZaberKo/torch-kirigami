@@ -136,6 +136,7 @@ class GateMagnitude:
     a shared weight contribute separately, independently of binding order.
     Already selected gate regions contribute zero. Gate statistics remain those
     supplied by the caller; scoring does not train or recalibrate them.
+    Effective scales are prepared once per score batch and never cached across calls.
 
     Args:
         bindings: Explicit GateBindings from the planning graph. Ungated
@@ -157,28 +158,33 @@ class GateMagnitude:
     ) -> list[float]:
         """Evaluate additions to a complete, possibly constrained selection."""
         context.require_complete(accepted_impact)
+        if not candidates:
+            return []
+        prepared, seen = [], set()
+        for binding in self.bindings:
+            if binding.graph is not context.graph:
+                raise ValueError("Gate score uses a different dependency graph")
+            ref = binding.graph.parameter(f"{binding.path}.weight".lstrip("."))
+            mask = binding.graph.buffer(f"{binding.path}.mask".lstrip("."))
+            identity = (ref, mask)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            gate = binding.graph.model.get_submodule(binding.path)
+            dtype = torch.float64 if gate.weight.dtype == torch.float64 else torch.float32
+            # Statistics are shared only within this call. Training or mask changes
+            # between score calls must immediately affect the next batch.
+            prepared.append((ref, gate.weight.to(dtype) * gate.mask.to(dtype)))
         scores = []
         for candidate in candidates:
             impact = context.impact(accepted_impact.requested + candidate.remove)
             context.require_complete(impact)
             score, found = 0.0, False
-            seen = set()
-            for binding in self.bindings:
-                if binding.graph is not context.graph:
-                    raise ValueError("Gate score uses a different dependency graph")
-                ref = binding.graph.parameter(f"{binding.path}.weight".lstrip("."))
-                mask = binding.graph.buffer(f"{binding.path}.mask".lstrip("."))
-                identity = (ref, mask)
-                if identity in seen:
-                    continue
-                seen.add(identity)
+            for ref, values in prepared:
                 selection = impact.selection(ref).subtract(accepted_impact.selection(ref))
                 if not selection:
                     continue
                 found = True
-                gate = binding.graph.model.get_submodule(binding.path)
-                dtype = torch.float64 if gate.weight.dtype == torch.float64 else torch.float32
-                values = gate.weight.to(dtype) * gate.mask.to(dtype)
                 score += sum(gather_region(values, r).abs().sum().item() for r in selection.regions)
             if not found:
                 # A previously selected gated candidate has zero marginal cost.

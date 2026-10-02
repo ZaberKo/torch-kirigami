@@ -198,14 +198,26 @@ def discover_reconstruction_pairs(
 
 
 def feature_rows(layer: nn.Module, inputs: torch.Tensor, row_ids: torch.Tensor) -> torch.Tensor:
-    """Sample the consumer design matrix, unfolding at most one image at a time.
+    """Sample the consumer design matrix, padding at most one image at a time.
 
     Conv rows follow batch, output-height, output-width order. Columns follow
     input-channel, kernel-height, kernel-width order, matching weight.flatten(1).
-    Row IDs must be sorted so sampled images can be processed consecutively.
+    Row IDs must be nonempty, sorted int64 coordinates on the input device, so
+    sampled images can be processed consecutively. Repeated coordinates are valid.
     """
+    if (
+        row_ids.ndim != 1
+        or row_ids.dtype != torch.long
+        or row_ids.device != inputs.device
+        or row_ids.numel() == 0
+        or bool((row_ids[1:] < row_ids[:-1]).any())
+    ):
+        raise ValueError("Sampling requires nonempty sorted int64 row IDs on the input device")
     if type(layer) is nn.Linear:
-        return inputs.reshape(-1, layer.in_features)[row_ids]
+        rows = inputs.reshape(-1, layer.in_features)
+        if bool(((row_ids < 0) | (row_ids >= len(rows))).any()):
+            raise ValueError("Sample row IDs must lie inside the consumer's output")
+        return rows[row_ids]
     if type(layer) is not nn.Conv2d or layer.groups != 1 or layer.padding_mode != "zeros":
         raise ValueError("Feature sampling supports Linear and ordinary zero-padded Conv2d")
     same_padding = layer.padding == "same"
@@ -230,33 +242,43 @@ def feature_rows(layer: nn.Module, inputs: torch.Tensor, row_ids: torch.Tensor) 
         )
     )
     locations = height * width
-    if row_ids.ndim != 1 or row_ids.numel() == 0 or bool((row_ids[1:] < row_ids[:-1]).any()):
-        raise ValueError("Sampling requires nonempty sorted row IDs")
+    if bool(((row_ids < 0) | (row_ids >= len(inputs) * locations)).any()):
+        raise ValueError("Sample row IDs must lie inside the consumer's output")
     image_ids = row_ids // locations
+    kernel_rows = (
+        torch.arange(layer.kernel_size[0], device=inputs.device).repeat_interleave(
+            layer.kernel_size[1]
+        )
+        * layer.dilation[0]
+    )
+    kernel_columns = (
+        torch.arange(layer.kernel_size[1], device=inputs.device).repeat(layer.kernel_size[0])
+        * layer.dilation[1]
+    )
     rows = []
     for image in image_ids.unique_consecutive().tolist():
         image_input = inputs[image : image + 1]
-        if same_padding:
-            # Even kernels can require asymmetric `same` padding, which
-            # unfold's symmetric padding argument cannot express.
-            vertical, horizontal = totals
-            image_input = F.pad(
-                image_input,
-                (
-                    horizontal // 2,
-                    horizontal - horizontal // 2,
-                    vertical // 2,
-                    vertical - vertical // 2,
-                ),
-            )
-        columns = F.unfold(
+        # Numeric padding is symmetric; `same` can require an extra cell on
+        # the right/bottom. Keep one image resident, and gather only sampled
+        # patches instead of unfolding all spatial positions then discarding them.
+        vertical, horizontal = totals
+        image_input = F.pad(
             image_input,
-            layer.kernel_size,
-            dilation=layer.dilation,
-            padding=padding,
-            stride=layer.stride,
-        )[0].T
-        rows.append(columns[row_ids[image_ids == image] % locations])
+            (
+                horizontal // 2,
+                horizontal - horizontal // 2,
+                vertical // 2,
+                vertical - vertical // 2,
+            ),
+        )
+        positions = row_ids[image_ids == image] % locations
+        sampled = image_input[
+            0,
+            :,
+            (positions // width)[:, None] * layer.stride[0] + kernel_rows,
+            (positions % width)[:, None] * layer.stride[1] + kernel_columns,
+        ]
+        rows.append(sampled.permute(1, 0, 2).reshape(len(positions), -1))
     return torch.cat(rows)
 
 
@@ -458,6 +480,13 @@ def deletion_costs(
     coefficients: torch.Tensor, inverse: torch.Tensor, group_size: int
 ) -> torch.Tensor:
     """Compute exact single-group loss increases at the current optimum."""
+    if group_size == 1:
+        diagonal = inverse.diagonal()
+        if bool((diagonal == 0).any()):
+            raise torch.linalg.LinAlgError("Singular deletion block")
+        # Divide before multiplying, just as the matrix solve does. Squaring
+        # first can overflow even when the cost is finite after division.
+        return (coefficients * (coefficients / diagonal[:, None])).sum(1) / 2
     n = len(coefficients) // group_size
     blocks = inverse.reshape(n, group_size, n, group_size).diagonal(dim1=0, dim2=2).movedim(-1, 0)
     weights = coefficients.reshape(n, group_size, -1)
@@ -491,7 +520,8 @@ def restoration_gains(
     group_size: int,
 ) -> tuple[tuple[int, ...], torch.Tensor]:
     """Compute the objective decrease from restoring each absent group separately."""
-    absent = tuple(i for i in range(len(gram) // group_size) if i not in retained)
+    retained_set = set(retained)
+    absent = tuple(i for i in range(len(gram) // group_size) if i not in retained_set)
     q = _coordinates(absent, group_size, gram.device).reshape(-1, group_size)
     r = _coordinates(retained, group_size, gram.device)
     coupling = gram[q.flatten()[:, None], r]
@@ -502,7 +532,14 @@ def restoration_gains(
     residual = (cross[q.flatten()] - coupling @ coefficients).reshape(
         len(absent), group_size, cross.shape[1]
     )
-    gains = (residual * torch.linalg.solve(schur, residual)).sum((1, 2)) / 2
+    if group_size == 1:
+        diagonal = schur[:, 0, 0]
+        if bool((diagonal == 0).any()):
+            raise torch.linalg.LinAlgError("Singular restoration block")
+        solved = residual / diagonal[:, None, None]
+    else:
+        solved = torch.linalg.solve(schur, residual)
+    gains = (residual * solved).sum((1, 2)) / 2
     return absent, gains
 
 
@@ -659,18 +696,20 @@ def allocate_widths(
     minimal, remaining = evaluate_fraction(fractions[0])
     if remaining <= budget.max_params:
         return minimal
-    _, remaining = evaluate_fraction(fractions[-1])
+    feasible, remaining = evaluate_fraction(fractions[-1])
     if remaining > budget.max_params:
         raise PlanningError("Parameter target is unreachable within the declared OSSCAR widths")
-    low, high = 0, len(fractions) - 1
+    # The first fraction is already known to miss the cap; the last is feasible.
+    low, high = 1, len(fractions) - 1
     while low < high:
         middle = (low + high) // 2
-        _, remaining = evaluate_fraction(fractions[middle])
+        widths_at_fraction, remaining = evaluate_fraction(fractions[middle])
         if remaining <= budget.max_params:
             high = middle
+            feasible = widths_at_fraction
         else:
             low = middle + 1
-    return evaluate_fraction(fractions[low])[0]
+    return feasible
 
 
 def apply_reconstruction(

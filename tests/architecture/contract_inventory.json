@@ -1,6 +1,23 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.pruning.IdentityAxisIndex",
+      "contracts": [
+        {
+          "behavior": "Prove immutable full-axis identity components without inferring constraints or execution support.",
+          "tests": [
+            "tests/pruning/test_identity_axes.py::test_identity_component_matches_every_single_position",
+            "tests/pruning/test_identity_axes.py::test_identity_component_rejects_scopes_extensions_and_full_width",
+            "tests/pruning/test_identity_axes.py::test_equivalent_seeds_keep_full_closure_with_nonidentity_relations",
+            "tests/integration/test_isomorphic_workflow.py::test_identity_family_reuse_matches_generic_plan_and_reduces_queries",
+            "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring"
+          ],
+          "conditions": "Exact declared relations; proper subsets for full-component reuse; equivalent seeds checked through actual CPU/CUDA propagation, planning, replay and execution.",
+          "gaps": ["Scoped mappings and extension semantics are not inferred. Equivalent seeds do not prove uniform behavior across different positions; full-axis changes still require ordinary joint analysis."]
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.ranking.IndependentRanking",
       "contracts": [
         {
@@ -11,9 +28,12 @@
             "tests/pruning/test_independent_ranking.py::test_dynamic_propagations_follow_joint_trials_instead_of_candidate_count",
             "tests/pruning/test_independent_ranking.py::test_unproved_candidates_use_generic_scoring",
             "tests/pruning/test_independent_ranking.py::test_extensions_and_inference_tensors_do_not_reuse_statistics",
-            "tests/pruning/test_independent_ranking.py::test_last_position_and_weight_updates_disable_reuse"
+            "tests/pruning/test_independent_ranking.py::test_last_position_and_weight_updates_disable_reuse",
+            "tests/pruning/test_independent_ranking.py::test_cached_score_rejects_stale_graph",
+            "tests/pruning/test_independent_ranking.py::test_partial_reuse_with_cross_axis_acceptance_matches_public_generic_plan",
+            "tests/integration/test_vit_head_workflow.py::test_mixed_head_ffn_reuse_matches_generic_global_selection"
           ],
-          "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components. CPU and CUDA numerical and lifecycle references.",
+          "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components, optionally mixed with ordinary candidates in one global ranking. Complete accepted projections guard conditional reuse. CPU and CUDA numerical and lifecycle references.",
           "gaps": [
             "Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."
           ]
@@ -989,6 +1009,20 @@
     {
       "object": "torch_kirigami.pruning.WeightTaylor",
       "contracts": [
+        {
+          "behavior": "Bounded absolute axis statistics preserve ordinary signed reductions, cache invalidation, conditional unions and public pruning lifecycle.",
+          "tests": [
+            "tests/pruning/test_taylor_statistics.py::test_axis_scores_match_independent_products_and_batch_order",
+            "tests/pruning/test_taylor_statistics.py::test_statistics_refresh_and_unselected_nonfinite_values",
+            "tests/pruning/test_taylor_statistics.py::test_conditional_rows_columns_use_union_and_preserve_signed_cancellation",
+            "tests/pruning/test_taylor_statistics.py::test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices",
+            "tests/pruning/test_taylor_statistics.py::test_joint_requests_keep_generic_overflow_failure_and_valid_alternative",
+            "tests/pruning/test_taylor_statistics.py::test_absolute_taylor_near_float64_overflow_retains_region_failure_semantics",
+            "tests/pruning/test_taylor_statistics.py::test_public_plans_compact_models_and_restore_match_generic_statistics"
+          ],
+          "conditions": "CPU/CUDA, signed/absolute modes, ordinary fallback, serialization, application, checkpoint and backward.",
+          "gaps": []
+        },
         {
           "behavior": "独立公式、区域去重、低精度/复数/极值溢出、梯度前提",
           "tests": [

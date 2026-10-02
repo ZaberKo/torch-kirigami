@@ -40,13 +40,17 @@ def bounded_cpu_threads():
     torch.set_num_threads(previous)
 
 
-def metric_context(device):
-    model = nn.Sequential(nn.Linear(3, 5, bias=False), nn.Linear(5, 2)).to(device).eval()
+def metric_context(device, dtype=torch.float32):
+    model = (
+        nn.Sequential(nn.Linear(3, 5, bias=False), nn.Linear(5, 2))
+        .to(device=device, dtype=dtype)
+        .eval()
+    )
     with torch.no_grad():
         model[0].weight.copy_(
             torch.tensor([[-2, 0, 1], [2, 0, -1], [0, 0, 0], [1, 2, 0], [2, 1, 0]])
         )
-    graph = DependencyGraph.build(model, args=(torch.zeros(2, 3, device=device),))
+    graph = DependencyGraph.build(model, args=(torch.zeros(2, 3, device=device, dtype=dtype),))
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates(targets=("0",))
     context = PlanningContext(
@@ -59,11 +63,12 @@ def metric_context(device):
     return model, pruner, space, context
 
 
-@pytest.mark.parametrize("block_size", [1, 2, 256])
+@pytest.mark.parametrize("block_size", [1, 2, 3, 256])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_geometric_scores_match_signed_distance_reference(
-    block_size, execution_device, monkeypatch
+    block_size, dtype, execution_device, monkeypatch
 ):
-    model, _pruner, space, context = metric_context(execution_device)
+    model, _pruner, space, context = metric_context(execution_device, dtype)
     axis = space.channel_axes[0]
     rows = model[0].weight.detach().double().cpu().tolist()
     # Python scalar arithmetic is independent of the tiled torch.cdist implementation.
@@ -99,7 +104,38 @@ def test_geometric_scores_match_signed_distance_reference(
     assert context.score(metric, (block,)) == pytest.approx(
         [expected[0] + expected[2] + expected[4]]
     )
-    assert len(distance_tiles) == math.ceil(5 / block_size) ** 2  # Scoring reuses the snapshot.
+    tiles = math.ceil(5 / block_size)
+    assert len(distance_tiles) == tiles * (tiles + 1) // 2  # Reuse symmetric tiles and snapshot.
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("block_size", [1, 2, 3, 256])
+def test_geometric_repeated_rows_keep_stable_ties_and_original_tile_scores(
+    dtype, block_size, execution_device
+):
+    model, _pruner, space, context = metric_context(execution_device, dtype)
+    with torch.no_grad():
+        # Identical rows lie on different tiles. Their scores must remain tied
+        # even though one is reduced from the transposed symmetric tile.
+        model[0].weight[4].copy_(model[0].weight[0])
+    rows = model[0].weight.detach()
+    expected = torch.zeros(len(rows), device=execution_device, dtype=dtype)
+    for start in range(0, len(rows), block_size):
+        for other in range(0, len(rows), block_size):
+            expected[start : start + block_size] += torch.cdist(
+                rows[start : start + block_size],
+                rows[other : other + block_size],
+                compute_mode="donot_use_mm_for_euclid_dist",
+            ).sum(1)
+    metric = prune_finetune.GeometricMedian(
+        context.graph, space.channel_axes, block_size=block_size
+    )
+    scores = context.score(metric, space.candidates)
+    assert scores == tuple(expected.cpu().tolist())
+    assert scores[0] == scores[4]
+    assert sorted(range(len(scores)), key=lambda i: (scores[i], space.candidates[i].key)) == sorted(
+        range(len(scores)), key=lambda i: (float(expected[i]), space.candidates[i].key)
+    )
 
 
 @pytest.mark.parametrize("value", [float("nan"), float("inf"), 1e30])
@@ -137,7 +173,8 @@ def test_geometric_requires_complete_output_rows_and_static_selection(execution_
 
 
 @pytest.mark.parametrize("family", ["cnn", "vit"])
-def test_geometric_public_plan_apply_and_checkpoint(family, execution_device, tmp_path):
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+def test_geometric_public_plan_apply_and_checkpoint(family, dtype, execution_device, tmp_path):
     torch.manual_seed(54)
     if family == "cnn":
         model = nn.Sequential(
@@ -159,10 +196,10 @@ def test_geometric_public_plan_apply_and_checkpoint(family, execution_device, tm
             (f"encoder.layers.encoder_layer_{i}.mlp.0", f"encoder.layers.encoder_layer_{i}.mlp.3")
             for i in range(2)
         )
-    model = model.to(execution_device).eval()
+    model = model.to(device=execution_device, dtype=dtype).eval()
     dense = copy.deepcopy(model)
     reference = copy.deepcopy(model)
-    inputs = torch.randn(2, 3, 8, 8, device=execution_device)
+    inputs = torch.randn(2, 3, 8, 8, device=execution_device, dtype=dtype)
     graph = DependencyGraph.build(model, args=(inputs,))
     targets = tuple(first for first, _second in pairs)
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path=dict.fromkeys(targets, 2)))

@@ -409,6 +409,13 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
         ("prune_finetune", []),
         ("prune_finetune", ["--train_workers", "2", "--val_workers", "2"]),
         ("prune_finetune", ["--metric", "taylor"]),
+        pytest.param("prune_finetune", ["--selection", "dynamic"], id="dynamic-magnitude"),
+        pytest.param(
+            "prune_finetune",
+            ["--metric", "taylor", "--selection", "dynamic"],
+            id="dynamic-taylor",
+        ),
+        pytest.param("prune_finetune", ["--metric", "geometric_median"], id="geometric-median"),
         ("iterative_pruning", ["--rounds", "2"]),
         ("bn_sparsity", []),
         ("group_sparsity", []),
@@ -448,6 +455,16 @@ def test_pretrained_workflow(
     requested = []
     module = importlib.import_module(recipe)
     weights = prune_finetune.MODELS[model_name][1]
+    graph_builds = 0
+    if recipe == "iterative_pruning":
+        original_build = module.DependencyGraph.build
+
+        def observed_build(*args, **kwargs):
+            nonlocal graph_builds
+            graph_builds += 1
+            return original_build(*args, **kwargs)
+
+        monkeypatch.setattr(module.DependencyGraph, "build", observed_build)
     # Observe the coefficient reaching autograd, not just a scheduler helper or
     # printed value. Keep real group penalties and public plan/apply/save/load.
     penalty_weights, selection_steps = [], []
@@ -602,6 +619,7 @@ def test_pretrained_workflow(
     assert pruned[-1]["#Params"] < baseline["#Params"]
     assert pruned[-1]["#MACs"] < baseline["#MACs"]
     if recipe == "iterative_pruning":
+        assert graph_builds == saved["config"]["rounds"]
         initial = baseline["#Params"]
         cap = saved["config"]["max_params"]
         assert [row["max_params"] for row in pruned] == [initial - (initial - cap) // 2, cap]
@@ -826,7 +844,8 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "--pruning_ratio" in completed.stdout
+    ratio_flag = "--family_pruning_ratio" if recipe == "isomorphic_pruning" else "--pruning_ratio"
+    assert ratio_flag in completed.stdout
     assert "--max_params" not in completed.stdout
     assert "--channel_pruning_ratio" not in completed.stdout
     assert "--max_macs" not in completed.stdout
@@ -869,7 +888,10 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     assert options.latency_warmup == latency_defaults["warmup"].default
     assert options.latency_repetitions == latency_defaults["repetitions"].default
     assert not options.compile_latency
-    assert options.pruning_ratio == 0.05
+    ratio_name = "family_pruning_ratio" if recipe == "isomorphic_pruning" else "pruning_ratio"
+    assert getattr(options, ratio_name) == 0.05
+    if recipe == "isomorphic_pruning":
+        assert options.calibration_batches == 100 and options.calibration_batch_size == 64
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
     if recipe in ("bn_sparsity", "gate_pruning", "group_sparsity", "stability_pruning"):
         assert options.sparse_loss_weight == 1e-4
@@ -887,7 +909,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
             recipe,
             "--device",
             "cpu",
-            "--pruning_ratio",
+            "--family_pruning_ratio" if recipe == "isomorphic_pruning" else "--pruning_ratio",
             "0.1",
             "--train_batch_size",
             "16",
@@ -903,7 +925,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     options = module.parse_args()
     assert (options.train_batch_size, options.val_batch_size) == (16, 128)
     assert options.compile_latency
-    assert options.pruning_ratio == 0.1
+    assert getattr(options, ratio_name) == 0.1
     for removed in (
         "--layers",
         "--threads",
@@ -1011,11 +1033,12 @@ def test_stability_step_training_matches_loss_reference(schedule, execution_devi
 @pytest.mark.parametrize("recipe", WORKFLOWS)
 @pytest.mark.parametrize("ratio", ["-0.1", "1", "nan", "inf"])
 def test_workflow_rejects_invalid_parameter_ratio(monkeypatch, capsys, recipe, ratio):
-    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", "--pruning_ratio", ratio])
+    ratio_name = "family_pruning_ratio" if recipe == "isomorphic_pruning" else "pruning_ratio"
+    monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", f"--{ratio_name}", ratio])
     with pytest.raises(SystemExit) as error:
         importlib.import_module(recipe).parse_args()
     assert error.value.code == 2
-    assert "0 <= pruning_ratio < 1" in capsys.readouterr().err
+    assert f"0 <= {ratio_name} < 1" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("recipe", WORKFLOWS)

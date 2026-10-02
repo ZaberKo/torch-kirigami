@@ -211,8 +211,9 @@ def train_steps(
             (task_loss + current_weight * sparse_loss).backward()
             optimizer.step()
             total += task_loss.detach().item() * labels.numel()
-            sparse_total += sparse_loss.detach().item() * labels.numel()
-            weighted_sparse_total += current_weight * sparse_loss.detach().item() * labels.numel()
+            sparse_value = sparse_loss.detach().item()
+            sparse_total += sparse_value * labels.numel()
+            weighted_sparse_total += current_weight * sparse_value * labels.numel()
             count += labels.numel()
             progress.set_postfix(
                 images=count,
@@ -346,16 +347,19 @@ def main() -> None:
 
     for check in range(options.max_selection_checks):
         plan = make_plan(pruner, space, budget)
-        selected = tuple(c for c in space.candidates if c.key in plan.selected)
+        selected_keys = set(plan.selected)
+        selected = tuple(c for c in space.candidates if c.key in selected_keys)
+        removed_by_axis = {axis: set() for axis in space.channel_axes}
+        for candidate in selected:
+            if candidate.axis in removed_by_axis:
+                removed_by_axis[candidate.axis].update(
+                    candidate.remove[0].fully_selected_indices(0)
+                )
         retained = {}
         for axis in space.channel_axes:
-            removed = {
-                index
-                for candidate in selected
-                if candidate.axis == axis
-                for index in candidate.remove[0].fully_selected_indices(0)
-            }
-            retained[axis.tensor.paths[0]] = sorted(set(range(axis.tensor.shape[0])) - removed)
+            retained[axis.tensor.paths[0]] = sorted(
+                set(range(axis.tensor.shape[0])) - removed_by_axis[axis]
+            )
         similarity = window.update(retained)
         stable = similarity is not None and similarity >= options.threshold
         # A check measures the current weights. Do not train after the final

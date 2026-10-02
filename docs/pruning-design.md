@@ -304,25 +304,57 @@ version changes invalidate it. Singleton candidates reuse the exact scores
 already calculated for normalization; multi-position candidates still require
 joint scoring because their affected regions can overlap.
 
-The built-in greedy strategies additionally reuse per-position weight norms when
-the complete candidate space consists of singleton requests on tensor-disjoint,
-one-to-one axis components. The proof uses declared index relations, including
+The built-in greedy strategies additionally reuse per-position weight norms for
+singleton requests on proved tensor-disjoint, one-to-one axis components. Other
+candidates in the same space retain ordinary joint scoring; both sets enter one
+global `(score, key)` ordering and the same resource target. The proof uses declared index relations, including
 broadcasting along other dimensions and identity reshape relations; it does not
 infer execution support from shapes. Weight reductions run in batches on each
-parameter's device. Dynamic ranking recomputes normalization over the remaining
-positions and sorts again after each accepted change. No full impacts or copied
+parameter's device. Dynamic ranking checks every cached component tensor against
+the complete accepted selection, recomputes normalization over the remaining
+positions and sorts again after each accepted change. Cross-axis or partitioned
+changes disable reuse for that ranking call. No full impacts or copied
 weights are retained by this optimization.
 
 This path applies only to exact, unmodified `GroupMagnitude` without a parameter
-filter. Scoped/block mappings, intersecting row/column domains, custom relations
-or constraints, incomplete influences, inference tensors and last-position
-removal use ordinary joint scoring. Each accelerated axis is bounded by the
+filter. Scoped/block candidates use ordinary joint scoring. Unknown custom relations
+or constraints disable this optimization; incomplete influences, inference tensors
+and last-position removal also retain the ordinary path. Shared row/column domains
+are never cached as independent components. Each accelerated axis is bounded by the
 existing index complexity limit. Model validation and tensor version checks
 guard reuse; every proposed combination still passes full propagation, budget
 accounting and recipe compilation. This changes neither the public API nor the
 mathematical score, apart from ordinary floating-point reduction roundoff.
 
+Custom strategies can use `IdentityAxisIndex(graph.relations)` for the same pure
+coordinate proofs. `component(axis)` returns a conservative identity component
+for proper subsets on one axis per tensor, or `None` when proof is unavailable.
+`equivalent_axes(axis)` returns entry axes whose equal-coordinate seeds imply one
+another and therefore have equal closures, even with other relations attached.
+It does not prove uniform behavior across different positions. Neither method
+checks constraints, graph freshness or execution support, retains impacts, or
+changes propagation. Analyze an actual request and validate the final joint
+selection before using such proofs for ranking or alias deduplication. The
+Isomorphic workflow demonstrates both uses with ordinary fallback paths.
+
 `WeightTaylor` reads existing dense, real, unscaled gradients. The caller owns the task loss, loss reduction, calibration data, accumulation, and AMP unscaling. Collect task-only gradients if sparse regularization should not influence importance. This metric does not call `backward()` or estimate per-example Fisher information.
+
+For exact native `WeightTaylor(mode="elementwise_abs")`, a complete single-axis
+slice can reuse a scalar vector of double-precision absolute weight-gradient
+sums. `joint_abs` retains ordinary region reductions: batching signed slices can
+change overflow and cancellation behavior, even for a singleton. Its absolute
+value is applied only after all parameter contributions have been combined.
+Statistics retain at most 128 entries and
+262,144 axis positions, with weak weight/gradient identities and version/mode
+guards. Parameter filters are still called and checked. Inference tensors,
+multi-axis or irregular remaining regions, overrides and nonfinite cached sums
+use ordinary selected-region reductions. Extreme float64 products also fall
+back under a conservative whole-parameter overflow bound. Every request still
+propagates its complete joint influence; this optimization does not accelerate propagation or
+recalibrate gradients. Floating reduction order can differ from the ordinary
+path, although the mathematical score is unchanged. Promoted products are
+computed in chunks of at most 1,048,576 elements; a larger individual slice uses
+the ordinary path rather than allocating a full promoted weight-gradient product.
 
 A `Strategy` implements `select(context) -> StrategyResult`. The immutable result
 contains registered candidate `keys`, a `stop_reason` (`target_reached`,

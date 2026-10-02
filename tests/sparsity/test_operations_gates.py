@@ -164,6 +164,33 @@ def test_gate_and_scale_parameter_aliases_are_not_counted_twice():
     assert context.score(metric, space.candidates) == (2.0, 0.0, 3.0)
 
 
+def test_empty_gate_score_batch_does_not_evaluate_unused_bindings(execution_device):
+    model = GatedModel().to(execution_device)
+    x = torch.ones(2, 2, device=execution_device)
+    operators = register_gate_operators(OperatorRegistry.default())
+    graph = DependencyGraph.build(model, args=(x,), operators=operators)
+    other_graph = DependencyGraph.build(
+        GatedModel().to(execution_device), args=(x,), operators=operators
+    )
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    context = PlanningContext(
+        graph, space.candidates, ChannelRatio(0.25), space.channel_axes, pruner.constraints
+    )
+    accepted = context.impact(())
+    valid = GateMagnitude((GateBinding(graph, "gate"),))
+    unrelated = GateMagnitude((GateBinding(other_graph, "gate"),))
+    for metric in (valid, unrelated):
+        assert metric.score(context, (), accepted_impact=accepted) == []
+        assert context.score(metric, ()) == ()
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    with pytest.raises(ValueError, match="different dependency graph"):
+        context.score(unrelated, space.candidates)
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name])
+    assert context.score(valid, space.candidates) == (1.0, 1.0, 1.0, 1.0)
+
+
 def test_gate_metric_conditional_regions_and_dynamic_plan(execution_device):
     class Parallel(nn.Module):
         def __init__(self):
@@ -324,6 +351,27 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
             1.0,
             2.0,
         )
+    metric = GateMagnitude(bindings)
+    with torch.no_grad():
+        model.g1.weight.copy_(model.g1.weight.new_tensor([2, 3, 5]))
+    expected = (2.0, 3.0, 10.0)
+    assert context.score(metric, space.candidates) == expected
+    assert tuple(context.score(metric, (c,))[0] for c in space.candidates) == expected
+    axis = space.channel_axes[0]
+    overlapping = Candidate("overlapping", (axis.select([0, 2]), axis.select([2])), axis)
+    assert context.score(metric, (overlapping,)) == (12.0,)
+    assert context.score(metric, (overlapping,), accepted_impact=selected) == (10.0,)
+    with torch.no_grad():
+        model.g1.weight[2] = float("nan")
+    # Unselected nonfinite scales do not contaminate an independent request.
+    assert context.score(metric, (space.candidates[0],)) == (2.0,)
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    with pytest.raises(PlanningError, match="nonfinite"):
+        context.score(metric, (space.candidates[2],))
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name], equal_nan=True)
+    with torch.no_grad():
+        model.g1.weight[2] = 5
     # An actually inactive shared channel remains a valid physical alternative.
     model.g1.set_mask([0, 0, 1])
     model.g2.set_mask([0, 1, 1])
@@ -336,6 +384,53 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
     )
     assert model.g1.weight is model.g2.weight
     assert model.g1 is model.alias
+    torch.testing.assert_close(model(x), reference)
+    model(x).sum().backward()
+    stream = io.BytesIO()
+    save_checkpoint(model, stream)
+    stream.seek(0)
+    restored = load_checkpoint(BranchGates().to(execution_device), stream)
+    assert restored.g1.weight is restored.g2.weight
+    assert restored.g1 is restored.alias
+    torch.testing.assert_close(restored(x), reference)
+    restored(x).sum().backward()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires CPU and CUDA gates")
+def test_gate_batch_scoring_keeps_device_local_reductions():
+    class MixedGates(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.hidden = nn.Linear(2, 4, device="cpu", dtype=torch.float64)
+            self.cpu_gate = ChannelGate(4, -1).to(device="cpu", dtype=torch.float64)
+            self.cuda_gate = ChannelGate(4, -1).to(device="cuda", dtype=torch.float64)
+            self.out = nn.Linear(4, 1, device="cpu", dtype=torch.float64)
+
+        def forward(self, x):
+            hidden = self.hidden(x)
+            return self.out(self.cpu_gate(hidden) + self.cuda_gate(hidden.to("cuda")).cpu())
+
+    model = MixedGates()
+    model.cpu_gate.set_mask([0, 1, 1, 1])
+    model.cuda_gate.set_mask([0, 1, 0, 1])
+    with torch.no_grad():
+        model.cpu_gate.weight.copy_(torch.tensor([1, 2, 3, 4], device="cpu"))
+        model.cuda_gate.weight.copy_(torch.tensor([5, 6, 7, 8], device="cuda"))
+    x = torch.ones(2, 2, device="cpu", dtype=torch.float64)
+    graph = DependencyGraph.build(
+        model, args=(x,), operators=register_gate_operators(OperatorRegistry.default())
+    )
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("hidden",))
+    budget = ChannelCount((3,), space.channel_axes)
+    context = PlanningContext(
+        graph, space.candidates, budget, space.channel_axes, pruner.constraints
+    )
+    metric = GateMagnitude((GateBinding(graph, "cpu_gate"), GateBinding(graph, "cuda_gate")))
+    assert context.score(metric, space.candidates) == (0.0, 8.0, 3.0, 12.0)
+    reference = model(x).detach()
+    pruner.apply(pruner.plan(space, budget=budget, strategy=Greedy(metric)))
+    assert model.cpu_gate.size == model.cuda_gate.size == 3
     torch.testing.assert_close(model(x), reference)
     model(x).sum().backward()
 

@@ -317,23 +317,38 @@ def _rank_candidates(
     accepted_impact: Impact,
     axes: tuple[AxisRef, ...],
     exclusions: dict[str, str],
+    independent: IndependentRanking | None = None,
 ) -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
     """Check complete joint influence and score within the bounded impact cache.
 
     The returned summaries exclude already selected axis positions and remain
     conservative lower bounds for combinations. They do not replace verification.
-    Every metric follows the same batching contract; no concrete type is special.
+    Unproved candidates follow the ordinary metric batching contract. Proven
+    native statistics join the same global score order, without separate pruning.
     """
-    eligible, scores, removals = [], [], {}
+    eligible, scores, removals = [], {}, {}
+    proved = independent.score(accepted_impact, axes) if independent is not None else None
+    proved_scores, proved_removals = proved if proved is not None else ({}, {})
+    proved_keys = {candidate.key for candidate, _, _ in independent.candidates} if proved else set()
     accepted_removals = _axis_removals(accepted_impact, axes)
     remaining = [
         candidate
         for candidate in candidates
-        if any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
+        if candidate.key in proved_scores
+        or (
+            candidate.key not in proved_keys
+            and any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
+        )
     ]
     for start in range(0, len(remaining), _SCORE_BATCH_SIZE):
         batch = []
         for candidate in remaining[start : start + _SCORE_BATCH_SIZE]:
+            if candidate.key in proved_scores:
+                eligible.append(candidate)
+                scores[candidate.key] = proved_scores[candidate.key]
+                removals[candidate.key] = proved_removals[candidate.key]
+                exclusions.pop(candidate.key, None)
+                continue
             try:
                 joint = context.impact((*accepted_impact.requested, *candidate.remove))
                 context.require_complete(joint)
@@ -348,16 +363,12 @@ def _rank_candidates(
                 }
                 batch.append(candidate)
         if batch:
-            scores.extend(
-                context._score_complete(metric, tuple(batch), accepted_impact=accepted_impact)
+            values = context._score_complete(metric, tuple(batch), accepted_impact=accepted_impact)
+            scores.update(
+                (candidate.key, score) for candidate, score in zip(batch, values, strict=True)
             )
             eligible.extend(batch)
-    ranked = [
-        candidate
-        for _, candidate in sorted(
-            zip(scores, eligible, strict=True), key=lambda item: (item[0], item[1].key)
-        )
-    ]
+    ranked = sorted(eligible, key=lambda candidate: (scores[candidate.key], candidate.key))
     return ranked, removals
 
 
@@ -430,14 +441,8 @@ def _select(
 
     def rank() -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
         """Use proved independent statistics; retain ordinary joint scoring otherwise."""
-        nonlocal independent
-        if independent is not None:
-            result = independent.rank(accepted_impact, axes)
-            if result is not None:
-                return result
-            independent = None
         return _rank_candidates(
-            context, metric, context.candidates, accepted_impact, axes, exclusions
+            context, metric, context.candidates, accepted_impact, axes, exclusions, independent
         )
 
     ranked, removals = rank()

@@ -71,6 +71,32 @@ def test_moments_reject_invalid_samples_without_replacing_prior_state():
     assert stats.count == before[2]
 
 
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_moments_reject_nonfinite_samples_atomically(dtype, value, execution_device):
+    stats = workflow.ActivationMoments()
+    stats.update(torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=dtype, device=execution_device))
+    mean, m2, count = stats.mean.clone(), stats.m2.clone(), stats.count
+    invalid = torch.tensor([[value, 1], [1, 2]], dtype=dtype, device=execution_device)
+    with pytest.raises(ValueError, match="finite"):
+        stats.update(invalid)
+    torch.testing.assert_close(stats.mean, mean)
+    torch.testing.assert_close(stats.m2, m2)
+    assert stats.count == count
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CPU/CUDA device change requires CUDA")
+def test_moments_device_change_preserves_prior_statistics():
+    stats = workflow.ActivationMoments()
+    stats.update(torch.tensor([[1.0, 2.0], [3.0, 4.0]]))
+    mean, m2, count = stats.mean.clone(), stats.m2.clone(), stats.count
+    with pytest.raises(ValueError, match="channel width and device"):
+        stats.update(torch.ones(2, 2, device="cuda"))
+    torch.testing.assert_close(stats.mean, mean)
+    torch.testing.assert_close(stats.m2, m2)
+    assert stats.count == count
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
 def test_low_precision_moments_reduce_represented_values_in_float32(dtype, execution_device):
     values = torch.linspace(-2, 3, 120, device=execution_device).reshape(10, 3, 4).to(dtype)

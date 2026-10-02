@@ -203,10 +203,15 @@ def parameter_groups(
             )
         selections = []
         for selection in impact.parameters:
-            if parameter_filter is None or parameter_filter(
-                selection.tensor, cast(nn.Parameter, graph.tensor(selection.tensor))
-            ):
+            if parameter_filter is None:
                 selections.append(selection)
-            graph.validate()
+            else:
+                keep = parameter_filter(
+                    selection.tensor, cast(nn.Parameter, graph.tensor(selection.tensor))
+                )
+                # A user callback can alter bindings even when it rejects a region.
+                graph.validate()
+                if keep:
+                    selections.append(selection)
         result.append(ParameterGroup(graph, tuple(selections), candidate.key))
     return unique_groups(result)

@@ -84,7 +84,7 @@ class GeometricMedian:
                 scores = torch.zeros(rows.shape[0], dtype=dtype, device=rows.device)
                 for start in range(0, len(rows), block_size):
                     current = rows[start : start + block_size]
-                    for other in range(0, len(rows), block_size):
+                    for other in range(start, len(rows), block_size):
                         distances = torch.cdist(
                             current,
                             rows[other : other + block_size],
@@ -92,6 +92,12 @@ class GeometricMedian:
                             compute_mode="donot_use_mm_for_euclid_dist",
                         )
                         scores[start : start + len(current)] += distances.sum(1)
+                        if other != start:
+                            # Reuse each symmetric tile while keeping contiguous
+                            # row reductions and the original tile order for both
+                            # sides. No distance approximation is introduced.
+                            reverse = distances.t().contiguous()
+                            scores[other : other + len(reverse)] += reverse.sum(1)
                 if not torch.isfinite(scores).all():
                     raise PlanningError("GeometricMedian produced nonfinite distance scores")
                 self.scores[axis] = tuple(scores.cpu().tolist())

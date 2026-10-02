@@ -266,10 +266,9 @@ def main() -> None:
                 optimizer.step()
                 completed_steps += 1
                 task_total += task_loss.detach().item() * labels.numel()
-                sparse_total += sparse_loss.detach().item() * labels.numel()
-                weighted_sparse_total += (
-                    sparse_loss_weight * sparse_loss.detach().item() * labels.numel()
-                )
+                sparse_value = sparse_loss.detach().item()
+                sparse_total += sparse_value * labels.numel()
+                weighted_sparse_total += sparse_loss_weight * sparse_value * labels.numel()
                 count += labels.numel()
                 progress.set_postfix(
                     images=count,

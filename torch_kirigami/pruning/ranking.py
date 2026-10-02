@@ -8,7 +8,6 @@ overlapping domain, extension, or full-axis removal uses ordinary ranking.
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
 from dataclasses import dataclass
 
 import torch
@@ -27,14 +26,13 @@ from ..contracts import (
 from ..operators.shapes import CallArgumentConstraint
 from ..relations import (
     AxisRelation,
-    BlockMap,
     BroadcastRelation,
     PermuteRelation,
-    Relation,
     ReshapeRelation,
     SliceRelation,
 )
-from ..selection import MAX_PARTS, AxisRef, IndexSet, TensorRef
+from ..selection import AxisRef, IndexSet, TensorRef
+from .axis_domains import IdentityAxisIndex
 from .metrics import (
     GroupMagnitude,
     _candidate_domain,
@@ -58,66 +56,6 @@ _CONSTRAINTS = (
     LayoutConstraint,
     CallArgumentConstraint,
 )
-
-
-def _component(
-    root: AxisRef,
-    adjacent: dict[TensorRef, list[Relation]],
-) -> tuple[AxisRef, ...] | None:
-    """Prove a one-to-one axis component without crossing scoped or nonlinear maps.
-
-    Other axes of a tensor cannot become full cross sections while a position
-    remains on this axis. Domains must also be tensor-disjoint from each other;
-    together those conditions exclude row/column intersections and joint-only
-    block completions. Full-axis removals are deliberately not accelerated.
-    """
-    width = root.tensor.shape[root.dim]
-    if not 1 < width <= MAX_PARTS:
-        return None
-    members, pending = {}, deque((root,))
-    while pending:
-        axis = pending.popleft()
-        if 0 in axis.tensor.shape:
-            return None
-        if axis.tensor in members:
-            if members[axis.tensor] != axis:
-                return None
-            continue
-        members[axis.tensor] = axis
-        for relation in adjacent.get(axis.tensor, ()):
-            if type(relation) is ReshapeRelation and relation.left.shape == relation.right.shape:
-                # The relation already establishes row-major correspondence.
-                # Equal shapes make its index map identity, not a layout proof.
-                target = relation.right if axis.tensor == relation.left else relation.left
-                pending.append(target.axis(axis.dim))
-                continue
-            if type(relation) is BroadcastRelation:
-                offset = len(relation.big.shape) - len(relation.small.shape)
-                forward = axis.tensor == relation.small
-                target = relation.big if forward else relation.small
-                dim = axis.dim + offset if forward else axis.dim - offset
-                if not 0 <= dim < len(target.shape) or target.shape[dim] != width:
-                    return None
-                # Other dimensions are complete cross sections, so broadcasting
-                # them preserves exactly the same positions of this axis.
-                pending.append(target.axis(dim))
-                continue
-            if type(relation) is not AxisRelation:
-                return None
-            if relation.left.scope is not None or relation.right.scope is not None:
-                return None
-            for origin, target in (
-                (relation.left.axis, relation.right.axis),
-                (relation.right.axis, relation.left.axis),
-            ):
-                if origin != axis:
-                    continue
-                if target.tensor.shape[target.dim] != width or relation.maps != (
-                    BlockMap(0, 0, width),
-                ):
-                    return None
-                pending.append(target)
-    return tuple(sorted(members.values(), key=lambda a: a.tensor.id))
 
 
 def _norms(
@@ -165,7 +103,7 @@ class IndependentRanking:
 
     @classmethod
     def build(cls, context: PlanningContext, metric: Metric) -> IndependentRanking | None:
-        """Use the fast path only when the entire candidate universe is proved."""
+        """Collect proved domains; other candidates retain ordinary joint scoring."""
         if (
             type(metric) is not GroupMagnitude
             or metric.parameter_filter is not None
@@ -181,26 +119,23 @@ class IndependentRanking:
         constraints = (*graph.constraints, *context.constraints)
         if any(type(c) not in _CONSTRAINTS for c in constraints):
             return None
-        adjacent = defaultdict(list)
-        for relation in graph.relations:
-            for ref in dict.fromkeys(relation.refs):
-                adjacent[ref].append(relation)
+        axis_index = IdentityAxisIndex(graph.relations)
         domains, candidates, owners = [], [], {}
         for candidate in context.candidates:
             try:
                 axis, indices = _candidate_domain(candidate)
             except PlanningError:
-                return None
+                continue
             if len(indices) != 1:
-                return None
+                continue
             if axis.tensor in owners:
                 group = owners[axis.tensor]
                 if axis not in domains[group]:
-                    return None
+                    continue
             else:
-                members = _component(axis, adjacent)
+                members = axis_index.component(axis)
                 if members is None or any(a.tensor in owners for a in members):
-                    return None
+                    continue
                 group = len(domains)
                 domains.append(members)
                 owners.update((a.tensor, group) for a in members)
@@ -238,13 +173,20 @@ class IndependentRanking:
             versions,
         )
 
-    def rank(
+    def score(
         self,
         accepted_impact: Impact,
         axes: tuple[AxisRef, ...],
-    ) -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]] | None:
-        """Recompute conditional normalization without repropagating untouched domains."""
+    ) -> tuple[dict[str, float], dict[str, dict[AxisRef, IndexSet]]] | None:
+        """Score proved candidates; return None when accepted changes invalidate reuse.
+
+        A generic candidate may remove another axis of a cached parameter. Check
+        the complete accepted closure, not just its original seeds or counts.
+        Any cross-axis or partitioned selection falls back to ordinary scoring.
+        """
         self.context.graph.validate()
+        self.context.graph.validate_impact(accepted_impact)
+        self.context.require_complete(accepted_impact)
         if (
             self.metric.p != self.p
             or self.metric.parameter_filter is not None
@@ -258,22 +200,25 @@ class IndependentRanking:
             root = members[0]
             # IndexSet stores intervals, so repeated membership would enumerate
             # removed positions. Only this bounded logical axis needs a set.
-            indices = frozenset(
-                accepted_impact.selection(root.tensor).fully_selected_indices(root.dim)
-            )
+            selected = accepted_impact.selection(root.tensor).fully_selected_indices(root.dim)
+            if any(
+                accepted_impact.selection(axis.tensor) != axis.select(selected) for axis in members
+            ):
+                return None
+            indices = frozenset(selected)
             surviving = [value for i, value in enumerate(norms) if i not in indices]
             if len(surviving) <= 1:
                 return None  # Completing an entire axis can activate other axes.
             removed.append(indices)
             normalization.append(_normalization(surviving, self.p))
             counted.append(tuple(axis for axis in axes if axis in members))
-        scores, removals = [], {}
+        scores, removals = {}, {}
         for candidate, group, indices in self.candidates:
             position = next(iter(indices))
             if position in removed[group]:
                 continue
             scale, mean = normalization[group]
             value = (self.norms[group][position] / scale) ** self.p / mean if scale else 0.0
-            scores.append((value, candidate.key, candidate))
+            scores[candidate.key] = value
             removals[candidate.key] = dict.fromkeys(counted[group], indices)
-        return [c for _, _, c in sorted(scores, key=lambda item: (item[0], item[1]))], removals
+        return scores, removals

@@ -154,7 +154,7 @@ The [workflow guide](examples/workflows/README.md) provides eleven standalone sc
 | Gate pruning | Train explicit channel scales, then prune using their magnitudes |
 | Stability-driven pruning | Monitor retained-channel selections while increasing regularization |
 | Variance-Based Pruning | Calibrate MLP activation variance, prune and compensate the consumer bias; optional fine-tuning |
-| Isomorphic Pruning | Rank independently within structural families and search their common channel ratio for the parameter target |
+| Isomorphic Pruning | Calibrate Taylor gradients, rank within structural families and apply a directly supplied family deletion ratio |
 | OSSCAR | Sequential dense-teacher reconstruction, grouped quadratic deletion, local swaps and weight refitting |
 | ViT heads and FFN | Explicit attention conversion, whole-head and FFN candidates, static group magnitude, fixed residual width |
 

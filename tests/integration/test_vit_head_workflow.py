@@ -15,6 +15,7 @@ from torch.utils.data import TensorDataset
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
+    DynamicGreedy,
     Granularity,
     Greedy,
     GroupMagnitude,
@@ -25,6 +26,7 @@ from torch_kirigami.pruning import (
     load_checkpoint,
     save_checkpoint,
 )
+from torch_kirigami.pruning.ranking import IndependentRanking
 
 pytest.importorskip("torchvision")
 pytest.importorskip("datasets")
@@ -60,6 +62,65 @@ def tiny_vit(image_size=8):
     # comparisons sensitive to changes in the encoder.
     nn.init.normal_(model.heads.head.weight, std=0.1)
     return model
+
+
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_mixed_head_ffn_reuse_matches_generic_global_selection(
+    execution_device, strategy_type, tmp_path
+):
+    class GenericMagnitude(GroupMagnitude):
+        """Use ordinary joint scoring as a correctness reference."""
+
+    torch.manual_seed(31)
+    optimized = HeadPrunableViT(tiny_vit()).double().eval()
+    reference = copy.deepcopy(optimized)
+    x = torch.randn(2, 3, 8, 8, dtype=torch.float64)
+    plans, calls = [], []
+    for current, metric in ((optimized, GroupMagnitude()), (reference, GenericMagnitude())):
+        graph = DependencyGraph.build(current, args=(x,))
+        targets = tuple(
+            f"encoder.layers.{name}.mlp.0" for name, _ in current.encoder.layers.named_children()
+        )
+        pruner = Pruner(
+            current, graph=graph, granularity=Granularity(by_path=dict.fromkeys(targets, 2))
+        )
+        space = workflow.candidate_space(pruner)
+        propagate = graph.propagate
+        count = []
+
+        def counted(*args, _propagate=propagate, _count=count, **kwargs):
+            _count.append(1)
+            return _propagate(*args, **kwargs)
+
+        graph.propagate = counted
+        context = PlanningContext(
+            graph, space.candidates, ParameterBudget(10000), space.channel_axes, pruner.constraints
+        )
+        ranking = IndependentRanking.build(context, metric)
+        if type(metric) is GroupMagnitude:
+            assert ranking is not None
+            scores, _ = ranking.score(context.impact(()), space.channel_axes)
+            assert 0 < len(scores) < len(space.candidates)
+        plan = pruner.plan(
+            space,
+            budget=ParameterBudget.from_ratio(current, 0.15),
+            strategy=strategy_type(metric),
+        )
+        plans.append(plan)
+        calls.append(len(count))
+        pruner.apply(type(plan).from_dict(plan.to_dict()))
+    assert plans[0].selected == plans[1].selected
+    assert plans[0].selection_report == plans[1].selection_report
+    assert calls[0] < calls[1]
+    for path, value in optimized.state_dict().items():
+        torch.testing.assert_close(value, reference.state_dict()[path], rtol=0, atol=0)
+    torch.testing.assert_close(optimized(x), reference(x), rtol=0, atol=0)
+    optimized(x).sum().backward()
+    save_checkpoint(optimized, tmp_path / "mixed.pt")
+    restored = load_checkpoint(
+        HeadPrunableViT(tiny_vit()).double(), tmp_path / "mixed.pt", map_location=execution_device
+    ).eval()
+    torch.testing.assert_close(restored(x), reference(x))
 
 
 def dense_attention(source, x, removed_heads=()):
@@ -194,6 +255,32 @@ def test_attention_dropout_and_mode(execution_device, monkeypatch):
     assert probabilities == [0.4, 0.4, 0.0]
 
 
+def test_attention_pruning_preserves_active_dropout_and_training(execution_device, tmp_path):
+    torch.manual_seed(73)
+    source = nn.MultiheadAttention(12, 3, dropout=0.4, batch_first=True).train()
+    model = HeadPrunableAttention(source)
+    x = torch.randn(2, 5, 12)
+    graph = DependencyGraph.build(model, args=(x,))
+    rows = [offset + feature for offset in (0, 12, 24) for feature in range(4, 8)]
+    pruner = Pruner(model, graph=graph)
+    pruner.apply(pruner.plan_remove((graph.parameter("qkv.weight").axis(0).select(rows),)))
+    assert model.training and model.dropout == 0.4 and model.num_heads == 2
+    loss = model(x).square().mean()
+    loss.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in model.parameters())
+    model.eval()
+    torch.testing.assert_close(model(x), dense_attention(source, x, removed_heads=(1,)))
+    save_checkpoint(model, tmp_path / "dropout.pt")
+    restored = load_checkpoint(
+        HeadPrunableAttention(source), tmp_path / "dropout.pt", map_location=execution_device
+    ).eval()
+    assert restored.dropout == 0.4 and restored.num_heads == 2
+    torch.testing.assert_close(restored(x), model(x))
+    restored.train()
+    restored(x).sum().backward()
+    assert restored.qkv.weight.grad is not None
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [
@@ -260,6 +347,81 @@ def test_joint_vit_head_ffn_pruning_and_restore(execution_device, tmp_path):
     restored.train()
     F.cross_entropy(restored(x), torch.tensor([1, 3])).backward()
     assert restored.encoder.layers[0].self_attention.qkv.weight.grad is not None
+
+
+@pytest.mark.parametrize("heads_first", [False, True])
+def test_head_ffn_rebuilds_retain_one_head_and_reject_empty_attention(
+    heads_first, execution_device, tmp_path
+):
+    torch.manual_seed(81)
+    model = HeadPrunableViT(tiny_vit()).double().eval()
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 3, 8, 8, dtype=torch.float64)
+    prefix = "encoder.layers.encoder_layer_0"
+
+    def remove_heads(pruner):
+        candidates = [c for c in workflow.candidate_space(pruner).candidates if ":head:" in c.key]
+        return (*candidates[0].remove, *candidates[2].remove)
+
+    def remove_ffn(pruner):
+        return (pruner.graph.parameter(f"{prefix}.mlp.0.weight").axis(0).select([1, 7, 13, 19]),)
+
+    steps = (remove_heads, remove_ffn) if heads_first else (remove_ffn, remove_heads)
+    for select in steps:
+        graph = DependencyGraph.build(model, args=(x[:1],))
+        pruner = Pruner(model, graph=graph)
+        pruner.apply(pruner.plan_remove(select(pruner)))
+
+    def mask_heads(_module, args):
+        values = args[0].clone()
+        values[..., [0, 1, 2, 3, 8, 9, 10, 11]] = 0
+        return (values,)
+
+    def mask_ffn(_module, args):
+        values = args[0].clone()
+        values[..., [1, 7, 13, 19]] = 0
+        return (values,)
+
+    hooks = (
+        reference.get_submodule(f"{prefix}.self_attention.proj").register_forward_pre_hook(
+            mask_heads
+        ),
+        reference.get_submodule(f"{prefix}.mlp.3").register_forward_pre_hook(mask_ffn),
+    )
+    try:
+        torch.testing.assert_close(model(x), reference(x), rtol=1e-10, atol=1e-10)
+    finally:
+        for hook in hooks:
+            hook.remove()
+    block = model.get_submodule(prefix)
+    assert block.self_attention.num_heads == 1 and block.self_attention.head_dim == 4
+    assert block.mlp[0].out_features == 20
+    assert model.heads.head.in_features == model.conv_proj.out_channels == 12
+    graph = DependencyGraph.build(model, args=(x[:1],))
+    pruner = Pruner(model, graph=graph)
+    remaining = next(c for c in workflow.candidate_space(pruner).candidates if ":head:" in c.key)
+    parameters = tuple(model.parameters())
+    before = {name: value.clone() for name, value in model.state_dict().items()}
+    with pytest.raises(PlanningError):
+        pruner.plan_remove(remaining.remove)
+    assert all(current is old for current, old in zip(model.parameters(), parameters, strict=True))
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, before[name], rtol=0, atol=0)
+    graph.validate()
+    save_checkpoint(model, tmp_path / "one_head.pt")
+    restored = load_checkpoint(
+        HeadPrunableViT(tiny_vit()).double(),
+        tmp_path / "one_head.pt",
+        map_location=execution_device,
+    ).eval()
+    torch.testing.assert_close(restored(x), model(x), rtol=0, atol=0)
+    restored(x).sum().backward()
+    assert restored.get_submodule(f"{prefix}.self_attention.qkv").weight.grad is not None
+    # A failed last-head deletion must leave the original graph usable.
+    pruner.apply(
+        pruner.plan_remove((graph.parameter(f"{prefix}.mlp.0.weight").axis(0).select([0, 1]),))
+    )
+    assert model(x).shape == (2, 5)
 
 
 def test_logical_head_metric_and_automatic_plan(execution_device):

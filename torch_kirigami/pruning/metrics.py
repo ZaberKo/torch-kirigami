@@ -17,6 +17,10 @@ from ..regions import gather_region
 from ..selection import AxisRef, IndexSet, Selection, TensorRef
 from .types import Candidate, MetricContext, PlanningError
 
+_TAYLOR_CACHE_ENTRIES = 128
+_TAYLOR_CACHE_POSITIONS = 262_144
+_TAYLOR_STATISTIC_ELEMENTS = 1_048_576
+
 
 class Magnitude:
     """Compute L1 or L2 over the union of all affected parameter regions.
@@ -54,6 +58,10 @@ class WeightTaylor:
 
     The caller owns loss reduction, gradient accumulation, and AMP unscaling.
     This is not a per-example Fisher estimator and never invokes backward.
+    Elementwise absolute Taylor reuses complete axis slices with at most 128
+    scalar vectors and 262,144 total positions. Signed joint Taylor preserves
+    original-region reductions, including cancellation and overflow behavior.
+    Irregular conditional regions and inference tensors are not cached.
 
     Args:
         mode: elementwise_abs sums absolute products; joint_abs takes one
@@ -71,6 +79,17 @@ class WeightTaylor:
             raise ValueError("Unknown Taylor mode")
         self.mode = mode
         self.parameter_filter = parameter_filter
+        # Scalar vectors only; weak bindings prevent a recycled object identity
+        # from reusing another tensor's statistics.
+        self._axis_statistics: OrderedDict[
+            tuple[object, ...],
+            tuple[
+                weakref.ReferenceType[torch.Tensor],
+                weakref.ReferenceType[torch.Tensor],
+                tuple[float, ...],
+            ],
+        ] = OrderedDict()
+        self._statistic_positions = 0
 
     def score(
         self,
@@ -81,6 +100,61 @@ class WeightTaylor:
     ) -> list[float]:
         """Return aligned scores; missing or nonfinite statistics are errors."""
         return _scores(self, context, candidates, accepted_impact=accepted_impact)
+
+    def _axis_sums(self, weight: torch.Tensor, dim: int) -> tuple[float, ...] | None:
+        """Reduce absolute axis statistics when their reuse is supported."""
+        gradient = weight.grad
+        assert gradient is not None
+        if self.mode != "elementwise_abs":
+            return None
+        width = weight.shape[dim]
+        elements_per_position = weight.numel() // width
+        if width > _TAYLOR_CACHE_POSITIONS or elements_per_position > _TAYLOR_STATISTIC_ELEMENTS:
+            return None
+        try:
+            key = (id(weight), weight._version, id(gradient), gradient._version, dim, self.mode)
+        except RuntimeError:
+            return None  # Inference tensors use ordinary selected-region reductions.
+        entry = self._axis_statistics.get(key)
+        if entry is not None:
+            previous_weight, previous_gradient, values = entry
+            if previous_weight() is weight and previous_gradient() is gradient:
+                self._axis_statistics.move_to_end(key)
+                return values
+            self._statistic_positions -= len(values)
+            del self._axis_statistics[key]
+        weights, gradients = weight.detach().movedim(dim, 0), gradient.detach().movedim(dim, 0)
+        chunk_size = max(1, _TAYLOR_STATISTIC_ELEMENTS // max(elements_per_position, 1))
+        sums = []
+        for start in range(0, width, chunk_size):
+            products = weights[start : start + chunk_size].to(torch.float64) * gradients[
+                start : start + chunk_size
+            ].to(torch.float64)
+            products = products.abs()
+            # Near float64 overflow, even unsigned reductions can differ between
+            # batched slices and the original region layout. Keep a wide safety
+            # margin for every possible subset of this parameter's products.
+            if (
+                weight.dtype == torch.float64
+                and (products > torch.finfo(torch.float64).max / (2 * max(weight.numel(), 1))).any()
+            ):
+                return None
+            sums.extend(products.reshape(products.shape[0], -1).sum(1).cpu().tolist())
+        values = tuple(sums)
+        # Unselected positions can be nonfinite. The planner checks only the
+        # candidate's resulting score, matching the ordinary region path.
+        self._axis_statistics[key] = (weakref.ref(weight), weakref.ref(gradient), values)
+        self._statistic_positions += len(values)
+        while (
+            len(self._axis_statistics) > _TAYLOR_CACHE_ENTRIES
+            or self._statistic_positions > _TAYLOR_CACHE_POSITIONS
+        ):
+            _old_key, (_weight, _gradient, old_values) = self._axis_statistics.popitem(last=False)
+            self._statistic_positions -= len(old_values)
+        return values
+
+
+_TAYLOR_SCORE = WeightTaylor.score
 
 
 _WEIGHT_MODULES = (
@@ -326,14 +400,19 @@ def _scores(
     context.graph.validate_impact(accepted_impact)
     context.require_complete(accepted_impact)
     result = [0.0] * len(candidates)
-    device_scores: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
+    device_scores: dict[torch.device, list[tuple[int, torch.Tensor | float]]] = {}
     l2 = isinstance(metric, (Magnitude, GroupMagnitude)) and metric.p == 2
     bindings = dict(context.graph.tensor_bindings())
+    native_taylor = (
+        type(metric) is WeightTaylor
+        and "score" not in vars(metric)
+        and type(metric).score is _TAYLOR_SCORE
+    )
     with torch.no_grad():
         for index, candidate in enumerate(candidates):
             impact = context.impact((*accepted_impact.requested, *candidate.remove))
             context.require_complete(impact)
-            totals: dict[torch.device, torch.Tensor] = {}
+            totals: dict[torch.device, torch.Tensor | float] = {}
             for selection in impact.parameters:
                 if include is not None and selection.tensor not in include:
                     continue
@@ -351,6 +430,26 @@ def _scores(
                     raise PlanningError(
                         "WeightTaylor requires real parameters and dense current gradients"
                     )
+                if native_taylor and len(selection.regions) == 1:
+                    region = selection.regions[0]
+                    partial = tuple(
+                        dim
+                        for dim, indices in enumerate(region.axes)
+                        if indices != IndexSet.span(0, weight.shape[dim])
+                    )
+                    if len(partial) == 1:
+                        dim = partial[0]
+                        values = cast(WeightTaylor, metric)._axis_sums(weight, dim)
+                        if values is not None:
+                            value = sum(values[position] for position in region.axes[dim])
+                            # Preserve ordinary region reduction and error
+                            # behavior when cached statistics are nonfinite.
+                            if math.isfinite(value):
+                                previous = totals.get(weight.device)
+                                totals[weight.device] = (
+                                    value if previous is None else previous + value
+                                )
+                                continue
                 for region in selection.regions:  # Selection normalizes to a disjoint union.
                     values = gather_region(weight.detach(), region)
                     if taylor:
@@ -377,8 +476,10 @@ def _scores(
         # One transfer per device/batch, rather than one synchronization per
         # affected parameter region. Different parameter devices can still contribute.
         for entries in device_scores.values():
-            values = torch.stack([value for _, value in entries]).cpu().tolist()
-            for (index, _), value in zip(entries, values, strict=True):
+            tensors = [value for _, value in entries if isinstance(value, torch.Tensor)]
+            values = iter(torch.stack(tensors).cpu().tolist() if tensors else ())
+            for index, value in entries:
+                value = next(values) if isinstance(value, torch.Tensor) else value
                 result[index] = math.hypot(result[index], value) if l2 else result[index] + value
     if isinstance(metric, WeightTaylor) and metric.mode == "joint_abs":
         result = [abs(value) for value in result]

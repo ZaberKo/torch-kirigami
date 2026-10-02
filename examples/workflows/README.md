@@ -82,7 +82,7 @@ All workflows preserve external input/output dimensions, including the classifie
 There is no layer-selection CLI or first-layer default. Every workflow examines its declared scope throughout the model; this does not mean that every parameter is eligible for every method. The dependency graph covers the entire model, and a selected channel can affect other parameters through dependencies.
 
 Granularity constrains retained widths in the chosen scope; it does not package
-adjacent channels. `--pruning_ratio` is a reduction fraction of the entire model's
+adjacent channels. Except for Isomorphic, `--pruning_ratio` is a reduction fraction of the entire model's
 parameter count, including fixed parts, rather than a per-layer channel ratio.
 Whole-model ViT candidate spaces can take substantially longer to plan than
 ResNets; reducing dataset samples does not reduce dependency-planning work.
@@ -96,7 +96,8 @@ additions are accepted. Explicit training or pruning rounds produce fresh scores
 on the next planning call. None of these scripts silently recalibrates during
 selection. The basic entry additionally exposes `--selection dynamic` for
 magnitude/Taylor; the other entries retain their explicit static selection steps.
-Isomorphic uses independent family quotas and its own ratio search, not `Greedy`.
+Isomorphic uses calibrated Taylor scores and a fixed `--family_pruning_ratio`
+within each structural family, not `Greedy` or a parameter-target ratio search.
 OSSCAR uses its own quadratic deletion/swap search and submits exact selections
 through `plan_remove`; it is not a magnitude metric for `Greedy`.
 
@@ -109,6 +110,11 @@ The head-pruning entry uses an explicit logical head axis, so its normalization
 compares complete heads within the same attention block. FFN channels are
 normalized within their own hidden axis. This heuristic does not guarantee
 comparable task sensitivity across attention and FFN.
+
+Proved independent FFN domains keep their batch-statistics acceleration when
+mixed with head candidates. Unproved head domains use ordinary joint scoring;
+both remain in one global ranking and parameter target. Accepted cross-axis
+changes force ordinary scoring rather than reuse stale domain statistics.
 `WeightTaylor(mode="elementwise_abs")` instead sums `abs(weight * grad)` over the
 affected parameter union, including bias and normalization parameters. BN and
 gate training retain their algorithm-specific learned-scale signals:
@@ -205,7 +211,7 @@ Both splits default to full data. Explicit sample limits enable small checks wit
 
 ## End-to-end workflows
 
-Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, Taylor calibration reads one batch, VBP calibration reads 16 batches, OSSCAR reads two batches per consumer by default, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. MACs and latency use the single-image example supplied by each workflow.
+Run these commands from `examples/workflows` after the downloads above. Every command uses real pretrained weights, covers physical pruning and checkpoint restoration, and writes a separate output directory. Dataset sample limits are disabled: epoch-based training reads the full training split, basic Taylor calibration reads one batch, Isomorphic reads 100 calibration batches of 64 images, VBP calibration reads 16 batches, OSSCAR reads two batches per consumer by default, and stability search reads only as many batches as its stopping rule permits. Every recorded stage evaluates the full validation split. Training and validation each use their default batch size of 256. MACs and latency use the single-image example supplied by each workflow.
 
 The commands use the default HF cache, data-loader settings, seed, and latency iteration counts. To use a separate snapshot, append `--data_dir /absolute/path/to/snapshot`. Each command enables `--compile_latency` to measure compiled inference; allow compilation time at each recorded stage. Training and accuracy evaluation remain eager.
 
@@ -221,12 +227,12 @@ The commands use the default HF cache, data-loader settings, seed, and latency i
 | `soft_pruning.py` | 4 epochs: 1 warmup, 2 projection, 1 recovery | 0 epochs | Adds 1 fine-tuning epoch, for 5 total |
 | `stability_pruning.py` | Up to 1,000 optimizer updates, with early stopping | 0 epochs | Adds 1 fine-tuning epoch |
 | `variance_pruning.py` | Forward-only calibration on 16 training batches | 0 epochs | Prune-only ConvNeXt and ViT commands |
-| `isomorphic_pruning.py` | Static within-family magnitude rankings; no training | 0 epochs | Prune-only ResNet and ViT commands |
+| `isomorphic_pruning.py` | Taylor calibration, then static within-family rankings | 0 epochs | Prune-only ResNet and ViT commands |
 | `osscar_pruning.py` | Two calibration batches per consumer, followed by quadratic reconstruction/search | 0 epochs | Prune-only ResNet and ViT commands |
 | `vit_head_pruning.py` | Static head/FFN group magnitude; no training | 0 epochs | Prune-only ViT command |
 
 These are bounded workflow demonstrations, not tuned accuracy-recovery recipes.
-The 5% parameter target, alignment of 8, SGD learning rate of `0.001`, and sparse-loss
+The 5% parameter target (or Isomorphic's 5% family-action ratio), alignment of 8, SGD learning rate of `0.001`, and sparse-loss
 weight of `1e-4` are starting settings. In particular, L1 scales, group norms, and
 squared group norms have different magnitudes; the common coefficient does not
 make their regularization effects comparable. Adjust it using validation results
@@ -241,6 +247,13 @@ explicit throughput setting, rather than adapting silently to each model or GPU.
 candidates after every accepted feasible addition using conditional parameter
 regions; it can take considerably longer. It does not rerun the model or refresh
 Taylor gradients. Neither policy is universally more accurate.
+
+Native magnitude ranking reuses proved independent-axis statistics, including
+FFN positions alongside ordinary whole-head scores. Taylor's `elementwise_abs`
+mode reuses bounded weight-gradient axis statistics but still analyzes each
+complete candidate impact. Conditional regions and `joint_abs` retain ordinary
+reductions; neither optimization
+recalibrates gradients or changes the static/dynamic selection policy.
 
 For a single magnitude-pruning pass **without training**:
 
@@ -430,39 +443,71 @@ part of VBP. Use the workflow's `model.pt` for restoration.
 
 `isomorphic_pruning.py` discovers graph-declared candidates and groups dependency
 structures by operator types, affected dimensions, connectivity and parameter
-sharing. It ranks magnitude scores independently within each family, then selects
+sharing. It ranks calibrated Taylor scores independently within each family, then selects
 each family's least-important fraction. Scores from different families are not
 mixed into a global ranking. Equivalent dependency closures count once.
 
-An outer search increases the common channel ratio until a jointly executable
-proposal meets the whole-model parameter target. Retained widths round down to
+`--family_pruning_ratio` directly sets the fraction of each family's deletion
+actions to remove. Each family selects `floor(ratio * action_count)` positions;
+the ratio is not a whole-model parameter reduction. There is no outer ratio search
+and no automatic increase after a rejected allocation. Retained widths round down to
 the configured granularity while preserving a nonempty domain. Actual removals
 may therefore exceed the unrounded family quotas. Rejected proposals do not
 mutate the model. A homogeneous candidate universe legitimately has one family;
 the example does not manufacture extra families from layer names or stages.
-`--max_trials` defaults to 10,000 ratio breakpoints, including repeated rounded
-requests; `planning_trials` separately counts actual joint attempts. A limit
-failure reports the recent blockers and does not apply a partial allocation.
+An invalid joint allocation fails before application. The planner's parameter cap
+is the original count, used only as a non-increase guard, not a compression target.
+
+Calibration defaults to `--calibration_batches 100 --calibration_batch_size 64`,
+matching the paper's sampling settings. Training images use weight-enum
+resize/center-crop preprocessing. In eval mode, batch-mean cross-entropy gradients
+are accumulated without optimizer steps, AMP, sparse penalties or distillation.
+A short training split is rejected; reduce `--calibration_batches` explicitly for
+small smoke tests. Recorded calibration counts describe the actual samples used.
+`PaperTaylor` implements paper equations 3-4: sum the per-parameter L2 norms of
+`weight * accumulated_gradient` over removed weight regions. Biases and buffers
+are excluded; aliases and overlapping regions count once. Scores have no domain
+normalization and are computed once before selection. The official repository's
+Taylor implementation instead uses an absolute-product sum with group reduction
+and normalization; this example deliberately follows the displayed paper formula.
 
 ```bash
 python isomorphic_pruning.py \
   --model resnet18 --device cuda --compile_latency \
-  --pruning_ratio 0.05 --granularity 8 \
+  --family_pruning_ratio 0.05 --granularity 8 \
+  --calibration_batches 100 --calibration_batch_size 64 \
   --finetune_epochs 0 --output runs/resnet18_isomorphic
 ```
 
 ```bash
 python isomorphic_pruning.py \
   --model vit_b_32 --device cuda --compile_latency \
-  --pruning_ratio 0.05 --granularity 8 \
+  --family_pruning_ratio 0.05 --granularity 8 \
+  --calibration_batches 100 --calibration_batch_size 64 \
   --finetune_epochs 0 --output runs/vit_b_32_isomorphic
 ```
 
-The example exercises the custom `Strategy` interface. Its metric is replaceable;
-magnitude scoring is not the paper's Taylor-calibrated experimental recipe.
+The example exercises the custom `Strategy` and `Metric` interfaces. It follows
+the paper's one-shot family-ranking procedure, not its full accuracy-recovery
+recipe or architecture-specific attention ratios. The supplied ratio is shared
+across families; separate embedding/head/head-dimension settings are not exposed.
 Optional fine-tuning is task-only. Family reports and exclusions describe the
 actual scope; attention pruning and arbitrary custom operators are not assumed
 supported merely because their candidates can be discovered.
+
+Native self-attention uses one candidate for a local dimension across all heads,
+with the head count fixed. This keeps head widths equal and scores the complete
+joint region, including QKV and output projection weights. FFN positions remain
+individual candidates. Shared widths with incompatible head partitions fail
+explicitly; this example does not independently remove whole heads.
+
+`Isomorphic analysis and scoring` shows planning progress. The strategy reuses
+proved identity-coordinate correspondences and batches Taylor reductions on the
+weight device; unproved cases keep ordinary propagation and scoring. Final joint
+execution checks remain mandatory. Evaluation, gradient calibration, planning
+and latency compilation are separate stages; `--compile_latency` only affects
+latency measurement. See the [performance notes](../../docs/dev-notes/planning-performance.md)
+for controlled planning comparisons, not end-to-end runtime guarantees.
 
 ### 10. OSSCAR reconstruction and local search
 
@@ -499,7 +544,10 @@ observations per batch and uses identical positions for student and teacher.
 The full image dataset remains available; this is not a replacement cache or a
 validation-data calibration. Statistics use float64; memory is quadratic in
 the consumer's input width times kernel area. Only one consumer's statistics are
-kept at a time, and convolution unfolding processes one image at a time.
+kept at a time. Convolution calibration pads one image at a time and gathers
+only requested patches, preserving the same sampled coordinates. Single-column
+reconstruction groups use scalar equivalents of the matrix solve; full
+refactorization and swap validation remain mandatory.
 
 `--damping` regularizes toward original weights, with a default scale of 0.01
 times the average Gram diagonal. `--prune_batch` controls channels removed per
@@ -594,7 +642,7 @@ compilation settings. Check `unsupported_ops` before treating MAC counts as
 complete. Neither MACs nor latency is a pruning target in these workflows.
 Pruning stages report `max_params`, `before_params`, `after_params` and `target_met`.
 Greedy-based workflows also report `planning_trials` and `planning_limit_reached`;
-Isomorphic reports family quotas, ratio trials and rejected allocations; OSSCAR
+Isomorphic reports fixed family quotas and calibration counts; OSSCAR
 reports its per-consumer reconstruction history. Counts include all unique
 Parameters, including retained learned gates; buffers are excluded. Meeting the
 parameter cap does not imply a particular latency or accuracy improvement.

@@ -111,6 +111,46 @@ def test_group_discovery_filter_duplicates_and_incomplete_path():
         GroupLasso(groups)
 
 
+@pytest.mark.parametrize("keep", [False, True])
+def test_parameter_group_filter_mutation_is_rejected_and_valid_filter_can_prune(
+    keep, execution_device
+):
+    model, graph = setup(device=execution_device)
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+
+    def invalid_filter(ref, parameter):
+        model[0].out_features = 99
+        return keep
+
+    with pytest.raises(StaleGraphError):
+        pruner.parameter_groups(space.candidates, parameter_filter=invalid_filter)
+    model[0].out_features = 3
+    with torch.no_grad():
+        model[2].weight.copy_(model[2].weight.new_tensor([[1, 2, 3]]))
+    # Restoring the module permits a fresh graph and an ordinary read-only filter.
+    x = torch.ones(2, 2, device=execution_device, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    groups = pruner.parameter_groups(
+        space.candidates, parameter_filter=lambda ref, parameter: ref.paths[0].endswith("weight")
+    )
+    assert all(s.tensor.paths[0].endswith("weight") for g in groups for s in g.selections)
+    GroupLasso(groups)().backward()
+    assert model[0].bias.grad is None
+    retained = [0, 2]
+    with torch.no_grad():
+        hidden = torch.nn.functional.linear(
+            x, model[0].weight[retained], model[0].bias[retained]
+        ).relu()
+        expected = torch.nn.functional.linear(hidden, model[2].weight[:, retained], model[2].bias)
+    pruner.apply(pruner.plan_remove((graph.parameter("0.weight").axis(0).select([1]),)))
+    torch.testing.assert_close(model(x), expected)
+    model.zero_grad()
+    model(x).sum().backward()
+
+
 @pytest.mark.parametrize("optimizer_cls", [torch.optim.SGD, torch.optim.AdamW])
 def test_sparse_loss_accumulation_matches_single_batch(optimizer_cls):
     model, graph = setup()

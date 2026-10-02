@@ -11,7 +11,7 @@ best method or reproduce those accuracy results.
 | Method | What the method adds | Decision for these examples |
 | --- | --- | --- |
 | **Variance-Based Pruning (VBP), ICCV 2025** | Rank MLP neurons by activation variance; compensate their mean contribution in the following layer's bias | Implemented in `variance_pruning.py` for ViT and ConvNeXt MLPs. Provides a recent data-dependent method with explicit calibration and correction steps |
-| **Isomorphic Pruning, ECCV 2024** | Compare importance within families of structurally similar dependency groups, rather than globally mixing heterogeneous structures | Independent within-family rankings and quotas; an outer search chooses a common channel ratio for the whole-model parameter cap |
+| **Isomorphic Pruning, ECCV 2024** | Compare importance within families of structurally similar dependency groups, rather than globally mixing heterogeneous structures | Accumulated-gradient Taylor scores and independent fixed-ratio family quotas; no parameter-target ratio search |
 | **SnapViT, NeurIPS 2025** | Training-free elastic ViTs using gradient information, an evolutionary architecture search and optional weight correction | Deferred. Its ViT-specific search and attention/head decisions are substantially more than a metric adapter and are outside the current example scope |
 | **OSSCAR, ICML 2024** | Structured output reconstruction through least-squares weight updates and combinatorial local search | Implemented in `osscar_pruning.py`: sequential dense-teacher reconstruction, grouped deletion, remove/restore local search and retained-weight refitting |
 | **DVBP + OB²C, 2026 preprint** | Covariance-based denoising and correction of both retained weights and bias, extending variance-based pruning | Deferred. Full covariance storage, spectral estimation and reconstruction solves need a separate numerical design and validation effort |
@@ -106,8 +106,10 @@ score(i) = sum_j ||w_i - w_j||₂
 Low-scoring filters are more central/redundant under this criterion. The workflow
 uses raw signed weights, not squared magnitudes or absolute-value vectors. It
 computes one score snapshot with bounded pairwise-distance tiles; memory is
-bounded per tile, but arithmetic remains quadratic in output width. No additional
-layer normalization is applied.
+bounded per tile, but arithmetic remains quadratic in output width. Off-diagonal
+tiles are evaluated once and reused through symmetry; direct Euclidean distances
+and each row's tile accumulation order are retained. No additional layer
+normalization is applied.
 
 `--metric geometric_median --selection static` uses this snapshot with the
 framework's dependency analysis, constraints and whole-model parameter target.
@@ -116,6 +118,32 @@ global allocation and one-shot physical deletion are adaptations: the original
 FPGM layerwise soft-pruning/training procedure is not reproduced. Dynamic
 selection is rejected instead of returning stale snapshot scores under a dynamic
 label.
+
+## Runtime optimizations and algorithm boundaries
+
+The built-in greedy policies can combine proved independent-axis statistics with
+ordinary joint scores in one global ranking. This benefits the mixed FFN/head
+candidate space without separating it into pruning stages. Dynamic selection
+still reranks after every accepted addition; an accepted change along another
+axis disables reuse for the affected ranking call. Native
+`WeightTaylor(mode="elementwise_abs")` reuses bounded scalar axis statistics
+while retaining complete propagation and original reductions for conditional
+regions. `joint_abs` keeps ordinary signed region reductions, preserving their
+overflow and cancellation behavior. Extreme float64 absolute products also use
+ordinary reductions under a conservative whole-parameter overflow bound.
+
+Gate-weight products are prepared once per scoring call, never cached across
+training updates. Soft and stability selection use sets for membership; stability
+collects removed coordinates in one pass. Iterative pruning rebuilds the graph
+between rounds but does not build an unused graph after the final application.
+These changes preserve candidate order, training steps and projection timing.
+
+VBP remains a single calibration snapshot. No dynamic activation recalibration
+or teacher-output cache has been introduced. OSSCAR continues to factorize the
+current reconstruction problem and execute its bounded deletion/swap search;
+its sampled-row gathering and scalar-group reductions change implementation
+cost rather than the optimization objective. Performance comparisons and their
+measurement scopes are recorded in the development notes.
 
 ## Separation from the pruning core
 
@@ -164,25 +192,52 @@ Module names, tensor widths and channel indices do not define a family. This
 ordered signature is conservative, not a general graph-isomorphism solver.
 Equivalent complete selections are counted once, regardless of entry aliases.
 
-Static metric scores are compared only within a family. For a common channel
-ratio, each family selects its own lowest-ranked quota. Retained-width alignment
+For native `nn.MultiheadAttention`, one candidate removes the same local head
+dimension from every head. This preserves equal head widths with a fixed head
+count; it does not prune independent whole heads. Equivalent residual entry axes
+use the same units. Incompatible head partitions on a shared width are rejected
+before planning. FFN candidates remain individual hidden positions. Taylor scores
+cover the complete candidate region, including packed QKV and output projection
+weights, rather than adding singleton scores to approximate a block.
+
+Static metric scores are compared only within a family. The explicitly supplied
+`--family_pruning_ratio` selects each family's lowest `floor(ratio * size)` actions.
+Retained-width alignment
 rounds down, adding that root's next lowest-ranked positions; nonempty and joint
 execution checks still apply. The strategy does not convert ranks to percentiles
 and feed them to `Greedy`. One family is a valid homogeneous case, not a reason
 to invent stage-based families or suppress the method.
 
-The example's `ParameterBudget` is a whole-model target. An outer search visits
-exact rational quota breakpoints and checks actual joint recipes until the cap
-is reached. It does not assume that execution feasibility is monotone. Families
-keep their original populations throughout this search; failed execution checks
-do not silently shrink denominators or replace the ranking algorithm. Reports
-separate unrounded quotas, actual selected actions, ratio trials and rejected
-proposals. A trial limit or unreachable target produces no applied partial plan.
+The ratio is not derived from a parameter target. One complete allocation is
+checked, and a failed execution check does not increase the ratio, shrink family
+populations or substitute a different algorithm. The original parameter count
+supplies the resource non-increase guard required by `plan()`; it does not drive
+selection. Reports separate unrounded quotas and actual aligned removals.
 
-The default metric is `GroupMagnitude`; custom metrics use the same `Metric`
-contract. This is not the paper's Taylor-calibrated and distilled accuracy recipe.
+The default `PaperTaylor` implements equations 3-4: sum per-parameter L2 norms of
+removed `weight * gradient` regions, with no domain normalization. Calibration
+accumulates batch-mean cross-entropy gradients over 100 training batches of 64
+images by default. Evaluation mode preserves BatchNorm statistics; weights are
+not updated. Aliases/region overlaps count once, and biases/buffers are omitted.
+The official code uses a different absolute-product sum reduction; this example
+follows the displayed paper formula. Short datasets fail explicitly. Custom
+metrics retain the same `Metric` contract. Separate architecture-specific family
+ratios and the complete distilled accuracy recipe are not reproduced.
 Optional task-only fine-tuning is a separate stage. Unsupported structures remain
 explicit exclusions rather than presumed supported attention/head operations.
+
+Analysis and scoring are interleaved in bounded batches so recent impacts remain
+in the planner cache. A tensor-to-operation index avoids rescanning the FX graph
+for each signature. Exact built-in identity relations prove which entry axes
+imply the same closure; these aliases need one actual analysis. For proper
+singleton removals in proved identity components, the native metric batches
+per-position weight-gradient norms and reuses the family signature. Custom
+metrics, constraints, scoped/nonidentity maps and unproved components use ordinary
+analysis and joint scoring. Scalar statistics are bounded by 256 entries and
+262,144 positions, and tracked weight/gradient changes invalidate them. The full
+selected request still passes propagation and recipe compilation, followed by
+the public planner's independent final validation. These optimizations do not
+change the fixed family ratio into a greedy or approximate selection method.
 
 ## OSSCAR implementation
 
@@ -240,8 +295,10 @@ is outside this example; attention operations are not treated as ordinary MLPs.
 
 Runtime and experimental boundaries:
 
-- Process one consumer's covariance at a time and unfold at most one image at a
-  time. Memory remains quadratic in `input_channels * kernel_area`; sampling
+- Process one consumer's covariance at a time, padding at most one image and
+  gathering only requested patches. Sampling coordinates are unchanged. Scalar
+  groups use the exact one-dimensional deletion/restoration formulas; final
+  refactorization and swap verification remain. Memory is still quadratic in `input_channels * kernel_area`; sampling
   fewer observations does not reduce this matrix dimension.
 - Default calibration is two training batches per consumer, with at most 4,096
   uniformly spaced spatial/token positions per batch. Identical position IDs

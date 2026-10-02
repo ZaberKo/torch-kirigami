@@ -217,9 +217,10 @@ def main() -> None:
         )
         plan = make_plan(pruner, space, ParameterBudget(max_params))
         model, _ = pruner.apply(plan)
-        graph = DependencyGraph.build(model, args=(example,))
-        pruner = Pruner(model, graph=graph, granularity=alignment)
-        space = pruner.discover_candidates(targets=targets)
+        if index < options.rounds:
+            graph = DependencyGraph.build(model, args=(example,))
+            pruner = Pruner(model, graph=graph, granularity=alignment)
+            space = pruner.discover_candidates(targets=targets)
         record(
             f"round_{index}_pruned",
             max_params=plan.selection_report.max_params,
