@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from types import MappingProxyType
 from typing import Any, cast
 from uuid import uuid4
@@ -36,8 +36,8 @@ from .errors import AnalysisLimitError, StaleGraphError, UnsupportedOperation
 from .operation import OperationContext, OperatorRule, OperatorSpec, TensorFacts, tensors
 from .operators.shapes import CallArgumentConstraint, dependencies
 from .registry import OperatorRegistry
-from .relations import AxisRelation, Relation
-from .selection import Selection, TensorRef, coalesce_selections
+from .relations import AxisPort, AxisRelation, BlockMap, Relation
+from .selection import AxisRef, IndexSet, Region, Selection, TensorRef, coalesce_selections
 
 # Only these immutable built-ins inspect exactly the selections named by `refs`.
 # Extensions and subclasses may inspect other selections or state, so they must
@@ -52,6 +52,17 @@ _LOCAL_CONSTRAINT_TYPES = (
     LayoutConstraint,
     NonEmpty,
 )
+
+
+def _immutable_axis_record(value: object) -> bool:
+    """Accept deeply immutable built-in axis records, never extension behavior."""
+    if type(value) in (str, int, bool, type(None)):
+        return True
+    if type(value) is tuple:
+        return all(_immutable_axis_record(item) for item in value)
+    if type(value) in (AxisRelation, AxisPort, BlockMap, AxisRef, TensorRef, Region, IndexSet):
+        return all(_immutable_axis_record(getattr(value, f.name)) for f in fields(value))
+    return False
 
 
 @dataclass(frozen=True)
@@ -116,6 +127,8 @@ class DependencyGraph:
     _operations: dict[str, OperationContext]
     _specs: dict[str, OperatorSpec]
     _adjacency: defaultdict[str, list[Relation]]
+    _cacheable_relations: set[int]
+    _relation_outputs: dict[tuple[int, str], tuple[tuple[Region, ...], tuple[Selection, ...]]]
     _tensor_operations: dict[str, tuple[str, ...]]
     _operation_successors: dict[str, tuple[str, ...]]
     _dynamic_expression_consumers: tuple[tuple[str, ShapeExpr], ...]
@@ -435,6 +448,12 @@ class DependencyGraph:
             for ref in dict.fromkeys(relation.refs):
                 self._adjacency[ref.id].append(relation)
         self._relations = tuple(self._relations)
+        self._cacheable_relations = {
+            id(relation)
+            for relation in self._relations
+            if type(relation) is AxisRelation and _immutable_axis_record(relation)
+        }
+        self._relation_outputs = {}
         layouts = tuple(layout for spec in self._specs.values() for layout in spec.layouts)
         self._constraints = tuple(
             replace(
@@ -905,11 +924,25 @@ class DependencyGraph:
             # Relations need the accumulated selection: separate arrivals may
             # jointly complete a block or a broadcast fiber on a shared path.
             source = current[identity]
+            cacheable_source = type(source) is Selection and all(
+                _immutable_axis_record(region) for region in source.regions
+            )
             for relation in self._adjacency[identity]:
                 if id(relation) in disabled:
                     continue
                 try:
-                    for target in relation.propagate(source):
+                    key = (id(relation), identity)
+                    cached = self._relation_outputs.get(key)
+                    cacheable = cacheable_source and id(relation) in self._cacheable_relations
+                    if cacheable and cached is not None and cached[0] == source.regions:
+                        targets = cached[1]
+                    else:
+                        targets = relation.propagate(source)
+                        if cacheable:
+                            # One last input/output per endpoint; merges, scheduling,
+                            # constraints and provenance still use the fresh joint query.
+                            self._relation_outputs[key] = (source.regions, targets)
+                    for target in targets:
                         delta = add(target)
                         if delta:
                             provenance.append(Provenance(source, delta, relation.reason))

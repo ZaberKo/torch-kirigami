@@ -173,7 +173,7 @@ def test_reused_transposed_convolution_has_one_budget_domain(dimension, groups, 
         strategy=Greedy(Magnitude()),
     )
     assert plan.selection_report.widths == (6,) and plan.selection_report.removed == (
-        3 if groups == 1 else 2,
+        3 if groups == 1 else 4,
     )
     Pruner(model, graph=graph).apply(plan)
     output = next(op.outputs[0] for op in graph.operations() if op.module_path == "up")

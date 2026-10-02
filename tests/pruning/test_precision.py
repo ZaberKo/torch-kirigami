@@ -13,6 +13,7 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    ChannelCount,
     ChannelRatio,
     Greedy,
     Magnitude,
@@ -38,7 +39,7 @@ def test_l2_extreme_finite_values_preserve_scores_and_order(scale, dtype, execut
     graph = DependencyGraph.build(model, args=(torch.ones(1, 2, dtype=dtype),))
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(2))
-    context = PlanningContext(graph, graph.operations(), candidates, ChannelRatio(0.5), (axis,), ())
+    context = PlanningContext(graph, candidates, ChannelRatio(0.5), (axis,), ())
     expected = [math.hypot(*row) for row in model.weight.detach().cpu().tolist()]
     assert context.score(Magnitude(), candidates) == pytest.approx(expected, rel=1e-6, abs=0)
     plan = Pruner(model, graph=graph, preserve_io=False).plan(
@@ -58,7 +59,7 @@ def test_stable_l2_complex_components_and_zero_region(execution_device):
     graph = DependencyGraph.build(model, args=(torch.zeros(1, 2, dtype=torch.complex64),))
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(2))
-    context = PlanningContext(graph, graph.operations(), candidates, ChannelRatio(0.5), (axis,), ())
+    context = PlanningContext(graph, candidates, ChannelRatio(0.5), (axis,), ())
     value = model.weight.detach().cpu()[0, 0].item()
     assert context.score(Magnitude(), candidates) == pytest.approx(
         (math.hypot(value.real, value.imag), 0)
@@ -76,7 +77,7 @@ def test_taylor_promotes_before_multiplying(scale, mode, execution_device):
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),)) for i in range(2))
     metric = WeightTaylor(mode)
-    context = PlanningContext(graph, graph.operations(), candidates, ChannelRatio(0.5), (axis,), ())
+    context = PlanningContext(graph, candidates, ChannelRatio(0.5), (axis,), ())
     rows = model.weight.detach().cpu().tolist()
     gradients = model.weight.grad.cpu().tolist()
     expected = [
@@ -99,7 +100,7 @@ def test_complex_l1_promotes_before_absolute_value(execution_device):
     graph = DependencyGraph.build(model, args=(torch.zeros(1, 2, dtype=torch.complex64),))
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),)) for i in range(2))
-    context = PlanningContext(graph, graph.operations(), candidates, ChannelRatio(0.5), (axis,), ())
+    context = PlanningContext(graph, candidates, ChannelRatio(0.5), (axis,), ())
     expected = [
         math.fsum(math.hypot(v.real, v.imag) for v in row)
         for row in model.weight.detach().cpu().tolist()
@@ -127,6 +128,6 @@ def test_magnitude_low_precision_accumulation_and_filter(dtype):
 
     Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
         CandidateSpace(candidates=candidates, channel_axes=(axis,)),
-        budget=ChannelRatio(0.2),
+        budget=ChannelCount((5,), (axis,)),
         strategy=strategy,
     )

@@ -19,9 +19,7 @@ def _context(model=None):
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
     axis = graph.parameter("weight").axis(0)
     candidate = Candidate("one", (axis.select([1]),), axis)
-    context = PlanningContext(
-        graph, graph.operations(), (candidate,), ChannelRatio(0.5), (axis,), ()
-    )
+    context = PlanningContext(graph, (candidate,), ChannelRatio(0.5), (axis,), ())
     return context, candidate
 
 

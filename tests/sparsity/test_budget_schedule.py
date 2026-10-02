@@ -12,6 +12,7 @@ from torch_kirigami.pruning import (
     ChannelCount,
     Greedy,
     Magnitude,
+    PlanningError,
     Pruner,
     load_checkpoint,
     save_checkpoint,
@@ -34,10 +35,47 @@ def model_and_space(width=7):
 
 
 @pytest.mark.parametrize("scope", ["local", "global"])
+def test_cumulative_decimal_caps_share_single_round_arithmetic(scope, execution_device):
+    model, graph, space = model_and_space(width=100)
+    cumulative = CumulativeChannelBudget(graph, space, scope=scope)
+    original = copy.deepcopy(model)
+    x = torch.ones(2, 2)
+    before = cumulative.state_dict()
+    for bad in (True, -0.1, float("nan"), "0.29"):
+        with pytest.raises(ValueError, match="ratio"):
+            cumulative.budget(graph, space, bad)
+        assert cumulative.state_dict() == before
+    budget = cumulative.budget(graph, space, 0.29)
+    assert budget.max_channels == (71 if scope == "global" else (71,))
+    pruner = Pruner(model, graph=graph)
+    _, result = pruner.prune(
+        space,
+        budget=budget,
+        strategy=Greedy(StaticMetric(lambda context, batch: [0.0] * len(batch))),
+    )
+    # Equal scores use the original ascending candidate coordinates.
+    reference = torch.nn.functional.linear(
+        torch.relu(torch.nn.functional.linear(x, original[0].weight[29:], original[0].bias[29:])),
+        original[2].weight[:, 29:],
+        original[2].bias,
+    )
+    torch.testing.assert_close(model(x), reference)
+    graph = DependencyGraph.build(model, args=(x,))
+    space = Pruner(model, graph=graph).discover_candidates()
+    cumulative.update(result, graph, space)
+    assert cumulative.budget(graph, space, 0.58).max_channels == (
+        42 if scope == "global" else (42,)
+    )
+    assert cumulative.budget(graph, space, 0.579).max_channels == (
+        42 if scope == "global" else (42,)
+    )
+
+
+@pytest.mark.parametrize("scope", ["local", "global"])
 def test_cumulative_integer_rounds_and_checkpoint_resume(scope):
     model, graph, space = model_and_space()
     cumulative = CumulativeChannelBudget(graph, space, scope=scope)
-    for ratio, expected_width in ((0.3, 5), (0.5, 4), (0.7, 3)):
+    for ratio, expected_width in ((0.3, 4), (0.5, 3), (0.7, 2)):
         budget = cumulative.budget(graph, space, ratio)
         plan = Pruner(model, graph=graph).plan(
             Pruner(model, graph=graph).discover_candidates(),
@@ -60,7 +98,7 @@ def test_cumulative_integer_rounds_and_checkpoint_resume(scope):
     space2 = Pruner(restored, graph=graph2).discover_candidates()
     resumed = CumulativeChannelBudget(graph2, space2, scope=scope)
     resumed.load_state_dict(cumulative.state_dict(), graph2, space2)
-    assert resumed.budget(graph2, space2, 0.8).counts == (1 if scope == "global" else (1,))
+    assert resumed.budget(graph2, space2, 0.8).max_channels == (1 if scope == "global" else (1,))
     state = resumed.state_dict()
     bad = copy.deepcopy(state)
     bad["current"][0] += 1
@@ -73,18 +111,24 @@ def test_underfill_and_unrecorded_structure_do_not_advance_budget():
     model, graph, space = model_and_space()
     cumulative = CumulativeChannelBudget(graph, space)
     budget = cumulative.budget(graph, space, 0.5)
-    # A valid alternative strategy deliberately underfills the cap.
-    _, result = Pruner(model, graph=graph).prune(
-        Pruner(model, graph=graph).discover_candidates(),
-        budget=budget,
-        strategy=KeyStrategy(lambda ctx: (ctx.candidates[0].key,)),
+    before = cumulative.state_dict()
+    with pytest.raises(PlanningError, match="Channel target not reached"):
+        Pruner(model, graph=graph).prune(
+            space,
+            budget=budget,
+            strategy=KeyStrategy(lambda ctx: (ctx.candidates[0].key,)),
+        )
+    assert cumulative.state_dict() == before
+    # Manual pruning can still make a smaller step; accounting records its actual result.
+    _, result = Pruner(model, graph=graph).apply(
+        Pruner(model, graph=graph).plan_remove(space.candidates[0].remove)
     )
     new_graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))
     new = Pruner(model, graph=new_graph).discover_candidates()
     with pytest.raises(ValueError):
         cumulative.budget(new_graph, new, 0.5)
     cumulative.update(result, new_graph, new)
-    assert cumulative.budget(new_graph, new, 0.5).counts == (2,)
+    assert cumulative.budget(new_graph, new, 0.5).max_channels == (3,)
     state = cumulative.state_dict()
     with pytest.raises(ValueError):
         cumulative.update(result, new_graph, new)
@@ -115,7 +159,7 @@ def test_count_budget_local_global_constraints_and_validation():
             .candidates,
             channel_axes=axes,
         ),
-        budget=ChannelCount((1, 2), axes),
+        budget=ChannelCount((3, 2), axes),
         strategy=Greedy(Magnitude()),
     )
     assert local.selection_report.removed == (1, 2)
@@ -126,19 +170,19 @@ def test_count_budget_local_global_constraints_and_validation():
             .candidates,
             channel_axes=axes,
         ),
-        budget=ChannelCount(2, axes, "global"),
+        budget=ChannelCount(6, axes, "global"),
         strategy=Greedy(
             StaticMetric(lambda ctx, batch: [0 if c.axis == axes[0] else 1 for c in batch])
         ),
     )
     assert global_plan.selection_report.removed == (2, 0)
-    protected = pruner.plan(
-        CandidateSpace(candidates=pruner.discover_candidates().candidates, channel_axes=axes),
-        budget=ChannelCount((1, 2), axes),
-        strategy=Greedy(Magnitude()),
-    )
-    assert protected.selection_report.removed == (0, 0)
-    for counts, scope in [((-1, 1), "local"), ((1,), "local"), (9, "global"), (True, "global")]:
+    with pytest.raises(PlanningError, match="Channel target not reached"):
+        pruner.plan(
+            CandidateSpace(candidates=pruner.discover_candidates().candidates, channel_axes=axes),
+            budget=ChannelCount((3, 2), axes),
+            strategy=Greedy(Magnitude()),
+        )
+    for counts, scope in [((-1, 1), "local"), ((1,), "local"), (-1, "global"), (True, "global")]:
         with pytest.raises(ValueError):
             ChannelCount(counts, axes, scope)
 
@@ -194,7 +238,7 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     pruner = Pruner(model, graph=graph)
     _, result = pruner.prune(
         pruner.discover_candidates(),
-        budget=accounting.budget(graph, space, 0.9),
+        budget=accounting.budget(graph, space, 0.66),
         strategy=Greedy(Magnitude()),
     )
     graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))
@@ -207,7 +251,14 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
         accounting.update(result, graph, CandidateSpace((), ()))
     assert accounting.state_dict() == before
     accounting.update(result, graph, compact)
-    budget = accounting.budget(graph, compact, 0.99)
+    impossible = accounting.budget(graph, compact, 0.99)
+    with pytest.raises(PlanningError, match="Channel target not reached"):
+        Pruner(model, graph=graph).plan(
+            CandidateSpace(compact.candidates, impossible.channel_axes),
+            budget=impossible,
+            strategy=Greedy(Magnitude()),
+        )
+    budget = accounting.budget(graph, compact, 0.66)
     assert budget.channel_axes == (graph.parameter("0.weight").axis(0),)
     plan = Pruner(model, graph=graph).plan(
         CandidateSpace(compact.candidates, budget.channel_axes),
@@ -227,7 +278,9 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     resumed = CumulativeChannelBudget(fresh_graph, fresh, scope=scope)
     resumed.load_state_dict(accounting.state_dict(), fresh_graph, fresh)
     assert resumed.state_dict() == accounting.state_dict()
-    assert resumed.budget(fresh_graph, fresh, 0.99).counts == (0 if scope == "global" else (0,))
+    assert resumed.budget(fresh_graph, fresh, 0.99).max_channels == (
+        0 if scope == "global" else (0,)
+    )
 
 
 @pytest.mark.parametrize(

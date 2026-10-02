@@ -1,5 +1,6 @@
 """pruning / context contracts."""
 
+import copy
 from dataclasses import replace
 
 import pytest
@@ -11,6 +12,7 @@ from tests.support.pruning import StaticMetric
 from torch_kirigami import (
     CandidateAxis,
     DependencyGraph,
+    Fixed,
     OperatorRegistry,
     OperatorRule,
     Selection,
@@ -23,8 +25,10 @@ from torch_kirigami.pruning import (
     GroupMagnitude,
     Magnitude,
     ParameterBudget,
+    PlanningContext,
     PlanningError,
     Pruner,
+    PruningPlan,
     StrategyResult,
     WeightTaylor,
     strategies,
@@ -45,6 +49,79 @@ class FalseyStrategy:
 
     def select(self, context):
         return StrategyResult(())
+
+
+@pytest.mark.parametrize(
+    "metric", [Magnitude(), GroupMagnitude(), WeightTaylor(), WeightTaylor(mode="joint_abs")]
+)
+def test_metric_keyword_contract_and_accepted_impact_match_independent_reference(
+    metric, execution_device
+):
+    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2)).eval()
+    original = copy.deepcopy(model)
+    x = torch.randn(2, 3)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    axis = graph.parameter("0.weight").axis(0)
+    candidate = Candidate("next", (axis.select([1]),), axis)
+    for parameter in model.parameters():
+        parameter.grad = torch.ones_like(parameter)
+    context = PlanningContext(
+        graph, space.candidates, ChannelRatio(0.5), space.channel_axes, pruner.constraints
+    )
+    accepted_impact = context.impact((axis.select([0]),))
+    values = torch.cat((original[0].weight[1], original[0].bias[1:2], original[1].weight[:, 1]))
+    if isinstance(metric, GroupMagnitude):
+        energies = original[0].weight[1:].square().sum(1) + original[1].weight[:, 1:].square().sum(
+            0
+        )
+        expected = (energies[0] / energies.mean()).item()
+    elif isinstance(metric, WeightTaylor):
+        expected = (
+            values.abs().sum() if metric.mode == "elementwise_abs" else values.sum().abs()
+        ).item()
+    else:
+        expected = values.norm(p=2).item()
+    direct = metric.score(context=context, candidates=(candidate,), accepted_impact=accepted_impact)
+    scores = context.score(metric=metric, candidates=(candidate,), accepted_impact=accepted_impact)
+    assert direct == pytest.approx([expected])
+    assert scores == pytest.approx((expected,))
+    assert isinstance(scores, tuple)
+    # Scoring is read-only; the baseline's requests have not yet been applied.
+    torch.testing.assert_close(model(x), original(x))
+    plan = pruner.plan_remove((*accepted_impact.requested, *candidate.remove))
+    compact, _ = pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    hidden = nn.functional.linear(x, original[0].weight[2:], original[0].bias[2:])
+    reference = nn.functional.linear(hidden, original[1].weight[:, 2:], original[1].bias)
+    torch.testing.assert_close(compact(x), reference)
+    compact(x).sum().backward()
+
+
+@pytest.mark.parametrize("empty_constraints", [(), [], iter(())])
+def test_graph_free_apply_accepts_empty_constraint_iterables(empty_constraints, execution_device):
+    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2)).eval()
+    original = copy.deepcopy(model)
+    x = torch.randn(2, 3)
+    graph = DependencyGraph.build(model, args=(x,))
+    axis = graph.parameter("0.weight").axis(0)
+    plan = Pruner(model, graph=graph).plan_remove((axis.select([0]),))
+    restored = copy.deepcopy(model)
+    compact, _ = Pruner(restored, constraints=empty_constraints).apply(
+        PruningPlan.from_dict(plan.to_dict())
+    )
+    reference = nn.functional.linear(
+        nn.functional.linear(x, original[0].weight[1:], original[0].bias[1:]),
+        original[1].weight[:, 1:],
+        original[1].bias,
+    )
+    torch.testing.assert_close(compact(x), reference)
+    # Nonempty iterators still require graph-bound planning configuration.
+    before = tuple(model.parameters())
+    with pytest.raises(ValueError, match="configuration requires"):
+        Pruner(model, constraints=iter((Fixed(axis),)))
+    assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
+    graph.validate()
 
 
 def test_cache_hit_validates_full_reference_and_impact_owner():
@@ -128,7 +205,7 @@ def test_candidate_domains_use_axes_not_keys(conflict):
     else:
         plan = pruner.plan(pruner.discover_candidates(), **options)
         assert plan.selection_report.widths == (6, 6)
-        assert plan.selection_report.targets == (3,) and plan.selection_report.removed == (0, 3)
+        assert plan.selection_report.targets == (9,) and plan.selection_report.removed == (0, 3)
 
 
 def test_falsey_strategy_and_parameter_filters_are_called():
@@ -136,7 +213,7 @@ def test_falsey_strategy_and_parameter_filters_are_called():
     context, candidate = _context(model)
     plan = Pruner(model, graph=context.graph, preserve_io=False).plan(
         Pruner(model, graph=context.graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.5),
+        budget=ChannelRatio(0),
         strategy=FalseyStrategy(),
     )
     assert plan.selected == ()
@@ -148,11 +225,11 @@ def test_falsey_strategy_and_parameter_filters_are_called():
         assert context.score(metric, (candidate,)) == (0.0,)
 
 
-def test_conditional_scoring_rejects_another_graphs_selected_impact():
+def test_conditional_scoring_rejects_another_graphs_accepted_impact():
     context, candidate = _context()
     other, _ = _context()
     with pytest.raises(ValueError, match="another graph"):
-        context.score(Magnitude(), (candidate,), selected=other.impact(()))
+        context.score(Magnitude(), (candidate,), accepted_impact=other.impact(()))
 
 
 @pytest.mark.parametrize(

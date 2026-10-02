@@ -146,7 +146,7 @@ def test_joint_rows_columns_greedy_grouped_chain(execution_device):
         ]
 
     plan = pruner.plan(
-        pruner.discover_candidates(), budget=ChannelRatio(0.34), strategy=Greedy(metric)
+        pruner.discover_candidates(), budget=ChannelRatio(0.3), strategy=Greedy(metric)
     )
     assert plan.selection_report.removed == (2, 2)
     pruner.apply(plan)

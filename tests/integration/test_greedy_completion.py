@@ -12,6 +12,7 @@ from torch_kirigami import Balanced, DependencyGraph, Divisible, Fixed, IndexSet
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    ChannelCount,
     ChannelRatio,
     Granularity,
     Greedy,
@@ -116,7 +117,7 @@ def test_constraints_construct_noncontiguous_batches_before_first_joint_trial(
     )
     plan = pruner.plan(
         CandidateSpace(candidates, (axis,)),
-        budget=ChannelRatio(count / width),
+        budget=ChannelCount((width - count,), (axis,)),
         strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     assert plan.selection_report.removed == (count,)
@@ -287,18 +288,26 @@ def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_reque
     )
     pruner = Pruner(model, graph=graph, constraints=[Divisible(axis, 2), Fixed(protected)])
     before = tuple(model.parameters())
-    plan = pruner.plan(
-        CandidateSpace(candidates, (axis,)),
-        budget=ChannelRatio(0.5),
-        strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit),
-    )
-    assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
     if limit == 1:
-        assert not plan.recipes and plan.selection_report.limit_reached
-        assert any("fixed_axis" in reason for _, reason in plan.selection_report.exclusions)
-        pruner.apply(plan)
+        with pytest.raises(PlanningError, match=r"target not reached.*fixed_axis"):
+            plan = pruner.plan(
+                CandidateSpace(candidates, (axis,)),
+                budget=ChannelRatio(0.5),
+                strategy=Greedy(
+                    StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit
+                ),
+            )
+        assert all(a is b for a, b in zip(before, model.parameters(), strict=True))
         torch.testing.assert_close(model(x), original(x))
+        graph.validate()
     else:
+        plan = pruner.plan(
+            CandidateSpace(candidates, (axis,)),
+            budget=ChannelRatio(0.5),
+            strategy=Greedy(
+                StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit
+            ),
+        )
         assert plan.selected == ("a_seed", "c_good_partner")
         assert plan.selection_report.removed == (2,)
         pruner.apply(PruningPlan.from_dict(plan.to_dict()))
@@ -333,13 +342,6 @@ def test_completion_falls_back_to_candidate_with_only_joint_axis_effect(ratio, e
     pruner = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 4)])
     space = CandidateSpace(candidates, (axis,))
     strategy = Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=3)
-    if ratio == 0.1:
-        before = model.weight, model.bias
-        with pytest.raises(PlanningError, match="empty request"):
-            pruner.plan(space, budget=ChannelRatio(ratio), strategy=strategy)
-        assert model.weight is before[0] and model.bias is before[1]
-        torch.testing.assert_close(model(x), original(x))
-        return
     plan = pruner.plan(space, budget=ChannelRatio(ratio), strategy=strategy)
     assert plan.selected == ("a_left", "c_full", "b_right")
     assert plan.selection_report.removed == (2,) and not plan.selection_report.limit_reached

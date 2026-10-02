@@ -193,7 +193,7 @@ def test_unsupported_branch_stays_fixed_and_counts_toward_parameter_limit(execut
     @StaticMetric
     def metric(context, batch):
         assert all(c.axis.tensor != graph.parameter("a.weight") for c in batch)
-        return ordered.score(context, batch, selected=context.impact(()))
+        return ordered.score(context, batch, accepted_impact=context.impact(()))
 
     plan = pruner.plan(space, budget=ParameterBudget(46), strategy=Greedy(metric))
     assert plan.selection_report.before_params == 74 and plan.selection_report.after_params == 46

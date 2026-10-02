@@ -286,7 +286,6 @@ def test_logical_head_metric_and_automatic_plan(execution_device):
     budget = ParameterBudget.from_ratio(model, 0.10)
     context = PlanningContext(
         graph,
-        graph.operations(),
         space.candidates,
         budget,
         space.channel_axes,

@@ -65,7 +65,7 @@ def test_gate_training_pruning_independent_reference_and_checkpoint(convolution,
     candidates = binding.candidates(pruner, space.candidates)
     plan = Pruner(model, graph=graph).plan(
         CandidateSpace(candidates=candidates, channel_axes=space.channel_axes),
-        budget=ChannelCount((1,), space.channel_axes),
+        budget=ChannelCount((3,), space.channel_axes),
         strategy=Greedy(GateMagnitude((binding,))),
     )
     Pruner(model, graph=graph).apply(plan)
@@ -156,7 +156,6 @@ def test_gate_and_scale_parameter_aliases_are_not_counted_twice():
     metric = GateMagnitude((GateBinding(graph, "gate"), GateBinding(graph, "alias")))
     context = PlanningContext(
         graph,
-        graph.operations(),
         space.candidates,
         ChannelRatio(0.5),
         space.channel_axes,
@@ -186,18 +185,20 @@ def test_gate_metric_conditional_regions_and_dynamic_plan(execution_device):
     space = pruner.discover_candidates(targets=("gated.0",))
     budget = ChannelCount((2,), space.channel_axes)
     context = PlanningContext(
-        graph, graph.operations(), space.candidates, budget, space.channel_axes, pruner.constraints
+        graph, space.candidates, budget, space.channel_axes, pruner.constraints
     )
     axis = graph.parameter("gated.0.weight").axis(0)
     metric = GateMagnitude((GateBinding(graph, "gated.1"),))
     selected = context.impact((axis.select([0]),))
     overlap = Candidate("overlap", (axis.select([0, 1]),), axis)
     duplicate = Candidate("duplicate", (axis.select([0]),), axis)
-    assert context.score(metric, (overlap, duplicate), selected=selected) == (3.0, 0.0)
+    assert context.score(metric, (overlap, duplicate), accepted_impact=selected) == (3.0, 0.0)
     ungated = graph.parameter("plain.0.weight").axis(0)
     with pytest.raises(ValueError, match="no bound gate"):
         context.score(
-            metric, (Candidate("ungated", (ungated.select([1]),), ungated),), selected=selected
+            metric,
+            (Candidate("ungated", (ungated.select([1]),), ungated),),
+            accepted_impact=selected,
         )
 
     before = {name: value.clone() for name, value in model.state_dict().items()}
@@ -307,11 +308,10 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
     pruner = Pruner(graph.model, graph=graph)
     space = pruner.discover_candidates()
     bindings = [GateBinding(graph, name) for name in ("g1", "g2", "alias")]
-    budget = ChannelCount((1,), space.channel_axes)
+    budget = ChannelCount((2,), space.channel_axes)
     for order in (bindings, list(reversed(bindings))):
         context = PlanningContext(
             graph,
-            graph.operations(),
             space.candidates,
             budget,
             space.channel_axes,
@@ -319,7 +319,7 @@ def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_devic
         )
         assert context.score(GateMagnitude(order), space.candidates) == (1.0, 1.0, 2.0)
         selected = context.impact(space.candidates[0].remove)
-        assert context.score(GateMagnitude(order), space.candidates, selected=selected) == (
+        assert context.score(GateMagnitude(order), space.candidates, accepted_impact=selected) == (
             0.0,
             1.0,
             2.0,

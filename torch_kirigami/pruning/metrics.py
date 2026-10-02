@@ -31,7 +31,7 @@ class Magnitude:
         self,
         p: int = 2,
         *,
-        parameter_filter: Callable[[TensorRef, torch.Tensor], bool] | None = None,
+        parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None = None,
     ) -> None:
         if p not in (1, 2):
             raise ValueError("Magnitude supports p=1 or p=2")
@@ -41,12 +41,12 @@ class Magnitude:
     def score(
         self,
         context: MetricContext,
-        candidate_batch: tuple[Candidate, ...],
+        candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         """Score newly removed regions after the complete accepted selection."""
-        return _scores(self, context, candidate_batch, selected=selected)
+        return _scores(self, context, candidates, accepted_impact=accepted_impact)
 
 
 class WeightTaylor:
@@ -65,7 +65,7 @@ class WeightTaylor:
         self,
         mode: str = "elementwise_abs",
         *,
-        parameter_filter: Callable[[TensorRef, torch.Tensor], bool] | None = None,
+        parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None = None,
     ) -> None:
         if mode not in ("elementwise_abs", "joint_abs"):
             raise ValueError("Unknown Taylor mode")
@@ -75,12 +75,12 @@ class WeightTaylor:
     def score(
         self,
         context: MetricContext,
-        candidate_batch: tuple[Candidate, ...],
+        candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         """Return aligned scores; missing or nonfinite statistics are errors."""
-        return _scores(self, context, candidate_batch, selected=selected)
+        return _scores(self, context, candidates, accepted_impact=accepted_impact)
 
 
 _WEIGHT_MODULES = (
@@ -137,7 +137,7 @@ class GroupMagnitude:
         self,
         p: int = 2,
         *,
-        parameter_filter: Callable[[TensorRef, torch.Tensor], bool] | None = None,
+        parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None = None,
     ) -> None:
         if p not in (1, 2):
             raise ValueError("GroupMagnitude supports p=1 or p=2")
@@ -153,14 +153,14 @@ class GroupMagnitude:
     def score(
         self,
         context: MetricContext,
-        candidate_batch: tuple[Candidate, ...],
+        candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         """Return normalized conditional energies, independent of batching."""
-        context.graph.validate_impact(selected)
-        context.require_complete(selected)
-        domains = tuple(_candidate_domain(candidate) for candidate in candidate_batch)
+        context.graph.validate_impact(accepted_impact)
+        context.require_complete(accepted_impact)
+        domains = tuple(_candidate_domain(candidate) for candidate in candidates)
         if not domains:
             return []
         weights = _weight_bindings(context)
@@ -171,7 +171,7 @@ class GroupMagnitude:
         if self.parameter_filter is not None:
             included = set()
             for ref in weights:
-                if self.parameter_filter(ref, bindings[ref]):
+                if self.parameter_filter(ref, cast(nn.Parameter, bindings[ref])):
                     included.add(ref)
                 context.graph.validate()
         if not included:
@@ -192,23 +192,25 @@ class GroupMagnitude:
             versions = tuple(sorted((id(bindings[r]), bindings[r]._version) for r in included))
         except RuntimeError:
             versions = None
-        selected_key = tuple((s.tensor, s.regions) for s in selected.selections.values())
+        accepted_regions = tuple((s.tensor, s.regions) for s in accepted_impact.selections.values())
         normalizers = {}
         for axis in dict.fromkeys(axis for axis, _indices in domains):
-            key = (context.graph.id, self.p, axis, selected_key, versions, frozenset(included))
+            key = (context.graph.id, self.p, axis, accepted_regions, versions, frozenset(included))
             cacheable = versions is not None and self._context is not None
             if cacheable and key in self._normalizers:
                 normalizers[axis] = self._normalizers[key]
                 self._normalizers.move_to_end(key)
                 continue
             surviving = IndexSet.span(0, axis.tensor.shape[axis.dim]).subtract(
-                selected.selection(axis.tensor).fully_selected_indices(axis.dim)
+                accepted_impact.selection(axis.tensor).fully_selected_indices(axis.dim)
             )
             population = tuple(
                 Candidate(f"normalization:{position}", (axis.select([position]),), axis)
                 for position in surviving
             )
-            norms = _scores(self, context, population, selected=selected, include=included)
+            norms = _scores(
+                self, context, population, accepted_impact=accepted_impact, include=included
+            )
             scale, mean = _normalization(norms, self.p)
             # A singleton's normalization query is exactly its conditional score
             # query. Store scalar results instead of propagating/evaluating them
@@ -222,7 +224,7 @@ class GroupMagnitude:
                 self._normalizers[key] = entry
                 if len(self._normalizers) > 32:
                     self._normalizers.popitem(last=False)
-        norms = [0.0] * len(candidate_batch)
+        norms = [0.0] * len(candidates)
         joint_indices = []
         for index, (axis, positions) in enumerate(domains):
             if len(positions) == 1:
@@ -233,8 +235,8 @@ class GroupMagnitude:
             joint_norms = _scores(
                 self,
                 context,
-                tuple(candidate_batch[index] for index in joint_indices),
-                selected=selected,
+                tuple(candidates[index] for index in joint_indices),
+                accepted_impact=accepted_impact,
                 include=included,
             )
             for index, norm in zip(joint_indices, joint_norms, strict=True):
@@ -315,32 +317,32 @@ def _magnitude_norm(values: torch.Tensor, p: int, *, batched: bool = False) -> t
 def _scores(
     metric: Magnitude | WeightTaylor | GroupMagnitude,
     context: MetricContext,
-    batch: tuple[Candidate, ...],
+    candidates: tuple[Candidate, ...],
     *,
-    selected: Impact,
+    accepted_impact: Impact,
     include: set[TensorRef] | None = None,
 ) -> list[float]:
     """Compute marginal norms or Taylor sums using complete joint propagation."""
-    context.graph.validate_impact(selected)
-    context.require_complete(selected)
-    result = [0.0] * len(batch)
+    context.graph.validate_impact(accepted_impact)
+    context.require_complete(accepted_impact)
+    result = [0.0] * len(candidates)
     device_scores: dict[torch.device, list[tuple[int, torch.Tensor]]] = {}
     l2 = isinstance(metric, (Magnitude, GroupMagnitude)) and metric.p == 2
     bindings = dict(context.graph.tensor_bindings())
     with torch.no_grad():
-        for index, candidate in enumerate(batch):
-            impact = context.impact((*selected.requested, *candidate.remove))
+        for index, candidate in enumerate(candidates):
+            impact = context.impact((*accepted_impact.requested, *candidate.remove))
             context.require_complete(impact)
             totals: dict[torch.device, torch.Tensor] = {}
             for selection in impact.parameters:
                 if include is not None and selection.tensor not in include:
                     continue
-                selection = selection.subtract(selected.selection(selection.tensor))
+                selection = selection.subtract(accepted_impact.selection(selection.tensor))
                 if not selection:
                     continue
                 weight = bindings[selection.tensor]
                 if include is None and metric.parameter_filter is not None:
-                    accepted = metric.parameter_filter(selection.tensor, weight)
+                    accepted = metric.parameter_filter(selection.tensor, cast(nn.Parameter, weight))
                     context.graph.validate()  # A user callback cannot invalidate cached bindings.
                     if not accepted:
                         continue
@@ -373,7 +375,7 @@ def _scores(
             for device, value in totals.items():
                 device_scores.setdefault(device, []).append((index, value))
         # One transfer per device/batch, rather than one synchronization per
-        # selected region. Different parameter devices can still contribute.
+        # affected parameter region. Different parameter devices can still contribute.
         for entries in device_scores.values():
             values = torch.stack([value for _, value in entries]).cpu().tolist()
             for (index, _), value in zip(entries, values, strict=True):

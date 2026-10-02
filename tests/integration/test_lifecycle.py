@@ -271,5 +271,5 @@ def test_rebuild_explicit_second_round_and_all_old_plans_stale(execution_device)
             pruner.discover_candidates(), budget=ChannelRatio(0.2), strategy=Greedy(Magnitude())
         )
     )
-    assert model[0].out_features == 6
+    assert model[0].out_features == 5
     assert model(x).shape == (2, 2)

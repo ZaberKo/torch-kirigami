@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
-from typing import cast
 
 import torch
 
@@ -13,6 +12,7 @@ from ..graph import DependencyGraph
 from ..operation import OperationContext
 from ..regions import Region
 from ..selection import AxisRef, Selection, TensorRef
+from .budget import remaining_parameters, resolve_budget
 from .rewrite import compile_recipes
 from .types import (
     AttributeRecipe,
@@ -26,7 +26,6 @@ from .types import (
     SelectionReport,
     StrategyResult,
     TensorRecipe,
-    channel_targets,
 )
 
 _IMPACT_CACHE_SIZE = 32
@@ -37,32 +36,38 @@ class PlanningContext:
 
     Metrics own their statistics and are never cached. Impact queries use a bounded
     32-entry cache; four recent verified recipe sets and 32 configuration checks
-    may also be reused. Caches retain no tensor data; version changes invalidate
+    may also be reused. Pure native metadata outputs retain at most one fact tree
+    per captured call. Caches retain no tensor data; version changes invalidate
     compilation caches, and callback boundaries still validate state.
+
+    Args:
+        graph: Fresh dependency snapshot supplying captured calls and bindings.
+        candidates: Explicit candidate universe; no discovery is performed.
+        budget: Upper bounds on final parameter count or channel widths.
+        channel_axes: Logical axes used to count channel removals.
+        constraints: Fixed structural premises for this planning round.
     """
 
     def __init__(
         self,
         graph: DependencyGraph,
-        operations: tuple[OperationContext, ...],
         candidates: tuple[Candidate, ...],
         budget: ChannelCount | ChannelRatio | ParameterBudget,
         channel_axes: tuple[AxisRef, ...],
         constraints: tuple[Constraint, ...],
     ) -> None:
-        self._graph, self._operations = graph, tuple(operations)
+        graph.validate()
+        self._graph, self._operations = graph, graph.operations()
         self._candidates = tuple(candidates)
         self._budget, self._channel_axes = budget, tuple(dict.fromkeys(channel_axes))
-        if isinstance(budget, ChannelCount) and budget.channel_axes != self.channel_axes:
-            raise ValueError("ChannelCount axes must match the candidate space in order")
+        for axis in self.channel_axes:
+            graph.metadata(axis.tensor)
         self._constraints = tuple(constraints)
         self._widths = tuple(a.tensor.shape[a.dim] for a in self.channel_axes)
-        self._targets = (
-            () if isinstance(budget, ParameterBudget) else channel_targets(budget, self.widths)
-        )
         self._parameter_count = sum(
             math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"
         )
+        self._target = resolve_budget(budget, self.channel_axes, self._parameter_count)
         self._trials = 0
         self._cache: OrderedDict[tuple[tuple[TensorRef, tuple[Region, ...]], ...], Impact] = (
             OrderedDict()
@@ -77,6 +82,8 @@ class PlanningContext:
         self._attribute_checks: OrderedDict[tuple[tuple[str, object], ...], str | None] = (
             OrderedDict()
         )
+        # One metadata-only result per captured call, never model tensor storage.
+        self._meta_outputs: dict[str, tuple[object, object]] = {}
         self._compile_versions: tuple[tuple[int, int | None], ...] | None = None
 
     @property
@@ -116,8 +123,13 @@ class PlanningContext:
 
     @property
     def targets(self) -> tuple[int, ...]:
-        """Return channel removal caps; empty for a parameter budget."""
-        return self._targets
+        """Return upper bounds on final sizes, aligned with remaining()."""
+        return self._target.limits
+
+    @property
+    def budget_axes(self) -> tuple[AxisRef, ...]:
+        """Return axes needing channel summaries; parameters use verified recipes."""
+        return self._target.axes
 
     @property
     def trials(self) -> int:
@@ -158,25 +170,35 @@ class PlanningContext:
     def score(
         self,
         metric: Metric,
-        candidate_batch: tuple[Candidate, ...],
+        candidates: tuple[Candidate, ...],
         *,
-        selected: Impact | None = None,
+        accepted_impact: Impact | None = None,
     ) -> tuple[float, ...]:
-        """Score additions to a committed closure, or to the empty request.
+        """Score each candidate's addition to the accepted removal requests.
 
         Temporary multi-selection candidates are allowed. Influence is checked
         jointly: an isolated candidate can miss effects triggered by combining
         it with the accepted requests. Feasibility is checked by the strategy.
+
+        Args:
+            metric: Batch-independent scorer with caller-owned statistics.
+            candidates: Requests to score separately, in the returned score order.
+            accepted_impact: Complete dependency analysis of previously accepted
+                removal requests. None uses the empty request. This is a planning
+                baseline; the original model has not been physically pruned.
+
+        Returns:
+            One finite real score per candidate, in the same order.
         """
-        batch = tuple(candidate_batch)
-        selected = self.impact(()) if selected is None else selected
-        self.require_complete(selected)
-        for candidate in batch:
-            self.require_complete(self.impact((*selected.requested, *candidate.remove)))
-        return self._score_complete(metric, batch, selected=selected)
+        candidates = tuple(candidates)
+        accepted_impact = self.impact(()) if accepted_impact is None else accepted_impact
+        self.require_complete(accepted_impact)
+        for candidate in candidates:
+            self.require_complete(self.impact((*accepted_impact.requested, *candidate.remove)))
+        return self._score_complete(metric, candidates, accepted_impact=accepted_impact)
 
     def _score_complete(
-        self, metric: Metric, batch: tuple[Candidate, ...], *, selected: Impact
+        self, metric: Metric, candidates: tuple[Candidate, ...], *, accepted_impact: Impact
     ) -> tuple[float, ...]:
         """Score a batch whose influence was already checked by this context.
 
@@ -185,12 +207,12 @@ class PlanningContext:
         custom batches. Keep the public score entry fully checked for temporary
         candidates, and retain state and result validation at callback boundaries.
         """
-        batch = tuple(batch)
-        self.require_complete(selected)
+        candidates = tuple(candidates)
+        self.require_complete(accepted_impact)
         self.graph.validate()
         if not callable(getattr(metric, "score", None)):
-            raise TypeError("Metric must implement score(context, candidates, *, selected)")
-        values = metric.score(self, batch, selected=selected)
+            raise TypeError("Metric must implement score(context, candidates, *, accepted_impact)")
+        values = metric.score(self, candidates, accepted_impact=accepted_impact)
         self.graph.validate()
         if isinstance(values, torch.Tensor):
             if values.ndim != 1 or values.is_complex():
@@ -202,66 +224,35 @@ class PlanningContext:
             raise PlanningError(
                 "Metric must return an aligned one-dimensional score batch"
             ) from error
-        if len(values) != len(batch) or not all(math.isfinite(v) for v in values):
+        if len(values) != len(candidates) or not all(math.isfinite(v) for v in values):
             raise PlanningError("Metric returned nonfinite scores or an incorrect batch length")
         return values
 
-    def counts(self, impact: Impact) -> tuple[int, ...]:
-        """Measure actual full-axis removals, counting each logical axis once."""
+    def remaining(self, impact: Impact) -> tuple[int, ...]:
+        """Measure final resource sizes in targets order, without compact weights."""
         self.graph.validate_impact(impact)
-        return tuple(
-            len(impact.selection(a.tensor).fully_selected_indices(a.dim)) for a in self.channel_axes
-        )
-
-    def admissible(self, impact: Impact) -> bool:
-        """Check intermediate removal caps, allowing progress toward a resource target.
-
-        Structural/execution validity is checked separately by compile(). A
-        parameter target cannot reject intermediate requests merely because they
-        still leave too many parameters.
-        """
-        if isinstance(self.budget, ParameterBudget):
-            self.graph.validate_impact(impact)
-            return True
-        return _within_targets(self, self.counts(impact))
+        recipes = self.compile(impact)[0] if self._target.resource == "parameters" else ()
+        return self._target.remaining(impact, recipes)
 
     def parameter_count(self, impact: Impact) -> int:
         """Count final unique Parameter elements using verified joint recipes."""
-        recipes, _, _ = self.compile(impact)
-        return self._parameter_count - sum(
-            math.prod(r.tensor.shape) - math.prod(r.shape)
-            for r in recipes
-            if r.tensor.kind == "parameter"
-        )
+        return remaining_parameters(self._parameter_count, self.compile(impact)[0])
 
     def within_budget(self, impact: Impact) -> bool:
-        """Check the final budget, including an absolute parameter target if given."""
-        if isinstance(self.budget, ParameterBudget):
-            return self.parameter_count(impact) <= self.budget.max_params
-        return self.admissible(impact)
+        """Check all final-size upper bounds; execution validity is checked separately."""
+        return self._target.met(self.remaining(impact))
+
+    def deficit(self, impact: Impact) -> int:
+        """Measure missing reduction; local excesses cannot cancel each other.
+
+        A complete addition must lower this value before a greedy strategy
+        accepts it. Coupled deletion may also shrink an already satisfied axis.
+        """
+        return self._target.deficit(self.remaining(impact))
 
     def require_budget(self, impact: Impact, *, result: StrategyResult | None = None) -> None:
-        """Reject an unmet final target with actual counts and bounded-search diagnostics."""
-        if self.within_budget(impact):
-            return
-        if isinstance(self.budget, ParameterBudget):
-            detail = (
-                "; ".join(f"{k}: {reason}" for k, reason in result.exclusions[-3:])
-                if result
-                else ""
-            )
-            raise PlanningError(
-                f"Parameter target not reached: {self.parameter_count(impact)} remain, "
-                f"max_params={self.budget.max_params}; {self.trials} joint trials"
-                + (
-                    "; strategy trial limit reached"
-                    if result and result.stop_reason == "trial_limit"
-                    else ""
-                )
-                + ". No plan was produced or applied. This is not a proof of infeasibility."
-                + (f" Last exclusions: {detail}" if detail else "")
-            )
-        raise PlanningError(_budget_reason(self, self.counts(impact)))
+        """Reject a missed final target with measured sizes and search diagnostics."""
+        self._target.require(self.remaining(impact), self.trials, result)
 
     def compile(
         self, impact: Impact
@@ -276,6 +267,7 @@ class PlanningContext:
         if versions is None or versions != self._compile_versions:
             self._compiled.clear()
             self._attribute_checks.clear()
+            self._meta_outputs.clear()
             self._compile_versions = versions
         # Cache a specific analysis result, not merely seeds/status: extra
         # constraints can produce a different closure or execution requirements.
@@ -288,6 +280,7 @@ class PlanningContext:
                     self.operations,
                     impact,
                     attribute_checks=self._attribute_checks if versions is not None else None,
+                    meta_outputs=self._meta_outputs if versions is not None else None,
                 ),
             )
             if len(self._compiled) > 4:
@@ -304,53 +297,5 @@ class PlanningContext:
         exclusions: tuple[tuple[str, str], ...] = (),
     ) -> ParameterReport | SelectionReport:
         """Freeze the measured budget and strategy diagnostics."""
-        if isinstance(self.budget, ParameterBudget):
-            return ParameterReport(
-                self._parameter_count,
-                self.parameter_count(impact),
-                self.budget.max_params,
-                self.trials,
-                result.stop_reason == "trial_limit",
-                (*exclusions, *result.exclusions),
-            )
-        return SelectionReport(
-            self.channel_axes,
-            self.widths,
-            self.counts(impact),
-            self.targets,
-            self.budget.scope,
-            self.trials,
-            result.stop_reason == "trial_limit",
-            (*exclusions, *result.exclusions),
-        )
-
-
-def _within_targets(context: PlanningContext, counts: tuple[int, ...]) -> bool:
-    """Apply the same caps to exact counts and proven lower bounds."""
-    if isinstance(context.budget, ParameterBudget):
-        return True
-    return (
-        all(a <= b for a, b in zip(counts, context.targets, strict=True))
-        if context.budget.scope == "local"
-        else sum(counts) <= context.targets[0]
-    )
-
-
-def _budget_reason(
-    context: PlanningContext, counts: tuple[int, ...], *, lower_bound: bool = False
-) -> str:
-    """Describe an exceeded cap, distinguishing exact counts from lower bounds."""
-    qualifier = "at least " if lower_bound else ""
-    budget = cast(ChannelCount | ChannelRatio, context.budget)
-    if budget.scope == "global":
-        return (
-            f"Joint request exceeds the global channel budget: "
-            f"{qualifier}{sum(counts)} removals > {context.targets[0]} allowed"
-        )
-    details = (
-        f"{axis.tensor.paths[0] if axis.tensor.paths else axis.tensor.id} "
-        f"axis {axis.dim}: {qualifier}{count} removals > {cap} allowed"
-        for axis, count, cap in zip(context.channel_axes, counts, context.targets, strict=True)
-        if count > cap
-    )
-    return "Joint request exceeds the local channel budget: " + "; ".join(details)
+        self.graph.validate_impact(impact)
+        return self._target.report(self.remaining(impact), impact, self.trials, result, exclusions)

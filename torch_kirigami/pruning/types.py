@@ -47,6 +47,15 @@ def _paths(values: tuple[str, ...]) -> tuple[str, ...]:
     return values
 
 
+def _decimal_ratio(value: float, *, name: str = "ratio") -> Fraction:
+    """Validate a ratio and preserve its supplied decimal value for integer caps."""
+    if type(value) not in (int, float) or not 0 <= value < 1:
+        raise ValueError(f"{name} must be finite and in [0, 1)")
+    # Binary multiplication/subtraction can move an integral target below its
+    # boundary. Do not add an epsilon: a truly smaller ratio must still floor down.
+    return Fraction(str(value))
+
+
 class PlanningError(KirigamiError):
     """The request has no verified executable recipe under the current policy."""
 
@@ -101,22 +110,19 @@ class ParameterBudget:
             The baseline is read once; later model changes do not alter the cap.
             Granularity may require a greater reduction. No model is retained.
         """
-        if type(pruning_ratio) not in (int, float) or not 0 <= pruning_ratio < 1:
-            raise ValueError("pruning_ratio must be finite and in [0, 1)")
-        # Interpret the supplied decimal value exactly: binary subtraction such
-        # as 1 - 0.9 must not turn a mathematically integral cap into one less.
-        ratio = Fraction(str(pruning_ratio))
+        ratio = _decimal_ratio(pruning_ratio, name="pruning_ratio")
         count = count_parameters(model)
         return cls(count * (ratio.denominator - ratio.numerator) // ratio.denominator)
 
 
 @dataclass(frozen=True)
 class ChannelRatio:
-    """Upper bound on removed positions relative to this snapshot's axis widths.
+    """Reduction fraction converted to upper bounds on final channel widths.
 
     Args:
-        ratio: Fraction in [0, 1). Integer targets round down.
-        scope: Local per-axis caps or a global cap without hidden local caps.
+        ratio: Fraction in [0, 1). Its decimal representation defines integer
+            remaining-width targets, which round down. Use ChannelCount for absolute caps.
+        scope: Local final-width caps or a global sum without hidden local caps.
 
     The candidate space supplies the logical channel axes.
     """
@@ -125,23 +131,25 @@ class ChannelRatio:
     scope: str = "local"
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.ratio) or not 0 <= self.ratio < 1:
-            raise ValueError("ratio must be finite and in [0, 1)")
+        _decimal_ratio(self.ratio)
         if self.scope not in ("local", "global"):
             raise ValueError("scope must be local or global")
 
 
 @dataclass(frozen=True)
 class ChannelCount:
-    """Integer removal caps over explicit logical channel axes.
+    """Upper bounds on final logical channel widths.
 
     Args:
-        counts: Local tuple aligned with channel_axes, or one integer for global scope.
+        max_channels: Local tuple aligned with channel_axes, or one global sum cap.
         channel_axes: Explicit unique logical axes, matching the candidate space in order.
-        scope: Local per-axis caps or a global joint cap.
+        scope: Local per-axis targets or a global target without hidden local caps.
+
+    Targets may exceed current widths, meaning no further reduction is required.
+    A zero target is allowed as input but may be structurally unattainable.
     """
 
-    counts: int | tuple[int, ...]
+    max_channels: int | tuple[int, ...]
     channel_axes: tuple[AxisRef, ...]
     scope: str = "local"
 
@@ -153,43 +161,21 @@ class ChannelCount:
             raise ValueError("ChannelCount requires unique explicit channel axes")
         if self.scope not in ("local", "global"):
             raise ValueError("scope must be local or global")
-        counts = (self.counts,) if self.scope == "global" else tuple(self.counts)
+        counts = (self.max_channels,) if self.scope == "global" else tuple(self.max_channels)
         if len(counts) != (1 if self.scope == "global" else len(channel_axes)) or any(
             type(c) is not int or c < 0 for c in counts
         ):
-            raise ValueError("Invalid integer channel caps")
-        widths = tuple(a.tensor.shape[a.dim] for a in channel_axes)
-        if (self.scope == "global" and counts[0] > sum(widths)) or (
-            self.scope == "local" and any(c > w for c, w in zip(counts, widths, strict=True))
-        ):
-            raise ValueError("Channel cap exceeds current width")
+            raise ValueError("Invalid final channel limits")
         object.__setattr__(self, "channel_axes", channel_axes)
         if self.scope == "local":
-            object.__setattr__(self, "counts", counts)
-
-
-def channel_targets(
-    budget: ChannelRatio | ChannelCount, widths: tuple[int, ...]
-) -> tuple[int, ...]:
-    """Resolve ratio or integer caps using one planner-independent definition."""
-    if isinstance(budget, ChannelRatio):
-        return (
-            tuple(math.floor(budget.ratio * w) for w in widths)
-            if budget.scope == "local"
-            else (math.floor(budget.ratio * sum(widths)),)
-        )
-    if isinstance(budget, ChannelCount):
-        if tuple(a.tensor.shape[a.dim] for a in budget.channel_axes) != tuple(widths):
-            raise ValueError("Integer budget channel axes do not match planning widths")
-        return (budget.counts,) if budget.scope == "global" else budget.counts
-    raise TypeError("Expected ChannelRatio or ChannelCount")
+            object.__setattr__(self, "max_channels", counts)
 
 
 class Metric(Protocol):
-    """Score additional removals given a complete committed dependency closure.
+    """Score additional removals given the complete accepted dependency impact.
 
     Lower finite scores are preferred. For the same model, statistics and
-    `selected`, a candidate's score must not depend on batch size, order or other
+    `accepted_impact`, a candidate's score must not depend on batch size, order or other
     batch members. A batch is a computation convenience, not a joint removal;
     use a multi-selection Candidate to request a joint score. Implementations
     own calibration statistics and must not modify the model or run training.
@@ -200,14 +186,24 @@ class Metric(Protocol):
         context: MetricContext,
         candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> Sequence[float] | torch.Tensor:
-        """Evaluate additions to `selected`, using original graph coordinates.
+        """Score additions to accepted requests, using original graph coordinates.
 
-        `selected` may violate repairable constraints when the empty request is
+        `accepted_impact` may violate repairable constraints when the empty request is
         initially infeasible. Scoring requires complete influence, not an
         executable intermediate model. Conditional scores are metric-specific;
         subtracting two whole-set scores is not a general implementation.
+
+        Args:
+            context: Dependency queries and original model bindings.
+            candidates: Requests to score separately; batching does not combine them.
+            accepted_impact: Joint dependency closure of already accepted removal
+                requests, including their coupled parameter regions. The original
+                model remains unchanged during planning.
+
+        Returns:
+            One finite real score per candidate, in the supplied order.
         """
         ...
 
@@ -413,7 +409,7 @@ class ParameterReport:
 
 @dataclass(frozen=True)
 class SelectionReport:
-    """Frozen denominator, target, and measured joint removals for this round."""
+    """Original widths, final-width limits and measured joint removals for this round."""
 
     channel_axes: tuple[AxisRef, ...] = ()
     widths: tuple[int, ...] = ()
@@ -461,8 +457,22 @@ class SelectionReport:
 
     @property
     def shortfall(self) -> int:
-        """Return the unfilled channel target, counting coupled logical axes separately."""
-        return max(0, sum(self.targets) - sum(self.removed))
+        """Return excess final channels; local excesses cannot cancel each other."""
+        if self.scope == "manual":
+            return 0
+        if self.scope == "global":
+            return max(0, sum(self.remaining) - self.targets[0])
+        return sum(max(0, n - cap) for n, cap in zip(self.remaining, self.targets, strict=True))
+
+    @property
+    def remaining(self) -> tuple[int, ...]:
+        """Return final widths in channel_axes order."""
+        return tuple(w - n for w, n in zip(self.widths, self.removed, strict=True))
+
+    @property
+    def target_met(self) -> bool:
+        """Whether every final-width limit is met; manual reports have no budget."""
+        return self.shortfall == 0
 
 
 @dataclass(frozen=True)
@@ -641,7 +651,7 @@ class RewriteResult:
 
     tensors: tuple[TensorRecipe, ...] = ()
     attributes: tuple[AttributeRecipe, ...] = ()
-    handled: tuple = ()
+    handled: tuple[Requirement, ...] = ()
     notes: tuple[str, ...] = ()
     output_strides: tuple[tuple[TensorRef, tuple[int, ...]], ...] = ()
 

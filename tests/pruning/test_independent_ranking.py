@@ -38,9 +38,7 @@ def context_for(
 ) -> PlanningContext:
     """Build a scoring context with explicit logical domains."""
     axes = tuple(dict.fromkeys(c.axis for c in candidates if c.axis is not None))
-    return PlanningContext(
-        graph, graph.operations(), candidates, ChannelRatio(0.5), axes, constraints
-    )
+    return PlanningContext(graph, candidates, ChannelRatio(0.5), axes, constraints)
 
 
 @pytest.mark.parametrize("p", [1, 2])
@@ -108,7 +106,7 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
     selected = context.impact((axis.select([0]),))
     actual, removals = ranking.rank(selected, (axis,))
     remaining = candidates[1:]
-    scores = context.score(ReferenceMagnitude(p), remaining, selected=selected)
+    scores = context.score(ReferenceMagnitude(p), remaining, accepted_impact=selected)
     assert actual == [
         c for _, c in sorted(zip(scores, remaining, strict=True), key=lambda x: (x[0], x[1].key))
     ]

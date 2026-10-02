@@ -30,7 +30,7 @@ class StaticMetric:
     function: Callable[[MetricContext, tuple[Candidate, ...]], Sequence[float] | torch.Tensor]
 
     def score(
-        self, context: MetricContext, candidates: tuple[Candidate, ...], *, selected: Impact
+        self, context: MetricContext, candidates: tuple[Candidate, ...], *, accepted_impact: Impact
     ) -> Sequence[float] | torch.Tensor:
         return self.function(context, candidates)
 

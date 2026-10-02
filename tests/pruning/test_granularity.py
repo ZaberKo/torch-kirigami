@@ -104,8 +104,8 @@ def test_alignment_cannot_exceed_budget_or_be_bypassed_by_manual_or_custom_strat
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path={"0": 4}))
     space = pruner.discover_candidates()
     before = tuple(model.parameters())
-    with pytest.raises(PlanningError, match="empty request"):
-        pruner.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(Magnitude()))
+    repaired = pruner.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(Magnitude()))
+    assert repaired.selection_report.remaining == (8,)
     with pytest.raises(PlanningError, match="indivisible"):
         pruner.plan_remove(space.candidates[0].remove)
     with pytest.raises(PlanningError, match="indivisible"):
@@ -127,8 +127,8 @@ def test_budget_underfill_and_protected_unchanged_axis():
     plan = pruner.plan(
         pruner.discover_candidates(), budget=ChannelRatio(0.2), strategy=Greedy(Magnitude())
     )
-    assert plan.selection_report.targets == (12,) and plan.selection_report.removed == (8,)
-    assert plan.selection_report.shortfall == 4
+    assert plan.selection_report.targets == (51,) and plan.selection_report.removed == (16,)
+    assert plan.selection_report.shortfall == 0
     protected = Pruner(model, graph=graph, granularity=Granularity(by_type={nn.Linear: 8}))
     with pytest.raises(PlanningError, match="indivisible"):
         protected.plan_remove(())  # The unchanged output width 2 is not divisible by 8.
@@ -235,7 +235,7 @@ def test_grouped_convolution_alignment_keeps_existing_partition_constraints(
         model, graph=graph, granularity=Granularity(by_type={conv: 4}, by_path={"1": 1})
     )
     plan = pruner.plan(
-        pruner.discover_candidates(), budget=ChannelRatio(0.34), strategy=Greedy(Magnitude())
+        pruner.discover_candidates(), budget=ChannelRatio(0.3), strategy=Greedy(Magnitude())
     )
     removed = set(plan.analysis.selection(graph.parameter("0.weight")).fully_selected_indices(0))
     assert len(removed) == 4 and len(removed & set(range(6))) == 2
@@ -259,10 +259,11 @@ def test_depthwise_blocks_are_not_redefined_by_alignment():
     space = pruner.discover_candidates(targets=("0",))
     assert len(space.candidates) == 4
     assert all(len(c.remove[0].fully_selected_indices(0)) == 3 for c in space.candidates)
-    plan = pruner.plan(space, budget=ChannelRatio(0.5), strategy=Greedy(Magnitude()))
     # No positive deletion of complete multiplier-3 groups can leave a positive
     # width divisible by four. Alignment does not invent multiplier shrinking.
-    assert not plan.recipes and plan.selection_report.shortfall == 6
+    with pytest.raises(PlanningError, match="Channel target not reached"):
+        pruner.plan(space, budget=ChannelRatio(0.5), strategy=Greedy(Magnitude()))
+    graph.validate()
 
 
 @pytest.mark.parametrize("dimension", [1, 2, 3])
@@ -296,7 +297,7 @@ def test_grouped_consumer_alignment_uses_logical_width_after_partitioned_input_r
         space = CandidateSpace([Candidate("pair", remove)], axes)
         plan = pruner.plan(
             space,
-            budget=ChannelCount((2, 4 if shrink_output else 0), axes),
+            budget=ChannelCount((4, 4 if shrink_output else 8), axes),
             strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
         )
         assert plan.selected == ("pair",) and plan.selection_report.shortfall == 0
@@ -380,7 +381,7 @@ def test_fused_module_alignment_applies_to_all_declared_axes(execution_device):
     plan = pruner.plan(
         pruner.discover_candidates(), budget=ChannelRatio(0.5), strategy=Greedy(Magnitude())
     )
-    assert plan.selection_report.removed == (4, 4)
+    assert plan.selection_report.removed == (4, 8)
     expected = []
     for name in ("a", "b"):
         weight = getattr(original, name)

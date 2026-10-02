@@ -14,7 +14,9 @@
             "tests/pruning/test_independent_ranking.py::test_last_position_and_weight_updates_disable_reuse"
           ],
           "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components. CPU and CUDA numerical and lifecycle references.",
-          "gaps": ["Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."]
+          "gaps": [
+            "Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."
+          ]
         }
       ]
     },
@@ -592,6 +594,15 @@
       "object": "torch_kirigami.OperatorRule",
       "contracts": [
         {
+          "behavior": "Native meta reuse requires a declared pure fresh output; extensions default to reexecution.",
+          "conditions": "CPU; native numerical equivalence additionally covers CUDA.",
+          "tests": [
+            "tests/pruning/test_meta_output_cache.py::test_unchanged_native_call_reuses_metadata_but_extensions_default_to_reexecution",
+            "tests/pruning/test_meta_output_cache.py::test_public_plan_restore_apply_matches_uncached_validation"
+          ],
+          "gaps": []
+        },
+        {
           "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
           "tests": [
             "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
@@ -639,6 +650,15 @@
     {
       "object": "torch_kirigami.DependencyGraph",
       "contracts": [
+        {
+          "behavior": "Pure axis-map reuse preserves fresh joint diagnostics, provenance, block completion and extension behavior.",
+          "conditions": "CPU/CUDA; ordinary, grouped and depthwise convolution, additional constraints and incomplete mappings.",
+          "tests": [
+            "tests/graph/test_relation_output_cache.py::test_cached_joint_queries_match_full_recomputation",
+            "tests/graph/test_relation_output_cache.py::test_axis_extensions_reexecute_and_limits_remain_incomplete"
+          ],
+          "gaps": []
+        },
         {
           "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
           "tests": [
@@ -732,6 +752,19 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -751,6 +784,19 @@
             "tests/integration/test_parameter_budget.py::test_ratio_budget_uses_the_same_plan_and_portable_execution"
           ],
           "conditions": "CPU and CUDA for execution_device tests; static validation on CPU",
+          "gaps": []
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
           "gaps": []
         }
       ]
@@ -783,6 +829,19 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -790,10 +849,22 @@
       "object": "torch_kirigami.pruning.PlanningContext",
       "contracts": [
         {
+          "behavior": "Metadata caches preserve layout and coordinate checks, tensor-version invalidation and independent final compilation.",
+          "conditions": "CPU/CUDA; static and dynamic policies, channel and parameter budgets.",
+          "tests": [
+            "tests/pruning/test_meta_output_cache.py::test_public_plan_restore_apply_matches_uncached_validation",
+            "tests/pruning/test_meta_output_cache.py::test_same_shape_requests_still_check_slice_coordinates",
+            "tests/pruning/test_meta_output_cache.py::test_meta_argument_keys_preserve_layout_and_container_semantics"
+          ],
+          "gaps": []
+        },
+        {
           "behavior": "归属、只读前提、缓存验证、回调完整批量、不变表达式",
           "tests": [
             "tests/pruning/test_context.py::test_cache_hit_validates_full_reference_and_impact_owner",
             "tests/pruning/test_context.py::test_context_premises_are_readonly",
+            "tests/pruning/test_context.py::test_metric_keyword_contract_and_accepted_impact_match_independent_reference",
+            "tests/pruning/test_context.py::test_conditional_scoring_rejects_another_graphs_accepted_impact",
             "tests/pruning/test_strategy.py::test_custom_metric_uses_bounded_batches_and_shared_expressions_are_readonly"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
@@ -805,6 +876,19 @@
           "tests": [
             "tests/integration/test_configuration_cache.py::test_same_width_configuration_checks_are_shared",
             "tests/integration/test_configuration_cache.py::test_configuration_cache_invalidates_after_tensor_write"
+          ],
+          "gaps": []
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
           ],
           "gaps": []
         }
@@ -865,6 +949,7 @@
             "tests/pruning/test_strategy.py::test_balanced_completion_multiple_constraints_and_stable_ties",
             "tests/pruning/test_strategy.py::test_greedy_initial_invalid_divisibility_and_limit",
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
+            "tests/pruning/test_context.py::test_metric_keyword_contract_and_accepted_impact_match_independent_reference",
             "tests/pruning/test_strategy.py::test_default_zero_budget_avoids_candidate_scoring"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
@@ -1135,6 +1220,7 @@
           "behavior": "IO 保护、联合配方、原子提交、失败后全状态回滚/重试、重建图再次剪枝",
           "tests": [
             "tests/pruning/test_apply.py::test_io_protection_and_mutual_exclusion",
+            "tests/pruning/test_context.py::test_graph_free_apply_accepts_empty_constraint_iterables",
             "tests/integration/test_lifecycle.py::test_failure_after_each_kind_of_commit_restores_exact_bindings",
             "tests/integration/test_lifecycle.py::test_shared_graph_survives_multiround_pruning_and_restore",
             "tests/integration/test_compact_networks.py::test_request_permutations_and_duplicates_preserve_shared_closure_and_values"
@@ -1618,6 +1704,19 @@
           "gaps": [
             "不覆盖分片训练或论文精度复现"
           ]
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -1792,6 +1891,19 @@
           "gaps": [
             "不覆盖分片训练或论文精度复现"
           ]
+        },
+        {
+          "behavior": "Final-size upper bounds: required attainment, structural overshoot, independent local targets and unchanged state on failure.",
+          "conditions": "CPU/CUDA; portable replay and cumulative checkpoint restoration.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
+          "gaps": []
         }
       ]
     },
@@ -2072,6 +2184,24 @@
             "tests/sparsity/test_regularizers.py::test_squared_group_reduces_before_tiny_squares_are_rounded"
           ],
           "conditions": "CPU/CUDA，float32/64；subnormal损失和全零组",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.budget._BudgetTarget",
+      "contracts": [
+        {
+          "behavior": "Unified final-size targets, independent measurement, local deficit accounting, overshoot and portable reports; no search or mutation.",
+          "conditions": "CPU/CUDA public build, plan, apply and checkpoint restoration; missed targets preserve model and graph.",
+          "tests": [
+            "tests/pruning/test_unified_budget.py::test_final_size_targets_share_completion_and_portable_execution",
+            "tests/pruning/test_unified_budget.py::test_local_targets_do_not_keep_pruning_a_satisfied_axis",
+            "tests/pruning/test_unified_budget.py::test_local_joint_effects_may_overshoot_one_axis_and_reports_cannot_cancel",
+            "tests/pruning/test_unified_budget.py::test_missed_channel_target_never_mutates_and_has_valid_alternative",
+            "tests/pruning/test_unified_budget.py::test_already_met_budget_still_repairs_invalid_empty_structure",
+            "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
+          ],
           "gaps": []
         }
       ]

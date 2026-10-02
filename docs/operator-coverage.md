@@ -72,7 +72,7 @@ flowchart LR
 
 `PartitionedLayout` is shared by dependency checking and physical lowering. `LayoutConstraint` checks every consumer separately. This is necessary for shared tensors: one consumer's legal packing must not accidentally authorize a layout that another consumer cannot interpret.
 
-Balancing is a planner decision. A dependency query can know all affected coordinates and still report that retained group counts differ. The planner may add candidates within the budget; it must report a shortfall when no legal completion fits.
+Balancing is a planner decision. A dependency query can know all affected coordinates and still report that retained group counts differ. The planner may add candidates to complete the constraint, including necessary deletion beyond a final-size target. If no verified selection reaches the target within the search limit, planning raises without mutation.
 
 ## Attention has distinct pruning domains
 

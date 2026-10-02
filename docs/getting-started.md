@@ -154,6 +154,6 @@ For caller-provided task gradients, use `WeightTaylor`; for custom candidates, d
 | `StaleGraphError` | Tracked structure, mode, configuration or constants changed | Rebuild the graph and all live bindings |
 | `PlanningError` | The joint selection or physical representation is not valid | Read the exception and graph.explain(impact); change the request or extend the rule |
 | `ExecutionError` | Execution preconditions or state validation failed | Verify model compatibility and inspect the reported binding or recipe |
-| Smaller-than-requested deletion count | Constraints or bounded selection left budget unused | Read the selection report; do not count the shortfall as deleted channels |
+| Final-size target not reached | Protected domains, unsupported execution or bounded search blocked sufficient reduction | Planning raises without mutation; inspect the measured remaining sizes and exclusions |
 
 The [architecture overview](architecture.md) explains why these phases are separate. The [dependency graph reference](dependency-graph-design.md) documents the objects used to inspect each phase.

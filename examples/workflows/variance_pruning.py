@@ -308,12 +308,12 @@ class ActivationVariance:
             self.scores[axis] = tuple(values)
 
     def score(
-        self, context: MetricContext, candidates: tuple[Candidate, ...], *, selected: Impact
+        self, context: MetricContext, candidates: tuple[Candidate, ...], *, accepted_impact: Impact
     ) -> list[float]:
         """Return batch-independent scores for complete hidden-axis selections."""
         if context.graph is not self.graph:
             raise ValueError("Calibration and candidates belong to different graphs")
-        context.require_complete(selected)
+        context.require_complete(accepted_impact)
         result = []
         for candidate in candidates:
             axis = candidate.axis
@@ -323,7 +323,9 @@ class ActivationVariance:
             indices = selection.fully_selected_indices(axis.dim)
             if selection != axis.select(indices):
                 raise ValueError("VBP candidates must select complete hidden-axis slices")
-            indices = indices.subtract(selected.selection(axis.tensor).fully_selected_indices(0))
+            indices = indices.subtract(
+                accepted_impact.selection(axis.tensor).fully_selected_indices(0)
+            )
             result.append(math.fsum(self.scores[axis][index] for index in indices))
         return result
 

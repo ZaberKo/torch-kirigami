@@ -11,7 +11,10 @@ from torch_kirigami.pruning.strategies import _completion_order, _ranked_axis_ca
 
 @pytest.mark.parametrize("known_only", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_completion_order_matches_exhaustive_set_reference(known_only: bool, reverse: bool) -> None:
+@pytest.mark.parametrize("excluded", [frozenset(), frozenset({"0", "1", "3", "7"})])
+def test_completion_order_matches_exhaustive_set_reference(
+    known_only: bool, reverse: bool, excluded: frozenset[str]
+) -> None:
     axis = TensorRef("channels", (4,)).axis(0)
     unrelated = TensorRef("unrelated", (1,)).axis(0)
     subsets = tuple(
@@ -34,6 +37,8 @@ def test_completion_order_matches_exhaustive_set_reference(known_only: bool, rev
         # Use ordinary Python sets, independent of the interval implementation.
         preferred, remaining = [], []
         for candidate in ranked:
+            if candidate.key in excluded:
+                continue
             delta = subsets[int(candidate.key)] - before
             helps = bool(delta) and (not partitions or any(delta & p for p in partitions))
             (preferred if helps else remaining).append(candidate)
@@ -45,9 +50,36 @@ def test_completion_order_matches_exhaustive_set_reference(known_only: bool, rev
             IndexSet.of(before),
             tuple(IndexSet.of(p) for p in partitions),
             contributors=by_axis.get(axis, ()),
+            excluded=excluded,
             known_only=known_only,
         )
         assert tuple(actual) == tuple(expected)
+
+
+def test_excluded_candidates_do_not_construct_differences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An accepted prefix is skipped before its fragmented index sets are inspected."""
+    axis = TensorRef("channels", (8,)).axis(0)
+    ranked = tuple(Candidate(str(i), (axis.select([i % 8]),)) for i in range(1_001))
+    removals = {c.key: {axis: IndexSet.of([i % 8])} for i, c in enumerate(ranked)}
+    calls = []
+    original = IndexSet.subtract
+
+    def counted(self: IndexSet, other: IndexSet) -> IndexSet:
+        calls.append(self)
+        return original(self, other)
+
+    monkeypatch.setattr(IndexSet, "subtract", counted)
+    order = _completion_order(
+        ranked,
+        removals,
+        axis,
+        IndexSet.of([0, 2, 4, 6]),
+        (),
+        contributors=ranked,
+        excluded={c.key for c in ranked[:-1]},
+    )
+    assert tuple(order) == (ranked[-1],)
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("known_only", [False, True])

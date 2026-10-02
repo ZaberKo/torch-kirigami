@@ -21,6 +21,7 @@ from torch_kirigami import (
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    ChannelCount,
     ChannelRatio,
     DynamicGreedy,
     Granularity,
@@ -66,7 +67,7 @@ def test_conditional_magnitude_changes_choice_and_matches_manual_model(
         pruner = Pruner(model, graph=graph)
         plan = pruner.plan(
             space,
-            budget=ChannelRatio(1 / 3, scope="global"),
+            budget=ChannelCount(4, space.channel_axes, scope="global"),
             strategy=strategy_type(Magnitude(p=1)),
         )
         assert plan.selected == expected_keys
@@ -95,11 +96,11 @@ class TrackingMetric:
         context: MetricContext,
         candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         axis = candidates[0].axis
         assert axis is not None
-        count = len(selected.selection(axis.tensor).fully_selected_indices(axis.dim))
+        count = len(accepted_impact.selection(axis.tensor).fully_selected_indices(axis.dim))
         self.selected_counts.append(count)
         if self.fail_after_commit and count:
             return [float("nan")] * len(candidates)
@@ -120,7 +121,7 @@ def test_dynamic_reranks_after_whole_constraint_completion(execution_device: str
         budget=ChannelRatio(0.5),
         strategy=DynamicGreedy(metric),
     )
-    assert metric.selected_counts == [0, 4]
+    assert metric.selected_counts == [0]
     assert plan.selection_report.removed == (4,)
     assert plan.selection_report.trials == 1
     original = copy.deepcopy(model)
@@ -142,7 +143,7 @@ def test_dynamic_accepts_initially_unresolved_divisibility(execution_device: str
         budget=ChannelRatio(0.2),
         strategy=DynamicGreedy(metric),
     )
-    assert metric.selected_counts == [0, 2]
+    assert metric.selected_counts == [0]
     assert plan.selection_report.removed == (2,)
     pruner.apply(plan)
     torch.testing.assert_close(model(x), F.linear(x, original.weight[2:]))
@@ -181,10 +182,9 @@ def test_empty_target_and_zero_trials_do_not_score(strategy_type: type[Greedy]) 
     metric = TrackingMetric()
     plan = pruner.plan(space, budget=ParameterBudget(8), strategy=strategy_type(metric))
     assert not metric.selected_counts and not plan.selected
-    plan = pruner.plan(
-        space, budget=ChannelRatio(0.5), strategy=strategy_type(metric, max_trials=0)
-    )
-    assert not metric.selected_counts and plan.selection_report.limit_reached
+    with pytest.raises(PlanningError, match="Channel target not reached"):
+        pruner.plan(space, budget=ChannelRatio(0.5), strategy=strategy_type(metric, max_trials=0))
+    assert not metric.selected_counts
     with pytest.raises(PlanningError, match="Parameter target not reached"):
         pruner.plan(space, budget=ParameterBudget(4), strategy=strategy_type(metric, max_trials=0))
 

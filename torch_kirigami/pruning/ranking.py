@@ -240,7 +240,7 @@ class IndependentRanking:
 
     def rank(
         self,
-        selected: Impact,
+        accepted_impact: Impact,
         axes: tuple[AxisRef, ...],
     ) -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]] | None:
         """Recompute conditional normalization without repropagating untouched domains."""
@@ -258,7 +258,9 @@ class IndependentRanking:
             root = members[0]
             # IndexSet stores intervals, so repeated membership would enumerate
             # removed positions. Only this bounded logical axis needs a set.
-            indices = frozenset(selected.selection(root.tensor).fully_selected_indices(root.dim))
+            indices = frozenset(
+                accepted_impact.selection(root.tensor).fully_selected_indices(root.dim)
+            )
             surviving = [value for i, value in enumerate(norms) if i not in indices]
             if len(surviving) <= 1:
                 return None  # Completing an entire axis can activate other axes.

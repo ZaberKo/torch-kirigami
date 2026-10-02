@@ -223,6 +223,16 @@ def validate_plan(plan: _PlanContract) -> None:
             raise ValueError(
                 "Parameter report disagrees with plan structures or exceeds its target"
             )
+    elif report.scope != "manual":
+        if not report.target_met:
+            raise ValueError("Channel report exceeds its final-width targets")
+        for axis, removed in zip(report.channel_axes, report.removed, strict=True):
+            try:
+                selection = plan.analysis.selection(axis.tensor)
+            except KeyError as error:
+                raise ValueError("Channel report axis is absent from frozen analysis") from error
+            if removed != len(selection.fully_selected_indices(axis.dim)):
+                raise ValueError("Channel report disagrees with frozen analysis")
 
 
 def check_structure(model: nn.Module, expected: ModelStructure) -> None:

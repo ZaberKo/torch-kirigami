@@ -51,7 +51,6 @@ def metric_context(device):
     space = pruner.discover_candidates(targets=("0",))
     context = PlanningContext(
         graph,
-        graph.operations(),
         space.candidates,
         ChannelRatio(0.4),
         space.channel_axes,
@@ -119,16 +118,18 @@ def test_geometric_requires_complete_output_rows_and_static_selection(execution_
     partial = Selection(axis.tensor, (Region((IndexSet.of([0]), IndexSet.of([0]))),))
     with pytest.raises(PlanningError, match="complete output-filter"):
         metric.score(
-            context, (Candidate("partial", (partial,), axis),), selected=context.impact(())
+            context, (Candidate("partial", (partial,), axis),), accepted_impact=context.impact(())
         )
     with pytest.raises(PlanningError, match="scored output-weight"):
         metric.score(
             context,
             (Candidate("undeclared", (axis.select([0]),)),),
-            selected=context.impact(()),
+            accepted_impact=context.impact(()),
         )
     with pytest.raises(PlanningError, match="static"):
-        context.score(metric, (space.candidates[0],), selected=context.impact((axis.select([2]),)))
+        context.score(
+            metric, (space.candidates[0],), accepted_impact=context.impact((axis.select([2]),))
+        )
     with pytest.raises(ValueError, match="output-weight"):
         prune_finetune.GeometricMedian(context.graph, (axis.tensor.axis(1),))
     with pytest.raises(ValueError, match="positive integer"):

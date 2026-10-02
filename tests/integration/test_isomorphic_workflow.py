@@ -91,7 +91,7 @@ class TwoFamilies(nn.Module):
 
 
 class ExplicitScores:
-    def score(self, context, candidates, *, selected):
+    def score(self, context, candidates, *, accepted_impact):
         values = []
         for candidate in candidates:
             index = next(iter(candidate.remove[0].fully_selected_indices(0)))

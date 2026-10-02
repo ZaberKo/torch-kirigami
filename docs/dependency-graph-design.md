@@ -255,6 +255,14 @@ The index is linear in the recorded graph edges, rather than an all-pairs
 reachability cache. Canonical interval bounds and simple Cartesian selections
 also admit direct checks without general region subtraction.
 
+For deeply immutable built-in `AxisRelation` records, queries retain the last
+input regions and mapped selections per relation endpoint. Unchanged inputs can
+reuse that pure index calculation. Every query still starts its own work queue,
+merges accumulated selections, records provenance and checks constraints. Larger
+inputs are remapped in full so that separate arrivals can complete blocks.
+Extensions and failed mappings are not cached; the cache stores coordinate
+records only and is bounded by the number of relation endpoints.
+
 See [planning performance notes in Chinese](cn/planning-performance.md) for the
 complete optimization scope and validation boundaries.
 
@@ -443,6 +451,7 @@ The unified extension object with four distinct responsibilities:
 | `analyze(context)` | Return pure structural facts as an `OperatorSpec`. |
 | `lower(context)` | Optionally return declarative rewrite recipes for the pruning layer; `None` uses shared compilation. |
 | `evaluate_on_meta` | Opt into native meta execution for compact-call validation; third-party rules default to declared output facts. |
+| `cache_meta_output` | Declare that a fresh, non-mutating meta output depends only on argument metadata and captured module configuration. Defaults to false for extensions; does not cache coordinate, layout-safety or configuration checks. |
 
 The core defines this interface but does not import a pruning executor. Extension code that needs custom recipes can import them from the pruning package; built-in declarative descriptors usually suffice.
 

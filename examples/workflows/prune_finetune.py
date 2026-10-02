@@ -101,13 +101,13 @@ class GeometricMedian:
         context: MetricContext,
         candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         """Sum unique output-row scores; reject partial slices and dynamic use."""
         if context.graph.id != self.graph_id:
             raise PlanningError("GeometricMedian scores belong to a different dependency graph")
-        context.require_complete(selected)
-        if selected.selections:
+        context.require_complete(accepted_impact)
+        if accepted_impact.selections:
             raise PlanningError("GeometricMedian supports static selection only")
         values = []
         for candidate in candidates:

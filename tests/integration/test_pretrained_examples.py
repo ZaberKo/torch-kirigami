@@ -119,7 +119,6 @@ def test_workflows_use_library_dependency_scores(entry, metric, execution_device
         assert isinstance(strategy.metric, expected_metric)
         context = PlanningContext(
             graph,
-            graph.operations(),
             space.candidates,
             budget,
             space.channel_axes,

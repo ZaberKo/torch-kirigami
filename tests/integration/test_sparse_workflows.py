@@ -83,7 +83,10 @@ def test_transformer_head_gate_compaction_and_checkpoint(execution_device):
         model.ffn_gate.weight.fill_(0.7)
     reference = model(x).detach()
     binding = GateBinding(pruner.graph, "attn.gate")
-    counts = tuple(4 if a.tensor.paths[0] == "attn.k.weight" else 0 for a in space.channel_axes)
+    counts = tuple(
+        a.tensor.shape[a.dim] - (4 if a.tensor.paths[0] == "attn.k.weight" else 0)
+        for a in space.channel_axes
+    )
     plan = Pruner(model, graph=pruner.graph).plan(
         CandidateSpace(
             candidates=binding.candidates(pruner, space.candidates), channel_axes=space.channel_axes

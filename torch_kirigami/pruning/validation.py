@@ -8,10 +8,10 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 import torch
 from torch import nn
 
-from ..configuration import thaw
+from ..configuration import freeze, thaw
 from ..contracts import Impact
 from ..graph import DependencyGraph
-from ..operation import OperationContext, argument
+from ..operation import OperationContext, TensorFacts, argument
 from ..operators.coordinates import narrow_index, retained_indices
 from ..operators.shapes import evaluate, reevaluate
 from ..selection import TensorRef
@@ -24,6 +24,68 @@ from .types import (
     TensorRecipe,
     require_compact_shape,
 )
+
+
+def _meta_key(value: object) -> object:
+    """Freeze actual meta arguments, including strides and scalar container types."""
+    if isinstance(value, torch.Tensor):
+        if (
+            type(value) is not torch.Tensor
+            or value.layout != torch.strided
+            or value.device.type != "meta"
+        ):
+            raise TypeError("Only strided metadata tensors can key a meta proof")
+        return (
+            "tensor",
+            TensorFacts(tuple(value.shape), tuple(value.stride()), value.dtype, value.device),
+            value.storage_offset(),
+            value.is_conj(),
+            value.is_neg(),
+            value.requires_grad,
+        )
+    if type(value) in (tuple, list):
+        return (type(value), tuple(_meta_key(item) for item in value))
+    if type(value) is dict:
+        return (dict, tuple((_meta_key(k), _meta_key(v)) for k, v in value.items()))
+    if type(value) is slice:
+        return (slice, _meta_key(value.start), _meta_key(value.stop), _meta_key(value.step))
+    return freeze(value)
+
+
+def _freeze_meta_output(value: object) -> object:
+    """Store independent output facts without retaining mutable metadata tensors."""
+    if isinstance(value, torch.Tensor):
+        if (
+            type(value) is not torch.Tensor
+            or value.layout != torch.strided
+            or value.device.type != "meta"
+            or value.storage_offset() != 0
+            or value.is_conj()
+            or value.is_neg()
+            or value.requires_grad
+        ):
+            raise TypeError("This output needs more than ordinary tensor metadata")
+        return TensorFacts(tuple(value.shape), tuple(value.stride()), value.dtype, value.device)
+    if isinstance(value, (tuple, list)):
+        items = [_freeze_meta_output(item) for item in value]
+        return items if isinstance(value, list) else tuple(items)
+    if type(value) is dict:
+        return {key: _freeze_meta_output(item) for key, item in value.items()}
+    freeze(value)  # Reject opaque mutable results instead of retaining them.
+    return value
+
+
+def _restore_meta_output(value: object) -> object:
+    """Rebuild fresh metadata tensors from a cached output fact tree."""
+    if type(value) is TensorFacts:
+        return torch.empty_strided(value.shape, value.stride, dtype=value.dtype, device="meta")
+    if isinstance(value, (tuple, list)):
+        items = [_restore_meta_output(item) for item in value]
+        return items if isinstance(value, list) else tuple(items)
+    if type(value) is dict:
+        return {key: _restore_meta_output(item) for key, item in value.items()}
+    freeze(value)
+    return value
 
 
 def _check_slice_coordinates(ctx: RewriteContext, new_index: object) -> None:
@@ -98,9 +160,13 @@ def check_forward(
     recipes: Mapping[str, TensorRecipe],
     attributes: Mapping[str, AttributeRecipe],
     strides: Mapping[str, tuple[int, ...]],
+    *,
+    meta_outputs: dict[str, tuple[object, object]] | None = None,
 ) -> None:
     """Verify declared call contracts using compact metadata and original coordinates."""
-    active_by_name = {ctx.operation.node.name: (ctx, builtin) for ctx, builtin in active}
+    active_by_name = {
+        ctx.operation.node.name: (ctx, evaluate_on_meta) for ctx, evaluate_on_meta in active
+    }
     operations_by_name = {op.node.name: op for op in operations}
     values, uncertain = {}, set()
     shapes: dict[TensorRef, tuple[int, ...]] = {}
@@ -178,10 +244,10 @@ def check_forward(
         entry = active_by_name.get(op.node.name)
         if entry is None:
             continue
-        ctx, builtin = entry
+        ctx, evaluate_on_meta = entry
         if ctx.spec.expression is not None:
             continue
-        if not builtin:
+        if not evaluate_on_meta:
             for ref in op.outputs:
                 if ref.id in strides:
                     values[ref.id] = torch.empty_strided(
@@ -288,7 +354,9 @@ def check_forward(
                     args, kwargs = (tensor(op.inputs[0]), dimensions), {}
                 else:
                     args, kwargs = (tensor(op.inputs[0]), *dimensions), {}
-        inplace = graph.operator_rule(op).effects(op.node, op.module).mutates_input
+        rule = graph.operator_rule(op)
+        effects = rule.effects(op.node, op.module)
+        inplace = effects.mutates_input
         if inplace:
             source = op.raw_argument("input", 0)
             producer = operations_by_name.get(getattr(source, "name", None))
@@ -305,8 +373,38 @@ def check_forward(
                     "out-of-place operation and rebuild the dependency graph."
                 )
         contract = ctx.spec.contract
+        key = None
+        if (
+            meta_outputs is not None
+            and rule.cache_meta_output
+            and effects.fresh_output
+            and not inplace
+        ):
+            try:
+                path = op.module_path
+                edits = tuple(
+                    (attr.path, attr.new)
+                    for attr in attributes.values()
+                    if path is not None
+                    and (
+                        attr.path.rpartition(".")[0] == path
+                        or attr.path.startswith(path + ".")
+                        or path == ""
+                    )
+                )
+                key = (
+                    _meta_key(args),
+                    _meta_key(kwargs),
+                    tuple((name, _meta_key(tensor(ref))) for name, ref in op.bindings.items()),
+                    edits,
+                )
+            except TypeError:
+                pass  # Opaque arguments keep the original per-call evaluation.
         try:
-            if contract is not None and contract.output_layout == "cast":
+            cached = meta_outputs.get(op.node.name) if key is not None else None
+            if cached is not None and cached[0] == key:
+                output = _restore_meta_output(cached[1])
+            elif contract is not None and contract.output_layout == "cast":
                 output = tensor(op.inputs[0]).to(
                     device="meta",
                     dtype=graph.metadata(op.outputs[0]).dtype,
@@ -322,6 +420,13 @@ def check_forward(
             else:
                 output = op.node.target(*args, **kwargs)
             record(op.output, output, shape_hint)
+            if key is not None and (cached is None or cached[0] != key):
+                try:
+                    facts = _freeze_meta_output(output)
+                except TypeError:
+                    pass
+                else:
+                    meta_outputs[op.node.name] = (key, facts)
         except (RuntimeError, ValueError, TypeError, IndexError, NotImplementedError) as error:
             raise PlanningError(
                 f"{op.node.name}: original forward is not proved executable: {error}{shape_hint}"

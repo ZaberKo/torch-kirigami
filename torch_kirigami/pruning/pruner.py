@@ -95,8 +95,8 @@ class Pruner:
             raise TypeError("preserve_io must be boolean")
         if not isinstance(granularity, Granularity):
             raise TypeError("Expected a Granularity configuration")
+        constraints = tuple(constraints)
         self.model, self.graph = model, graph
-        self.operations = graph.operations() if graph is not None else ()
         self._interface_constraints: tuple[Fixed, ...] = ()
         alignment: tuple[Constraint, ...] = ()
         self._configuration_notes: tuple[str, ...] = ()
@@ -106,7 +106,7 @@ class Pruner:
             alignment, self._configuration_notes = alignment_constraints(graph, granularity)
         elif constraints or granularity != Granularity() or not preserve_io:
             raise ValueError("Planning configuration requires a DependencyGraph")
-        self._constraints = (*self._interface_constraints, *tuple(constraints), *alignment)
+        self._constraints = (*self._interface_constraints, *constraints, *alignment)
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
@@ -167,7 +167,7 @@ class Pruner:
         before = snapshot(self.model, guarded=graph.constant_guards())
         versions = _snapshot(graph)
         impact = graph.propagate(remove=tuple(remove), constraints=self.constraints)
-        recipes, attributes, notes = compile_recipes(graph, self.operations, impact)
+        recipes, attributes, notes = compile_recipes(graph, graph.operations(), impact)
         return self._finish(
             impact, recipes, attributes, (), SelectionReport(), notes, before, versions
         )
@@ -184,7 +184,7 @@ class Pruner:
         Args:
             space: Explicit CandidateSpace, constructed manually or discovered.
             budget: ParameterBudget for a final whole-model cap, or ChannelRatio /
-                ChannelCount for upper bounds on channel removals.
+                ChannelCount for upper bounds on final channel widths.
             strategy: Implements `select(context)` returning a StrategyResult;
                 owns its scoring metric and any selection-specific settings.
 
@@ -205,9 +205,7 @@ class Pruner:
         versions = _snapshot(graph)
         candidates, axes = space.candidates, space.channel_axes
         registered = {c.key: c for c in candidates}
-        context = PlanningContext(
-            graph, self.operations, candidates, budget, axes, self.constraints
-        )
+        context = PlanningContext(graph, candidates, budget, axes, self.constraints)
         if not callable(getattr(strategy, "select", None)):
             raise TypeError("Strategy must implement select(context) -> StrategyResult")
         result = strategy.select(context)
@@ -223,9 +221,7 @@ class Pruner:
             constraints=self.constraints,
         )
         # Reestablish premises after arbitrary strategy callbacks.
-        final_context = PlanningContext(
-            graph, self.operations, candidates, budget, axes, self.constraints
-        )
+        final_context = PlanningContext(graph, candidates, budget, axes, self.constraints)
         recipes, attributes, notes = final_context.compile(impact)
         # Measurements are independently recomputed; diagnostics cannot make an
         # infeasible selection executable or declare a resource target met.

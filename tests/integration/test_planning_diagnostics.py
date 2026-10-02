@@ -13,6 +13,7 @@ from torch_kirigami import AxisRef, DependencyGraph, Diagnostic, Divisible
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    ChannelCount,
     ChannelRatio,
     Greedy,
     Magnitude,
@@ -92,14 +93,17 @@ def test_manual_and_automatic_rewrite_diagnostics_survive_plan_roundtrip(
             candidates=[Candidate("bad", (request,)), Candidate("good", (good.select([1]),))],
             channel_axes=(bad, good),
         ),
-        budget=ChannelRatio(0.25),
+        budget=ChannelCount((4, 3), (bad, good)),
         strategy=Greedy(ranked),
     )
     assert plan.selected == ("good",)
     assert len(plan.selection_report.exclusions) == 1
     reason = dict(plan.selection_report.exclusions)["bad"]
     assert location in reason and hint in reason
-    assert "Earlier attempt" not in reason  # Retried after the independent cut was accepted.
+    if impact.complete:
+        assert "Earlier attempt" in reason  # Reaching the target stops further retries.
+    else:
+        assert "Incomplete scoring influence" in reason  # Excluded before trial execution.
     assert all(a is b for a, b in zip(before[0], model.parameters(), strict=True))
     assert model.scale is before[1]
     for name, value in model.state_dict().items():
@@ -195,31 +199,28 @@ def test_retry_replaces_old_failure_and_distinguishes_unfinished_search(limit, e
     x = torch.randn(2, 3)
     graph = DependencyGraph.build(model, args=(x,))
     axis = graph.parameter("weight").axis(0)
-    plan = Pruner(model, graph=graph, preserve_io=False, constraints=[NeedsPartner(axis)]).plan(
-        CandidateSpace(
-            candidates=[
-                Candidate("early", (axis.select([0]),)),
-                Candidate("later", (axis.select([1]),)),
-            ],
-            channel_axes=(axis,),
-        ),
-        budget=ChannelRatio(0.5),
-        strategy=Greedy(ranked, max_trials=limit),
+    pruner = Pruner(model, graph=graph, preserve_io=False, constraints=[NeedsPartner(axis)])
+    space = CandidateSpace(
+        [Candidate("early", (axis.select([0]),)), Candidate("later", (axis.select([1]),))], (axis,)
     )
     if limit == 2:
-        assert plan.selected == ("later",) and plan.selection_report.limit_reached
-        reason = dict(plan.selection_report.exclusions)["early"]
-        assert "Earlier attempt" in reason and "needs_partner at pair_rule" in reason
-        assert "Not retried after the accepted selection changed" in reason
-        keep = [0, 2, 3]
+        with pytest.raises(PlanningError) as error:
+            pruner.plan(space, budget=ChannelRatio(0.5), strategy=Greedy(ranked, max_trials=limit))
+        message = str(error.value)
+        assert "target not reached" in message and "strategy trial limit reached" in message
+        assert "needs_partner at pair_rule" in message and "Not retried" in message
+        torch.testing.assert_close(model(x), original(x))
+        graph.validate()
     else:
+        plan = pruner.plan(
+            space, budget=ChannelRatio(0.5), strategy=Greedy(ranked, max_trials=limit)
+        )
         assert set(plan.selected) == {"early", "later"}
         assert not plan.selection_report.exclusions and not plan.selection_report.limit_reached
-        keep = [2, 3]
-    restored = PruningPlan.from_dict(plan.to_dict())
-    assert restored.explain() == plan.explain()
-    Pruner(model).apply(restored)
-    torch.testing.assert_close(model(x), F.linear(x, original.weight[keep], original.bias[keep]))
+        restored = PruningPlan.from_dict(plan.to_dict())
+        assert restored.explain() == plan.explain()
+        pruner.apply(restored)
+        torch.testing.assert_close(model(x), F.linear(x, original.weight[2:], original.bias[2:]))
     model(x).sum().backward()
 
 
@@ -242,92 +243,86 @@ def test_covered_candidate_has_no_stale_exclusion():
 
 
 @pytest.mark.parametrize("scope", ["local", "global"])
-def test_budget_blocked_completion_retains_constraint_and_actual_cap(scope):
+def test_structural_completion_can_overshoot_final_target(scope):
     model = nn.Linear(3, 4)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
     axis = graph.parameter("weight").axis(0)
-    plan = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 2)]).plan(
-        Pruner(
-            model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 2)]
-        ).discover_candidates(),
+    pruner = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 2)])
+    plan = pruner.plan(
+        pruner.discover_candidates(),
         budget=ChannelRatio(0.25, scope=scope),
         strategy=Greedy(Magnitude()),
     )
-    assert not plan.recipes
-    assert len(plan.selection_report.exclusions) == 4
-    for _, reason in plan.selection_report.exclusions:
-        assert "divisible" in reason
-        assert f"{scope} channel budget" in reason and "2 removals > 1 allowed" in reason
-    assert (
-        PruningPlan.from_dict(plan.to_dict()).selection_report.exclusions
-        == plan.selection_report.exclusions
-    )
+    assert plan.selection_report.targets == (3,)
+    assert plan.selection_report.remaining == (2,)
+    assert plan.selection_report.target_met and not plan.selection_report.exclusions
+    assert PruningPlan.from_dict(plan.to_dict()).selection_report == plan.selection_report
+    pruner.apply(plan)
 
 
 def test_trial_limit_reports_untested_candidates_without_inventing_constraints():
     model = nn.Linear(3, 4)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
-    plan = Pruner(model, graph=graph, preserve_io=False).plan(
-        Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.5),
-        strategy=Greedy(Magnitude(), max_trials=1),
-    )
-    assert len(plan.selected) == 1 and len(plan.selection_report.exclusions) == 3
-    assert all(
-        "before this candidate could be tested" in reason
-        for _, reason in plan.selection_report.exclusions
-    )
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    original = model.weight
+    with pytest.raises(PlanningError) as error:
+        pruner.plan(
+            pruner.discover_candidates(),
+            budget=ChannelRatio(0.5),
+            strategy=Greedy(Magnitude(), max_trials=1),
+        )
+    message = str(error.value)
+    assert "strategy trial limit reached" in message
+    assert "before this candidate could be tested" in message
+    assert "indivisible" not in message
+    assert model.weight is original
+    graph.validate()
 
 
 def test_invalid_empty_request_preserves_reason_and_failure_state():
     model = nn.Linear(3, 10)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
     original = model.weight
+    axis = graph.parameter("weight").axis(0)
+    pruner = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 4)])
     with pytest.raises(PlanningError) as error:
-        Pruner(
-            model,
-            graph=graph,
-            preserve_io=False,
-            constraints=[Divisible(graph.parameter("weight").axis(0), 4)],
-        ).plan(
-            Pruner(
-                model,
-                graph=graph,
-                preserve_io=False,
-                constraints=[Divisible(graph.parameter("weight").axis(0), 4)],
-            ).discover_candidates(),
+        pruner.plan(
+            CandidateSpace((Candidate("only_one", (axis.select([0]),)),), (axis,)),
             budget=ChannelRatio(0.1),
             strategy=Greedy(Magnitude()),
         )
     assert "Empty request:" in str(error.value) and "divisible" in str(error.value)
-    assert "Candidate attempt" in str(error.value) and "budget" in str(error.value)
+    assert "Candidate attempt" in str(error.value)
     assert model.weight is original
+    graph.validate()
 
 
 @pytest.mark.parametrize("limit", [0, 1])
 def test_count_feasible_batch_uses_one_trial_and_zero_limit_still_skips_search(limit):
     model = nn.Linear(3, 4)
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
-    plan = Pruner(
+    pruner = Pruner(
         model,
         graph=graph,
         preserve_io=False,
         constraints=[Divisible(graph.parameter("weight").axis(0), 2)],
-    ).plan(
-        Pruner(
-            model,
-            graph=graph,
-            preserve_io=False,
-            constraints=[Divisible(graph.parameter("weight").axis(0), 2)],
-        ).discover_candidates(),
-        budget=ChannelRatio(0.5),
-        strategy=Greedy(Magnitude(), max_trials=limit),
     )
     if limit:
+        plan = pruner.plan(
+            pruner.discover_candidates(),
+            budget=ChannelRatio(0.5),
+            strategy=Greedy(Magnitude(), max_trials=limit),
+        )
         assert plan.selection_report.removed == (2,)
         assert plan.selection_report.trials == 1 and not plan.selection_report.limit_reached
         assert plan.analysis.status == "resolved"
     else:
-        assert not plan.recipes and plan.selection_report.limit_reached
-        assert all("limit is zero" in reason for _, reason in plan.selection_report.exclusions)
-        assert "no claim of infeasibility" in plan.explain()
+        original = model.weight
+        with pytest.raises(PlanningError, match=r"target not reached.*limit is zero"):
+            pruner.plan(
+                pruner.discover_candidates(),
+                budget=ChannelRatio(0.5),
+                strategy=Greedy(Magnitude(), max_trials=limit),
+            )
+        assert model.weight is original
+        graph.validate()

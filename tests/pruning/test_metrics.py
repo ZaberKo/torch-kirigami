@@ -8,7 +8,7 @@ from tests.support.pruning import KeyStrategy, build
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
-    ChannelRatio,
+    ChannelCount,
     Magnitude,
     Pruner,
     WeightTaylor,
@@ -48,6 +48,6 @@ def test_metric_union_formula_and_precision(metric, execution_device):
 
     Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
         CandidateSpace(candidates=[candidate], channel_axes=(ref.axis(0),)),
-        budget=ChannelRatio(0.5),
+        budget=ChannelCount((4,), (ref.axis(0),)),
         strategy=strategy,
     )

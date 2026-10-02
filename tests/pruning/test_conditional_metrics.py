@@ -24,7 +24,6 @@ from torch_kirigami.pruning.types import StrategyResult
 def context_for(graph, candidates):
     return PlanningContext(
         graph,
-        graph.operations(),
         tuple(candidates),
         ChannelRatio(0.5),
         tuple(dict.fromkeys(c.axis for c in candidates if c.axis is not None)),
@@ -46,7 +45,7 @@ def test_conditional_metric_counts_new_union_once(metric, execution_device):
     context = context_for(graph, (candidate,))
     selected = context.impact((ref.axis(0).select([0]), ref.axis(1).select([3])))
 
-    score = metric.score(context, (candidate,), selected=selected)[0]
+    score = metric.score(context, (candidate,), accepted_impact=selected)[0]
     mask = torch.zeros_like(model.weight, dtype=torch.bool)
     mask[1] = True
     mask[:, 2] = True
@@ -85,7 +84,7 @@ def test_conditional_metric_includes_joint_only_upstream_effect(metric, executio
         if isinstance(metric, Magnitude)
         else (2 * values).abs().sum()
     )
-    assert metric.score(context, (candidate,), selected=selected)[0] == pytest.approx(
+    assert metric.score(context, (candidate,), accepted_impact=selected)[0] == pytest.approx(
         expected.item()
     )
 
@@ -103,7 +102,7 @@ def test_group_magnitude_formula_includes_dependencies_and_affine_weights(p, exe
     axis = graph.parameter("0.weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(4))
     context = context_for(graph, candidates)
-    scores = GroupMagnitude(p).score(context, candidates, selected=context.impact(()))
+    scores = GroupMagnitude(p).score(context, candidates, accepted_impact=context.impact(()))
     energy = (
         model[0].weight.abs().pow(p).sum(1)
         + model[1].weight.abs().pow(p)
@@ -124,15 +123,15 @@ def test_group_normalization_independent_of_batch_subset_and_block_wrapping(exec
     context = context_for(graph, (first, second, block))
     selected = context.impact(())
     metric = GroupMagnitude()
-    joint = metric.score(context, (first, second, block), selected=selected)
-    assert metric.score(context, (block, first), selected=selected) == pytest.approx(
+    joint = metric.score(context, (first, second, block), accepted_impact=selected)
+    assert metric.score(context, (block, first), accepted_impact=selected) == pytest.approx(
         [joint[2], joint[0]]
     )
-    assert metric.score(context, (second,), selected=selected) == pytest.approx([joint[1]])
+    assert metric.score(context, (second,), accepted_impact=selected) == pytest.approx([joint[1]])
     restricted = context_for(graph, (block,))
-    assert metric.score(restricted, (block,), selected=restricted.impact(())) == pytest.approx(
-        [joint[2]]
-    )
+    assert metric.score(
+        restricted, (block,), accepted_impact=restricted.impact(())
+    ) == pytest.approx([joint[2]])
     energy = model.weight.square().sum(1)
     assert joint == pytest.approx(
         [
@@ -155,7 +154,7 @@ def test_group_dynamic_normalization_uses_surviving_rows_and_columns(execution_d
     selected = context.impact((axis.select([1]), graph.parameter("1.weight").axis(0).select([0])))
     energy = model[0].weight.square().sum(1) + model[1].weight[1:].square().sum(0)
     expected = energy[2] / energy[[0, 2, 3]].mean()
-    score = GroupMagnitude().score(context, (candidate,), selected=selected)[0]
+    score = GroupMagnitude().score(context, (candidate,), accepted_impact=selected)[0]
     assert score == pytest.approx(expected.item())
 
 
@@ -180,7 +179,7 @@ def test_group_excludes_bias_with_misleading_alias(execution_device):
     context = context_for(graph, (candidate,))
     energy = model.linear.weight.square().sum(1)
     assert GroupMagnitude().score(
-        context, (candidate,), selected=context.impact(())
+        context, (candidate,), accepted_impact=context.impact(())
     ) == pytest.approx([(energy[0] / energy.mean()).item()])
 
 
@@ -202,7 +201,7 @@ def test_group_functional_roles_do_not_require_weight_attribute_names(execution_
     context = context_for(graph, (candidate,))
     energy = model.matrix.square().sum(1)
     assert GroupMagnitude().score(
-        context, (candidate,), selected=context.impact(())
+        context, (candidate,), accepted_impact=context.impact(())
     ) == pytest.approx([(energy[0] / energy.mean()).item()])
 
 
@@ -221,7 +220,7 @@ def test_group_ambiguous_domain_is_explicit_error(invalid):
         candidate = Candidate("bad", (partial,), axis)
     context = context_for(graph, (candidate,))
     with pytest.raises(PlanningError, match="declared axis"):
-        GroupMagnitude().score(context, (candidate,), selected=context.impact(()))
+        GroupMagnitude().score(context, (candidate,), accepted_impact=context.impact(()))
 
 
 @pytest.mark.parametrize("scale", [0.0, 1e-200, 1e200])
@@ -233,7 +232,7 @@ def test_group_normalization_is_finite_at_extreme_scales(scale, execution_device
     axis = graph.parameter("weight").axis(0)
     candidate = Candidate("first", (axis.select([0]),), axis)
     context = context_for(graph, (candidate,))
-    score = GroupMagnitude().score(context, (candidate,), selected=context.impact(()))[0]
+    score = GroupMagnitude().score(context, (candidate,), accepted_impact=context.impact(()))[0]
     assert math.isfinite(score)
     assert score == pytest.approx(0.0 if scale == 0 else 1 / 3)
 
@@ -248,10 +247,10 @@ def test_group_normalization_cache_observes_weight_updates():
     context = context_for(graph, (candidate,))
     selected = context.impact(())
     metric = GroupMagnitude()
-    assert metric.score(context, (candidate,), selected=selected) == pytest.approx([1])
+    assert metric.score(context, (candidate,), accepted_impact=selected) == pytest.approx([1])
     with torch.no_grad():
         model.weight[0].mul_(2)
-    assert metric.score(context, (candidate,), selected=selected) == pytest.approx([1.6])
+    assert metric.score(context, (candidate,), accepted_impact=selected) == pytest.approx([1.6])
 
 
 def test_group_tied_weight_rows_columns_and_repeated_calls_count_once(execution_device):
@@ -267,7 +266,7 @@ def test_group_tied_weight_rows_columns_and_repeated_calls_count_once(execution_
     energy = linear.weight.square()
     union_energy = energy.sum(0) + energy.sum(1) - energy.diag()
     assert GroupMagnitude().score(
-        context, candidates, selected=context.impact(())
+        context, candidates, accepted_impact=context.impact(())
     ) == pytest.approx((union_energy / union_energy.mean()).tolist())
 
 
@@ -288,7 +287,7 @@ def test_group_custom_strategy_public_plan_apply_keeps_model_unchanged_during_sc
     class ConditionalStrategy:
         def select(self, context):
             selected = context.impact(candidates[0].remove)
-            scores = context.score(GroupMagnitude(), (candidates[1],), selected=selected)
+            scores = context.score(GroupMagnitude(), (candidates[1],), accepted_impact=selected)
             assert scores == pytest.approx([(energy[2] / energy[[0, 2, 3]].mean()).item()])
             return StrategyResult(("1", "2"))
 
@@ -320,9 +319,9 @@ def test_group_inference_parameters_do_not_use_stale_normalization_cache():
         context = context_for(graph, (candidate,))
         selected = context.impact(())
         metric = GroupMagnitude()
-        assert metric.score(context, (candidate,), selected=selected) == pytest.approx([1])
+        assert metric.score(context, (candidate,), accepted_impact=selected) == pytest.approx([1])
         model.weight[0].mul_(2)
-        assert metric.score(context, (candidate,), selected=selected) == pytest.approx([1.6])
+        assert metric.score(context, (candidate,), accepted_impact=selected) == pytest.approx([1.6])
 
 
 @pytest.mark.parametrize("kind", ["magnitude", "taylor"])
@@ -345,7 +344,7 @@ def test_parameter_filter_applies_to_every_candidate_and_parameter(kind):
         else WeightTaylor(parameter_filter=only_downstream)
     )
     context = context_for(graph, candidates)
-    scores = metric.score(context, candidates, selected=context.impact(()))
+    scores = metric.score(context, candidates, accepted_impact=context.impact(()))
     assert scores == pytest.approx(model[1].weight.abs().sum(0).tolist())
     assert seen.count(graph.parameter("1.weight")) == 3
     assert seen.count(graph.parameter("0.weight")) == 3
@@ -359,7 +358,7 @@ def test_group_cache_cannot_hide_incomplete_domain_in_another_context():
     candidate = Candidate("first", (axis.select([0]),), axis)
     context = context_for(graph, (candidate,))
     metric = GroupMagnitude()
-    metric.score(context, (candidate,), selected=context.impact(()))
+    metric.score(context, (candidate,), accepted_impact=context.impact(()))
 
     class IncompleteSecondPosition:
         refs = (axis.tensor,)
@@ -372,14 +371,13 @@ def test_group_cache_cannot_hide_incomplete_domain_in_another_context():
 
     constrained = PlanningContext(
         graph,
-        graph.operations(),
         (candidate,),
         ChannelRatio(0.5),
         (axis,),
         (IncompleteSecondPosition(),),
     )
     with pytest.raises(PlanningError, match="Unknown second position"):
-        metric.score(constrained, (candidate,), selected=constrained.impact(()))
+        metric.score(constrained, (candidate,), accepted_impact=constrained.impact(()))
 
 
 def test_group_singleton_cache_avoids_duplicate_propagation(monkeypatch):
@@ -398,14 +396,14 @@ def test_group_singleton_cache_avoids_duplicate_propagation(monkeypatch):
 
     monkeypatch.setattr(DependencyGraph, "propagate", counted_propagation)
     metric = GroupMagnitude()
-    first = metric.score(context, candidates[:4], selected=selected)
+    first = metric.score(context, candidates[:4], accepted_impact=selected)
     assert len(calls) == 64  # Full original domain once, not 64 + 4 requested candidates.
-    again = metric.score(context, (candidates[20], candidates[0]), selected=selected)
+    again = metric.score(context, (candidates[20], candidates[0]), accepted_impact=selected)
     assert len(calls) == 64
     assert again[1] == first[0]
 
     committed = context.impact(candidates[0].remove)
-    scores = metric.score(context, candidates[:2], selected=committed)
+    scores = metric.score(context, candidates[:2], accepted_impact=committed)
     energy = model.weight.square().sum(1)
     assert scores == pytest.approx([0.0, (energy[1] / energy[1:].mean()).item()])
 
@@ -422,8 +420,8 @@ def test_group_cached_singletons_do_not_replace_joint_block_score(execution_devi
     context = context_for(graph, (*singles, block))
     selected = context.impact(())
     metric = GroupMagnitude()
-    scores = metric.score(context, singles, selected=selected)
-    joint_score = metric.score(context, (block,), selected=selected)[0]
+    scores = metric.score(context, singles, accepted_impact=selected)
+    joint_score = metric.score(context, (block,), accepted_impact=selected)[0]
     energy = linear.weight.square()
     singleton_energies = energy.sum(0) + energy.sum(1) - energy.diag()
     joint_energy = energy.sum() - energy[2, 2]

@@ -19,7 +19,7 @@ def test_embedding_uses_feature_axis_budget_and_rejects_parameter_writes(executi
     graph = DependencyGraph.build(model, args=(x,))
     _, result = Pruner(model, graph=graph).prune(
         Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.34),
+        budget=ChannelRatio(0.3),
         strategy=Greedy(Magnitude()),
     )
     assert result.plan.selection_report.widths == (6,) and result.plan.selection_report.removed == (

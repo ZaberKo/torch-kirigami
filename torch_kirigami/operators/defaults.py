@@ -78,7 +78,10 @@ def register_defaults(registry: OperatorRegistrar) -> None:
             return result
 
         return OperatorRule(
-            analyze, evaluate_on_meta=True, effects=partial(native_effects, fresh_output=fresh)
+            analyze,
+            evaluate_on_meta=True,
+            cache_meta_output=True,
+            effects=partial(native_effects, fresh_output=fresh),
         )
 
     def modules(

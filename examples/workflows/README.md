@@ -117,8 +117,9 @@ The basic entry also offers FPGM's signed-filter distance criterion. VBP uses
 post-activation variance and consumer-bias compensation. These two criteria are
 method-specific signals, rather than alternative implementations of magnitude.
 
-Custom model scoring implements `score(context, candidates, *, selected)`;
-`selected` is the already accepted dependency impact. The library also offers
+Custom model scoring implements `score(context, candidates, *, accepted_impact)`;
+`accepted_impact` is the complete dependency analysis of accepted removal requests,
+while the original model remains unchanged. The library also offers
 `DynamicGreedy`, which rescores after accepting each feasible addition. It updates
 conditional parameter-region scores, not the model's activations or gradients.
 Fresh task statistics require explicit execution and calibration between rounds.
@@ -600,11 +601,14 @@ parameter cap does not imply a particular latency or accuracy improvement.
 
 The default Greedy limit is 10,000 tentative joint dependency queries, including
 fallback completion attempts. It does not count training steps or removed
-channels; scoring queries are separate. The strategy first combines candidates
+channels; scoring queries are separate. Every budget bounds the final remaining
+resource; an unmet target raises before application. `ChannelRatio` converts a
+reduction fraction to final-width limits, and `ChannelCount(max_channels,
+channel_axes)` supplies those limits directly. Structural coupling may reduce
+widths below their targets. The strategy first combines candidates
 using the known divisibility and balance constraints, then checks the complete
 batch jointly. A width of 64 aligned to 8 can submit eight selected channels in
-one trial. Unpredicted joint effects still require further checks, and proven
-channel-budget violations are skipped without a query. Parameter-budget search
+one trial. Unpredicted joint effects still require further checks. Search
 allows intermediate requests above the final cap and stops at the first verified
 combination meeting it. If the cap remains unmet, planning raises an error before
 any new model mutation or compact checkpoint is produced. The error reports the

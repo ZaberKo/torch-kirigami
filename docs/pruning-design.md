@@ -89,7 +89,7 @@ Candidate order aligns with metric scores. Channel-axis order aligns with local 
 
 `Pruner.impact(candidates)` jointly propagates candidate seeds with the pruner's constraints. `Pruner.parameter_groups(candidates, parameter_filter=None)` extracts complete parameter groups for sparse training. Both require explicit candidate iterables and perform no discovery.
 
-A zero budget still consumes the supplied space; Greedy can skip scoring when the empty request is valid and no candidate can change an uncounted axis.
+If the original sizes already meet the target, Greedy returns an empty plan without scoring, provided the empty request passes structural and execution checks.
 
 A `Candidate(key, remove, axis=None)` names one batch of original-coordinate removal seeds. Its associated `axis` describes a logical domain; the candidate itself does not create an indivisible structural constraint. Required coupling comes from dependency relations and constraints.
 
@@ -148,14 +148,14 @@ reapply a fraction to shrinking models. See the iterative workflow. Parameter
 budgets impose no hidden per-layer ratio and do not change the metric's meaning
 or enable score normalization.
 
-Budget-specific accounting, admissibility and final checks reside in
-`PlanningContext`; Greedy also stops early when a parameter target is met.
-`Pruner.plan()` independently validates the final selection. These parts share
-candidate discovery, scoring, count-constraint completion, dependency
-propagation, recipe compilation, and transactional application. Changing an
-existing budget at a call site only changes the `budget=` argument. Adding a new
-budget semantic would require its accounting/stopping rules and portable report
-validation; accepting arbitrary objects does not implement those semantics.
+Final-size resolution, measurement, comparison and report construction reside in
+`pruning/budget.py`. Budget configuration objects contain only user input. The
+internal resolved target contains original sizes, final upper bounds and counted
+axes. `PlanningContext` supplies ownership checks and verified recipes; the
+budget module never queries the graph, searches candidates or compiles recipes.
+Both greedy strategies use the same deficit and stop when it reaches zero.
+`Pruner.plan()` independently verifies the final selection and budget. Changing
+an existing budget changes the `budget=` argument, not the scoring contract.
 
 There is no catch-all `ResourceBudget`, budget registry, or nested budget DSL.
 Latency remains an explicit post-pruning measurement: its hardware, batch,
@@ -169,12 +169,14 @@ Unsupported influence paths remain visible during discovery; they cannot silentl
 
 | Budget | Local scope | Global scope |
 | --- | --- | --- |
-| `ChannelRatio(ratio, scope="local")` | Per-axis cap `floor(ratio * width)` | One cap `floor(ratio * sum(widths))` |
-| `ChannelCount(counts, channel_axes, scope="local")` | Tuple of nonnegative integer caps, aligned with unique axes | One nonnegative integer cap |
+| `ChannelRatio(ratio, scope="local")` | Final-width cap `floor((1 - ratio) * width)` | Final sum cap `floor((1 - ratio) * sum(widths))` |
+| `ChannelCount(max_channels, channel_axes, scope="local")` | Tuple of nonnegative integer caps, aligned with unique axes | One nonnegative integer cap |
 
-A ratio must be finite and in `[0, 1)`. Counts are upper bounds, not a promise that the target is attainable. Global scope adds no hidden local percentage cap. Structural constraints still prohibit invalid results, including empty required dimensions.
+A ratio must be finite and in `[0, 1)`. Both channel and parameter budgets interpret its supplied decimal representation exactly and use integer arithmetic for rounding down; `ChannelRatio(0.29)` over width 100 requires at most 71 remaining channels. No epsilon is added to nearby smaller values. For an already known integer target, use `ChannelCount` instead of converting it to an approximate floating-point ratio such as `1 / 3`. Cumulative channel budgets reuse the same conversion against their original widths.
 
-Budgets count actual removals in the union of the dependency closure. Two seeds that remove the same logical position count once. If one removal affects two distinct budget axes, both axes contribute. Candidate count, parameter count, MACs, and latency are not channel budgets.
+Counts are upper bounds on final widths. Targets above current widths require no further deletion. Every automatic plan must reach its target; exhausted or limited search raises `PlanningError` without mutation. This does not prove the target mathematically unattainable. Global scope adds no hidden local percentage cap. Structural constraints still prohibit invalid results, including empty required dimensions.
+
+Final widths subtract actual removals in the union of the dependency closure. Two seeds that remove the same logical position count once. If one removal affects two distinct budget axes, both axes contribute. Candidate count, parameter count, MACs, and latency are not channel budgets.
 
 ```python
 from torch_kirigami.pruning import Candidate, CandidateSpace, ChannelCount, Greedy
@@ -188,7 +190,7 @@ candidates = tuple(
     Candidate(f"hidden:{i}", (axis.select([i]),), axis) for i in range(axis.tensor.shape[axis.dim])
 )
 space = CandidateSpace(candidates, channel_axes=(axis,))
-plan = pruner.plan(space, budget=ChannelCount((3,), (axis,)), strategy=Greedy(Magnitude()))
+plan = pruner.plan(space, budget=ChannelCount((9,), (axis,)), strategy=Greedy(Magnitude()))
 ```
 
 For several rounds, use [CumulativeChannelBudget](sparse-training.md#cumulative-budgets-and-rebinding) rather than repeatedly applying a ratio to shrinking widths.
@@ -224,7 +226,7 @@ axes must have the same original width, and the rule must relate their positions
 
 Original aliases are resolved before deduplication. A path override configures the shared module object; contradictory explicit overrides on its aliases raise an error. Separate modules sharing a Parameter retain all their requirements. A factor of one adds no requirement and cannot cancel another module's or operator's constraints.
 
-Alignment is a final-structure requirement, including unchanged and protected axes. Width 10 with factor 4 requires at least two removals; a budget allowing only one cannot produce a valid plan. Width 64 with factor 8 and a 20% deletion cap permits eight removals, leaving a shortfall of four. Manual requests and custom strategies cannot bypass these checks. Configuration resolution appears in plan notes; plans retain static recipes, not the configuration object.
+Alignment is a final-structure requirement, including unchanged and protected axes. Width 10 with factor 4 requires at least two removals, even when its final-width target is 9 or 10. Width 64 with factor 8 and a 20% reduction target has a final-width cap of 51; deleting 16 leaves 48. Targets may be overshot to satisfy structural constraints. Manual requests and custom strategies cannot bypass these checks. Configuration resolution appears in plan notes; plans retain static recipes, not the configuration object.
 
 The built-in greedy strategies use these constraints before submitting a joint pruning
 request. Candidate discovery retains independently selectable positions or
@@ -234,11 +236,18 @@ original-width denominator.
 
 ## Scoring and strategy contracts
 
-A `Metric` implements `score(context, candidates, *, selected)` and returns one
-finite real score per candidate. Lower scores are preferred. `selected` is the
+A `Metric` implements `score(context, candidates, *, accepted_impact)` and returns one
+finite real score per candidate. Lower scores are preferred. `accepted_impact` is the
 complete joint `Impact` of accepted requests; an initially unresolved count
 constraint does not make that influence incomplete. The planner supplies this
 argument explicitly, including the empty request for static scoring.
+
+The baseline is an analysis result, not a list of candidates or a physically
+pruned model. It includes both accepted removal seeds and their coupled effects
+across the model. For example, an accepted producer channel can also remove a
+consumer's input-weight column; conditional scoring must exclude both regions.
+Use `accepted_impact = context.impact(accepted_removals)` when supplying a baseline
+explicitly. `PlanningContext.score()` uses the empty request when it is omitted.
 
 Batching is computational only: a candidate's score must not depend on batch
 size, order, or other candidates in the batch. Use `context.candidates` for the
@@ -247,7 +256,7 @@ normalization needs a population. A temporary `Candidate` can contain multiple
 selections for joint scoring; its score need not equal the sum of separate
 scores.
 
-For conditional scoring, built-in metrics propagate `selected.requested` together
+For conditional scoring, built-in metrics propagate `accepted_impact.requested` together
 with the candidate's seeds, then subtract already selected parameter regions.
 Subtracting two scalar scores is incorrect for norms or signed Taylor sums.
 Subtracting from an isolated candidate's impact is also insufficient: a
@@ -328,13 +337,13 @@ bypass those checks.
 | Interface | Purpose |
 | --- | --- |
 | `graph`, `operations`, `candidates`, `budget`, `channel_axes`, `constraints` | Fixed planning inputs |
-| `widths`, `targets` | Frozen denominator and integer caps |
+| `widths`, `targets`, `budget_axes` | Original logical widths, final-size limits and axes needing channel summaries |
 | `impact(remove)` | Propagate joint original-coordinate seeds |
 | `attempt(remove)` | Propagate a search attempt and increment the read-only trial counter, including cache hits |
 | `require_complete(impact)` | Reject incomplete influence; repairable count constraints may remain |
-| `score(metric, candidate_batch, *, selected=None)` | Score candidates relative to the supplied joint Impact; omitted selection means an empty request |
-| `counts(impact)` | Actual logical channel removals |
-| `admissible(impact)` | Intermediate removal caps; parameter targets allow progress above the final cap |
+| `score(metric, candidates, *, accepted_impact=None)` | Score each candidate relative to accepted requests and their coupled effects; omitted baseline means an empty request |
+| `remaining(impact)` | Final resource sizes in target order; one count for parameters/global channels, one width per local axis |
+| `deficit(impact)` | Missing reduction; local excesses cannot cancel each other |
 | `parameter_count(impact)` | Whole-model count from executable joint recipes |
 | `within_budget(impact)`, `require_budget(impact)` | Final budget check, boolean or diagnostic exception |
 | `compile(impact)` | Verify tensor/attribute recipes without allocating compact weights |
@@ -342,6 +351,12 @@ bypass those checks.
 | `trials` | Read-only count of calls through `attempt()` |
 
 Callbacks must not mutate model state or structural premises. Planning checks graph freshness and tracked tensor identity, version, and `requires_grad` after callbacks; detected mutation raises an error. This check is not a transaction that reverses arbitrary user callback side effects.
+
+`PlanningContext` derives captured operations from its graph instead of accepting
+a second operation list. Automatic selection's final validation constructs a
+fresh context, with independent operation inspection copies and caches. Direct
+construction uses `PlanningContext(graph, candidates, budget, channel_axes, constraints)`;
+ordinary users receive the context through their strategy.
 
 ## Static and dynamic greedy search
 
@@ -358,7 +373,7 @@ again. It does not rescore halfway through constraint completion or physically
 prune a trial model. Dynamic ranking usually costs substantially more and does
 not guarantee better accuracy.
 
-A custom metric that deliberately ignores `selected` keeps its fixed ranking
+A custom metric that deliberately ignores `accepted_impact` keeps its fixed ranking
 even when called repeatedly. Training learned importance values is an external
 statistics-collection step, not a third search protocol: its output can feed
 either strategy under the same metric contract.
@@ -423,8 +438,8 @@ change the selected sequence.
 
 Candidate axis summaries store only nonempty effects. An axis-to-candidate index
 narrows the helpful pass without removing any candidate from the complete ranked
-fallback. Parameter budgets skip channel-cap arithmetic and retain recipe-based
-whole-model accounting. These indexes propose work; they never certify a joint
+fallback. Parameter budgets use recipe-based whole-model accounting without
+constructing unused channel summaries. These indexes propose work; they never certify a joint
 request independently of propagation and execution checks.
 
 Recipe compilation validates model state at entry and exit. Each custom lowering
@@ -442,20 +457,32 @@ partitioned recipes where present. Model fingerprints share raw property and
 slot reads within one validation; they do not reuse that readout across queries.
 No shape-only execution-proof cache or global validation bypass is introduced.
 
-Monotone propagation also makes the union of current and individual axis removals
-a lower bound on joint removals. A proven budget excess can therefore be rejected
-without a joint query; overlapping positions count once. Already-covered seeds
-are skipped. All remaining trials still undergo joint propagation, actual budget
-checks, and execution validation before commitment.
+Pure native meta computations can reuse one output fact tree per captured call
+within a planning context. The key includes argument container/scalar values,
+tensor shapes, strides, offsets, dtype, flags, module binding metadata and relevant
+proposed attributes. Each hit creates fresh metadata tensors. Original-coordinate
+checks, expected output validation, in-place safety and layout uncertainty still
+run; attribute edits still undergo FX re-tracing. Tensor version changes clear
+these facts, and the final independent context does not share them. Extensions
+must explicitly declare `OperatorRule(cache_meta_output=True)`; in-place calls
+and outputs requiring additional metadata use ordinary execution.
+
+Constraint completion excludes candidates already in the trial before computing
+index differences. The remaining helpful and fallback orders are unchanged.
+
+Already-covered seeds are skipped. Every accepted addition passes joint
+propagation, structural and execution checks, and lowers the unmet budget deficit.
+A local axis already below its cap cannot justify another independent deletion;
+coupled changes may shrink it further while helping another axis. No removal-cap
+pruning is performed: temporary sizes above the final limit are normal search
+states, not budget violations. Candidate and trial bounds still ensure termination.
 
 The trial counter measures tentative joint queries, including cache hits and
-fallback attempts. Initial scoring queries, projected count checks, and proven
-skips do not count. A count-feasible batch uses one trial when its joint check
+fallback attempts. Initial scoring queries and projected count checks do not count. A count-feasible batch uses one trial when its joint check
 succeeds. Count construction terminates because each addition contributes new
 positions and uses a previously unused candidate. The limit bounds joint search
-queries, not total runtime, channel count, or training steps. Reaching it discards
-unfinished completion and returns the last verified selection with a shortfall
-report.
+queries, not total runtime, channel count, or training steps. If a limit or exhaustion prevents reaching the target, planning raises
+`PlanningError`; it does not return a partial plan.
 
 ```mermaid
 flowchart TD
@@ -469,16 +496,18 @@ flowchart TD
 ```
 
 For channel budgets, `plan.selection_report` is a `SelectionReport` recording
-`channel_axes`, `widths`, `targets`, actual `removed` counts, `scope`, `trials`,
-`limit_reached`, and `exclusions`. Its `shortfall` is the unfilled channel target.
-A nonzero shortfall can result from coupling, protected dimensions, unsupported
-execution, or bounded search. `limit_reached=True` does not prove infeasibility.
+`channel_axes`, original `widths`, final-width `targets`, actual `removed` counts,
+`scope`, `trials`, `limit_reached`, and `exclusions`. Its derived `remaining`
+contains final per-axis widths, `target_met` checks the final limits, and `shortfall`
+is excess remaining channels (local excesses never cancel). Returned automatic
+plans have zero shortfall. Portable validation rejects unmet targets or removal
+counts inconsistent with the frozen analysis.
 
-Greedy reports the latest rejection for each excluded candidate, whether from a
-joint attempt or a proven budget excess. Diagnostics include
-constraint codes and available operation locations, actual exceeded budget caps,
-and execution errors with conditional rewrite advice. A completion failure names
-its remaining constraint and the last blocking addition, when one was tested.
+Greedy retains the latest rejection for excluded candidates. Diagnostics include
+constraint codes, execution errors and conditional rewrite advice, no reduction
+of unmet targets, and bounded-search limits. A completion failure names its
+remaining constraint and last blocking addition, when one was tested.
+
 Only one failure per candidate is retained; this is not an exhaustive search trace.
 A failure from before the accepted selection changed is explicitly labeled as an
 earlier, untried-again result when the trial limit stops search. Selected candidates
@@ -527,7 +556,7 @@ After a nonempty application, rebuild the dependency graph and all graph-bound g
 
 - Does a candidate identify the intended logical domain, with all coupling expressed structurally?
 - Are scores computed over a complete influence range using the intended task statistics?
-- Are caps checked against the joint closure rather than the sum of independent candidate costs?
+- Are final sizes measured from the joint closure and verified recipes rather than the sum of independent candidate costs?
 - Does every activated requirement have a verified lowering, including static forward arguments?
 - Are plan serialization and apply independent of live graph identities and scoring callbacks?
 - Does a failure leave ordinary registered state unchanged wherever a transaction is promised?

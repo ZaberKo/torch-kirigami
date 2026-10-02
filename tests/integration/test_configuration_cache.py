@@ -46,7 +46,7 @@ def test_same_width_configuration_checks_are_shared(dependent, monkeypatch, exec
 
     plan = Pruner(model, graph=graph).plan(
         Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.25),
+        budget=ChannelRatio(0 if dependent else 0.125),
         strategy=strategy,
     )
     # A final independently validated context is retained for accepted changes.
@@ -83,7 +83,7 @@ def test_configuration_cache_invalidates_after_tensor_write(monkeypatch, executi
     with pytest.raises(ExecutionError, match="changed since planning"):
         Pruner(model, graph=graph).plan(
             Pruner(model, graph=graph).discover_candidates(),
-            budget=ChannelRatio(0.25),
+            budget=ChannelRatio(0),
             strategy=strategy,
         )
     assert model[0].weight.shape == (8, 4) and model[1].weight.shape == (2, 8)

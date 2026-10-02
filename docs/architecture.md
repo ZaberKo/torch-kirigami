@@ -50,7 +50,7 @@ Repeated calls to a shared module remain separate calls. References to the same 
 
 `Pruner` owns the graph, interface protection, extra constraints and optional `Granularity` settings. Candidate discovery is explicit: `pruner.discover_candidates()` returns an immutable `CandidateSpace` containing candidates and logical `channel_axes`. The space retains no model, graph or policy. Automatic planning consumes it through `plan(space, budget=..., strategy=...)`; exact manual requests use `plan_remove(remove)`.
 
-`Granularity` resolves exact module types and paths into ordinary `Divisible` constraints. Strategies implement `select(context) -> StrategyResult` and own their scoring policy. Metrics implement `score(context, candidates, *, selected)`; `selected` is the accepted joint dependency impact. `PlanningContext.score()` validates scores and complete influence. See [alignment configuration](pruning-design.md#retained-width-alignment) and [scoring contracts](pruning-design.md#scoring-and-strategy-contracts).
+`Granularity` resolves exact module types and paths into ordinary `Divisible` constraints. Strategies implement `select(context) -> StrategyResult` and own their scoring policy. Metrics implement `score(context, candidates, *, accepted_impact)`; `accepted_impact` is the complete dependency analysis of previously accepted removal requests, while the original model remains unchanged. `PlanningContext.score()` validates scores and complete influence. See [alignment configuration](pruning-design.md#retained-width-alignment) and [scoring contracts](pruning-design.md#scoring-and-strategy-contracts).
 
 `Greedy` ranks once; `DynamicGreedy` rescores after each accepted complete change.
 Both share the same search verification and completion implementation. Metrics
@@ -80,9 +80,11 @@ Relations grow the removal set until no new regions appear. Constraints inspect 
 Planning combines the closure with physical representation requirements. It checks that the original model can execute with the proposed compact shapes and supported attribute edits. A candidate can have a complete impact but still fail physical planning.
 
 Automatic planning accepts separate immutable budget objects. `ChannelRatio` and
-`ChannelCount` cap logical removals and report underfill. `ParameterBudget` caps
-the final whole-model parameter count and rejects an unmet target before apply.
-All share candidate selection, dependency propagation and recipe verification.
+`ChannelCount` cap final logical widths. `ParameterBudget` caps the final
+whole-model parameter count. Every automatic plan must meet its target before apply.
+Resolution, measurement and reporting live in `pruning/budget.py`; the planning
+context obtains verified recipes, and strategies share one final-size stopping
+rule. All use the same dependency propagation and recipe verification.
 The parameter baseline includes fixed, frozen and uncaptured Parameter objects,
 deduplicated by identity; it is independent of candidate-space channel axes.
 

@@ -411,6 +411,10 @@ class OperatorRule(Generic[_LowerContext, _LowerResult]):
             before metadata execution. Raise CaptureError for recognized writes.
         effects: Optional callback with the same arguments, returning CallEffects.
         evaluate_on_meta: Whether the native operation is safe to evaluate on meta tensors.
+        cache_meta_output: Whether a fresh, non-mutating meta output depends only
+            on argument metadata and the captured module configuration. Extensions
+            default to executing every meta call; opt in only for pure metadata
+            computation without external state or tensor-value dependencies.
             Third-party callbacks default to declared output facts instead.
     """
 
@@ -422,12 +426,14 @@ class OperatorRule(Generic[_LowerContext, _LowerResult]):
         preflight: Callable[[fx.Node, nn.Module | None], None] | None = None,
         effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = None,
         evaluate_on_meta: bool = False,
+        cache_meta_output: bool = False,
     ) -> None:
         self._analyze: Callable[[OperationContext], OperatorSpec] | None = analyze
         self._lower = lower
         self._preflight: Callable[[fx.Node, nn.Module | None], None] | None = preflight
         self._effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = effects
         self.evaluate_on_meta = evaluate_on_meta
+        self.cache_meta_output = cache_meta_output
 
     @property
     def uses_default_lowering(self) -> bool:

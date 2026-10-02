@@ -87,7 +87,7 @@ def test_transpose_output_protection_uses_logical_domain():
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3, 4),))
     model, result = Pruner(model, graph=graph).prune(
         Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.34),
+        budget=ChannelRatio(0.3),
         strategy=Greedy(Magnitude()),
     )
     assert result.plan.selection_report.widths == (6,)
@@ -191,7 +191,7 @@ def test_automatic_group_balance_selects_different_local_positions():
 
     plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
         Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.34),
+        budget=ChannelRatio(0.3),
         strategy=Greedy(metric),
     )
     assert set(plan.analysis.selection(graph.parameter("weight")).fully_selected_indices(0)) == {

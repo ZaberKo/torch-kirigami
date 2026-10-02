@@ -153,13 +153,13 @@ class GateMagnitude:
         context: MetricContext,
         candidates: tuple[Candidate, ...],
         *,
-        selected: Impact,
+        accepted_impact: Impact,
     ) -> list[float]:
         """Evaluate additions to a complete, possibly constrained selection."""
-        context.require_complete(selected)
+        context.require_complete(accepted_impact)
         scores = []
         for candidate in candidates:
-            impact = context.impact(selected.requested + candidate.remove)
+            impact = context.impact(accepted_impact.requested + candidate.remove)
             context.require_complete(impact)
             score, found = 0.0, False
             seen = set()
@@ -172,7 +172,7 @@ class GateMagnitude:
                 if identity in seen:
                     continue
                 seen.add(identity)
-                selection = impact.selection(ref).subtract(selected.selection(ref))
+                selection = impact.selection(ref).subtract(accepted_impact.selection(ref))
                 if not selection:
                     continue
                 found = True

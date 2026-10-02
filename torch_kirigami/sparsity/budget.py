@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import math
-
 from ..graph import DependencyGraph
+from ..pruning.budget import channel_targets
 from ..pruning.candidates import CandidateSpace
 from ..pruning.plan import PruningResult
 from ..pruning.serialization import decode, encode
 from ..pruning.state import check_structure, snapshot, validate_plan
-from ..pruning.types import ChannelCount, ModelStructure
+from ..pruning.types import ChannelCount, ChannelRatio, ModelStructure
 
 
 def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None = None) -> tuple:
@@ -84,20 +83,12 @@ class CumulativeChannelBudget:
         self, graph: DependencyGraph, space: CandidateSpace, ratio: int | float
     ) -> ChannelCount:
         """Return this round's cap for a cumulative ratio of original widths."""
-        if type(ratio) not in (int, float) or not math.isfinite(ratio) or not 0 <= ratio < 1:
-            raise ValueError("ratio must be finite and in [0, 1)")
+        targets = channel_targets(ChannelRatio(ratio, scope=self.scope), self._initial)
         axes = self._validate_space(graph, space, self._structure, self._current)
-        if self.scope == "global":
-            count = max(
-                0,
-                math.floor(ratio * sum(self._initial)) - (sum(self._initial) - sum(self._current)),
-            )
-            return ChannelCount(count, axes, "global")
-        counts = tuple(
-            max(0, math.floor(ratio * initial) - (initial - current))
-            for initial, current in zip(self._initial, self._current, strict=True)
-        )
-        return ChannelCount(counts, axes)
+        # Targets refer to original widths, not the already compact model.
+        # A target above a current width is already satisfied; do not request
+        # an additional deletion merely because an earlier round overshot it.
+        return ChannelCount(targets[0] if self.scope == "global" else targets, axes, self.scope)
 
     def update(self, result: PruningResult, graph: DependencyGraph, space: CandidateSpace) -> None:
         """Accept an applied result and rebuilt space; reject inconsistent transitions."""

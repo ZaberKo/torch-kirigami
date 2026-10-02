@@ -11,7 +11,7 @@ from torch_kirigami import DependencyGraph, Divisible, IndexSet, Region
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
-    ChannelRatio,
+    ChannelCount,
     Greedy,
     ParameterBudget,
     PlanningContext,
@@ -19,6 +19,7 @@ from torch_kirigami.pruning import (
     Pruner,
     PruningPlan,
 )
+from torch_kirigami.pruning.budget import _BudgetTarget
 from torch_kirigami.pruning.strategies import _axis_removals
 
 
@@ -49,16 +50,16 @@ def test_parameter_budget_skips_channel_counting_but_preserves_final_target_and_
     pruner = Pruner(model, graph=graph)
     parameters = tuple(model.parameters())
 
-    def unexpected_channel_counts(self: PlanningContext, impact: object) -> tuple[int, ...]:
+    def unexpected_channel_counts(self: _BudgetTarget, impact: object) -> tuple[int, ...]:
         pytest.fail("An absolute parameter target must not compute channel removal counts")
 
     @KeyStrategy
     def strategy(context: PlanningContext) -> tuple[str, ...]:
         with pytest.raises(ValueError, match="another graph"):
-            context.admissible(foreign)
+            context.remaining(foreign)
         return Greedy(StaticMetric(lambda context, batch: [0] * len(batch))).select(context).keys
 
-    monkeypatch.setattr(PlanningContext, "counts", unexpected_channel_counts)
+    monkeypatch.setattr(_BudgetTarget, "channel_widths", unexpected_channel_counts)
     if cap == 1:
         with pytest.raises(PlanningError, match="Parameter target not reached"):
             pruner.plan(
@@ -98,7 +99,7 @@ def test_sparse_multi_axis_candidates_preserve_combination_and_replay(
     pruner = Pruner(model, graph=graph, constraints=(Divisible(first, 2), Divisible(second, 2)))
     plan = pruner.plan(
         CandidateSpace(candidates, (first, second)),
-        budget=ParameterBudget(46) if parameter_budget else ChannelRatio(1 / 3),
+        budget=ParameterBudget(46) if parameter_budget else ChannelCount((4, 4), (first, second)),
         strategy=Greedy(StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=1),
     )
     assert plan.selected == ("a_first", "c_both", "b_second")

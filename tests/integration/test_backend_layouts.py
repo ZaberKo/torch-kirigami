@@ -11,7 +11,7 @@ from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
-    ChannelRatio,
+    ChannelCount,
     Greedy,
     Magnitude,
     PlanningError,
@@ -448,7 +448,13 @@ def test_unknown_convolution_layout_excludes_only_affected_candidate(mode, execu
             ],
             channel_axes=(bad, good),
         ),
-        budget=ChannelRatio(0.25),
+        budget=ChannelCount(
+            (
+                bad.tensor.shape[bad.dim] - (0 if mode == "view" else 1),
+                good.tensor.shape[good.dim] - 1,
+            ),
+            (bad, good),
+        ),
         strategy=Greedy(Magnitude()),
     )
     assert set(plan.selected) == ({"good"} if mode == "view" else {"bad", "good"})

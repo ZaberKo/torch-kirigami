@@ -32,7 +32,7 @@ Examples supply execution metadata; they do not specialize data-dependent Python
 | Capture or metadata execution | `CaptureError`; no usable dependency graph is returned. The entire build attempt fails. |
 | Rule analysis | Unsupported semantics become barriers over their structural and data dependencies. Independent subgraphs remain queryable. Unexpected extension programming errors are not silently converted into barriers. |
 | Manual planning | The complete submitted request must be executable. An invalid request raises `PlanningError`; requested selections are not silently dropped. |
-| Default automatic planning | The strategy retains validated combinations and reports excluded candidates, shortfall, and search limits. Temporary imbalance may be resolved by combining candidates. Arbitrary custom metric or strategy failures are not guaranteed to become candidate exclusions. |
+| Default automatic planning | The strategy retains validated combinations and reports excluded candidates and search limits; an unmet final-size target raises before mutation. Temporary imbalance may be resolved by combining candidates. Arbitrary custom metric or strategy failures are not guaranteed to become candidate exclusions. |
 | Application | Model and plan preconditions are revalidated before submission. Invalid plans or incompatible targets fail the application attempt; `apply()` does not rerun candidate selection. |
 
 Barrier scope follows dependencies rather than module boundaries. Unknown operations may use input values as indices or dimensions, so their data ancestors can also be protected. Shared parameters and residual joins can extend the affected region across branches. An unsupported operation cannot safely be treated as an isolated fixed box with unrestricted upstream pruning.
@@ -41,7 +41,7 @@ Barrier scope follows dependencies rather than module boundaries. Unknown operat
 
 - All selections and recipes use coordinates from the current graph. Shared uses must agree on retained coordinates, ordering, and structural attribute values.
 - `preserve_io=True` protects every external input/output tensor axis by default. Disabling it removes interface protection only; operator constraints remain active.
-- Group balance, divisibility, nonempty dimensions, execution support, and budget limits constrain admissible selections. Budget shortfall is not proof of mathematical infeasibility.
+- Group balance, divisibility, nonempty dimensions, execution support, and budget limits constrain admissible selections. Failure to reach a final-size target within bounded search is not proof of mathematical infeasibility.
 - A static plan can use the current weights of a structurally compatible target without rescoring. Configuration and guarded constants must still satisfy its preconditions.
 - After nonempty pruning, rebuild dependency graphs and graph-bound training objects, and recreate the optimizer. Resized parameters are new objects; optimizer-state migration is not implemented.
 

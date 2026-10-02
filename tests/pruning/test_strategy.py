@@ -36,11 +36,12 @@ def test_builtin_scoring_does_not_thrash_small_impact_cache(width, monkeypatch):
         return propagate(**kwargs)
 
     monkeypatch.setattr(graph, "propagate", counted)
-    Pruner(model, graph=graph, preserve_io=False).plan(
-        Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.2),
-        strategy=Greedy(Magnitude(), max_trials=1),
-    )
+    with pytest.raises(PlanningError, match="target not reached"):
+        Pruner(model, graph=graph, preserve_io=False).plan(
+            Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
+            budget=ChannelRatio(0.2),
+            strategy=Greedy(Magnitude(), max_trials=1),
+        )
     assert count <= width + 12
 
 
@@ -70,32 +71,32 @@ def test_custom_metric_uses_bounded_batches_and_shared_expressions_are_readonly(
         batch_sizes.append(len(batch))
         return [1.0] * len(batch)
 
-    Pruner(model, graph=graph, preserve_io=False).plan(
-        Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.2),
-        strategy=Greedy(metric, max_trials=1),
-    )
+    with pytest.raises(PlanningError, match="target not reached"):
+        Pruner(model, graph=graph, preserve_io=False).plan(
+            Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
+            budget=ChannelRatio(0.2),
+            strategy=Greedy(metric, max_trials=1),
+        )
     assert batch_sizes == [32, 32]
 
 
 def test_greedy_initial_invalid_divisibility_and_limit():
     model = nn.Linear(4, 10)
-    graph, pruner = build(model, torch.randn(2, 4))
+    graph, _pruner = build(model, torch.randn(2, 4))
     axis = graph.parameter("weight").axis(0)
     aligned = Pruner(model, graph=graph, preserve_io=False, constraints=[Divisible(axis, 4)])
     space = aligned.discover_candidates()
     plan = aligned.plan(space, budget=ChannelRatio(0.2), strategy=Greedy(Magnitude()))
     assert plan.selection_report.removed == (2,)
-    with pytest.raises(PlanningError, match="empty request"):
-        aligned.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(Magnitude()))
-    plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(
-        Pruner(pruner.model, graph=pruner.graph, preserve_io=False).discover_candidates(),
-        budget=ChannelRatio(0.4),
-        strategy=Greedy(Magnitude(), max_trials=1),
-    )
-    assert plan.selection_report.limit_reached
-    assert plan.analysis.status == "resolved"
-    assert plan.selection_report.removed == (1,)
+    repaired = aligned.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(Magnitude()))
+    assert repaired.selection_report.remaining == (8,)
+    with pytest.raises(PlanningError, match=r"target not reached.*strategy trial limit"):
+        Pruner(model, graph=graph, preserve_io=False).plan(
+            Pruner(model, graph=graph, preserve_io=False).discover_candidates(),
+            budget=ChannelRatio(0.4),
+            strategy=Greedy(Magnitude(), max_trials=1),
+        )
+    graph.validate()
 
 
 def test_balanced_completion_multiple_constraints_and_stable_ties():
@@ -129,7 +130,7 @@ def test_metric_errors_and_nonadditive_custom_scoring():
     _graph, pruner = build(model, torch.randn(2, 4))
     pruner = Pruner(model, graph=_graph, preserve_io=False)
     space = pruner.discover_candidates()
-    common = {"budget": ChannelRatio(0.4)}
+    common = {"budget": ChannelRatio(0.3)}
     with pytest.raises(PlanningError, match="gradients"):
         pruner.plan(space, strategy=Greedy(WeightTaylor()), **common)
     for metric in (
@@ -191,9 +192,11 @@ def test_zero_trial_strategy_skips_scoring_but_validates_empty(monkeypatch):
         calls.append(batch)
         raise AssertionError("No score should be needed")
 
-    plan = Pruner(model, graph=graph).plan(
-        Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.5),
-        strategy=Greedy(metric, max_trials=0),
-    )
-    assert not calls and not plan.recipes and plan.selection_report.limit_reached
+    with pytest.raises(PlanningError, match="target not reached"):
+        Pruner(model, graph=graph).plan(
+            Pruner(model, graph=graph).discover_candidates(),
+            budget=ChannelRatio(0.5),
+            strategy=Greedy(metric, max_trials=0),
+        )
+    assert not calls
+    graph.validate()

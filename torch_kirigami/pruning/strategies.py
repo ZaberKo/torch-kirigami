@@ -9,12 +9,11 @@ from typing import Literal
 
 from ..contracts import Balanced, Constraint, Divisible, Impact
 from ..selection import AxisRef, IndexSet
-from .planner import PlanningContext, _budget_reason, _within_targets
+from .planner import PlanningContext
 from .ranking import IndependentRanking
 from .types import (
     Candidate,
     Metric,
-    ParameterBudget,
     PlanningError,
     StrategyResult,
 )
@@ -41,20 +40,6 @@ def _merge_axis_removals(
     for axis, indices in addition.items():
         combined[axis] = current.get(axis, _EMPTY_INDICES).union(indices)
     return combined
-
-
-def _combined_counts(
-    context: PlanningContext,
-    current: Mapping[AxisRef, IndexSet],
-    addition: Mapping[AxisRef, IndexSet],
-) -> tuple[int, ...]:
-    """Bound channel removals below; parameter budgets impose no channel caps."""
-    if isinstance(context.budget, ParameterBudget):
-        return ()
-    return tuple(
-        len(current.get(a, _EMPTY_INDICES).union(addition.get(a, _EMPTY_INDICES)))
-        for a in context.channel_axes
-    )
 
 
 def _ranked_axis_candidates(
@@ -84,6 +69,7 @@ def _completion_order(
     partitions: tuple[IndexSet, ...],
     *,
     contributors: Sequence[Candidate],
+    excluded: set[str] | frozenset[str] = frozenset(),
     known_only: bool = False,
 ) -> Iterator[Candidate]:
     """Yield known contributions first, retaining joint-only effects as fallback.
@@ -93,6 +79,8 @@ def _completion_order(
     """
     helpful = set()
     for candidate in contributors:
+        if candidate.key in excluded:
+            continue
         delta = removals[candidate.key][axis].subtract(before)
         helps = bool(delta) and (not partitions or any(delta.intersect(p) for p in partitions))
         if helps:
@@ -101,7 +89,11 @@ def _completion_order(
     if not known_only:
         # Include every non-helpful candidate, not just those absent from the
         # index: covered or partition-irrelevant contributions may help jointly.
-        yield from (candidate for candidate in ranked if candidate.key not in helpful)
+        yield from (
+            candidate
+            for candidate in ranked
+            if candidate.key not in helpful and candidate.key not in excluded
+        )
 
 
 def _balance_deficit(
@@ -127,9 +119,8 @@ def _balance_deficit(
 
 
 def _propose_batch(
-    context: PlanningContext,
     initial: list[Candidate],
-    committed_removals: Mapping[AxisRef, IndexSet],
+    accepted_removals: Mapping[AxisRef, IndexSet],
     ranked: Sequence[Candidate],
     removals: Mapping[str, Mapping[AxisRef, IndexSet]],
     ranked_by_axis: Mapping[AxisRef, Sequence[Candidate]],
@@ -146,7 +137,7 @@ def _propose_batch(
     trial = list(initial)
     used = {c.key for c in trial}
     seed = removals[trial[-1].key]
-    predicted = _merge_axis_removals(committed_removals, seed)
+    predicted = _merge_axis_removals(accepted_removals, seed)
     balances = tuple(c for c in constraints if isinstance(c, Balanced))
     while True:
         repair = None
@@ -173,13 +164,10 @@ def _propose_batch(
             before,
             _repair_partitions(repair, before) if isinstance(repair, Balanced) else (),
             contributors=ranked_by_axis.get(repair.axis, ()),
+            excluded=used,
             known_only=True,
         ):
-            if extra.key in used:
-                continue
             addition = removals[extra.key]
-            if not _within_targets(context, _combined_counts(context, predicted, addition)):
-                continue
             deficit = _balance_deficit(balances, predicted, addition)
             if deficit < best_deficit:
                 best, best_deficit = extra, deficit
@@ -200,7 +188,6 @@ def _complete_trial(
     ranked: Sequence[Candidate],
     removals: Mapping[str, Mapping[AxisRef, IndexSet]],
     ranked_by_axis: Mapping[AxisRef, Sequence[Candidate]],
-    axes: tuple[AxisRef, ...],
     attempt: Callable[[list[Candidate]], Impact | None],
 ) -> tuple[list[Candidate], Impact]:
     """Validate a batch and complete constraints revealed by actual joint effects."""
@@ -208,8 +195,6 @@ def _complete_trial(
     if impact is None:
         raise PlanningError("Strategy trial limit reached before this candidate could be tested")
     while True:
-        if not context.admissible(impact):
-            raise PlanningError(_budget_reason(context, context.counts(impact)))
         if impact.status == "resolved":
             context.compile(impact)
             return trial, impact
@@ -232,7 +217,6 @@ def _complete_trial(
         before = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
         partitions = _repair_partitions(repair, before) if isinstance(repair, Balanced) else ()
         trial_keys = {c.key for c in trial}
-        trial_removals = _axis_removals(impact, axes)
         added, last_blocker, limited = False, "", False
         for extra in _completion_order(
             ranked,
@@ -241,22 +225,14 @@ def _complete_trial(
             before,
             partitions,
             contributors=ranked_by_axis.get(axis, ()),
+            excluded=trial_keys,
         ):
-            if extra.key in trial_keys:
-                continue
-            counts = _combined_counts(context, trial_removals, removals[extra.key])
-            if not _within_targets(context, counts):
-                last_blocker = _budget_reason(context, counts, lower_bound=True)
-                continue
             new = attempt([*trial, extra])
             if new is None:
                 limited = True
                 break
             delta = new.selection(axis.tensor).fully_selected_indices(axis.dim).subtract(before)
             if not delta or (partitions and not any(delta.intersect(p) for p in partitions)):
-                continue
-            if not context.admissible(new):
-                last_blocker = _budget_reason(context, context.counts(new))
                 continue
             if new.status == "conflict":
                 last_blocker = "; ".join(map(str, new.diagnostics))
@@ -338,7 +314,7 @@ def _rank_candidates(
     context: PlanningContext,
     metric: Metric,
     candidates: Sequence[Candidate],
-    selected: Impact,
+    accepted_impact: Impact,
     axes: tuple[AxisRef, ...],
     exclusions: dict[str, str],
 ) -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
@@ -349,17 +325,17 @@ def _rank_candidates(
     Every metric follows the same batching contract; no concrete type is special.
     """
     eligible, scores, removals = [], [], {}
-    selected_removals = _axis_removals(selected, axes)
+    accepted_removals = _axis_removals(accepted_impact, axes)
     remaining = [
         candidate
         for candidate in candidates
-        if any(s.subtract(selected.selection(s.tensor)) for s in candidate.remove)
+        if any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
     ]
     for start in range(0, len(remaining), _SCORE_BATCH_SIZE):
         batch = []
         for candidate in remaining[start : start + _SCORE_BATCH_SIZE]:
             try:
-                joint = context.impact((*selected.requested, *candidate.remove))
+                joint = context.impact((*accepted_impact.requested, *candidate.remove))
                 context.require_complete(joint)
             except PlanningError as error:
                 exclusions[candidate.key] = str(error)
@@ -368,11 +344,13 @@ def _rank_candidates(
                 removals[candidate.key] = {
                     axis: delta
                     for axis, indices in _axis_removals(joint, axes).items()
-                    if (delta := indices.subtract(selected_removals.get(axis, _EMPTY_INDICES)))
+                    if (delta := indices.subtract(accepted_removals.get(axis, _EMPTY_INDICES)))
                 }
                 batch.append(candidate)
         if batch:
-            scores.extend(context._score_complete(metric, tuple(batch), selected=selected))
+            scores.extend(
+                context._score_complete(metric, tuple(batch), accepted_impact=accepted_impact)
+            )
             eligible.extend(batch)
     ranked = [
         candidate
@@ -387,8 +365,8 @@ def _select(
     context: PlanningContext, metric: Metric, max_trials: int, *, dynamic: bool
 ) -> StrategyResult:
     """Share budget, completion, and failure handling between both greedy loops."""
-    committed: list[Candidate] = []
-    committed_impact = context.impact(())
+    accepted_candidates: list[Candidate] = []
+    accepted_impact = context.impact(())
     exclusions: dict[str, str] = {}
     failures: dict[str, tuple[int, str]] = {}
     revision, limited, empty_error = 0, False, ""
@@ -412,25 +390,25 @@ def _select(
         covered = {
             candidate.key
             for candidate in context.candidates
-            if all(not s.subtract(committed_impact.selection(s.tensor)) for s in candidate.remove)
+            if all(not s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
         }
         result = StrategyResult(
-            keys=tuple(c.key for c in committed),
+            keys=tuple(c.key for c in accepted_candidates),
             stop_reason=stop_reason,
             exclusions=tuple(
                 (key, reason) for key, reason in exclusions.items() if key not in covered
             ),
         )
-        context.require_budget(committed_impact, result=result)
+        context.require_budget(accepted_impact, result=result)
         return result
 
     try:
-        context.compile(committed_impact)
-        valid = context.admissible(committed_impact)
+        context.compile(accepted_impact)
+        valid = True
     except PlanningError as error:
         valid, empty_error = False, str(error)
-    parameter_target = isinstance(context.budget, ParameterBudget)
-    if valid and parameter_target and context.within_budget(committed_impact):
+    accepted_deficit = context.deficit(accepted_impact) if valid else None
+    if accepted_deficit == 0:
         return finish("target_reached")
     if max_trials == 0:
         if not valid:
@@ -439,44 +417,27 @@ def _select(
             )
         exclusions.update((c.key, "Strategy limit is zero") for c in context.candidates)
         return finish("trial_limit" if context.candidates else "exhausted")
-    # Custom candidates may remove unbudgeted positions, so a zero channel cap
-    # proves no progress possible only if every seed touches a counted axis.
-    if (
-        valid
-        and not parameter_target
-        and not any(context.targets)
-        and all(
-            any(
-                s.tensor == a.tensor and s.fully_selected_indices(a.dim)
-                for s in c.remove
-                for a in context.channel_axes
-            )
-            for c in context.candidates
-        )
-    ):
-        exclusions.update((c.key, "Zero channel budget") for c in context.candidates)
-        return finish("target_reached")
     repair_constraints = tuple(
-        c for c in committed_impact.constraints if isinstance(c, (Balanced, Divisible))
+        c for c in accepted_impact.constraints if isinstance(c, (Balanced, Divisible))
     )
     # Extension constraints can inspect the entire closure. Only the exact built-in
     # count constraints can be projected onto sparse independent axis summaries.
     count_constraints = tuple(c for c in repair_constraints if type(c) in (Balanced, Divisible))
-    counted_axes = () if parameter_target else context.channel_axes
+    counted_axes = context.budget_axes
     axes = tuple(dict.fromkeys((*counted_axes, *(c.axis for c in repair_constraints))))
-    committed_removals = _axis_removals(committed_impact, axes)
+    accepted_removals = _axis_removals(accepted_impact, axes)
     independent = IndependentRanking.build(context, metric)
 
     def rank() -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
         """Use proved independent statistics; retain ordinary joint scoring otherwise."""
         nonlocal independent
         if independent is not None:
-            result = independent.rank(committed_impact, axes)
+            result = independent.rank(accepted_impact, axes)
             if result is not None:
                 return result
             independent = None
         return _rank_candidates(
-            context, metric, context.candidates, committed_impact, axes, exclusions
+            context, metric, context.candidates, accepted_impact, axes, exclusions
         )
 
     ranked, removals = rank()
@@ -493,17 +454,12 @@ def _select(
     while True:
         progress = False
         for seed in ranked:
-            if all(not s.subtract(committed_impact.selection(s.tensor)) for s in seed.remove):
+            if all(not s.subtract(accepted_impact.selection(s.tensor)) for s in seed.remove):
                 continue
-            counts = _combined_counts(context, committed_removals, removals[seed.key])
-            if not _within_targets(context, counts):
-                failures[seed.key] = (revision, _budget_reason(context, counts, lower_bound=True))
-                continue
-            initial = [*committed, seed]
+            initial = [*accepted_candidates, seed]
             batch = _propose_batch(
-                context,
                 initial,
-                committed_removals,
+                accepted_removals,
                 ranked,
                 removals,
                 ranked_by_axis,
@@ -516,7 +472,7 @@ def _select(
                 attempts_before = context.trials
                 try:
                     trial, impact = _complete_trial(
-                        context, trial, ranked, removals, ranked_by_axis, axes, attempt
+                        context, trial, ranked, removals, ranked_by_axis, attempt
                     )
                 except PlanningError as error:
                     if context.trials > attempts_before or seed.key not in failures:
@@ -524,10 +480,16 @@ def _select(
                     if limited:
                         break
                 else:
-                    committed, committed_impact, valid, progress = trial, impact, True, True
-                    committed_removals = _axis_removals(impact, axes)
+                    deficit = context.deficit(impact)
+                    if accepted_deficit is not None and deficit >= accepted_deficit:
+                        failures[seed.key] = (revision, "No reduction of unmet budget targets")
+                        continue
+                    accepted_candidates, accepted_impact = trial, impact
+                    valid = progress = True
+                    accepted_removals = _axis_removals(impact, axes)
+                    accepted_deficit = deficit
                     revision += 1
-                    if parameter_target and context.within_budget(impact):
+                    if deficit == 0:
                         return finish("target_reached")
                     break
             if limited or (dynamic and progress):

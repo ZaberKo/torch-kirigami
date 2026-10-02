@@ -145,6 +145,7 @@ def compile_recipes(
     impact: Impact,
     *,
     attribute_checks: OrderedDict[tuple[tuple[str, object], ...], str | None] | None = None,
+    meta_outputs: dict[str, tuple[object, object]] | None = None,
 ) -> tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]]:
     """Prove all affected requirements and combine per-use recipes without weights."""
     if impact.status != "resolved":
@@ -259,7 +260,9 @@ def compile_recipes(
         handled.add(id(req))
     if any(id(r) not in handled for r in impact.requirements):
         raise PlanningError("Impact contains an unhandled execution requirement")
-    check_forward(graph, operations, active, impact, recipes, attributes, strides)
+    check_forward(
+        graph, operations, active, impact, recipes, attributes, strides, meta_outputs=meta_outputs
+    )
     # Attribute validation depends on configuration, not which same-width channels
     # were selected. The context owns/invalidate this bounded cache; manual and final
     # independent compilation still validate without sharing another context's cache.

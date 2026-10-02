@@ -84,7 +84,7 @@ def test_precision_scale_aliases_and_freshness(dtype):
     assert value.item() == 5
     Pruner(model, graph=graph).prune(
         Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.34),
+        budget=ChannelRatio(0.3),
         strategy=Greedy(Magnitude()),
     )
     with pytest.raises(StaleGraphError):
@@ -163,7 +163,7 @@ def test_autocast_sparse_loss_then_public_prune_and_train(execution_device):
     scaler.update()
     Pruner(model, graph=graph).prune(
         Pruner(model, graph=graph).discover_candidates(),
-        budget=ChannelRatio(0.34),
+        budget=ChannelRatio(0.3),
         strategy=Greedy(Magnitude()),
     )
     fresh = DependencyGraph.build(model, args=(x,))

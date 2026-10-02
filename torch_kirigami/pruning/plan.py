@@ -96,7 +96,7 @@ class PruningPlan:
             )
         elif self.selection_report.scope != "manual":
             lines.append(
-                f"Channels: target {sum(self.selection_report.targets)}, removed {sum(self.selection_report.removed)}, "
+                f"Channels: remaining {self.selection_report.remaining}, limits {self.selection_report.targets}, "
                 f"shortfall {self.selection_report.shortfall}; {self.selection_report.trials} trials"
             )
         lines.extend(f"{r.tensor.paths[0]}: {r.tensor.shape} -> {r.shape}" for r in self.recipes)

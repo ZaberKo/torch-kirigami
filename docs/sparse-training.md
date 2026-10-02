@@ -136,19 +136,19 @@ gated_space = CandidateSpace(binding.candidates(pruner, space.candidates), (axis
 plan = pruner.plan(
     gated_space,
     strategy=Greedy(GateMagnitude((binding,))),
-    budget=ChannelCount((3,), (axis,)),
+    budget=ChannelCount((9,), (axis,)),
 )
 model, result = Pruner(model, graph=graph).apply(plan)
 ```
 
 `register_gate_operators(operators)` adds a leaf rule linking input/output axes to the gate weight and mask, with a requirement to update `size`. It adds no logical candidate axis, so the gate does not inflate the denominator. Its multiplication produces fresh storage; this fact supports checks for an immediately following in-place activation without relaxing other alias or multiple-consumer constraints.
 
-`GateBinding(graph, path).candidates(pruner, candidates)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings).score(context, candidates, selected=impact)` sums `abs(weight * mask)` over newly affected scales, excluding regions already covered by `selected`. It rejects ungated candidates, while a previously selected gated candidate has zero additional score. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
+`GateBinding(graph, path).candidates(pruner, candidates)` discovers which existing candidates affect that gate by dependency propagation. `GateMagnitude(bindings).score(context, candidates, accepted_impact=impact)` sums `abs(weight * mask)` over newly affected scales, excluding regions already covered by the accepted requests' dependency impact. It rejects ungated candidates, while a previously selected gated candidate has zero additional score. Aliases sharing both the weight and mask count once; a shared weight paired with different masks contributes for each distinct pair.
 
 `Greedy` scores once per plan. `DynamicGreedy` calls the same metric again after
-each accepted addition, passing the updated joint impact as `selected`. Neither
+each accepted addition, passing the updated joint impact as `accepted_impact`. Neither
 strategy trains gates or recalibrates activations. For identical model values and
-`selected`, each candidate's score must be independent of scoring batch size and
+`accepted_impact`, each candidate's score must be independent of scoring batch size and
 order; a batch is not a combined pruning request. Supply one multi-selection
 `Candidate` when a joint score is required.
 
@@ -174,7 +174,7 @@ Validation and new values are prepared before committing any parameter change. O
 
 Applying `ChannelRatio(0.2)` repeatedly means 20% of each new snapshot's widths, with new rounding every round. `CumulativeChannelBudget` instead records the original logical widths and subtracts only observed, successfully applied removals.
 
-For an initial width `W`, current width `w`, and cumulative target ratio `r`, the next local cap is `max(0, floor(r * W) - (W - w))`. Global scope uses the sums of original and current widths. A shortfall is not counted as completed pruning.
+For an initial width `W` and cumulative reduction ratio `r`, the final-width cap is `floor((1 - r) * W)`. Global scope uses the sum of original widths. Conversion shares the single-round exact decimal arithmetic: width 100 with `r=0.29` has a final cap of 71 in every round. Earlier overshoot requires no further deletion when the current width already meets that cap. Failed planning does not advance the recorded widths; only successfully applied plans do.
 
 ```mermaid
 sequenceDiagram

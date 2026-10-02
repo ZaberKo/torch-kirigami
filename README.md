@@ -132,9 +132,10 @@ space = pruner.discover_candidates()
 plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
 ```
 
-Use a `Pruner` bound to the current graph. `ChannelRatio` limits channel removals
-and may return an underfilled plan. `ParameterBudget(max_params=...)` instead
-requires the final whole-model count to meet an absolute cap; an unmet target
+Use a `Pruner` bound to the current graph. `ChannelRatio` converts a reduction
+fraction into upper bounds on final channel widths. `ChannelCount(max_channels,
+channel_axes)` supplies those bounds directly; `ParameterBudget(max_params=...)`
+bounds the final whole-model parameter count. Every budget must be met; an unmet target
 raises `PlanningError` before application. Both use the same dependency and
 execution checks. A resolved impact alone does not guarantee executability or
 numerical equivalence to the unpruned model.

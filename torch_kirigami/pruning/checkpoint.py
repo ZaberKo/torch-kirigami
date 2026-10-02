@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from collections.abc import Callable
 from dataclasses import replace
 from os import PathLike
 from typing import IO
@@ -265,7 +264,7 @@ def load_checkpoint(
     model: nn.Module,
     path: str | PathLike[str] | IO[bytes],
     *,
-    map_location: str | torch.device | dict[str, str | torch.device] | Callable | None = None,
+    map_location: str | torch.device | dict[str, str | torch.device] | None = None,
 ) -> nn.Module:
     """Restore final tensor sizes, sharing, configuration, and values into a skeleton.
 
