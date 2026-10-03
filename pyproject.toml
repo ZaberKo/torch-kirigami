@@ -1,17 +1,23 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["uv_build>=0.9.11,<0.10.0"]
+build-backend = "uv_build"
 
 [project]
 name = "torch-kirigami"
-version = "0.1.0"
-description = "FX-based structural dependency analysis for PyTorch"
+version = "0.1.1"
+description = "Structured pruning and dependency analysis for PyTorch models"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
 dependencies = ["torch>=2.6"]
-keywords = ["pytorch", "structural-pruning", "fx"]
+keywords = [
+    "pytorch",
+    "pruning",
+    "structured-pruning",
+    "model-compression",
+    "sparse-training",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -32,19 +38,10 @@ dev = [
     "ruff>=0.12",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["torch_kirigami"]
-
-[tool.hatch.build.targets.sdist]
-include = [
-    "/torch_kirigami",
-    "/tests",
-    "/examples",
-    "/docs",
-    "/README.md",
-    "/LICENSE",
-    "/pyproject.toml",
-]
+[tool.uv.build-backend]
+module-name = "torch_kirigami"
+module-root = ""
+source-include = ["tests/**", "examples/**", "docs/**"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

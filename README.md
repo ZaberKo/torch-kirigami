@@ -1,30 +1,42 @@
 # torch-kirigami
 
-**Structural dependency analysis and physical pruning for PyTorch.**
+[![CI](https://github.com/ZaberKo/torch-kirigami/actions/workflows/ci.yml/badge.svg)](https://github.com/ZaberKo/torch-kirigami/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/torch-kirigami)](https://pypi.org/project/torch-kirigami/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-torch-kirigami determines which tensor regions must change together when a channel, feature, or attention dimension is removed. It separates dependency analysis from pruning decisions and model mutation, so the same structural model supports manual pruning, automatic selection, sparse training, and custom operators.
+**Structured pruning and dependency analysis for PyTorch models.**
 
-The library requires **Python 3.10+ and PyTorch 2.6+**. PyTorch is its only runtime dependency.
+torch-kirigami helps you build smaller neural networks by physically removing
+channels, features, and attention heads together with their dependent parameters.
+It uses PyTorch FX to analyze model structure, then validates and applies pruning
+plans to the original `nn.Module`.
 
-## How it works
+Use it for automatic model pruning, custom pruning algorithms, or inspecting how
+a structural change propagates through a model.
 
-```mermaid
-flowchart LR
-    Model["Model"] --> Graph["Dependency graph"]
-    Graph --> Plan["Pruning plan"]
-    Plan --> Compact["Compact model"]
-```
+[Quick start](#quick-start) · [Documentation](docs/index.md) · [ImageNet examples](examples/workflows/README.md) · [Development](docs/development.md)
 
-- **Dependency analysis** captures a model with FX, describes tensor regions and operator relations, and computes the impact of a selection without changing the model.
-- **Pruning** discovers candidates, scores and selects them, validates an executable plan, and commits parameter and module-attribute changes.
-- **Sparse training components** provide scalar regularizers, explicit channel gates, parameter projections, cumulative budgets, and schedules. The caller owns the task loss, optimizer, and training loop.
-- **Measurement** reports parameter counts, supported multiply–accumulate operations, and inference latency, including `torch.compile` execution.
+## Features
 
-See the [architecture overview](docs/architecture.md) for the complete component diagram and dependency boundaries.
+- **Dependency-aware pruning:** propagate removals through connected operators
+  and coordinate the required tensor and module-attribute changes.
+- **Automatic and manual selection:** use magnitude or Taylor scores, supply
+  explicit removals, or implement custom metrics and strategies. Set channel
+  limits or a final whole-model parameter budget.
+- **Sparse training and iterative pruning:** compose regularizers, channel gates,
+  parameter operations, and cumulative budgets with your own training loop.
+- **Compact-model checkpoints:** save the pruned structure and weights, then
+  restore them using the original model definition.
+- **Custom operators:** extend analysis and pruning through explicit operator
+  rules, including fused attention blocks.
+- **Model measurement:** inspect parameter counts, supported MACs, and measured
+  inference latency, including compiled execution.
 
-## Install
+## Installation
 
-Install the published package:
+Requires **Python 3.10+** and **PyTorch 2.6+**. PyTorch is the only runtime dependency.
+
+Install from [PyPI](https://pypi.org/project/torch-kirigami/) with uv:
 
 ```bash
 uv venv .venv
@@ -32,21 +44,14 @@ source .venv/bin/activate
 uv pip install --torch-backend=auto torch-kirigami
 ```
 
-For development from the repository root:
+For an editable installation and development tools, see the
+[development guide](docs/development.md). ImageNet examples have additional
+dependencies listed in the [workflow guide](examples/workflows/README.md).
 
-```bash
-uv venv .venv
-source .venv/bin/activate
-uv pip install --torch-backend=auto -e .
-```
+## Quick start
 
-The [ImageNet workflow guide](examples/workflows/README.md) installs the additional dependencies needed by the pretrained-model examples.
-
-## One-shot automatic pruning
-
-Build the dependency graph, discover candidates, and call `prune()` to select and
-physically remove channels in one round. This example requires CUDA; set `device`
-to `"cpu"` for a CPU run. It needs no dataset or training loop.
+Prune a small network to a final parameter budget. This example uses the current
+accelerator; set `device = torch.device("cpu")` to run it on a CPU.
 
 ```python
 import torch
@@ -55,15 +60,16 @@ from torch import nn
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import Greedy, GroupMagnitude, ParameterBudget, Pruner
 
-device = "cuda"
+device = torch.accelerator.current_accelerator()
 model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 3)).to(device).eval()
 x = torch.randn(2, 4, device=device)
 
 graph = DependencyGraph.build(model, args=(x,))
 pruner = Pruner(model, graph=graph)
-space = pruner.discover_candidates()
+candidates = pruner.discover_candidates()
+
 model, result = pruner.prune(
-    space,
+    candidates,
     budget=ParameterBudget(max_params=51),
     strategy=Greedy(GroupMagnitude(p=2)),
 )
@@ -73,136 +79,74 @@ assert model(x).shape == (2, 3)
 print(result.plan.explain())
 ```
 
-`prune()` combines `plan()` and `apply()` and modifies the original model in place.
-External input/output dimensions are protected by default. Here the whole model
-shrinks from 67 to 51 parameters, removing two of eight hidden features.
-For another pruning round, rebuild the graph. Create a new optimizer if training
-afterward, because physical pruning replaces parameters.
+The hidden width shrinks from 8 to 6, reducing the model from 67 to 51 parameters.
+The first layer's weight rows and bias entries are removed together with the
+second layer's matching input columns. Model input and output dimensions remain
+unchanged.
 
-`Greedy` scores once. `DynamicGreedy` rescores after each accepted change using
-the selected joint impact; it costs more and does not run training or refresh
-gradients. Metrics and strategies have explicit extension methods for
-model-specific policies. See the [scoring API](docs/pruning-design.md#scoring-and-strategy-contracts).
+`prune()` selects and applies a plan in place. You can also inspect a plan before
+applying it, or specify exactly which positions to remove. The
+[getting-started tutorial](docs/getting-started.md) covers manual pruning,
+training after pruning, and checkpoint restoration.
 
-For a whole-model parameter reduction fraction, use
-`budget=ParameterBudget.from_ratio(model, pruning_ratio=0.05)`. This counts the
-initial parameters and converts the ratio to an absolute cap once. The standalone
-`torch_kirigami.measurement.count_parameters(model)` also exposes that count
-without tracing or executing the model.
+For another pruning round, rebuild the dependency graph. Create a new optimizer
+before continuing training, because physical pruning replaces parameters.
 
-For a pretrained ResNet one-shot command without fine-tuning, see the
-[workflow guide](examples/workflows/README.md#1-magnitude-or-taylor-pruning-and-fine-tuning).
+## Examples
 
-## Inspect a manual pruning plan
+Start with the small API examples:
 
-This small model illustrates the API. For accuracy experiments, use the pretrained ImageNet workflows below.
-
-```python
-import torch
-from torch import nn
-
-from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import Pruner
-
-model = nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 3))
-x = torch.randn(2, 4)
-
-# Capture structure and inspect the dependency closure without mutation.
-graph = DependencyGraph.build(model, args=(x,))
-selection = graph.parameter("0.weight").axis(0).select([1, 4])
-impact = graph.propagate(remove=[selection])
-print(graph.explain(impact))
-
-# Validate all physical edits before applying them to the original model.
-pruner = Pruner(model, graph=graph)
-plan = pruner.plan_remove([selection])
-print(plan.explain())
-model, result = pruner.apply(plan)
-
-assert model[0].out_features == 4
-assert model[2].in_features == 4
-assert model(x).shape == (2, 3)
-
-# Structure changed: rebuild analysis and bind a new optimizer.
-graph = DependencyGraph.build(model, args=(x,))
-optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
-```
-
-Removing two outputs of the first linear layer also removes their bias entries and the corresponding input columns of the second layer. Public input and output dimensions remain unchanged.
-
-For automatic selection, replace the explicit `plan_remove(...)` call with:
-
-```python
-from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
-
-pruner = Pruner(model, graph=graph)
-space = pruner.discover_candidates()
-plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=Greedy(Magnitude(p=2)))
-```
-
-Use a `Pruner` bound to the current graph. `ChannelRatio` converts a reduction
-fraction into upper bounds on final channel widths. `ChannelCount(max_channels,
-channel_axes)` supplies those bounds directly; `ParameterBudget(max_params=...)`
-bounds the final whole-model parameter count. Every budget must be met; an unmet target
-raises `PlanningError` before application. Both use the same dependency and
-execution checks. A resolved impact alone does not guarantee executability or
-numerical equivalence to the unpruned model.
-
-## Pretrained ImageNet workflows
-
-The [workflow guide](examples/workflows/README.md) provides eleven standalone scripts using torchvision's pretrained **ResNet-18/34/50**, **ViT-B/16/32**, or **ConvNeXt-Tiny**, with ImageNet training and validation kept separate. Basic and iterative pruning target every block's internal widths; the ViT head example adds independently prunable attention heads; Isomorphic uses broader graph-declared candidates; reconstruction methods discover structurally eligible chains. Sparse-training examples declare their BN/gate or regularization scopes. Model choices are method-specific: VBP demonstrates ViT or ConvNeXt MLPs; BN sparsity uses ResNets. The documented commands use full-data defaults with separate training and validation batches of 256, and enable compiled inference for latency measurement:
-
-| Workflow | Purpose |
+| Example | What it demonstrates |
 | --- | --- |
-| Basic pruning | Static/dynamic magnitude or Taylor selection; static FPGM filter-distance criterion |
-| Iterative pruning | Repeated selection toward a final absolute parameter limit |
-| BN sparsity | L1 regularization of ResNet batch-normalization scales |
-| Dependency-group sparsity | Group Lasso or increasing squared-L2 regularization |
-| Soft pruning | Repeated zeroing or gradual norm reduction before physical deletion |
-| Gate pruning | Train explicit channel scales, then prune using their magnitudes |
-| Stability-driven pruning | Monitor retained-channel selections while increasing regularization |
-| Variance-Based Pruning | Calibrate MLP activation variance, prune and compensate the consumer bias; optional fine-tuning |
-| Isomorphic Pruning | Calibrate Taylor gradients, rank within structural families and apply a directly supplied family deletion ratio |
-| OSSCAR | Sequential dense-teacher reconstruction, grouped quadratic deletion, local swaps and weight refitting |
-| ViT heads and FFN | Explicit attention conversion, whole-head and FFN candidates, static group magnitude, fixed residual width |
+| [Dependency analysis](examples/dependency.py) | Inspect the effects of a removal without modifying the model |
+| [Two pruning rounds](examples/pruning.py) | Automatic selection, training, and graph rebuilding |
+| [Custom operator](examples/custom_rule.py) | Declare structural relations for a custom module |
+| [Fused attention](examples/fused_attention.py) | Prune attention groups and restore a compact checkpoint |
 
-Each workflow reports validation accuracy before and after pruning, optional fine-tuning results, parameter counts, MACs, and latency. These are compact algorithm examples, not reproductions of published benchmark results. [Method selection and adaptations](docs/workflow-methods.md) explains the paper/repository comparisons and the implemented scope.
+The [pretrained ImageNet workflows](examples/workflows/README.md) provide complete
+pruning and fine-tuning examples for ResNet, ViT, and ConvNeXt models. They cover
+magnitude and Taylor pruning, FPGM, sparse training, iterative pruning, VBP,
+Isomorphic Pruning, OSSCAR, and ViT attention-head and FFN pruning. Each workflow
+reports validation accuracy, parameter counts, MACs, and latency.
+
+Model choices and pruning scopes vary by method. See
+[method selection and adaptations](docs/workflow-methods.md) for the implemented
+algorithms and their research references. These examples do not claim to
+reproduce published benchmark results.
 
 ## Documentation
 
-Start at the [documentation index](docs/index.md), or choose a path:
-
-| Goal | Read |
+| Topic | Guide |
 | --- | --- |
-| Understand component responsibilities and control flow | [Architecture overview](docs/architecture.md) |
-| Learn the public API step by step | [Getting started](docs/getting-started.md) |
-| Review graph construction, relations, and class contracts | [Dependency graph design](docs/dependency-graph-design.md) |
-| Understand candidate selection and physical execution | [Pruning design](docs/pruning-design.md) |
-| Save plans and restore compact models | [Persistence](docs/persistence.md) |
-| Assemble sparse training and iterative algorithms | [Sparse training](docs/sparse-training.md) |
-| Interpret complexity and latency measurements | [Measurement](docs/measurement.md) |
-| Check supported operators and limitations | [Operator coverage](docs/operator-coverage.md) |
-| Develop, test, or publish a release | [Development guide](docs/development.md) |
+| First pruning operation | [Getting started](docs/getting-started.md) |
+| Supported models and operators | [Model support](docs/model-support.md), [operator coverage](docs/operator-coverage.md) |
+| Budgets, scoring, and custom pruning policies | [Pruning](docs/pruning-design.md) |
+| Sparse training components | [Sparse training](docs/sparse-training.md) |
+| Saving and restoring compact models | [Persistence](docs/persistence.md) |
+| Parameters, MACs, and latency | [Measurement](docs/measurement.md) |
+| Development, testing, and PyPI releases | [Development guide](docs/development.md) |
 
-The executable [custom rule](examples/custom_rule.py) and [fused attention](examples/fused_attention.py) examples demonstrate operator extension.
+The [documentation index](docs/index.md) also links to the architecture and
+dependency-graph references.
 
-## Operating boundaries
+## Model support
 
-Capture uses FX symbolic tracing and shape propagation. Tensor-dependent Python branches, dynamic loops, unknown operators, and edits requiring an unsupported forward rewrite are reported rather than silently approximated. Supported behavior is specific to each operator and pruning axis; consult the coverage guide.
+Support depends on the model's operator forms and the dimensions being pruned.
+The graph is captured with PyTorch FX; tensor-dependent Python control flow and
+unsupported structural transformations are reported explicitly. Consult the
+[model support contract](docs/model-support.md) before adapting a new architecture.
 
-A graph is bound to the captured input metadata, structure, module modes, and relevant configuration. Rebuild it after physical pruning or incompatible model changes. Parameter replacement also requires a new optimizer; optimizer state is not migrated automatically.
+Pruning changes the model's computation. Evaluate the compact model on your task
+and fine-tune as needed; the library leaves the loss, optimizer, and training loop
+under your control.
 
-Graph construction isolates example inputs and registered buffers and restores supported RNG state. Model forwards must not mutate parameters or produce external side effects, and capture must not run concurrently with training on the same model.
+## Contributing
 
-## Development
+Bug reports, operator extensions, and pruning workflows are welcome. Include a
+minimal model and representative inputs when reporting an issue. Follow the
+[development guide](docs/development.md) for environment setup and the
+[testing guide](docs/testing.md) for regression tests and public API checks.
 
-```bash
-uv pip install --torch-backend=auto --group dev -e .
-python -m pytest
-ruff check .
-ruff format --check .
-```
+## License
 
-Use the activated repository environment. Install dependencies with `uv pip install` and invoke Python and developer tools directly to preserve separately installed workflow packages. The project does not pin a CPU-only PyTorch index. See [development and releases](docs/development.md) for the release process and [testing](docs/testing.md) for optional example dependencies, CUDA checks, and minimum-version validation.
-
-Licensed under the [MIT License](LICENSE).
+[MIT](LICENSE).

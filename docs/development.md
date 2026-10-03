@@ -38,25 +38,14 @@ result of the pushed commit on GitHub.
 
 ## Prepare a release
 
-The package version is `[project].version` in [pyproject.toml](../pyproject.toml).
-For every release after the first, change it to a new version, commit the change,
-push `main`, and wait for its CI run to pass. PyPI does not allow replacing an
-uploaded file with the same name and version.
-
-Before tagging, check that:
-
-1. The release changes are committed and pushed to `main`, and the latest
+1. Set `[project].version` in [pyproject.toml](../pyproject.toml) to an unpublished
+   version, such as `0.1.1` or `0.1.1.dev1`. Local commits can share a version;
+   [PyPI files cannot be overwritten](https://pypi.org/help/#file-name-reuse).
+2. Commit the release changes, push `main`, and wait for that commit's
    [CI run](https://github.com/ZaberKo/torch-kirigami/actions/workflows/ci.yml)
-   for that commit passed.
-2. `git status --short` has no output, and `main` points to the commit you want
-   to release.
-3. The version in `pyproject.toml` has not already been published on
-   [PyPI](https://pypi.org/project/torch-kirigami/).
+   to pass. Keep the working tree clean before tagging.
 
-Optionally build and inspect the distributions locally. Use a new temporary
-directory so older files in the ignored `dist/` directory are not checked by
-mistake. The GitHub workflow builds its own distributions from the tagged commit;
-it does not upload these local files.
+Optionally check the `uv_build` distributions locally in a fresh directory:
 
 ```bash
 uv pip install --python .venv/bin/python twine
