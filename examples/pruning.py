@@ -38,7 +38,7 @@ def main() -> None:
     graph = DependencyGraph.build(model, args=(x,))
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates()
-    plan = pruner.plan(space, budget=ChannelRatio(0.2), strategy=Greedy(WeightTaylor()))
+    plan = pruner.plan(space, budget=ChannelRatio(0.1), strategy=Greedy(WeightTaylor()))
     pruner.apply(plan)
     assert model[0].out_features == 5
     model(x).sum().backward()
