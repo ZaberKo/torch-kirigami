@@ -7,13 +7,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.pruning import StaticMetric
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
     ChannelCount,
     Greedy,
-    Magnitude,
     PlanningError,
     Pruner,
     PruningPlan,
@@ -440,6 +440,11 @@ def test_unknown_convolution_layout_excludes_only_affected_candidate(mode, execu
     x = torch.randn(2, 4, 4, 4)
     graph = DependencyGraph.build(model, args=(x,))
     bad, good = (graph.parameter(path).axis(0) for path in ("bad.weight", "good.0.weight"))
+
+    @StaticMetric
+    def rank_bad_first(context, candidates):
+        return [0.0 if candidate.key == "bad" else 1.0 for candidate in candidates]
+
     plan = Pruner(model, graph=graph, preserve_io=False).plan(
         CandidateSpace(
             candidates=[
@@ -455,7 +460,7 @@ def test_unknown_convolution_layout_excludes_only_affected_candidate(mode, execu
             ),
             (bad, good),
         ),
-        strategy=Greedy(Magnitude()),
+        strategy=Greedy(rank_bad_first),
     )
     assert set(plan.selected) == ({"good"} if mode == "view" else {"bad", "good"})
     if mode == "view":
