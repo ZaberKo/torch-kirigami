@@ -20,6 +20,11 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.urls]
+Repository = "https://github.com/ZaberKo/torch-kirigami"
+Documentation = "https://github.com/ZaberKo/torch-kirigami/blob/main/docs/index.md"
+Issues = "https://github.com/ZaberKo/torch-kirigami/issues"
+
 [dependency-groups]
 dev = [
     "numpy>=1.26",
@@ -36,11 +41,9 @@ include = [
     "/tests",
     "/examples",
     "/docs",
-    "/AGENTS.md",
     "/README.md",
     "/LICENSE",
     "/pyproject.toml",
-    "/uv.lock",
 ]
 
 [tool.pytest.ini_options]

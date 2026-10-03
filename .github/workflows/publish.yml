@@ -1,0 +1,80 @@
+name: Publish to PyPI
+
+on:
+  push:
+    tags:
+      - "v[0-9]*"
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            torch: "2.6.0"
+          - python: "3.12"
+            torch: "2.14.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.11"
+      - name: Test release commit
+        env:
+          TEST_PYTHON: ${{ matrix.python }}
+          TEST_TORCH: ${{ matrix.torch }}
+        run: |
+          uv venv .venv --python "$TEST_PYTHON"
+          uv pip install --python .venv/bin/python --torch-backend=cpu --group dev -e . "torch==$TEST_TORCH+cpu"
+          .venv/bin/python -m pytest
+      - name: Check formatting and examples
+        if: matrix.torch == '2.14.0'
+        run: |
+          .venv/bin/ruff check .
+          .venv/bin/ruff format --check .
+          .venv/bin/python examples/dependency.py
+          .venv/bin/python examples/custom_rule.py
+          .venv/bin/python examples/pruning.py
+          .venv/bin/python examples/fused_attention.py
+
+  build:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.11"
+      - name: Create build environment
+        run: uv venv .venv --python 3.12
+      - name: Match tag to package version
+        run: |
+          .venv/bin/python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["GITHUB_REF_NAME"] == f"v{version}"'
+      - name: Build and check distributions
+        run: |
+          uv pip install --python .venv/bin/python twine
+          uv build
+          .venv/bin/python -m twine check --strict dist/*.whl dist/*.tar.gz
+      - uses: actions/upload-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

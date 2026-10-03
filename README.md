@@ -24,7 +24,15 @@ See the [architecture overview](docs/architecture.md) for the complete component
 
 ## Install
 
-From the repository root:
+Install the published package:
+
+```bash
+uv venv .venv
+source .venv/bin/activate
+uv pip install --torch-backend=auto torch-kirigami
+```
+
+For development from the repository root:
 
 ```bash
 uv venv .venv
