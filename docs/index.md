@@ -15,7 +15,7 @@ torch-kirigami analyzes structural dependencies in PyTorch models and uses those
 | Compare workflow algorithms and their paper adaptations | [Workflow methods](workflow-methods.md) | [ImageNet workflows](../examples/workflows/README.md) |
 | Save plans or compact models | [Persistence](persistence.md) | [Pruning design](pruning-design.md) |
 | Measure the resulting model | [Measurement](measurement.md) | [Verification guide](testing-coverage.md) |
-| Contribute a change | [Development and testing](testing.md) | [Verification guide](testing-coverage.md) |
+| Develop or publish a release | [Development guide](development.md) | [Testing](testing.md), [Verification guide](testing-coverage.md) |
 
 ## Terms used throughout the documentation
 

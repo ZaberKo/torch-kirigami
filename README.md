@@ -182,7 +182,7 @@ Start at the [documentation index](docs/index.md), or choose a path:
 | Assemble sparse training and iterative algorithms | [Sparse training](docs/sparse-training.md) |
 | Interpret complexity and latency measurements | [Measurement](docs/measurement.md) |
 | Check supported operators and limitations | [Operator coverage](docs/operator-coverage.md) |
-| Run tests and contribute changes | [Testing and development](docs/testing.md) |
+| Develop, test, or publish a release | [Development guide](docs/development.md) |
 
 The executable [custom rule](examples/custom_rule.py) and [fused attention](examples/fused_attention.py) examples demonstrate operator extension.
 
@@ -203,6 +203,6 @@ ruff check .
 ruff format --check .
 ```
 
-Use the activated repository environment. Install dependencies with `uv pip install` and invoke Python and developer tools directly to preserve separately installed workflow packages. The project does not pin a CPU-only PyTorch index. See [testing and development](docs/testing.md) for optional example dependencies, CUDA checks, and minimum-version validation.
+Use the activated repository environment. Install dependencies with `uv pip install` and invoke Python and developer tools directly to preserve separately installed workflow packages. The project does not pin a CPU-only PyTorch index. See [development and releases](docs/development.md) for the release process and [testing](docs/testing.md) for optional example dependencies, CUDA checks, and minimum-version validation.
 
 Licensed under the [MIT License](LICENSE).
