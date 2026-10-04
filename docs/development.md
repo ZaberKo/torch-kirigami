@@ -1,6 +1,6 @@
 # Development and releases
 
-This guide covers the local development loop and publishing a release to PyPI.
+This guide covers local development and releases on PyPI and GitHub.
 For test selection, CUDA validation, and review expectations, see the
 [testing guide](testing.md).
 
@@ -84,7 +84,9 @@ for the account-side steps.
 
 The release workflow starts when a version tag is pushed. Its tag must equal
 `v` followed by `[project].version`; for example, version `0.1.0` uses
-`v0.1.0`. A GitHub Release page is optional for this workflow.
+`v0.1.0`. After the PyPI upload succeeds, the workflow creates a GitHub Release
+with generated release notes and attaches the same wheel and source archive.
+Development and pre-release versions are marked as GitHub pre-releases.
 
 From the repository root, after the release commit's CI passes:
 
@@ -106,14 +108,20 @@ a commit hash or editing the command for each release. Pushing it starts the
 release workflow and can publish the package to PyPI. Do not reuse a tag or
 package version for a different build.
 
-Watch [Publish to PyPI](https://github.com/ZaberKo/torch-kirigami/actions/workflows/publish.yml)
-until its `tests`, `build`, and `publish` jobs all pass. The build job checks that
-the tag matches the package version and validates the wheel and source archive.
+Watch [Publish to PyPI and GitHub](https://github.com/ZaberKo/torch-kirigami/actions/workflows/publish.yml)
+until its `tests`, `build`, `publish`, and `github-release` jobs all pass. The build
+job checks that the tag matches the package version and validates the wheel and
+source archive.
 The publish job uses PyPI's short-lived OIDC credentials; it does not need a
 password or API token. If it fails, inspect that job's log and the five Trusted
 Publisher fields before trying another release.
+
+If only `github-release` fails, rerun the failed job. It can resume a draft
+release without repeating the PyPI upload.
 
 After success, verify that the new version and both distribution files appear
 on the [PyPI project page](https://pypi.org/project/torch-kirigami/). For the
 first release, confirm that the publisher has moved from **Pending publishers**
 to the project's active publishing configuration.
+Also check the tag's [GitHub Release](https://github.com/ZaberKo/torch-kirigami/releases)
+and its two package assets.
