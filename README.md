@@ -110,7 +110,7 @@ Isomorphic Pruning, OSSCAR, and ViT attention-head and FFN pruning. Each workflo
 reports validation accuracy, parameter counts, MACs, and latency.
 
 Model choices and pruning scopes vary by method. See
-[method selection and adaptations](docs/workflow-methods.md) for the implemented
+[workflow methods and adaptations](examples/workflows/README.md#workflows) for the implemented
 algorithms and their research references. These examples do not claim to
 reproduce published benchmark results.
 
@@ -119,8 +119,8 @@ reproduce published benchmark results.
 | Topic | Guide |
 | --- | --- |
 | First pruning operation | [Getting started](docs/getting-started.md) |
-| Supported models and operators | [Model support](docs/model-support.md), [operator coverage](docs/operator-coverage.md) |
-| Budgets, scoring, and custom pruning policies | [Pruning](docs/pruning-design.md) |
+| Supported models and operators | [Model support](docs/model-support.md), [operator support](docs/operator-support.md) |
+| Budgets, scoring, and custom pruning policies | [Pruning](docs/pruning.md) |
 | Sparse training components | [Sparse training](docs/sparse-training.md) |
 | Saving and restoring compact models | [Persistence](docs/persistence.md) |
 | Parameters, MACs, and latency | [Measurement](docs/measurement.md) |
@@ -144,8 +144,8 @@ under your control.
 
 Bug reports, operator extensions, and pruning workflows are welcome. Include a
 minimal model and representative inputs when reporting an issue. Follow the
-[development guide](docs/development.md) for environment setup and the
-[testing guide](docs/testing.md) for regression tests and public API checks.
+[development guide](docs/development.md) for environment setup, regression tests,
+and public API checks.
 
 ## License
 

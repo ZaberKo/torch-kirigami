@@ -1,11 +1,12 @@
 """Measure model complexity and inference latency for workflow reports.
 
-``measure_model`` calls the public complexity and latency measurement APIs with
-the supplied example tensor and device options, then returns comparable input,
-device, compilation and warmup metadata alongside parameter/MAC counts and
-unsupported-operation diagnostics. These measurements describe the current
-model and run configuration; they do not estimate accuracy or guarantee a
-pruning speedup.
+`measure_model` calls the public complexity and latency measurement APIs.
+It uses the supplied example tensor and device options.
+The result includes parameter counts, MAC counts, and unsupported operations.
+It also records input, device, compilation, and warmup settings for comparison.
+
+The measurements describe the current model and run configuration.
+They do not estimate accuracy or guarantee faster inference after pruning.
 """
 
 from argparse import Namespace

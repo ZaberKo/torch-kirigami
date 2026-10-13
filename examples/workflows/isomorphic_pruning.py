@@ -1,25 +1,41 @@
-"""Prune within structurally similar dependency families using calibrated Taylor scores.
+"""Prune within structurally similar dependency families using Taylor scores.
 
-The workflow follows the family-wise comparison idea in [Isomorphic Pruning
-for Vision Models (ECCV 2024)](https://arxiv.org/abs/2407.04616). A
-``DependencyGraph`` and ``Pruner`` discover candidate domains. After candidate
-discovery, the workflow accumulates task gradients without updating weights.
-The custom strategy groups complete dependency impacts by typed structural
-signatures, evaluates the paper's Taylor score, and ranks scores only within
-each family. These signatures are a conservative ordered structural proxy, not
-a general graph-isomorphism solver. Taylor calibration accumulates cross-entropy
-gradients over 100 batches of 64 images by default without updating weights.
-The supplied ``family_pruning_ratio`` independently selects each family's
-lowest-ranked actions, with retained-width alignment and joint execution checks
-before applying the single plan; this common ratio is not searched against the
-parameter target and replaces the paper's architecture-specific family ratios.
-The example sums the displayed per-parameter L2 norms of removed weight-gradient
-regions. Each native multihead-attention candidate removes the same local
-dimension from every head, keeping head count fixed; it does not implement
-the paper's independent whole-head deletion. Candidate domains are discovered
-broadly, subject to proven interface protections and
-explicit unsupported-case exclusions. Optional task-only fine-tuning omits the
-paper's distilled recovery recipe.
+This workflow adopts comparisons within dependency families from ECCV 2024.
+Paper: *Isomorphic Pruning for Vision Models*.
+https://arxiv.org/abs/2407.04616
+
+`DependencyGraph` and `Pruner` discover graph-declared candidate domains.
+Interface protections and execution checks restrict this discovery.
+The custom strategy groups complete impacts by typed structural signatures.
+Each signature preserves structural order.
+These signatures provide conservative structural comparisons.
+They do not implement a general graph-isomorphism solver.
+
+The workflow uses these steps:
+
+1. Discover supported candidates. Accumulate task gradients.
+2. Score complete impacts with `PaperTaylor`.
+3. Rank scores within each structural family.
+4. Select each family's lowest-ranked actions using `family_pruning_ratio`.
+5. Complete retained-width alignment. Check joint execution.
+6. Apply the single plan. Optionally fine-tune with task loss only.
+7. Save the compact checkpoint. Load it. Check its outputs.
+
+Calibration defaults to 100 batches of 64 training images.
+It accumulates cross-entropy gradients without updating weights or BatchNorm
+statistics. `PaperTaylor` sums per-parameter L2 norms of removed
+`weight * gradient` regions, following the displayed paper equations.
+It excludes biases and buffers and counts shared regions once.
+
+The common family ratio replaces architecture-specific family ratios.
+Selection does not search for a whole-model parameter target.
+The initial parameter count supplies only a non-increase guard.
+Alignment can add removals beyond each family's unrounded quota.
+
+Each native multihead-attention candidate removes the same local dimension
+from every head. Head count stays unchanged while per-head width decreases.
+The example omits independent whole-head deletion and distilled recovery.
+Unsupported structures remain explicit exclusions.
 """
 
 import argparse

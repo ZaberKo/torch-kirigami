@@ -1,14 +1,30 @@
 # Plans, model checkpoints, and training state
 
-Persistence has three distinct purposes: replay a pruning decision, restore a final compact model, or resume an algorithm's training progress. Keeping them separate avoids requiring a graph or a pruning-history replay just to load a model.
+Plans apply a pruning decision. Model checkpoints restore saved model values. Training state restores the caller's progress.
+
+```mermaid
+flowchart LR
+    Plan["Plan"] -- apply --> Model["Compact model"]
+    Checkpoint["Model checkpoint"] -- restore --> Model
+    Model --> Training["Training"]
+    State["Training state"] -- resume --> Training
+    classDef state fill:#eef2f7,stroke:#64748b,color:#172033
+    classDef restored fill:#eaf5ee,stroke:#98bba3,color:#213f2c
+    class Plan,Checkpoint,State state
+    class Model,Training restored
+```
+
+Plan application uses the receiving model's current values. Checkpoint restoration uses the saved compact values. Neither artifact restores training progress. The caller restores training state separately, after creating an optimizer for the restored parameters.
 
 | Artifact | Contains | Does not contain |
 | --- | --- | --- |
-| `PruningPlan.to_dict()` | Decision, recipes, analysis summary, budgets, before/after structure | Weight values, model code, FX graph, scoring callbacks |
-| `save_checkpoint(model, path)` | Final registered state, compact structure, supported configuration and aliases | Original constructor code, pruning history, optimizer or algorithm progress |
-| Caller training checkpoint | Optimizer and application-defined recovery data | An automatic guarantee that all external data-loader or application state is captured |
+| `PruningPlan` | Original-coordinate decision, recipes, reports, and before/after structure. | Weights, model code, graph, or scoring callbacks. |
+| Model checkpoint | Final registered tensors, supported configuration, and aliases. | Constructor code, pruning history, optimizer, or training progress. |
+| Training checkpoint | State selected by the training application. | An automatic guarantee that external state is complete. |
 
-## Save and replay a static plan
+## Save and replay a plan
+
+A plan can be serialized as basic data and loaded without importing the model class.
 
 ```python
 import torch
@@ -24,98 +40,77 @@ def make_model():
 
 model = make_model()
 graph = DependencyGraph.build(model, args=(torch.randn(2, 8),))
-plan = Pruner(model, graph=graph).plan_remove((graph.parameter("0.weight").axis(0).select([1, 3]),))
+remove = graph.parameter("0.weight").axis(0).select([1, 3])
+plan = Pruner(model, graph=graph).plan_remove((remove,))
 torch.save(plan.to_dict(), "decision.pt")
 
-restored_plan = PruningPlan.from_dict(torch.load("decision.pt", weights_only=True))
+portable = torch.load("decision.pt", weights_only=True)
+restored_plan = PruningPlan.from_dict(portable)
 other_model = make_model()
 other_model, result = Pruner(other_model).apply(restored_plan)
 ```
 
-`to_dict()` produces basic data suitable for weights-only loading. `from_dict()` validates the envelope, record schema, and recipe consistency without importing a model class. Portable references identify registered paths and structural facts rather than live graph identities.
+The receiving model must match the plan's original structural preconditions, including supported configuration and guarded constants. Applying a nonempty plan to an already compact model normally fails those preconditions.
 
-A plan chooses original coordinates once. Replaying it uses the receiving model's current numerical weights; it does not restore the weights used for scoring or recompute importance. The receiving structure, supported configuration, and guarded constants must match the plan's preconditions. Applying the same nonempty plan twice to an already compact model normally fails those preconditions.
+A plan records coordinates, not the weights used for scoring. Replay uses the receiving model's current values. It does not recompute importance or restore the scoring weights. Use a model checkpoint when you need the saved compact values.
 
-Use a plan to audit or share a decision. Use a model checkpoint to reproduce the compact model's actual outputs.
-
-## Save and restore the final model
+## Save and restore a model checkpoint
 
 ```python
 from torch_kirigami.pruning import load_checkpoint, save_checkpoint
 
 save_checkpoint(other_model, "compact.pt")
 restored = load_checkpoint(make_model(), "compact.pt", map_location="cpu")
-assert restored[0].out_features == restored[2].in_features == 10
 ```
 
-`save_checkpoint(model, path)` accepts a pruned, restored, or ordinary module. `load_checkpoint(model, path, *, map_location=None)` changes and returns the supplied skeleton with the same module identity. It requires no input example, operator registry, dependency graph, or original pruning history.
+`save_checkpoint(model, path)` accepts an ordinary, pruned, or restored module. `load_checkpoint(model, path, map_location=None)` modifies and returns the supplied module. It needs no example input, graph, operator registry, or pruning history.
 
-The factory must reproduce the original module classes, hierarchy, alias relationships, registered slots, and constructor configuration. Loading reconstructs the saved final tensor sizes and library-managed structural attributes. A checkpoint cannot infer arbitrary missing model code or repair a different module hierarchy.
+The factory must create the original module classes and hierarchy. It must preserve module aliases, registered slots, and constructor configuration. Loading restores the final tensor shapes and library-managed structural attributes. It cannot create missing model code or repair a different module hierarchy.
 
-The checkpoint includes parameters, persistent buffers, and explicitly saved nonpersistent registered buffers. It preserves supported tensor layouts, parameter `requires_grad`, tensor sharing by object identity, module sharing, and saved module configuration, including training flags. `map_location` accepts `None`, a destination device (`str` or `torch.device`), or a source/destination device dictionary. These use PyTorch storage relocation. Per-storage callable mappings are rejected before reading the checkpoint.
+The checkpoint stores parameters, persistent buffers, and nonpersistent registered buffers. It preserves registered aliases, supported layouts, parameter `requires_grad`, module sharing, and saved module configuration, including training flags. `map_location` accepts no value, a destination device, or a source-to-destination device map. The loader does not support per-storage callable mappings.
 
-For a gated model, construct the skeleton with the same `ChannelGate` definitions and placements. The saved weight and mask are restored with their retained values and compact sizes; no assumption sets surviving scales back to one.
+The checkpoint restores the final model structure. It does not save the original structure or the sequence of pruning rounds.
+It does not store the example inputs used to capture a graph.
+It does not store ordinary tensor constants that the model keeps outside registered slots.
+Create those constants with compatible values and devices in the factory.
 
-### Load transaction
+The format stores raw registered tensor slots. It does not call `state_dict`, `load_state_dict`, or their module overrides. The loader does not support registered state-dict hooks. It checks ordinary tensor constants as structural preconditions, but it does not save their values. Register a constant as a buffer when the checkpoint must own it.
 
-```mermaid
-sequenceDiagram
-    participant Loader
-    participant Prepared
-    participant Model
-    Loader->>Loader: Validate payload
-    Loader->>Prepared: Allocate and load
-    Prepared-->>Loader: Validated state
-    Loader->>Model: Commit
-```
+## Extra state and transaction limits
 
-Registered state is validated and prepared before commit. Data-oriented extra-state setters run on isolated module shells; final configuration and references are checked before assigning the prepared state to the original model. Setters may update ordinary attributes, including a child's data, but must preserve every registered module and Tensor binding, tensor values/layouts, buffer persistence, and runtime hooks. Arbitrary external side effects from user callbacks are outside the transaction contract.
+Paired `get_extra_state` and `set_extra_state` methods can save ordinary application data. A shared module has one canonical entry. Its getter and setter run once. The getter must be read-only. Getter side effects are not rolled back.
 
-The transaction preserves registration categories: an ordinary cached parameter reference remains an ordinary attribute, and a parent-module reference does not become a registered child. It copies initialized Python slots as well as instance dictionaries. Final structural validation runs inside the rollback boundary.
+Extra state must be a bounded, acyclic tree of supported basic values, plain containers, and ordinary tensors accepted by weights-only loading. It cannot contain references or views into registered tensor storage. Save a basic representation or an independent tensor clone. Rebuild application objects in `set_extra_state`.
 
-The format stores raw registered tensor slots and loads them directly into the declared final shapes. It does **not** call `state_dict`, `load_state_dict`, `_save_to_state_dict`, or `_load_from_state_dict`, including third-party overrides. A module may define those methods without affecting this checkpoint: encoded names, constructor-dependent decoding, and old PyTorch state-dictionary metadata do not participate. BatchNorm/InstanceNorm and torchvision modules work through the same registered parameter/buffer handling, without a codec allowlist or delayed resize hooks.
+Load checks the payload and prepares tensor replacements before it changes the destination model. Extra-state setters run on isolated module shells. They may restore ordinary data. They must preserve registered module and tensor bindings, tensor values and layouts, buffer persistence, and runtime hooks. Load checks these conditions before commit. Arbitrary external side effects from callbacks remain outside the transaction guarantee.
 
-Paired `get_extra_state`/`set_extra_state` methods are handled separately for ordinary application data. A shared module has one canonical extra-state entry, and its getter/setter runs once. Saving calls the getter on the source module: it must be read-only, and arbitrary getter side effects are not isolated or rolled back. A module using extra state cannot also register a Tensor named `_extra_state`, since the two payload keys would collide. All prepared registered tensors already contain their saved values when setters run. Module graph reconstruction, registered Tensor replacement, and mutation of registered values or runtime hooks in a setter are rejected before commit. To persist an application-specific encoding or missing external state, use an application-owned format.
+The loader disables inference mode while it reads and copies state. Restored parameters can participate in ordinary autograd.
+Device mapping applies to serialized storages, including tensors in extra state. It does not move constants created by the factory.
 
-Extra state must be a bounded, acyclic tree of supported basic values, plain containers (including `OrderedDict`), and ordinary tensors suitable for `weights_only=True`. Hidden tensor/container attributes and tensor hooks are rejected in the payload. References or views into registered tensor storage, and arbitrary objects such as `datetime.date`, are rejected during save before writing the destination. Save a basic representation or an independent tensor clone instead, and reconstruct application objects explicitly in `set_extra_state`.
+Loading rejects target tensors with gradient hooks because replacement would discard those hooks. Register hooks on the restored tensors.
+Pruning rejects hooks only on tensors it replaces.
+The API does not support custom parameter or tensor subclasses.
+It does not support distinct tensor objects that share storage.
 
-Tensor gradient hooks are runtime bindings, not serialized model state. Loading rejects target parameters/buffers with gradient or post-accumulate hooks before replacing them; remove and register those hooks on the restored parameters explicitly. Physical pruning applies this restriction only to tensors it replaces, including hooks added after planning.
+It does not support registered state-dict hooks or layouts whose non-overlap it cannot prove.
+The API supports aliases of the same ordinary Parameter or buffer.
 
-Explicitly unsupported cases also include registered `state_dict` hooks, custom parameter/tensor subclasses, distinct tensor objects sharing storage, and layouts whose non-overlap cannot be proved. Registered aliases of the same ordinary parameter or buffer are different from distinct storage-sharing tensors and are supported.
+Payload errors and factory mismatches raise `ExecutionError` before the loader commits ordinary registered state.
+Checkpoint changes should include success and failure coverage for aliases, buffers, and saved values.
+Round-trip checks should compare outputs and sharing relationships, not only tensor shapes.
 
 ## Training state is caller-owned
 
-A final model checkpoint is sufficient for model restoration, but not for resuming sparse training. Save at a well-defined boundary outside an in-flight backward graph, and record all state the algorithm needs:
+A model checkpoint restores a model. It does not resume sparse training. Save training state at a clear boundary outside an in-flight backward graph. Include the state required by the algorithm:
 
-- Optimizer state and any AMP gradient-scaler state.
+- Optimizer state and AMP gradient-scaler state.
 - Epoch, optimizer-step, and schedule-position counters.
 - `CumulativeChannelBudget.state_dict()` and `SelectionWindow.state_dict()` when used.
-- Algorithm-specific selections, original group norms, decay progress, and stage flags.
-- RNG states and any application-specific sampler/data-loader progress needed for reproducibility.
+- Algorithm selections, original group norms, decay progress, and stage flags.
+- RNG state and needed sampler or data-loader progress.
 
-Pure schedules such as `Linear` or `Polynomial` do not maintain a step counter. Save their configuration and the caller's position. A parameter operation does not manage momentum, so an algorithm's checkpoint must retain whichever optimizer policy it actually implements.
+Pure schedules such as `Linear` and `Polynomial` do not track a step. Save their configuration and the caller's position. A parameter operation does not manage momentum. Save the optimizer policy used by the algorithm.
 
-```mermaid
-flowchart LR
-    Model["Restored model"] --> Bindings["Fresh bindings"]
-    Model --> Optimizer["New optimizer"]
-    Bindings --> Resume["Resume"]
-    Optimizer --> Resume
-    State["Training state"] --> Resume
-```
+Do not use live `AxisRef`, `ParameterGroup`, or `GateBinding` objects instead of rebinding. Graph references belong to one graph snapshot. After restore or pruning, create fresh bindings and check saved component state against them. `CumulativeChannelBudget.load_state_dict(state, space)` checks the candidate domain and structure before changing state. `SelectionWindow.load_state_dict(state)` checks window compatibility and stored similarities. Reset the window when coordinates change.
 
-Do not serialize live `AxisRef`, `ParameterGroup`, or `GateBinding` objects as a replacement for rebinding. Graph references belong to one dependency snapshot. After restoring or physically pruning a model, construct fresh bindings and validate saved component state against them.
-
-`CumulativeChannelBudget.load_state_dict(state, space)` checks domains and structure before replacing state. `SelectionWindow.load_state_dict(state)` checks window compatibility and stored similarities; reset it when the coordinate universe changes. Optimizer state loading is valid only when the recreated optimizer and compact parameter layout match the saved state.
-
-The workflow scripts save the compact model and a separate training-state file. Their saved state demonstrates the separation of responsibilities; it is not a general-purpose resume CLI or a distributed-training checkpoint framework.
-
-## Failure and review contracts
-
-Structural compatibility errors are reported before committing ordinary registered state. Review persistence changes with both successful round trips and failure-state tests: malformed recipes, mismatched factories, inconsistent aliases, unexpected payload values, extra-state failures, and nonpersistent buffers all affect correctness.
-
-Round-trip comparisons should verify final outputs and sharing relationships in addition to tensor shapes. Plan replay and checkpoint restoration have different numerical expectations: replay adopts the target model's current weights, whereas a model checkpoint restores the saved values.
-
-Checkpoint loading disables inference mode throughout deserialization, shell preparation and copying of ordinary/extra Tensor state. Restored parameters and copied constants can therefore participate in ordinary autograd even if the caller loads inside inference mode. Actual module extra-state keys are distinguished from ordinary tensor names such as `weight_extra_state`.
-
-Ordinary Tensor constants have structural compatibility guards but their numerical values are not implicitly checkpointed. Construct them consistently in the skeleton, or register/save them explicitly. Device remapping validates these constant premises using one actual destination per source device, including extra-state-only storages. Constructor-owned constants must have compatible devices; loading does not relocate tensors that were never serialized. Extra-state setters may retain loaded tensors or reconstruct independent tensors on the mapped device. No per-storage callback or hidden payload-origin tracking is needed.
+Plan replay and checkpoint restoration have different value expectations. Plan replay uses the receiving model's current weights. Checkpoint loading restores saved values. Review both success and failure paths when changing these contracts.

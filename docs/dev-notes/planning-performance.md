@@ -1,8 +1,8 @@
 # 剪枝规划性能优化
 
-> 开发笔记，非正式 API 或支持契约。历史基准对应各节记录的实现阶段；当前契约见[剪枝设计](../pruning-design.md)与[依赖图设计](../dependency-graph-design.md)。
+> 开发笔记，非正式 API 或支持契约。历史基准对应各节记录的实现阶段；当前契约见[剪枝设计](../pruning.md)与[依赖图设计](../dependency-graph.md)。
 
-> 后续更新：Isomorphic 示例已改为 Taylor 校准和直接给定类别删除比例；下文提到的外层比例搜索属于历史实现，当前流程见[方法说明](../workflow-methods.md#isomorphic-pruning-implementation)。
+> 后续更新：Isomorphic 示例已改为 Taylor 校准和直接给定类别删除比例；下文提到的外层比例搜索属于历史实现，当前流程见[方法说明](../../examples/workflows/README.md#isomorphic-pruning)。
 
 本文说明依赖分析与 `Pruner.plan()` 的性能改造。历史性能优化不改变剪枝执行契约；当前预算已统一为剪枝后剩余量上限，评分接口为 `Metric.score(context, candidates, accepted_impact=...)`，其中 `accepted_impact` 表示已经接受的删除请求及其完整依赖影响，模型尚未执行物理剪枝。选择接口为 `Strategy.select(context)`。下文历史基准使用当时的静态评分，不能直接用于比较新评分或动态策略的耗时。
 
@@ -52,7 +52,7 @@
 - `GroupMagnitude` 以候选逻辑轴的全部剩余单位置能量均值归一化，分母不随 batch、候选子集或块包装变化。缓存限于同一规划上下文、最多 32 项轴记录，只保留归一化常量和每个位置的标量分数；参数版本变化时重算。单通道候选复用已经算出的精确分数，多通道组合仍做联合评分，不假定可加。
 - 动态策略会增加依赖查询和评分次数。`max_trials` 限制联合搜索尝试，不限制评分耗时；动态评分也不重新运行模型或更新梯度。
 
-原 workflow 的单层输出权重评分已删除，普通 magnitude 工作流统一使用库内 `GroupMagnitude`。以下历史基准保留用于说明原数据结构优化效果，不代表新评分得出相同计划或具有相同耗时。完整接口见[规划设计](../pruning-design.md#scoring-and-strategy-contracts)。
+原 workflow 的单层输出权重评分已删除，普通 magnitude 工作流统一使用库内 `GroupMagnitude`。以下历史基准保留用于说明原数据结构优化效果，不代表新评分得出相同计划或具有相同耗时。完整接口见[规划设计](../pruning.md#scoring-and-strategy-contracts)。
 
 ### 独立轴上的精确评分复用
 
@@ -114,7 +114,7 @@
 
 性能回归优先统计实际读取、遍历或计算次数，避免用受系统负载影响的秒数作为单元测试阈值。真实模型基准使用相同模型、输入、评分和预算，对比完整静态计划及应用后的张量；不能只凭运行加快或 forward 成功判断优化正确。
 
-更多测试入口见[验证指南](../testing-coverage.md)。基准中的规划耗时不包含 ImageNet 评估、微调或 `torch.compile` 延迟测试。
+更多测试入口见[验证指南](../verification.md)。基准中的规划耗时不包含 ImageNet 评估、微调或 `torch.compile` 延迟测试。
 
 本轮最终验证：当前环境执行 `pytest --require-cuda`，3,803 项通过，1 项跳过（跨设备测试的 CPU 参数分支）；Python 3.10 / PyTorch 2.6 CPU 相关套件 1,085 项通过，685 项 CUDA 参数用例跳过。Ruff、四个基础示例及打包检查通过。
 

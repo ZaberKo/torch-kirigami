@@ -1,127 +1,195 @@
 # Development and releases
 
-This guide covers local development and releases on PyPI and GitHub.
-For test selection, CUDA validation, and review expectations, see the
-[testing guide](testing.md).
+Use Python 3.10 or newer and the flat `torch_kirigami/` package layout.
+Keep dependency analysis, pruning policy, and model changes separate.
+Use public PyTorch APIs.
 
-## Set up a development environment
+## Environment
 
-Run these commands from the repository root with Python 3.10 or newer available:
+Run these commands from the repository root:
 
 ```bash
 uv venv .venv
 uv pip install --python .venv/bin/python --torch-backend=auto --group dev -e .
 ```
 
-The editable install uses the PyTorch backend appropriate for the host. Add
-optional ImageNet workflow dependencies as described in the
-[workflow guide](../examples/workflows/README.md). Use `uv pip install` for
-additional packages; environment synchronization can remove separately
-installed workflow dependencies.
+The installation selects the PyTorch backend for the host.
+Install additional packages with `uv pip install`.
+Do not use `uv sync` or `uv run` in this environment.
+Those commands can remove separately installed workflow dependencies.
 
-Run the checks relevant to a change before committing it:
+Install optional ImageNet packages when a change affects the workflow examples:
+
+```bash
+uv pip install --python .venv/bin/python --torch-backend=auto \
+  -r examples/workflows/requirements-examples.txt
+```
+
+## Code and API contracts
+
+Use the project's Ruff configuration and Google-style docstrings.
+Document accepted inputs, ownership, return values, model changes, and failure conditions.
+Explain non-obvious reasoning in comments.
+
+Keep imports explicit and acyclic.
+Define shared records below the modules that consume them.
+Do not conceal reverse dependencies with local imports or `TYPE_CHECKING`.
+Keep library code independent of workflow examples.
+
+Update APIs and saved schemas directly during initial development.
+Do not add schema versions or migration layers.
+Preserve unrelated changes and reference repositories under `tmp/`.
+
+## Tests and checks
+
+Run Ruff and the relevant pytest suites directly:
 
 ```bash
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
+.venv/bin/pytest tests/core tests/graph tests/architecture
+.venv/bin/pytest tests/pruning tests/persistence tests/integration/test_lifecycle.py
+```
+
+Choose suites for the changed contract:
+
+- Region and relation changes need independent coordinate references.
+- Capture and operator changes need public graph and pruning tests.
+- Budget and selection changes need target, constraint, and failure cases.
+- Model changes and checkpoints need round trips and failure-state checks.
+- Sparse training needs independent loss and gradient references.
+- Workflow changes need public planning, application, training, and restoration checks.
+
+A direct operator test does not establish execution or checkpoint support.
+Cross-layer changes must use public APIs on a model.
+Include a valid alternative when testing an unsupported request.
+Check model state after a rejected operation.
+
+Run the full suite after changes to shared capture, planning, or execution contracts:
+
+```bash
 .venv/bin/pytest
+```
+
+The small examples check API composition without ImageNet data:
+
+```bash
 .venv/bin/python examples/dependency.py
 .venv/bin/python examples/custom_rule.py
 .venv/bin/python examples/pruning.py
 .venv/bin/python examples/fused_attention.py
 ```
 
-The [CI workflow](../.github/workflows/ci.yml) checks Python 3.10 with PyTorch
-2.6 and Python 3.12 with PyTorch 2.14 on CPU. It also runs Ruff, the four small
-examples, and a package build. A local test run does not replace checking the
-result of the pushed commit on GitHub.
+For numerical tests, derive the reference independently of the implementation.
+A masked dense model is a valid reference only when masking preserves the relevant calculation.
+Removing normalization or attention dimensions can change that calculation.
+Use an independent compact reference for those cases.
 
-## Prepare a release
+### CPU, CUDA, and CI
 
-1. Set `[project].version` in [pyproject.toml](../pyproject.toml) to an unpublished
-   version, such as `0.1.1` or `0.1.1.dev1`. Local commits can share a version;
-   [PyPI files cannot be overwritten](https://pypi.org/help/#file-name-reuse).
-2. Commit the release changes, push `main`, and wait for that commit's
-   [CI run](https://github.com/ZaberKo/torch-kirigami/actions/workflows/ci.yml)
-   to pass. Keep the working tree clean before tagging.
+The device fixture runs participating tests on CPU and CUDA.
+CUDA tests skip when a CUDA build or accessible GPU is unavailable.
+A skipped CUDA case is not GPU validation.
 
-Optionally check the `uv_build` distributions locally in a fresh directory:
+Require CUDA in a configured GPU environment:
+
+```bash
+.venv/bin/pytest --require-cuda
+```
+
+The regular CI tests Python 3.10 with PyTorch 2.6 and Python 3.12 with PyTorch 2.14 on CPU.
+The development pair also runs Ruff, the small examples, and a package build.
+Manual compatibility jobs cover intermediate PyTorch releases.
+A separate manual workflow runs tests on a configured GPU runner.
+
+Workflow definitions describe intended checks.
+Report remote success only after checking the run for the relevant commit.
+Optional workflow dependencies are not present in every CI environment.
+The [verification guide](verification.md) explains the limits of each evidence level.
+
+### Documentation checks
+
+Keep formal documentation in English.
+Use short sentences and consistent API terms.
+Retain conditions and uncertainty when simplifying a contract.
+
+Check documentation changes with these steps:
+
+1. Check local links and heading anchors.
+2. Execute complete Python examples.
+3. State assumptions for partial code examples.
+4. Render retained diagrams.
+5. Check diagrams visually for layout and meaning.
+
+Do not turn test counts or successful capture into broad support claims.
+Distinguish synthetic tests, pretrained execution checks, and task accuracy measurements.
+
+## Releases
+
+Pushing a tag beginning with `v` starts the release workflow.
+The tag must match the package version in `pyproject.toml`.
+For example, version `0.1.3` requires tag `v0.1.3`.
+Use a new version for each uploaded distribution.
+PyPI does not permit replacing a distribution with the same filename.
+
+Before creating a release tag:
+
+1. Set the package version to an unpublished value.
+2. Commit the release changes.
+3. Push the release commit.
+4. Check that its CI run passes.
+5. Check that the working tree is clean.
+
+Optionally check distributions in a new temporary directory:
 
 ```bash
 uv pip install --python .venv/bin/python twine
-DIST_DIR="$(mktemp -d)"
-uv build --out-dir "$DIST_DIR"
-.venv/bin/python -m twine check --strict "$DIST_DIR"/*.whl "$DIST_DIR"/*.tar.gz
+KIRIGAMI_DIST_DIR="$(mktemp -d)"
+uv build --out-dir "$KIRIGAMI_DIST_DIR"
+.venv/bin/python -m twine check --strict "$KIRIGAMI_DIST_DIR"/*.whl "$KIRIGAMI_DIST_DIR"/*.tar.gz
 ```
 
-## Configure Trusted Publishing once
+### Trusted Publishing
 
-The [publish workflow](../.github/workflows/publish.yml) uses GitHub's `pypi`
-environment and PyPI Trusted Publishing. On GitHub, create the `pypi`
-environment under **Settings → Environments**. A deployment tag rule of `v*`
-allows version tags used by this workflow. No PyPI API token or environment
-secret is needed.
+The workflow uses the GitHub environment `pypi` and PyPI Trusted Publishing.
+Configure a GitHub publisher for these values:
 
-For the first release, sign in to PyPI and open **Publishing → Add a new pending
-publisher**. Select GitHub Actions and use these values:
+- Project: `torch-kirigami`.
+- Owner and repository: `ZaberKo/torch-kirigami`.
+- Workflow: `publish.yml`.
+- Environment: `pypi`.
 
-| Field | Value |
-| --- | --- |
-| PyPI project name | `torch-kirigami` |
-| GitHub owner | `ZaberKo` |
-| Repository | `torch-kirigami` |
-| Workflow filename | `publish.yml` |
-| Environment | `pypi` |
+For the first upload, create a pending publisher in PyPI.
+The upload creates the project and activates the publisher.
+Later releases use that publisher.
+Follow the [PyPI setup instructions](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) for account configuration.
 
-After selecting **Add**, confirm the entry appears under **Pending publishers**.
-It does not yet create a PyPI project or reserve the name. The first successful
-upload creates the project and converts the entry to an active publisher.
-Subsequent releases use the same publisher. See the
-[PyPI first-project guide](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/)
-for the account-side steps.
+### Tag and check the release
 
-## Tag and publish
-
-The release workflow starts when a version tag is pushed. Its tag must equal
-`v` followed by `[project].version`; for example, version `0.1.0` uses
-`v0.1.0`. After the PyPI upload succeeds, the workflow creates a GitHub Release
-with generated release notes and attaches the same wheel and source archive.
-Development and pre-release versions are marked as GitHub pre-releases.
-
-From the repository root, after the release commit's CI passes:
+Run these commands after the release commit passes CI:
 
 ```bash
 git switch main
 git pull --ff-only
 git status --short
 git log -1 --oneline
-VERSION="$(uv version --short)"
-echo "Tagging v${VERSION}"
-git tag -a "v${VERSION}" -m "Release v${VERSION}"
-git push origin "v${VERSION}"
 ```
 
-Check the status and commit shown by the two inspection commands before
-creating the tag. `uv version --short` reads the current version from
-`pyproject.toml`, so the tag points to the current `main` commit without copying
-a commit hash or editing the command for each release. Pushing it starts the
-release workflow and can publish the package to PyPI. Do not reuse a tag or
-package version for a different build.
+Check the displayed status and commit before creating the tag:
 
-Watch [Publish to PyPI and GitHub](https://github.com/ZaberKo/torch-kirigami/actions/workflows/publish.yml)
-until its `tests`, `build`, `publish`, and `github-release` jobs all pass. The build
-job checks that the tag matches the package version and validates the wheel and
-source archive.
-The publish job uses PyPI's short-lived OIDC credentials; it does not need a
-password or API token. If it fails, inspect that job's log and the five Trusted
-Publisher fields before trying another release.
+```bash
+KIRIGAMI_RELEASE_VERSION="$(uv version --short)"
+git tag -a "v${KIRIGAMI_RELEASE_VERSION}" -m "Release v${KIRIGAMI_RELEASE_VERSION}"
+git push origin "v${KIRIGAMI_RELEASE_VERSION}"
+```
 
-If only `github-release` fails, rerun the failed job. It can resume a draft
-release without repeating the PyPI upload.
+Pushing the tag starts the release workflow.
+It runs tests, checks the version, builds distributions, and uploads them to PyPI.
+It then creates a GitHub Release with the same distributions.
+Development and prerelease versions become GitHub prereleases.
 
-After success, verify that the new version and both distribution files appear
-on the [PyPI project page](https://pypi.org/project/torch-kirigami/). For the
-first release, confirm that the publisher has moved from **Pending publishers**
-to the project's active publishing configuration.
-Also check the tag's [GitHub Release](https://github.com/ZaberKo/torch-kirigami/releases)
-and its two package assets.
+Check the workflow result, the PyPI version, and the GitHub Release assets.
+If only the GitHub Release job fails, rerun that job.
+The job can resume a draft without repeating the PyPI upload.
+
+The [workflow guide](../examples/workflows/README.md) covers data and pretrained experiments.

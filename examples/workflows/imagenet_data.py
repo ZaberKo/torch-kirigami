@@ -1,12 +1,16 @@
-"""Provide shared ImageNet input and evaluation infrastructure for workflows.
+"""Provide shared ImageNet data loading and accuracy evaluation for workflows.
 
-``load_images`` opens local ImageNet Parquet shards through Hugging Face
-Datasets, prepares reusable Arrow-backed map-style datasets, verifies class
-indices against torchvision weights, and applies the weights' preprocessing
-inside DataLoader workers. It does not download dataset shards. ``evaluate``
-reports sample-weighted loss, top-1 and top-5 accuracy while restoring the
-model's prior train/eval flags. Algorithm-specific sampling, training and
-pruning remain in each workflow entry.
+`load_images` uses these steps:
+
+1. Open local ImageNet Parquet shards through Hugging Face Datasets.
+2. Prepare reusable datasets with Arrow storage and indexed access.
+3. Check class indices against the selected torchvision weights.
+4. Apply those weights' preprocessing inside DataLoader workers.
+
+The loader does not download dataset shards.
+`evaluate` reports sample-weighted loss and top-1 and top-5 accuracy.
+It restores the model's previous train/eval flags.
+Each workflow entry owns its algorithm-specific sampling, training, and pruning.
 """
 
 from collections.abc import Callable, Iterable, Sequence

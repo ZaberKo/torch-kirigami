@@ -1,26 +1,31 @@
-"""Alternate block-internal structural pruning and optional ImageNet recovery.
+"""Alternate internal channel pruning and optional ImageNet recovery training.
 
-This baseline uses ``DependencyGraph.build`` and
-``Pruner.discover_candidates`` to find internal widths in every ResNet
-``BasicBlock.conv1``, ``Bottleneck.conv1/conv2`` and ViT
-``EncoderBlock.mlp.0``. Each round uses ``GroupMagnitude(p=2)`` with
-``Greedy`` and a ``ParameterBudget`` interpolated from the initial model size
-to the requested final cap. ``Pruner.apply`` physically changes the model;
-before another round, the workflow rebuilds the graph and candidate space for
-the compact structure. Optional task-loss fine-tuning follows each round, then
-the final compact checkpoint is saved and restored for verification. This is a
-repeated-pruning baseline rather than a reproduction of a single research
-paper. Dependency-aware structural pruning is the background of [DepGraph:
-Towards Any Structural Pruning (CVPR
-2023)](https://openaccess.thecvf.com/content/CVPR2023/html/Fang_DepGraph_Towards_Any_Structural_Pruning_CVPR_2023_paper.html).
-The shared mechanism is propagating a channel removal to all dependent tensor
-regions before physically deleting them. This workflow uses the library's
-mean-normalized ``GroupMagnitude`` and linearly interpolated parameter caps;
-it does not implement DepGraph's importance-dependent exponential shrinkage
-during sparse training or its post-training Top-N normalization. Repeated
-task-only recovery here is a baseline schedule, not that paper's sparse-learning
-procedure. Stem, residual interfaces, attention widths and classifier dimensions
-are outside this workflow's candidate scope.
+This baseline uses dependency-aware removal of coupled tensor coordinates.
+Background paper: *DepGraph: Towards Any Structural Pruning* (CVPR 2023).
+https://openaccess.thecvf.com/content/CVPR2023/html/Fang_DepGraph_Towards_Any_Structural_Pruning_CVPR_2023_paper.html
+
+`DependencyGraph.build` and `Pruner.discover_candidates` identify internal widths
+in every ResNet `BasicBlock.conv1`, Bottleneck `conv1` and `conv2`, or ViT
+`EncoderBlock.mlp.0`. Stem, residual, attention, and classifier dimensions
+remain unchanged.
+
+Each round uses these steps:
+
+1. Set a parameter cap by linear interpolation from the initial count.
+2. Rank candidates with mean-normalized `GroupMagnitude(p=2)` and `Greedy`.
+3. Apply the feasible plan with `Pruner.apply`.
+4. Optionally fine-tune the compact model with task loss only.
+5. Rebuild the graph and candidate space if another round remains.
+
+The final cap defines the requested reduction from the initial model.
+Later rounds do not repeat that ratio against the shrinking parameter count.
+The workflow saves the final compact checkpoint and checks its restored outputs.
+Earlier rounds remain applied if a later round fails.
+
+This schedule implements a repeated-pruning baseline.
+It omits DepGraph's importance-dependent exponential shrinkage during sparse
+training and its post-training Top-N normalization.
+Repeated task-only recovery replaces that paper's sparse-learning procedure.
 """
 
 import argparse

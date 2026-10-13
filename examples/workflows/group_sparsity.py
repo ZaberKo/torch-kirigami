@@ -1,39 +1,49 @@
 """Train dependency-group sparsity before budgeted structural pruning.
 
-Candidates are output channels of supported ResNet-block `conv1` layers or
-ViT-block `mlp.0` layers. Dependency groups contain the linked parameters
-that must change together when a candidate channel is removed. `GroupLasso`
-and `GroupSquaredL2` are defined in `torch_kirigami.sparsity`.
+Candidates cover supported ResNet block `conv1` outputs or ViT `mlp.0` outputs.
+Each dependency group contains parameters linked to one candidate's removal.
+`torch_kirigami.sparsity` supplies `GroupLasso` and `GroupSquaredL2`.
 
-**Group Lasso ([Learning Structured Sparsity in Deep Neural Networks,
-NeurIPS 2016](https://proceedings.neurips.cc/paper/2016/hash/41bfd20a38bb1b0bec75acf0845530a7-Abstract.html)).**
-The paper adds sums of group L2 norms to the
-task loss; for convolutional channels it regularizes input-channel slices
-across filters and combines this with filter-wise regularization. The `lasso`
-mode likewise adds `weight * sum_g ||W_g||_2`, with one group per discovered
-dependency candidate, throughout sparse training. Its candidate scope is the
-listed block outputs, rather than the paper's joint filter/channel, filter
-shape, depth, and other structure choices.
+Group Lasso source: *Learning Structured Sparsity in Deep Neural Networks*
+(NeurIPS 2016).
+https://proceedings.neurips.cc/paper/2016/hash/41bfd20a38bb1b0bec75acf0845530a7-Abstract.html
 
-**Growing regularization ([Neural Pruning via Growing Regularization,
-ICLR 2021](https://arxiv.org/abs/2012.09243)).** GReg-1 starts from a pretrained
-network, chooses filters by L1 norm, and raises a per-filter L2 penalty on
-the chosen filters at intervals until a ceiling before pruning and fine-tuning.
+The paper adds group L2 norms to task loss.
+For convolutional channels, it regularizes input-channel slices across filters
+and combines them with filter-wise regularization.
+Here, `lasso` mode adds `weight * sum_g ||W_g||_2` throughout sparse training.
+Each discovered dependency candidate defines one group.
+This scope omits joint filter/channel, filter-shape, depth, and other structure
+choices from the paper.
+
+Growing regularization source: *Neural Pruning via Growing Regularization*
+(ICLR 2021).
+https://arxiv.org/abs/2012.09243
+
+GReg-1 starts from a pretrained network and selects filters by L1 norm.
+It raises per-filter L2 penalties at intervals until a ceiling.
+Pruning and fine-tuning follow that stage.
+
 GReg-2 first raises a uniform L2 penalty to reveal curvature-related magnitude
-differences, then uses L1 scoring and opposite-signed penalties for kept and
-pruned filters before its final prune and fine-tune. In `squared` mode, this
-example instead replans a fixed parameter-budget subset with
-`Greedy(GroupMagnitude(p=2))` at optimizer-step intervals, then applies
-`weight * 1/2 sum_g ||W_g||_2^2` only to that subset. The single multiplier
-rises from zero to the configured value over the whole sparse-training run,
-linearly or by cosine interpolation; reselection does not reset the ramp.
-It uses neither GReg-1's L1 filter choice and per-filter penalty ceiling nor
-GReg-2's uniform all-weight scoring phase and differentiated kept/pruned
-penalties, and does not implement either complete pruning protocol.
+differences. It then uses L1 scoring and opposite-signed penalties for retained
+and pruned filters. Final pruning and fine-tuning follow.
 
-After sparse training, the final budgeted plan is physically applied. Optional
-task-only fine-tuning uses a fresh optimizer, and the compact checkpoint is
-saved and restored for an output check.
+Here, `squared` mode uses a different regularization procedure:
+
+1. Select a subset under the parameter budget with `Greedy(GroupMagnitude(p=2))`.
+2. Add `weight * 1/2 sum_g ||W_g||_2^2` only for the selected groups.
+3. Reselect groups at configured optimizer-step intervals.
+
+One multiplier rises from zero to the configured value over the complete run.
+The ramp uses linear or cosine interpolation.
+Reselection does not restart it.
+This mode omits GReg-1's L1 choice and per-filter penalty ceiling.
+It also omits GReg-2's uniform scoring phase and separate retained/pruned
+penalties. It does not reproduce either complete pruning protocol.
+
+After sparse training, the workflow applies the final budgeted structural plan.
+Optional fine-tuning uses task loss only and a fresh optimizer.
+The workflow saves the compact checkpoint and checks its restored outputs.
 """
 
 import argparse

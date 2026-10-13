@@ -1,23 +1,29 @@
 """Run an ImageNet baseline that prunes ViT heads and FFN hidden channels.
 
-The workflow adapts torchvision's ViT attention to explicit scaled-dot-product
-attention while keeping the embedding width and per-head feature width fixed.
-It loads pretrained weights and held-out ImageNet data, evaluates the baseline,
-captures a :class:`DependencyGraph`, combines complete-head and FFN candidates,
-and uses ``Pruner.plan`` with ``ParameterBudget`` and ``Greedy(GroupMagnitude)``
-before applying the plan. Optional fine-tuning and structural checkpoint
-save/load follow pruning; measurements and validation accuracy are reported at
-each stage. This is an explicit magnitude baseline, not an implementation of a
-research paper's ViT head-pruning method. Support is limited to the adapted
-torchvision ViT-B/16 and ViT-B/32 layouts and declared operator rules.
+This example implements a magnitude baseline without claiming a paper method.
+The adapter exposes torchvision ViT attention through scaled-dot-product
+attention. It preserves embedding width and per-head feature width.
+Support covers the adapted ViT-B/16 and ViT-B/32 layouts and declared operators.
 
-Each head candidate removes its complete Q/K/V projection rows, corresponding
-biases and output-projection columns together; FFN candidates remove hidden
-neurons. Static ranking uses normalized affected-weight energy and a shared
-parameter cap, with no separate head/FFN quotas. The example provides no
-activation or gradient calibration, sensitivity search, learned head gates or
-teacher distillation. These are the bounds of this magnitude baseline, rather
-than missing stages of a claimed paper implementation.
+The workflow uses these steps:
+
+1. Load pretrained weights. Load ImageNet data. Evaluate the baseline.
+2. Capture a `DependencyGraph`. Combine complete-head and FFN candidates.
+3. Plan with `ParameterBudget` and static `Greedy(GroupMagnitude)`.
+4. Apply the structural plan. Evaluate the compact model.
+5. Optionally fine-tune. Evaluate the result.
+6. Save the compact checkpoint. Load it. Check its outputs.
+
+Each head candidate removes complete Q/K/V rows, matching biases, and
+output-projection columns together.
+FFN candidates remove hidden neurons and matching consumer columns.
+Static ranking uses normalized affected-weight energy under one parameter cap.
+It does not impose separate head and FFN quotas.
+Each recorded stage includes measurements and validation accuracy.
+
+The example omits activation or gradient calibration, sensitivity search,
+learned head gates, and teacher distillation.
+These choices define the scope of this magnitude baseline.
 """
 
 import argparse

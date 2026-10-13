@@ -1,22 +1,23 @@
 # Getting started
 
-This walkthrough demonstrates the public analysis, planning and execution APIs with a small network. The network is an API teaching example; meaningful accuracy comparisons use the [pretrained ImageNet workflows](../examples/workflows/README.md).
+This guide shows how to inspect, plan, apply, train, and save a small PyTorch model. Use the [ImageNet workflows](../examples/workflows/README.md) for accuracy comparisons.
 
-## Install from the repository
+## Install
 
-Python 3.10 or newer and PyTorch 2.6 or newer are required. From the repository root:
+Use Python 3.10 or newer and PyTorch 2.6 or newer. Run these commands from the repository root:
 
 ```bash
 uv venv .venv
 source .venv/bin/activate
 uv pip install --torch-backend=auto -e .
+uv pip install --group dev
 ```
 
-Install test and lint tools with `uv pip install --group dev`. Use the activated environment's `python`, `pytest`, and `ruff` directly. The installation command selects PyTorch for the host; the project keeps the portable runtime dependency `torch>=2.6` and does not pin a CPU-only index.
+The project keeps `torch>=2.6` as its portable runtime dependency. The install command selects the PyTorch backend for your host.
 
-The Python blocks below form one script when run in order.
+## Inspect and prune a model
 
-## 1. Define the model and capture its structure
+The Python blocks in this section form one script. Build the graph after you set the model mode and choose representative inputs.
 
 ```python
 import torch
@@ -36,17 +37,9 @@ inputs = torch.randn(2, 4)
 graph = DependencyGraph.build(model, args=(inputs,))
 ```
 
-Choose the model's mode before building the graph. Use example inputs with the shape, device, dtype and argument structure you intend to analyze.
+The hidden width is six. Rows of the first weight tensor represent hidden features. Columns of the last weight tensor consume those features.
 
-This model has a hidden width of six. The output rows of the first weight tensor correspond to its six hidden features; the input columns of the last weight tensor consume those features.
-
-```mermaid
-flowchart LR
-    First["Linear: 4 → 6"] --> Activation["ReLU"]
-    Activation --> Last["Linear: 6 → 3"]
-```
-
-## 2. Inspect a removal without modifying the model
+Inspect a removal in the graph's original coordinates. This step does not change the model.
 
 ```python
 hidden_axis = graph.parameter("0.weight").axis(0)
@@ -60,11 +53,9 @@ assert set(impact.selection(consumer).fully_selected_indices(1)) == {1, 4}
 assert model[0].out_features == 6
 ```
 
-The request is expressed in the original coordinates of this graph. The result includes the first layer's bias and the last layer's dependent columns. No parameters have been removed.
+The impact includes the first layer's bias and the last layer's matching input columns. `impact.complete` reports whether the graph knows the full influence. A complete impact does not prove that a physical rewrite is valid.
 
-Use `impact.diagnostics` and `impact.requirements` to investigate unresolved requests. `impact.complete` reports whether the influence range is known; `impact.status` also reflects constraint validity. Neither is a promise that a physical rewrite is executable.
-
-## 3. Plan and apply the change
+Plan the exact request, then apply its static recipes to the original module.
 
 ```python
 pruner = Pruner(model, graph=graph)
@@ -78,11 +69,13 @@ assert model[2].in_features == 4
 assert model(inputs).shape == (2, 3)
 ```
 
-Planning protects external input and output axes by default. It validates the joint removal and the physical tensor and attribute edits. Applying the plan replaces affected tensors on the original module hierarchy.
+Planning checks the joint request, structural constraints, and execution requirements. Application prepares replacement tensors before it changes bindings. The module keeps its identity, but each replaced parameter is a new object.
 
-The old graph, axis references and parameter groups must not be used for another pruning round. Rebuild them from the compact model.
+Rebuild the graph and graph-bound groups after a structural change. Recreate the optimizer because it still points to replaced parameters.
 
-## 4. Continue ordinary training
+## Train and save the compact model
+
+This batch shows that the compact model supports ordinary autograd. It is not a fine-tuning recipe.
 
 ```python
 model.train()
@@ -93,28 +86,33 @@ optimizer.zero_grad()
 loss = nn.functional.cross_entropy(model(inputs), targets)
 loss.backward()
 optimizer.step()
-```
 
-This single batch demonstrates optimizer rebuilding and a valid backward pass; it is not a fine-tuning recipe. The library does not implement your task loss or migrate optimizer state. Real workflows evaluate the pretrained baseline, the freshly pruned model and any fine-tuned result on the same held-out data.
-
-## 5. Save and restore the compact model
-
-```python
 model.eval()
 save_checkpoint(model, "compact.pt")
 restored = load_checkpoint(make_model(), "compact.pt", map_location="cpu")
 torch.testing.assert_close(restored(inputs), model(inputs))
 ```
 
-The checkpoint includes final structural information and values. The supplied original model definition provides the Python module code. You do not need to rebuild a graph or replay earlier pruning rounds to restore the final structure.
+The checkpoint restores final tensor sizes and values into a compatible model skeleton. It does not contain model code, pruning history, or optimizer state. See [persistence](persistence.md) for the checkpoint contract.
 
-## Let a policy choose the channels
+## Let a policy choose channels
 
-This is an independent example using a fresh model:
+This is an independent example. It uses a fresh model and graph.
 
 ```python
+import torch
+from torch import nn
+
+from torch_kirigami import DependencyGraph
+from torch_kirigami.pruning import Pruner
 from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
 
+
+def make_model():
+    return nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 3)).eval()
+
+
+inputs = torch.randn(2, 4)
 automatic_model = make_model()
 automatic_graph = DependencyGraph.build(automatic_model, args=(inputs,))
 automatic_pruner = Pruner(automatic_model, graph=automatic_graph)
@@ -122,38 +120,26 @@ space = automatic_pruner.discover_candidates()
 automatic_plan = automatic_pruner.plan(
     space,
     strategy=Greedy(Magnitude(p=2)),
-    budget=ChannelRatio(0.34),
+    budget=ChannelRatio(0.25),
 )
-print(automatic_plan.explain())
 automatic_pruner.apply(automatic_plan)
 assert automatic_model[0].out_features == 4
 ```
 
-The explicit `discover_candidates()` call discovers entry axes declared by operator rules throughout the captured graph. The resulting space is passed unchanged to planning. **The Linear rule declares its output-feature axis, not its input-feature axis.** In this example, the first Linear supplies six hidden-feature candidates; the last Linear's three output features are protected as the model output. ReLU supplies dependency relations, but no independent candidates.
+Candidate discovery uses channel axes declared by operator rules. The Linear rule declares output features. It does not declare input features as default candidates. A hidden-feature candidate removes the matching producer row, bias entry, and consumer column through dependency propagation.
 
-Selecting a hidden feature removes the first Linear's corresponding weight row and bias entry and, through dependency propagation, the second Linear's corresponding weight column. These linked changes do not require separate candidates at both ends. Default discovery does not enumerate every possible entry axis; custom candidates or manual requests can select other supported entries. See [default candidate discovery](pruning-design.md#default-candidate-entry-axes).
+`Magnitude` scores the union of affected parameter regions. `ChannelRatio` caps final channel widths. It does not cap parameter count, MACs, or latency. The ratio `0.25` gives a final-width cap of `floor(6 * (1 - 0.25))`, which is four. The dependency closure and structural constraints must produce a valid plan within that cap.
 
-`Magnitude` scores the union of affected parameter regions. `ChannelRatio` measures logical channel deletions, not parameter count, MACs or latency. The default strategy can return less pruning than requested when constraints prevent reaching the target.
+Every automatic plan must meet its final-size target. If the search cannot meet the target, planning raises `PlanningError` and does not return a partial plan. A trial limit does not prove that the target is impossible.
 
-For a cap on the final whole-model parameter count, pass
-`budget=ParameterBudget(max_params=...)` after importing `ParameterBudget` from
-`torch_kirigami.pruning`. It counts all unique Parameters, including fixed and
-frozen tensors, and stops once an executable selection meets the cap. Unlike a
-channel removal allowance, an unmet parameter target raises `PlanningError`
-before applying changes. `plan.selection_report` then uses `ParameterReport`
-with exact before/after counts instead of channel-count fields.
+For a whole-model parameter cap, use `ParameterBudget(max_params=...)`. It counts all unique registered Parameters, including frozen and protected tensors. It excludes buffers. An unmet parameter target also raises `PlanningError`.
 
-For caller-provided task gradients, use `WeightTaylor`; for custom candidates, domains and strategies, read [Pruning design](pruning-design.md).
+## Diagnose failures
 
-## Diagnose the common failure modes
-
-| Symptom | Meaning | Next step |
+| Error or result | Meaning | Next step |
 | --- | --- | --- |
-| `CaptureError` | FX tracing or isolated metadata execution failed | Inspect forward control flow and use representative inputs |
-| Unsupported diagnostic | No sufficient rule covers the affected operation or selection | Inspect the named operation and [operator support](operator-coverage.md) |
-| `StaleGraphError` | Tracked structure, mode, configuration or constants changed | Rebuild the graph and all live bindings |
-| `PlanningError` | The joint selection or physical representation is not valid | Read the exception and graph.explain(impact); change the request or extend the rule |
-| `ExecutionError` | Execution preconditions or state validation failed | Verify model compatibility and inspect the reported binding or recipe |
-| Final-size target not reached | Protected domains, unsupported execution or bounded search blocked sufficient reduction | Planning raises without mutation; inspect the measured remaining sizes and exclusions |
-
-The [architecture overview](architecture.md) explains why these phases are separate. The [dependency graph reference](dependency-graph-design.md) documents the objects used to inspect each phase.
+| `CaptureError` | FX tracing or isolated metadata execution failed. | Check forward control flow and example inputs. |
+| Unsupported diagnostic | The rules do not fully describe an affected operation. | Read the operator support reference. |
+| `StaleGraphError` | Tracked model structure, mode, configuration, or constants changed. | Rebuild the graph and graph-bound objects. |
+| `PlanningError` | The request lacks a verified executable recipe or misses its target. | Read the diagnostic and change the request or operator rule. |
+| `ExecutionError` | Apply or load rejected a precondition or state change. | Check model compatibility and the reported binding. |

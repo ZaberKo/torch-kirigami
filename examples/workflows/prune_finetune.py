@@ -1,23 +1,36 @@
-"""Evaluate, structurally prune and optionally fine-tune an ImageNet model.
+"""Evaluate, structurally prune, and optionally fine-tune an ImageNet model.
 
-The workflow captures a ``DependencyGraph``, discovers block-internal channel
-candidates with ``Pruner.discover_candidates``, selects a feasible request under
-``ParameterBudget``, applies the resulting plan, and saves a restorable compact
-checkpoint. The scope is every ResNet ``BasicBlock.conv1``, ResNet
-``Bottleneck.conv1/conv2`` and torchvision ViT ``EncoderBlock.mlp.0``; residual,
-stem, attention and classifier interfaces remain intact. Magnitude and Taylor
-metrics can use static or dynamic greedy selection. The optional
-``geometric_median`` metric is the FPGM criterion from [Filter Pruning via
-Geometric Median for Deep Convolutional Neural Networks Acceleration (CVPR
-2019)](https://openaccess.thecvf.com/content_CVPR_2019/html/He_Filter_Pruning_via_Geometric_Median_for_Deep_Convolutional_Neural_Networks_Acceleration_CVPR_2019_paper.html):
-it ranks same-layer signed Conv/Linear output filters by summed pairwise
-Euclidean distance, a filter-space proxy for closeness to the geometric median,
-and requires static selection. This extends the criterion to Linear filters
-and uses global parameter budgeting followed by one-shot physical deletion.
-It omits per-epoch filter reselection and zeroing during training, where zeroed
-filters remain trainable and can regrow before final physical removal.
-ImageNet evaluation brackets pruning and optional task-only fine-tuning, while
-the checkpoint round-trip checks structural persistence.
+Candidates cover every ResNet `BasicBlock.conv1`, Bottleneck `conv1` and `conv2`,
+or torchvision ViT `EncoderBlock.mlp.0`.
+Stem, residual, attention, and classifier interfaces remain unchanged.
+
+The workflow uses these steps:
+
+1. Evaluate the pretrained model on ImageNet validation data.
+2. Capture a `DependencyGraph`. Discover internal channel candidates.
+3. Select a feasible request under `ParameterBudget` with `Pruner.plan`.
+4. Apply the structural plan. Evaluate the compact model.
+5. Optionally fine-tune with task loss only. Evaluate the result.
+6. Save the compact checkpoint. Load it. Check its outputs.
+
+Magnitude and Taylor metrics support static or dynamic greedy selection.
+Dynamic selection updates scores after accepted removals.
+It does not collect new activations or gradients.
+
+The optional `geometric_median` metric adopts the FPGM criterion from CVPR 2019.
+Paper: *Filter Pruning via Geometric Median for Deep Convolutional Neural
+Networks Acceleration*.
+https://openaccess.thecvf.com/content_CVPR_2019/html/He_Filter_Pruning_via_Geometric_Median_for_Deep_Convolutional_Neural_Networks_Acceleration_CVPR_2019_paper.html
+
+The criterion flattens each Conv or Linear output filter into a signed vector.
+Each score sums Euclidean distances to all filters in the same layer.
+A low score indicates closeness to other filters under this criterion.
+This metric requires static selection.
+
+The example extends FPGM to Linear filters and uses global parameter budgeting.
+It performs one physical pruning stage.
+It omits the paper's per-epoch filter reselection and zeroing during training.
+That paper keeps zeroed filters trainable so they can regrow before final removal.
 """
 
 import argparse

@@ -1,135 +1,86 @@
 # Complexity and latency measurement
 
-`torch_kirigami.measurement` measures an eager PyTorch model independently of dependency analysis and pruning policy. It reports parameter elements, matrix/convolution multiply-accumulates (MACs), and inference latency on CPU or CUDA. Latency can use `torch.compile`.
+`torch_kirigami.measurement` measures an eager PyTorch model on CPU or CUDA. It reports registered parameter elements, multiply-accumulates (MACs), native counter FLOPs, and inference latency. It does not require a dependency graph and does not select a pruning policy.
 
 ## Basic use
 
-For parameter counts alone, use `count_parameters(model)` from
-`torch_kirigami.measurement`. It requires no sample input or forward execution
-and returns the sum of unique registered Parameter elements. Frozen and unused
-parameters count; buffers do not. Aliases of one Parameter count once, while
-distinct Parameters sharing storage count separately. It does not transfer data
-between devices. Complexity measurement and `ParameterBudget.from_ratio()` use
-the same counter. Zero weights and pruning masks do not reduce this count;
-physical tensor sizes determine the number of parameters.
+`count_parameters(model)` needs no input and does not execute the model. It counts unique registered `Parameter` objects, including frozen and unused parameters. It excludes buffers. Distinct `Parameter` objects count separately even when they share storage. Zero weights and masks do not reduce the count. Physical tensor sizes determine parameter count.
 
-For MACs and latency, pass the original eager module to
-`calculate_model_complexity()` and `measure_module_latency()`, with its parameters
-and buffers already on the selected device. `compile=True` requests compilation
-inside the latency function.
+For MACs and latency, pass the eager model and an example input:
 
 ```python
 import torch
 from torch import nn
 
-from torch_kirigami.measurement import (
-    calculate_model_complexity,
-    measure_module_latency,
-)
+from torch_kirigami.measurement import calculate_model_complexity, measure_module_latency
 
 model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4)).eval()
 x = torch.randn(2, 8)
-complexity = calculate_model_complexity(model, (x,))
-latency_ms = measure_module_latency(model, (x,), compile=True, warmup=5, repetitions=20)
-print(f"#Params: {complexity.params}")
-print(f"#MACs: {complexity.macs}")
-print(f"Unsupported operations: {complexity.unsupported_ops}")
-print(f"Recorded FLOPs (registered formulas only): {complexity.flops}")
+result = calculate_model_complexity(model, (x,))
+latency_ms = measure_module_latency(model, (x,), warmup=5, repetitions=20)
+print(result.params, result.macs, result.flops, result.unsupported_ops)
 print(f"Batch latency: {latency_ms:.3f} ms")
 ```
 
-Both functions accept a single input or a tuple/list of positional arguments, plus `input_kwargs` for keyword arguments. Nested tensor containers are supported. Inputs are isolated jointly and moved to the chosen device while retaining repeated tensor and container identity across positional and keyword arguments. This preserves identity-sensitive paths such as `MultiheadAttention(x, x, x)`. Distinct storage-sharing views remain supported on the selected device; automatic cross-device transfer of those views is rejected because moving each tensor separately would break their relationship. Move their shared base and recreate the views on the target device before measurement. A list intended as one model argument must itself be wrapped in an outer positional-argument tuple.
+Both measurement functions accept one input or positional arguments as a tuple or list. Use `input_kwargs` for keyword arguments. They accept nested tensor containers. They preserve repeated input and container identities across positional and keyword arguments. Wrap a list in an outer positional-argument tuple when the model expects one list argument.
 
-When `device` is omitted, the device is inferred from registered model tensors, falling back to CPU for a tensor-free model. All model parameters and buffers must already be on that one device. The functions do not move the model for the caller.
+When the caller omits `device`, measurement uses the device of the first registered model tensor. A model with no tensors uses CPU. Move all parameters and buffers to the selected device before measurement. Measurement does not move the model. The API supports CPU and CUDA only.
 
-## Two independent execution paths
+Measurement isolates inputs from model execution and preserves repeated input identity. It supports storage-sharing views that already use the selected device. It rejects cross-device transfer of separate views because transfer would break their storage relationship. Move the shared base and recreate its views on the target device first.
 
-```mermaid
-flowchart LR
-    Model["Model"] --> Count["MAC counter"]
-    Count --> Complexity["Complexity"]
-    Model --> Prepare["Compile / warm up"]
-    Prepare --> Time["Time inference"]
-    Time --> Latency["Latency"]
-```
+## Parameter, MAC, and FLOP definitions
 
-Counting and timing are separate forwards. Instrumentation and the math attention backend used for counting do not affect the timed path. The measurement functions do not require a dependency graph and do not select a pruning budget.
+`calculate_model_complexity()` returns a `ModelComplexity` record.
 
-## Parameter and MAC definitions
-
-`calculate_model_complexity(target, input_args, device=None, input_kwargs=None)` returns the immutable `ModelComplexity` record:
-
-| Field | Meaning |
+| Field | Definition |
 | --- | --- |
-| `params: int` | Number of elements in unique registered parameters, including frozen parameters; buffers are excluded |
-| `macs: int` | MACs for the entire supplied input batch and executed path |
-| `flops: int` | Native counter total for registered FLOP formulas, including non-MAC formulas; not a complete model FLOP count |
-| `unsupported_ops: tuple[str, ...]` | Observed operations whose MAC coverage could not be verified; excludes known non-MAC operations |
+| `params` | Elements in unique registered Parameter objects, including frozen parameters |
+| `macs` | Dense matrix and convolution MACs for the supplied batch and executed path |
+| `flops` | Native counter total for registered formulas. It is not a complete model FLOP count. |
+| `unsupported_ops` | Observed operations whose MAC coverage could not be verified |
 
-One MAC is one multiply-accumulate, equivalent to two FLOPs in the counting convention. Matrix products and convolutions contribute, including the matrix products in attention. Bias addition, activation, normalization, and other elementwise work are excluded. Parameter sharing is deduplicated by `Parameter` identity, not by comparing numerical values.
+One MAC counts as two FLOPs in the convention used here. Matrix products and convolutions count, including the matrix products in attention. Bias additions, normalization, activations, pooling, and other elementwise work do not count. Zero weights, masks, causal attention masks, and kernel fusion do not reduce the dense theoretical count.
 
-`flops` retains the native counter's total without converting units. Additional registered non-MAC formulas contribute to `flops` but not `macs`. Operations without a formula or counted decomposition contribute nothing to `flops`; for example, standard activation and normalization work is generally absent from the native counter. `unsupported_ops` describes MAC coverage only: an empty tuple does not establish FLOP completeness. Consequently, `flops` may equal `2 * macs` for common models, but that equality is not an API invariant.
+The counter can include formulas for operations beyond matrix products and convolutions. Those formulas can contribute to `flops` without contributing to `macs`. The implementation converts only audited matrix and convolution formulas into MACs. It does not divide the unrestricted FLOP total by two. Therefore `flops` can equal `2 * macs` for common models, but this equality is not guaranteed.
 
-The implementation sums audited matrix and convolution entries from PyTorch's native `FlopCounterMode`, converting each from FLOPs to MACs. It does not divide the counter's unrestricted total by two: formulas registered for other operations need not represent multiply-accumulates. A formula on an explicitly excluded operation cannot increase MACs; an unverified formula on a computational operation remains unsupported. Replacing an audited PyTorch formula is outside the contract; malformed negative, odd or non-integer counts are rejected, but this check cannot verify an arbitrary replacement formula.
+`unsupported_ops` describes MAC coverage only. A nonempty tuple means that complete MAC coverage could not be established. It does not prove that each listed operation omitted MACs. An empty tuple does not prove complete FLOP coverage. Known operations with no MAC work, such as ReLU and pooling, do not cause this warning.
 
-Counts describe dense theoretical work, not hardware instructions. Matrix multiplication contributes `M * N * K` per batch item. Ordinary convolution contributes output elements times kernel volume times input channels per group; transposed convolution uses the input spatial positions. Attention contributes the `QKᵀ` and `AV` matrix products. Zero weights, causal masks and kernel fusion do not reduce these counts. Pooling, activation, normalization and bias work are excluded; twice the MAC count is not a complete model FLOP count.
-
-Executed operations are profiled to identify missing coverage. The SDPA math backend is selected temporarily so fused attention does not silently bypass matrix-operation counting. Counting uses `no_grad` outside inference mode.
-
-A nonempty `unsupported_ops` means MAC completeness could not be established, not that every listed operation necessarily contains omitted MACs. Known excluded operations such as ReLU and pooling do not cause this warning. Coverage describes the observed execution path; it cannot establish the cost of arbitrary opaque Python or native code. Pass an eager module, not a previously compiled wrapper.
+Coverage describes the observed execution path. It cannot establish the cost of opaque Python or native code that did not expose countable operations. Pass an eager module, not a compiled wrapper. Counting uses a math attention backend so fused attention does not hide its matrix work. Timing uses the normal attention backend.
 
 ## Latency definition
 
-```python
-latency_ms = measure_module_latency(
-    model,
-    (x,),
-    device="cpu",
-    repetitions=20,
-    warmup=5,
-    compile=True,
-    compile_kwargs={"mode": "default"},
-)
-```
+`measure_module_latency()` returns the median duration of one forward for the entire supplied batch, in milliseconds. `repetitions` must be a positive integer. `warmup` must be a nonnegative integer.
 
-`measure_module_latency` returns the median duration of one forward for the entire supplied batch, in milliseconds. `repetitions` must be positive and `warmup` nonnegative.
-
-| Device | Timing mechanism |
+| Device | Timing method |
 | --- | --- |
-| CPU | `time.perf_counter()` around each uninstrumented forward |
-| CUDA | Preinitialized events on the selected device's current stream, with synchronization before and after measurement |
+| CPU | `time.perf_counter()` around each forward |
+| CUDA | Events on the selected device's current stream, with synchronization before and after measurement |
 
-Input transfer, state isolation, compilation, the initial compiled invocation, and warmup are outside the timed region. Timing uses inference mode and the normal attention backend. It measures model execution, not data loading or end-to-end application latency.
+Input transfer, state isolation, compilation, the first compiled call, and warmup are outside the timed region. Compilation requires `compile=True`. `compile_kwargs` passes options such as `backend` and `mode` to `torch.compile`. Compilation errors propagate. Each call creates a wrapper for the supplied model. Measure the compact eager model again after pruning.
 
-`compile_kwargs` forwards native options such as `backend` and `mode` to `torch.compile`; it requires `compile=True`. Compilation errors propagate instead of silently switching execution mode. A callable wrapper retains module call semantics without permanently adding compilation bookkeeping to the original model. Each measurement call creates its own wrapper, while PyTorch manages any underlying compiler caches.
-
-After physical pruning, call measurement again with the compact eager model. A previously compiled callable is not the artifact to compare against the newly changed structure.
-
-## State preservation and boundaries
-
-Both functions restore per-module training flags, complete registered buffer tables and values (including `None`, added/deleted entries, and persistence flags), isolated input state, and torch RNG state on success and failure. Latency also restores the garbage-collector enabled state. Existing supported isolation contracts apply; incompatible storage aliasing can be rejected.
-
-Forward execution must not modify parameter values. Arbitrary Python side effects are outside the isolation contract, and the same model must not be concurrently trained or mutated during measurement. Only CPU and CUDA devices are supported.
-
-## Interpreting before/after results
-
-Use identical input shapes, batch size, dtype, device, thread count, compilation options, warmup, and repetitions for the baseline and compact model. MACs and latency are batch-level quantities; report batch size alongside them. Lower parameter count or theoretical MACs does not guarantee lower latency because kernel choices, shape alignment, launch overhead, and hardware utilization also change.
-
-The [workflow examples](../examples/workflows/README.md) print and save parameter counts, MACs, unsupported operations, latency, and measurement settings alongside validation accuracy. Each workflow supplies a batch=1 example to `measure_model()`, which passes it unchanged to both measurement APIs. Saved `input_shape` describes the input for both MACs and latency. `--val_batch_size` controls only the accuracy loader batch; `--train_batch_size` controls training separately. Both measurement APIs operate on the entire example supplied by their caller. Inspect unsupported operations before interpreting MAC reduction.
-
-From `examples/workflows`, after installing its requirements and downloading the required data:
-
-```bash
-python prune_finetune.py --model resnet18 --device cuda --compile_latency \
-  --finetune_epochs 0
-python gate_pruning.py --model resnet18 --device cuda --compile_latency \
-  --sparse_epochs 1 --finetune_epochs 0
+```mermaid
+flowchart LR
+    prepare["Prepare"] --> warmup["Warm up"] --> timed["Timed repeats"] --> restore["Restore"]
+    classDef outside fill:#edf3fd,stroke:#97afd0,color:#20364d
+    classDef timed fill:#eaf5ee,stroke:#98bba3,color:#213f2c
+    class prepare,warmup,restore outside
+    class timed timed
 ```
 
-These commands also perform the workflow's task-specific evaluation or training; they are not isolated benchmark-only commands. `--compile_latency` compiles only the latency-measurement forward, excluding compilation time from the timing; training and accuracy evaluation remain eager. See the workflow README for required ImageNet splits and training controls.
+Preparation and warmup happen before timing. Preparation includes input transfer, state isolation, and requested compilation, including its first call. Restoration happens after timing.
 
-Inputs sharing identity or storage with Tensor leaves of ordinary model attributes
-are isolated together and temporarily rebound, including nested containers. Shared input/container identity is retained as well, including empty containers; same-device measurement does not rebuild that tree.
-Bindings are restored on both success and failure. Moving only the input to another
-device would break this relationship and is rejected; move the model-owned state
-and its shared input together before measuring.
+Only timed forwards contribute to the reported latency. Each measurement covers the complete supplied batch. The result reports the median duration.
+
+The result measures model execution. It does not include data loading or end-to-end application latency.
+
+## State and interpretation
+
+Both functions restore module training flags, registered buffer names and values, isolated inputs, and PyTorch random-number state after success or failure. Latency also restores the garbage collector's enabled state. Forward execution must not modify parameter values. Measurement does not isolate arbitrary Python side effects. Do not train or mutate the same model concurrently.
+
+The isolation covers registered buffers that the forward adds, removes, or replaces. It also covers buffer persistence flags and buffers whose value is `None`. Measurement restores those registrations after a failed forward as well as a successful one.
+
+The input tree can share tensors with ordinary model attributes. Measurement isolates and temporarily rebinds those tensors with the inputs. Keep model-owned tensors and their shared inputs on the same device before measurement.
+
+Compare a baseline and compact model with the same input shape, batch size, dtype, device, thread count, compilation options, warmup, and repetitions. MACs and latency cover the full supplied batch, so report the batch size. Lower parameter count or MACs do not guarantee lower latency. Kernel choice, shape alignment, launch overhead, and hardware use can affect latency.
+
+The [workflow examples](../examples/workflows/README.md) report parameter counts, MACs, unsupported operations, latency, and settings with validation accuracy. They use a batch-one example for measurement. Validation loader batch size and training batch size are separate settings. Inspect unsupported operations before interpreting a MAC reduction.

@@ -1,32 +1,34 @@
-"""Learn identity-initialized channel gates and use their scales for pruning.
+"""Learn channel gates and use their scales to select pruning candidates.
 
-The gate mechanism is related to *Gate Decorator: Global Filter Pruning Method
-for Accelerating Deep Convolutional Neural Networks* (You et al., NeurIPS
-2019; https://papers.neurips.cc/paper/8486-gate-decorator-global-filter-pruning-method-for-accelerating-deep-convolutional-neural-networks.pdf).
-That paper estimates the loss change from removing a gate with the first-order
-Taylor score ``|gate * d(loss)/d(gate)|`` and uses its iterative Tick-Tock
-pruning procedure. This example is a gate-based baseline, not a reproduction of
-that method.
+This baseline adopts gates and L1 training from Gate Decorator.
+Paper: *Gate Decorator: Global Filter Pruning Method for Accelerating Deep
+Convolutional Neural Networks* (You et al., NeurIPS 2019).
+https://papers.neurips.cc/paper/8486-gate-decorator-global-filter-pruning-method-for-accelerating-deep-convolutional-neural-networks.pdf
 
-The workflow inserts identity-initialized `ChannelGate` modules after each
-ResNet block's first BatchNorm or each ViT block's FFN activation. It learns
-those gates jointly with the model, optionally adding `ScaleL1` on gate scales.
-The gates identify candidate internal widths: each ResNet block's `conv1`
-output or each ViT block's `mlp.0` output. Registered gate operators let
-`DependencyGraph` trace the custom modules. `GateMagnitude` scores affected
-gates by the sum of their absolute effective scales (`weight * mask`), and
-`Pruner.plan` with `Greedy` enforces a whole-model parameter budget. Applying
-the plan removes selected channels through `Pruner.apply`; gate modules remain
-in the compact model. Optional task-only recovery follows, and
-`save_checkpoint`/`load_checkpoint` check the saved compact model.
+The paper estimates gate-removal loss changes with the first-order Taylor score
+`|gate * d(loss)/d(gate)|`. It uses iterative Tick-Tock pruning.
+This example implements a baseline based on gate magnitude.
 
-The paper-specific differences are deliberate: this workflow uses gate
-magnitude instead of the Taylor loss-change score, restricts candidates to the
-internal widths above instead of ranking every filter globally, and uses a
-single budget plan rather than repeated Tick-Tock pruning. It does not use the
-paper's Group Pruning procedure or fold gates back into BatchNorm; gates remain
-explicit modules after pruning. The ViT path is an additional application of
-the same static learned-scale idea, not a setting evaluated by that CNN paper.
+The workflow uses these steps:
+
+1. Insert unit-valued `ChannelGate` modules after ResNet `bn1` or ViT FFN activation.
+2. Train model weights and gates together, with optional `ScaleL1` on gate scales.
+3. Discover each block's `conv1` outputs or ViT `mlp.0` outputs as candidates.
+4. Rank affected gate positions with `GateMagnitude`.
+5. Use `Pruner.plan` with `Greedy` to enforce the whole-model parameter budget.
+6. Use `Pruner.apply` to remove channels and their dependent parameters.
+7. Optionally fine-tune with task loss only.
+8. Save the compact checkpoint. Load it. Check its outputs.
+
+Registered gate operators let `DependencyGraph` trace these custom modules.
+`GateMagnitude` sums `abs(gate_weight * gate_mask)` over affected gate positions.
+Retained gates remain explicit modules with their learned values.
+
+Magnitude scoring replaces the paper's Taylor loss-change score.
+Candidates cover the specified internal widths, rather than every filter.
+One budget plan replaces repeated Tick-Tock pruning.
+The example omits the paper's Group Pruning procedure and gate folding into BN.
+The ViT path extends the gating idea beyond the paper's CNN experiments.
 """
 
 import argparse

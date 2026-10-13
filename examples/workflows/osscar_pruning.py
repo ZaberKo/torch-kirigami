@@ -1,23 +1,36 @@
-"""Reconstruct each layer against a dense teacher, then search grouped deletions and swaps.
+"""Reconstruct layer outputs against a dense teacher and prune channel groups.
 
-This workflow implements the layer-wise reconstruction and combinatorial search
-from [OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
-Combinatorial Optimization (ICML 2024)](https://proceedings.mlr.press/v235/meng24a.html).
-It discovers supported unbranched Conv2d/Linear producer-consumer pairs from a
-``DependencyGraph``. An aligned whole-model parameter allocation first sets
-retained widths using a common removal fraction; it does not optimize
-reconstruction error across layers. Consumers are then processed in forward
-order using paired dense-teacher targets and current compact-model inputs,
-damped Gram/cross-product systems, grouped deletion updates and bounded
-remove/restore swaps. This is a bounded local search, not a guarantee of the
-global combinatorial optimum. The solver refits retained weights before the
-chosen channels are submitted through ``plan_remove`` and structurally applied;
-the refitted values are then installed before rebuilding the graph for the next
-consumer. Branches, cross-channel mixing, grouped/depthwise convolution and
-attention are excluded. Sampled calibration positions, common-fraction
-allocation, ViT FFNs and optional task-only fine-tuning adapt the paper's scope
-and recipe. Save the refitted compact checkpoint because a structural plan
-alone does not contain reconstructed weights.
+This workflow adopts layer reconstruction and combinatorial search from
+OSSCAR, ICML 2024.
+Paper: *OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
+Combinatorial Optimization*.
+https://proceedings.mlr.press/v235/meng24a.html
+
+`DependencyGraph` identifies supported unbranched Conv2d and Linear pairs.
+Discovery excludes branches, cross-channel mixing, grouped or depthwise
+convolution, and attention.
+An initial allocation chooses aligned retained widths under the whole-model
+parameter cap. It uses one common channel-removal fraction.
+This allocation does not optimize reconstruction error across layers.
+
+The workflow processes consumers in forward order:
+
+1. Pair current compact-model inputs with original dense-teacher targets.
+2. Accumulate damped Gram and cross-product systems.
+3. Search grouped deletions and bounded remove/restore swaps.
+4. Refit the retained weights.
+5. Submit the chosen channels through `plan_remove`. Apply the structural plan.
+6. Install the refitted values. Rebuild the graph for the next consumer.
+
+The bounded local search does not guarantee a global combinatorial optimum.
+Earlier consumer changes remain if a later operation fails.
+Teacher targets remain necessary when you disable fine-tuning.
+Sampled calibration positions, common-fraction allocation, and ViT FFN scope
+adapt the paper's experiments. Optional recovery uses task loss only.
+
+Save the refitted compact checkpoint after optional fine-tuning.
+A structural plan alone does not contain reconstructed weights.
+The workflow loads the checkpoint and checks its restored outputs.
 """
 
 import argparse

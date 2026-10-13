@@ -1,22 +1,38 @@
-"""Calibrate MLP activations, prune low-variance neurons and compensate their means.
+"""Calibrate MLP activations and compensate removed neurons' mean contributions.
 
-This workflow implements the criterion and local mean-shift correction from
-[Variance-Based Pruning for Accelerating and Compressing Trained Networks
-(ICCV 2025)](https://openaccess.thecvf.com/content/ICCV2025/html/Berisha_Variance-Based_Pruning_for_Accelerating_and_Compressing_Trained_Networks_ICCV_2025_paper.html).
-It discovers eligible dense producer/consumer MLP pairs from a
-``DependencyGraph``, gathers channel moments from a training calibration pass,
-and uses ``Pruner``, ``Greedy`` and ``ParameterBudget`` for one static global
-variance ranking. Calibration defaults to 16 training batches (zero selects the
-full loader). Before applying the structural plan, the workflow computes each
-consumer's bias correction as the old removed-weight columns multiplied by the
-corresponding calibrated means, then installs the corrected bias afterward.
-The supported examples are torchvision ViT and ConvNeXt MLPs. Whole-model
-budgeting, retained-width alignment and these model/data settings adapt the
-paper's method. A compact-checkpoint save/load check follows optional task-only
-fine-tuning. The paper's knowledge-distillation recovery and reported ImageNet
-recipe/results are not
-reproduced. The workflow uses one initial calibration snapshot; it does not
-recalibrate while pruning.
+This workflow implements variance ranking and local mean compensation from
+VBP, ICCV 2025.
+Paper: *Variance-Based Pruning for Accelerating and Compressing Trained Networks*.
+https://openaccess.thecvf.com/content/ICCV2025/html/Berisha_Variance-Based_Pruning_for_Accelerating_and_Compressing_Trained_Networks_ICCV_2025_paper.html
+
+`DependencyGraph` discovers eligible dense MLP producer/consumer pairs.
+Supported examples use torchvision ViT and ConvNeXt MLPs.
+The workflow uses these steps:
+
+1. Calibrate consumer-input means and sample variances on training images.
+2. Rank candidates once by raw variance with `Greedy`.
+3. Use `Pruner` and `ParameterBudget` to plan structural removals.
+4. Compute bias corrections from the original weights and calibrated means.
+5. Apply the structural plan. Install the corrected biases.
+6. Optionally fine-tune with task loss only.
+7. Save the compact checkpoint. Load it. Check its outputs.
+
+Calibration defaults to 16 training batches.
+A zero batch limit uses the full loader.
+Calibration uses evaluation mode without labels or backward.
+It pools batch, spatial, and token positions, including the ViT class token.
+One initial snapshot supplies all scores and corrections.
+The workflow does not recalibrate during pruning.
+
+For removed positions `R`, compensation adds
+`old_weight[:, R] @ calibration_mean[R]` to the consumer bias.
+This represents replacing removed activations with their calibrated means.
+Earlier pruning can change later activation distributions.
+A structural plan alone does not contain these bias corrections.
+
+Whole-model budgeting, width alignment, and model/data settings adapt the paper.
+The example omits knowledge-distillation recovery and the complete ImageNet
+training recipe. It does not reproduce published accuracy results.
 """
 
 import argparse

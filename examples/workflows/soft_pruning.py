@@ -1,38 +1,45 @@
 """Project selected dependency groups toward zero before structural pruning.
 
-The candidate scope is each supported ResNet block's `conv1` output or each
-ViT block's `mlp.0` output. A task-only warmup precedes a global
-parameter-budget selection. During each projection cycle, SGD updates the
-model and the selected dependency-linked parameter union is projected after
-every optimizer step. A task-only recovery epoch separates cycles.
+Candidates cover supported ResNet block `conv1` outputs or ViT `mlp.0` outputs.
+The workflow uses these stages:
 
-**Zero mode and [Soft Filter Pruning for Accelerating Deep Convolutional
-Neural Networks (IJCAI 2018)](https://www.ijcai.org/proceedings/2018/309).** SFP
-ranks convolutional filters by L2 norm and zeros a newly selected low-norm set
-at each epoch's end; those filters can update during the following epoch, and
-a final selection is hard-pruned after training. Here `zero_groups_` zeros
-the same fixed budget-selected dependency union after every minibatch.
-Selection is not refreshed within a cycle; reselection happens only at the
-next cycle boundary. The task-only recovery epoch between cycles has no
-projection, so only then can zeroed regions participate in forward updates
-and regrow. This adopts the zero-and-recover idea, but not SFP's per-epoch
-filter ranking and schedule.
+1. Train with task loss only for one warmup epoch.
+2. Select dependency groups under the whole-model parameter budget.
+3. Update weights with SGD. Project the selected union after every optimizer step.
+4. Train without projection for one recovery epoch between cycles.
+5. Reselect at the next cycle boundary if another cycle remains.
+6. Check the final selection with `plan_remove`. Compact the model with `Pruner.apply`.
+7. Optionally fine-tune. Save the compact checkpoint. Check its restored outputs.
 
-**Decay mode and [Decay Pruning Method: Smooth Pruning With a Self-Rectifying
-Procedure (ICCV Workshops 2025)](https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html).**
-DPM gradually reduces selected structure norms over N steps while training
-and self-rectifies pruning choices using gradient information. This mode
-captures smooth norm reduction:
-it measures the selected union's initial L2 norm once per cycle and after
-each SGD step rescales that entire union to `initial_norm * (1 - step/N)`.
-The target is linear in optimizer-step progress (from the first update through
-zero at the last); all selected regions share one norm trajectory. It omits
-DPM's gradient-based self-rectification and per-structure norm trajectories.
+Selection stays unchanged within each projection cycle.
+Projection changes parameter values until physical pruning changes dimensions.
 
-Finally, `plan_remove` removes the selected channels and `Pruner.apply`
-physically compacts the model. Projection alone changes weights, not channel
-dimensions. Optional fine-tuning and checkpoint save/restore complete the
-workflow.
+Zero-mode source: *Soft Filter Pruning for Accelerating Deep Convolutional
+Neural Networks* (IJCAI 2018).
+https://www.ijcai.org/proceedings/2018/309
+
+SFP ranks convolutional filters by L2 norm.
+It zeros a newly selected low-norm set at each epoch's end.
+Those filters can update during the next epoch.
+After training, it physically removes the final selection.
+
+Here, `zero_groups_` zeros the same budget-selected dependency union after every
+minibatch. Between cycles, the unprojected recovery epoch lets zeroed regions
+contribute to subsequent forward passes and regrow.
+This mode adopts zeroing and recovery.
+It omits SFP's per-epoch filter ranking and schedule.
+
+Decay-mode source: *Decay Pruning Method: Smooth Pruning With a Self-Rectifying
+Procedure* (ICCV Workshops 2025).
+https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html
+
+DPM reduces selected structure norms over N training steps.
+It uses gradients to revise pruning choices.
+Here, decay mode measures the selected union's initial L2 norm once per cycle.
+After each SGD step, it rescales that union to `initial_norm * (1 - step/N)`.
+All selected regions share one linear trajectory, reaching zero at the last step.
+The example omits gradient-based self-rectification and separate per-structure
+norm trajectories.
 """
 
 import argparse

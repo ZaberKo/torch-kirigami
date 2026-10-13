@@ -4703,6 +4703,6 @@
   "operator_verification": {
     "level": "rule",
     "scope": "手工 OperationContext 的规则匹配、关系闭包和约束断言",
-    "limits": "不代表完整捕获、规划、执行或持久化组合覆盖；跨层专项见 testing-coverage.md"
+    "limits": "不代表完整捕获、规划、执行或持久化组合覆盖；跨层专项见 verification.md"
   }
 }

@@ -1,13 +1,16 @@
 """Provide pretrained torchvision models and traceable ViT adapters.
 
-The model catalogs pair supported names with their official weight enums.
-``TraceableViT`` makes the stock ViT dataflow explicit to FX while reusing its
-modules and weights; ``HeadPrunableViT`` replaces attention with a fixed
-per-head-width implementation whose Q/K/V and output projections can shrink by
-whole heads. These adapters expose structure for dependency analysis and
-execution. They do not choose pruning candidates or policies; those stay in
-individual workflows. The head adapter is specific to the supported torchvision
-ViT self-attention form and does not handle masks or cross-attention.
+The model catalogs pair supported names with official weight enums.
+`TraceableViT` exposes the stock ViT dataflow to FX.
+It reuses the original modules and weights.
+
+`HeadPrunableViT` replaces attention with explicit Q/K/V and output projections.
+These projections can shrink by whole heads while preserving per-head width.
+The adapter supports the specified torchvision ViT self-attention layouts.
+It does not support attention masks or cross-attention.
+
+The adapters expose structure for dependency analysis and model mutation.
+Each workflow entry chooses its own pruning candidates and selection policy.
 """
 
 import torch
