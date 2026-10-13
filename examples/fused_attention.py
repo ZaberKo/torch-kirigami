@@ -1,4 +1,14 @@
-"""One opaque GQA definition supplies analysis, candidates, lowering, and persistence."""
+"""Prune and restore a small fused grouped-query-attention module.
+
+The custom operator rule describes Q/K/V and output-projection relations,
+whole-KV-group candidate units, and head-count/projection attributes. The
+registered rule feeds ``DependencyGraph.build`` and ``Pruner`` discovery;
+``Pruner.prune`` then plans, verifies and applies magnitude-ranked removals
+under a ``ChannelRatio`` budget. Finally, ``save_checkpoint`` and
+``load_checkpoint`` exercise structural checkpoint restoration against a fresh
+module skeleton. This example covers the declared GQA layout and its supported
+rewrite; it does not promise arbitrary fused attention or mask semantics.
+"""
 
 import io
 

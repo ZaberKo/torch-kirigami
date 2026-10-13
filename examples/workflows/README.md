@@ -2,6 +2,41 @@
 
 Eleven standalone entries demonstrate structural pruning, sparse training, fine-tuning, and checkpoint restoration. Each file owns its CLI and training/pruning steps. Three infrastructure modules are shared: `imagenet_data.py` (data and accuracy), `imagenet_models.py` (official weights and the ViT adapter), and `model_metrics.py` (complexity and latency). Common CLI options have the same meaning across entries; they are documented below rather than hidden in a shared parser. See [method selection and adaptations](../../docs/workflow-methods.md) for the research sources and implemented scope.
 
+## Workflow entry map
+
+Each entry's opening docstring describes its stages, candidate scope, public API
+composition and research sources. Paper references identify the implemented
+criterion or procedure; the docstrings also state how the example adapts it.
+Coverage is explicit: shared mathematical steps are distinguished from changed
+selection, calibration or training policies, and omitted paper mechanisms are
+named. A paper citation does not imply that its complete algorithm or experiment
+is reproduced.
+The [sparse-training method background](../../docs/sparse-training.md#method-background-and-deliberate-simplifications)
+records the research ideas behind regularization, norm decay and stability checks.
+
+| Entry | Main procedure | Research relationship |
+| --- | --- | --- |
+| [prune_finetune.py](prune_finetune.py) | Score internal channels, plan to a parameter cap, compact, optionally fine-tune | Magnitude/Taylor baseline; optional FPGM criterion (CVPR 2019) |
+| [iterative_pruning.py](iterative_pruning.py) | Repeat planning and recovery with absolute parameter caps and rebuilt graphs | Iterative baseline; DepGraph (CVPR 2023) is dependency-analysis background |
+| [bn_sparsity.py](bn_sparsity.py) | Train BN scales with L1, rank by scale magnitude, compact | Scoped Network Slimming-inspired baseline (ICCV 2017) |
+| [group_sparsity.py](group_sparsity.py) | Train with dependency-group penalties, then plan and compact | Structured Sparsity Learning (NeurIPS 2016); Growing Regularization (ICLR 2021) |
+| [soft_pruning.py](soft_pruning.py) | Alternate parameter projection and regrowth, then physically compact | Soft Filter Pruning (IJCAI 2018) for zeroing; Decay Pruning Method (ICCV Workshops 2025) for norm decay |
+| [gate_pruning.py](gate_pruning.py) | Insert and train channel gates, rank effective gate scales, compact | Gate Decorator-inspired gates and L1 training (NeurIPS 2019); magnitude scoring, no Tick-Tock or gate folding |
+| [stability_pruning.py](stability_pruning.py) | Alternate group regularization and selection until stable or bounded | One-Cycle Structured Pruning stability-driven search (WACV 2026) |
+| [variance_pruning.py](variance_pruning.py) | Calibrate activation moments, prune by variance, compensate consumer biases | VBP criterion and mean compensation (ICCV 2025) |
+| [isomorphic_pruning.py](isomorphic_pruning.py) | Calibrate Taylor gradients, classify dependency impacts, select within each family | Isomorphic Pruning family selection (ECCV 2024) |
+| [osscar_pruning.py](osscar_pruning.py) | Allocate widths, reconstruct layers sequentially, search deletions and swaps | OSSCAR reconstruction and combinatorial search (ICML 2024) |
+| [vit_head_pruning.py](vit_head_pruning.py) | Expose attention dataflow, jointly rank whole heads and FFN channels, compact | ViT magnitude baseline |
+
+The smaller examples one directory above isolate the component contracts:
+[dependency.py](../dependency.py) queries propagation,
+[pruning.py](../pruning.py) composes two plan/apply rounds,
+[custom_rule.py](../custom_rule.py) declares an opaque operator's semantics, and
+[fused_attention.py](../fused_attention.py) combines custom GQA rules, pruning and
+checkpoint restoration. The [architecture](../../docs/architecture.md) explains
+how dependency analysis, pruning policy, model mutation and sparse training fit
+together.
+
 ## Environment, data, and weight caches
 
 From the repository root, use the existing environment, install the workflow dependencies, and enter this directory:

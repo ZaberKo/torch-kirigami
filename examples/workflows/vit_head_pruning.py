@@ -1,8 +1,23 @@
-"""Prune complete attention heads and FFN hidden channels in torchvision ViT.
+"""Run an ImageNet baseline that prunes ViT heads and FFN hidden channels.
 
-Attention is explicitly converted before graph capture. Its external embedding
-width stays fixed while Q/K/V projection rows and output-projection columns
-shrink together. This is a magnitude baseline, not a paper reproduction.
+The workflow adapts torchvision's ViT attention to explicit scaled-dot-product
+attention while keeping the embedding width and per-head feature width fixed.
+It loads pretrained weights and held-out ImageNet data, evaluates the baseline,
+captures a :class:`DependencyGraph`, combines complete-head and FFN candidates,
+and uses ``Pruner.plan`` with ``ParameterBudget`` and ``Greedy(GroupMagnitude)``
+before applying the plan. Optional fine-tuning and structural checkpoint
+save/load follow pruning; measurements and validation accuracy are reported at
+each stage. This is an explicit magnitude baseline, not an implementation of a
+research paper's ViT head-pruning method. Support is limited to the adapted
+torchvision ViT-B/16 and ViT-B/32 layouts and declared operator rules.
+
+Each head candidate removes its complete Q/K/V projection rows, corresponding
+biases and output-projection columns together; FFN candidates remove hidden
+neurons. Static ranking uses normalized affected-weight energy and a shared
+parameter cap, with no separate head/FFN quotas. The example provides no
+activation or gradient calibration, sensitivity search, learned head gates or
+teacher distillation. These are the bounds of this magnitude baseline, rather
+than missing stages of a claimed paper implementation.
 """
 
 import argparse

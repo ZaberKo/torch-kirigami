@@ -1,4 +1,31 @@
-"""Train pretrained ResNet BN scales with L1, prune channels, then fine-tune."""
+"""Train BN scales as a channel-pruning signal, then compact a ResNet.
+
+This workflow adapts *Learning Efficient Convolutional Networks through Network
+Slimming* (Liu et al., ICCV 2017,
+https://openaccess.thecvf.com/content_ICCV_2017/papers/Liu_Learning_Efficient_Convolutional_ICCV_2017_paper.pdf).
+The paper applies L1 sparsity to BatchNorm scaling factors, globally thresholds
+their learned magnitudes to select channels, removes the channels and connected
+weights, then fine-tunes the compact network; it also describes a multi-pass
+extension.
+
+Here, optional sparse training applies `ScaleL1` only to each supported
+torchvision ResNet block's `bn1.weight`. The pruning candidates are the
+corresponding `conv1` output channels. A `Magnitude` metric filtered to those BN
+scales ranks them, while `Pruner.plan` and `Greedy` choose removals under a
+whole-model parameter budget and channel granularity. `Pruner.apply` physically
+removes selected channels and dependency-linked parameters, including the BN
+scales and following `conv2` inputs. Optional task-only fine-tuning follows;
+`save_checkpoint` writes the compact model and `load_checkpoint` verifies that
+it restores the same outputs.
+
+This changes Network Slimming's selection policy from a global percentile
+threshold over channel scales to budget-driven greedy planning over only these
+block-internal widths. The example uses pretrained ImageNet ResNets and a
+configurable, fixed-weight sparse-training stage; it does not implement the
+paper's broader architecture coverage, its cross-layer/pre-activation
+adaptations, or multi-pass slimming. Dependency analysis, the BN-scale ranking
+signal, and structural application remain separate workflow steps.
+"""
 
 import argparse
 import json

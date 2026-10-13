@@ -1,4 +1,14 @@
-"""A complete pruning round on the original module, with explicit graph rebuilding."""
+"""Demonstrate two public plan/apply rounds with caller-owned training between.
+
+Each round captures a fresh :class:`DependencyGraph`, discovers candidates
+through :class:`Pruner`, selects under a :class:`ChannelRatio` budget over the
+discovered logical channel axes, and applies the plan to the original module. The first round uses
+weight magnitude; the second uses Taylor scores from gradients collected by
+the caller after rebuilding the optimizer. Rebuilding the graph after training
+and physical pruning makes the next plan reflect the current structure. This is
+a compact API workflow, not a paper-specific pruning reproduction; optimizer
+state migration is outside the library contract.
+"""
 
 import argparse
 

@@ -1,4 +1,15 @@
-"""Run with: python examples/dependency.py"""
+"""Build and query a structural dependency graph for a small MLP.
+
+The example captures the model with :meth:`DependencyGraph.build`, removes two
+output coordinates from the first Linear weight, then inspects the propagated
+impact on the next Linear layer. ``propagate`` computes structural closure and
+``explain`` reports it; neither API chooses an importance policy nor mutates the
+model. This illustrates a dependency-analysis idea related to DepGraph,
+"DepGraph: Towards Any Structural Pruning" (CVPR 2023), without reproducing
+that paper's method: https://openaccess.thecvf.com/content/CVPR2023/html/Fang_DepGraph_Towards_Any_Structural_Pruning_CVPR_2023_paper.html
+
+Run with: python examples/dependency.py
+"""
 
 import torch
 from torch import nn

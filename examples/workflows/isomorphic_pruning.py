@@ -1,10 +1,25 @@
-"""One-shot Isomorphic Pruning with calibrated Taylor scores and fixed family quotas.
+"""Prune within structurally similar dependency families using calibrated Taylor scores.
 
-Static scores are ranked only inside typed dependency families. At a common
-channel ratio each family independently requests its lowest floor(ratio * size)
-actions. The ratio is supplied directly, not searched against parameter counts.
-Alignment rounds retained widths down, extending each root's
-selection with its next lowest scores. All discovered domains are inspected.
+The workflow follows the family-wise comparison idea in [Isomorphic Pruning
+for Vision Models (ECCV 2024)](https://arxiv.org/abs/2407.04616). A
+``DependencyGraph`` and ``Pruner`` discover candidate domains. After candidate
+discovery, the workflow accumulates task gradients without updating weights.
+The custom strategy groups complete dependency impacts by typed structural
+signatures, evaluates the paper's Taylor score, and ranks scores only within
+each family. These signatures are a conservative ordered structural proxy, not
+a general graph-isomorphism solver. Taylor calibration accumulates cross-entropy
+gradients over 100 batches of 64 images by default without updating weights.
+The supplied ``family_pruning_ratio`` independently selects each family's
+lowest-ranked actions, with retained-width alignment and joint execution checks
+before applying the single plan; this common ratio is not searched against the
+parameter target and replaces the paper's architecture-specific family ratios.
+The example sums the displayed per-parameter L2 norms of removed weight-gradient
+regions. Each native multihead-attention candidate removes the same local
+dimension from every head, keeping head count fixed; it does not implement
+the paper's independent whole-head deletion. Candidate domains are discovered
+broadly, subject to proven interface protections and
+explicit unsupported-case exclusions. Optional task-only fine-tuning omits the
+paper's distilled recovery recipe.
 """
 
 import argparse

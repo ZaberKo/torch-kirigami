@@ -1,4 +1,14 @@
-"""A fused/opaque module adds semantics through the same interface as built-ins."""
+"""Declare graph semantics for a fused module through the public rule API.
+
+The example registers an :class:`OperatorRule` on the default
+:class:`OperatorRegistry`. Its ``OperatorSpec`` connects input, output and
+weight axes and declares the module attribute that must track a compacted
+output. ``DependencyGraph.build`` captures the module with that registry, and
+``propagate`` demonstrates the resulting closure. The rule describes supported
+structure; it does not rank channels or perform pruning. A custom rule must
+declare the relations and attribute requirements its module needs for safe
+planning and rewrite.
+"""
 
 import torch
 from torch import nn

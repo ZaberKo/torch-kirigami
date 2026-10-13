@@ -1,4 +1,14 @@
-"""Shared pretrained model loading and explicit torchvision ViT FX adapters."""
+"""Provide pretrained torchvision models and traceable ViT adapters.
+
+The model catalogs pair supported names with their official weight enums.
+``TraceableViT`` makes the stock ViT dataflow explicit to FX while reusing its
+modules and weights; ``HeadPrunableViT`` replaces attention with a fixed
+per-head-width implementation whose Q/K/V and output projections can shrink by
+whole heads. These adapters expose structure for dependency analysis and
+execution. They do not choose pruning candidates or policies; those stay in
+individual workflows. The head adapter is specific to the supported torchvision
+ViT self-attention form and does not handle masks or cross-attention.
+"""
 
 import torch
 from torch import nn

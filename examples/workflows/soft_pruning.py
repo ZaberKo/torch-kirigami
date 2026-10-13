@@ -1,4 +1,39 @@
-"""Train with group zeroing or norm decay, then physically remove those groups."""
+"""Project selected dependency groups toward zero before structural pruning.
+
+The candidate scope is each supported ResNet block's `conv1` output or each
+ViT block's `mlp.0` output. A task-only warmup precedes a global
+parameter-budget selection. During each projection cycle, SGD updates the
+model and the selected dependency-linked parameter union is projected after
+every optimizer step. A task-only recovery epoch separates cycles.
+
+**Zero mode and [Soft Filter Pruning for Accelerating Deep Convolutional
+Neural Networks (IJCAI 2018)](https://www.ijcai.org/proceedings/2018/309).** SFP
+ranks convolutional filters by L2 norm and zeros a newly selected low-norm set
+at each epoch's end; those filters can update during the following epoch, and
+a final selection is hard-pruned after training. Here `zero_groups_` zeros
+the same fixed budget-selected dependency union after every minibatch.
+Selection is not refreshed within a cycle; reselection happens only at the
+next cycle boundary. The task-only recovery epoch between cycles has no
+projection, so only then can zeroed regions participate in forward updates
+and regrow. This adopts the zero-and-recover idea, but not SFP's per-epoch
+filter ranking and schedule.
+
+**Decay mode and [Decay Pruning Method: Smooth Pruning With a Self-Rectifying
+Procedure (ICCV Workshops 2025)](https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html).**
+DPM gradually reduces selected structure norms over N steps while training
+and self-rectifies pruning choices using gradient information. This mode
+captures smooth norm reduction:
+it measures the selected union's initial L2 norm once per cycle and after
+each SGD step rescales that entire union to `initial_norm * (1 - step/N)`.
+The target is linear in optimizer-step progress (from the first update through
+zero at the last); all selected regions share one norm trajectory. It omits
+DPM's gradient-based self-rectification and per-structure norm trajectories.
+
+Finally, `plan_remove` removes the selected channels and `Pruner.apply`
+physically compacts the model. Projection alone changes weights, not channel
+dimensions. Optional fine-tuning and checkpoint save/restore complete the
+workflow.
+"""
 
 import argparse
 import json

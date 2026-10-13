@@ -255,12 +255,22 @@ These references explain the ideas behind the example compositions. The library 
 
 | Reference | Connection to the examples | Scope of this implementation |
 | --- | --- | --- |
-| [Network Slimming](https://arxiv.org/abs/1708.06519) | Channel sparsity through learned scaling factors | The BN workflow applies `ScaleL1` to explicitly selected ResNet BN scales, then ranks and physically prunes those channels |
-| [Neural Pruning via Growing Regularization](https://arxiv.org/abs/2012.09243) | Gradually increasing regularization strength | The squared-L2 workflow reselects groups at optimizer-step intervals and increases the sparse-loss weight each step using cosine or linear interpolation; it does not reproduce every importance-estimation or training variant |
-| [Decay Pruning Method](https://arxiv.org/html/2406.03879v2) | Gradual target-norm decay during optimization | The decay workflow projects one union of selected dependency regions and reselects between two cycles; it does not implement the paper's gradient-driven self-rectification criteria or separate per-structure norm trajectories |
-| [One-Cycle Structured Pruning](https://arxiv.org/html/2501.13439v2) | Selection stability based on layer-wise Jaccard similarity | The stability workflow uses a two-comparison adjacent-selection window and a fixed trigger; it does not reproduce the paper's full delayed-start and one-cycle training policy |
+| [Network Slimming (ICCV 2017)](https://arxiv.org/abs/1708.06519) | BN-scale L1 training, magnitude selection and channel deletion | `bn_sparsity.py` uses only ResNet block `bn1` scales and `conv1` candidates. Greedy parameter budgeting replaces global percentile thresholding; multi-pass slimming and pre-activation adaptations are absent |
+| [Learning Structured Sparsity in Deep Neural Networks (NeurIPS 2016)](https://proceedings.neurips.cc/paper/2016/hash/41bfd20a38bb1b0bec75acf0845530a7-Abstract.html) | Group Lasso penalties | `group_sparsity.py --penalty lasso` regularizes complete candidate dependency groups. The paper's filter-shape, depth and joint structure-learning configurations are absent |
+| [Neural Pruning via Growing Regularization (ICLR 2021)](https://arxiv.org/abs/2012.09243) | Increasing L2 penalties during training | The squared-L2 mode periodically reselects dependency groups and ramps a shared coefficient with cosine or linear interpolation. It omits GReg-1's per-filter penalty progression and GReg-2's curvature-revealing phase and separate kept/pruned penalties |
+| [Soft Filter Pruning (IJCAI 2018)](https://www.ijcai.org/proceedings/2018/309) | Trainable zeroed filters can regrow | The zero mode projects a fixed dependency union after each minibatch and reselects between cycles. Its scope and projection schedule replace the paper's per-epoch convolution-filter selection |
+| [Decay Pruning Method (ICCV Workshops 2025)](https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html) | Smoothly reduce selected structure norms during optimization | The decay mode projects one dependency union along a linear norm trajectory per cycle. Gradient-driven self-rectification and separate per-structure trajectories are absent |
+| [Gate Decorator (NeurIPS 2019)](https://proceedings.neurips.cc/paper_files/paper/2019/file/b51a15f382ac914391a58850ab343b00-Paper.pdf) | Explicit channel gates and L1 gate training | `gate_pruning.py` scores effective gate magnitudes on internal widths. It omits gate-gradient Taylor scoring, Tick-Tock phases, the paper's shortcut Group Pruning procedure and gate folding; retained gates remain explicit |
+| [One-Cycle Structured Pruning (WACV 2026)](https://openaccess.thecvf.com/content/WACV2026/html/Ghimire_One-Cycle_Structured_Pruning_via_Stability-Driven_Subnetwork_Search_WACV_2026_paper.html) | Jaccard similarity of pruning subnetworks | The stability mode starts from pretrained weights, compares retained indices per axis and uses a two-comparison adjacent window with a fixed trigger. The paper's delayed-start and one-cycle training policy are absent |
 
 The soft-zeroing mode retains SGD momentum and includes an unprojected recovery interval so regions can regrow. The gate workflow demonstrates explicit activation scaling and L1 selection without introducing expected-L0 objectives, a control network, or a specialized optimizer.
+
+Each [workflow entry](../examples/workflows/README.md#workflow-entry-map) states
+its implemented mathematical steps, changed policies and omitted paper
+mechanisms in the opening docstring. The gate example borrows gating and
+sparse-training mechanisms; its magnitude score is not Gate Decorator's
+loss-change estimate. These distinctions apply even when optional recovery
+training is enabled.
 
 L2 penalties use scaled row/segment norms and normalized-direction backward (including external loss strengths), with a zero subgradient at zero. The normal batched reduction remains the common path; absolute or relative subnormal contributions fall back to original group values so rounding intermediate row norms cannot corrupt their relative gradients. Equivalent groups are bucketed by geometric invariants and still compared exactly; different overlapping groups continue to contribute separately.
 

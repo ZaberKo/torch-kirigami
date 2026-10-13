@@ -1,8 +1,22 @@
-"""Variance-Based Pruning: calibrate MLP activations, compact, compensate and fine-tune.
+"""Calibrate MLP activations, prune low-variance neurons and compensate their means.
 
-Implements the pruning criterion and mean-shift compensation of VBP (ICCV 2025).
-The parameter budget, width alignment and torchvision models are explicit
-adaptations; this example does not reproduce the paper's accuracy experiments.
+This workflow implements the criterion and local mean-shift correction from
+[Variance-Based Pruning for Accelerating and Compressing Trained Networks
+(ICCV 2025)](https://openaccess.thecvf.com/content/ICCV2025/html/Berisha_Variance-Based_Pruning_for_Accelerating_and_Compressing_Trained_Networks_ICCV_2025_paper.html).
+It discovers eligible dense producer/consumer MLP pairs from a
+``DependencyGraph``, gathers channel moments from a training calibration pass,
+and uses ``Pruner``, ``Greedy`` and ``ParameterBudget`` for one static global
+variance ranking. Calibration defaults to 16 training batches (zero selects the
+full loader). Before applying the structural plan, the workflow computes each
+consumer's bias correction as the old removed-weight columns multiplied by the
+corresponding calibrated means, then installs the corrected bias afterward.
+The supported examples are torchvision ViT and ConvNeXt MLPs. Whole-model
+budgeting, retained-width alignment and these model/data settings adapt the
+paper's method. A compact-checkpoint save/load check follows optional task-only
+fine-tuning. The paper's knowledge-distillation recovery and reported ImageNet
+recipe/results are not
+reproduced. The workflow uses one initial calibration snapshot; it does not
+recalibrate while pruning.
 """
 
 import argparse

@@ -1,4 +1,13 @@
-"""Shared local ImageNet loading, label alignment and held-out evaluation."""
+"""Provide shared ImageNet input and evaluation infrastructure for workflows.
+
+``load_images`` opens local ImageNet Parquet shards through Hugging Face
+Datasets, prepares reusable Arrow-backed map-style datasets, verifies class
+indices against torchvision weights, and applies the weights' preprocessing
+inside DataLoader workers. It does not download dataset shards. ``evaluate``
+reports sample-weighted loss, top-1 and top-5 accuracy while restoring the
+model's prior train/eval flags. Algorithm-specific sampling, training and
+pruning remain in each workflow entry.
+"""
 
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path

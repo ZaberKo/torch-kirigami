@@ -1,4 +1,38 @@
-"""Regularize pretrained-model groups until channel selection stabilizes."""
+"""Train selected channel groups until repeated pruning selections stabilize.
+
+Candidates are supported ResNet-block `conv1` outputs or ViT-block `mlp.0`
+outputs. Starting from the configured pretrained model, the workflow makes an
+initial `Greedy(GroupMagnitude(p=2))` parameter-budget selection, regularizes
+its dependency groups with `GroupSquaredL2`, and replans after each training
+interval. `GroupSquaredL2` is `1/2 * sum_g ||W_g||_2^2`. Its multiplier rises
+from zero to the configured final value over all search steps, linearly or by
+cosine interpolation; interval boundaries do not restart the ramp.
+
+**Stability comparison ([One-Cycle Structured Pruning via Stability-Driven
+Subnetwork Search, WACV 2026](https://openaccess.thecvf.com/content/WACV2026/html/Ghimire_One-Cycle_Structured_Pruning_via_Stability-Driven_Subnetwork_Search_WACV_2026_paper.html)).**
+The paper scores dependency groups by normalized group L2 saliency, checks
+subnetworks at each training epoch, and
+averages Jaccard similarities over its stability window. Its delayed start is
+triggered when that average changes little; final pruning occurs when the
+average reaches a separate near-one stability cutoff. This workflow adapts
+the signal: it compares retained channel indices at each interval, computes
+Jaccard similarity separately for each channel axis, and averages those
+per-axis values. `SelectionWindow` then averages adjacent comparison scores;
+with the default size 2, the first score requires three selections (initial
+selection plus two replans). One fixed threshold stops search, subject to the
+check limit.
+
+The procedure starts from pretrained weights and applies a budgeted selection
+before regularized search. It does not use the paper's normalized group
+saliency ranking, stability-based delayed start, distinct stability cutoff,
+or epoch-wise regularization schedule (which grows by increments after the
+delayed start). Here the multiplier instead ramps each optimizer step over
+the bounded search. The paper's one-cycle means training and pruning from
+random initialization in one training cycle; this example does not implement
+that full training method. The last checked selection is passed to
+`plan_remove` and physically applied with `Pruner.apply`; optional task-only
+fine-tuning and checkpoint save/restore follow.
+"""
 
 import argparse
 import json

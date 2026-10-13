@@ -1,4 +1,24 @@
-"""Pretrained model -> scored structural pruning -> optional ImageNet fine-tuning."""
+"""Evaluate, structurally prune and optionally fine-tune an ImageNet model.
+
+The workflow captures a ``DependencyGraph``, discovers block-internal channel
+candidates with ``Pruner.discover_candidates``, selects a feasible request under
+``ParameterBudget``, applies the resulting plan, and saves a restorable compact
+checkpoint. The scope is every ResNet ``BasicBlock.conv1``, ResNet
+``Bottleneck.conv1/conv2`` and torchvision ViT ``EncoderBlock.mlp.0``; residual,
+stem, attention and classifier interfaces remain intact. Magnitude and Taylor
+metrics can use static or dynamic greedy selection. The optional
+``geometric_median`` metric is the FPGM criterion from [Filter Pruning via
+Geometric Median for Deep Convolutional Neural Networks Acceleration (CVPR
+2019)](https://openaccess.thecvf.com/content_CVPR_2019/html/He_Filter_Pruning_via_Geometric_Median_for_Deep_Convolutional_Neural_Networks_Acceleration_CVPR_2019_paper.html):
+it ranks same-layer signed Conv/Linear output filters by summed pairwise
+Euclidean distance, a filter-space proxy for closeness to the geometric median,
+and requires static selection. This extends the criterion to Linear filters
+and uses global parameter budgeting followed by one-shot physical deletion.
+It omits per-epoch filter reselection and zeroing during training, where zeroed
+filters remain trainable and can regrow before final physical removal.
+ImageNet evaluation brackets pruning and optional task-only fine-tuning, while
+the checkpoint round-trip checks structural persistence.
+"""
 
 import argparse
 import json

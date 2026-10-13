@@ -1,8 +1,23 @@
-"""OSSCAR: sequential teacher reconstruction, grouped deletion and local swaps.
+"""Reconstruct each layer against a dense teacher, then search grouped deletions and swaps.
 
-Implements the ICML 2024 quadratic reconstruction objective and grouped search.
-Whole-model parameter allocation, sampled calibration positions and torchvision
-ViT FFNs are explicit adaptations, not reproductions of published accuracy.
+This workflow implements the layer-wise reconstruction and combinatorial search
+from [OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
+Combinatorial Optimization (ICML 2024)](https://proceedings.mlr.press/v235/meng24a.html).
+It discovers supported unbranched Conv2d/Linear producer-consumer pairs from a
+``DependencyGraph``. An aligned whole-model parameter allocation first sets
+retained widths using a common removal fraction; it does not optimize
+reconstruction error across layers. Consumers are then processed in forward
+order using paired dense-teacher targets and current compact-model inputs,
+damped Gram/cross-product systems, grouped deletion updates and bounded
+remove/restore swaps. This is a bounded local search, not a guarantee of the
+global combinatorial optimum. The solver refits retained weights before the
+chosen channels are submitted through ``plan_remove`` and structurally applied;
+the refitted values are then installed before rebuilding the graph for the next
+consumer. Branches, cross-channel mixing, grouped/depthwise convolution and
+attention are excluded. Sampled calibration positions, common-fraction
+allocation, ViT FFNs and optional task-only fine-tuning adapt the paper's scope
+and recipe. Save the refitted compact checkpoint because a structural plan
+alone does not contain reconstructed weights.
 """
 
 import argparse
