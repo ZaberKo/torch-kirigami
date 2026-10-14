@@ -27,6 +27,12 @@ Examples provide metadata. They do not specialize tensor-dependent Python contro
 
 Unknown operations can use input values as indices or sizes. Their barriers can therefore reach data ancestors across branches. Shared parameters and residual joins can also connect branches. An unsupported operation is not a fixed box that permits unrestricted upstream pruning.
 
+A structural barrier requires successful capture first.
+An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.
+Capture rejects that call before metadata execution.
+A rule can declare read-only inputs yet raise `UnsupportedOperation` from `build_spec()`.
+That case creates a barrier instead of failing capture.
+
 ## Capture and snapshot assumptions
 
 Capture supports FX-traceable modules with supported call signatures and metadata. It binds positional and keyword arguments using the forward signature and applies defaults. Supported nested containers are plain tuples, lists, and dictionaries with supported keys.

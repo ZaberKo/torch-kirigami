@@ -4,11 +4,11 @@ The dependency graph answers one question: if you remove these tensor positions,
 
 The graph records operator semantics. A query computes the closure of a joint removal request. The graph does not rank candidates, choose a budget, or change model tensors. See [model support](model-support.md) for capture limits and [operator support](operator-support.md) for built-in rules.
 
-Structural expansion limits use the process-global
-[`config`](pruning.md#global-resource-configuration), including integer literal
-capture and ChannelShuffle mapping. Set these before building a graph. Propagation
-and planning require the same structural settings as construction; changing them
-requires rebuilding. Cache-size changes alone do not invalidate graphs.
+The process-global [`config`](pruning.md#global-resource-configuration) controls structural expansion limits, including integer literal capture and ChannelShuffle mapping.
+Set these limits before building a graph.
+Propagation and planning require the structural settings from construction.
+Rebuild the graph after changing those settings.
+Cache-size changes alone do not invalidate graphs.
 
 ## Main relationships
 
@@ -225,22 +225,27 @@ An unresolved balance check can have complete influence. An unknown operation ca
 
 ## Build and inspect a graph
 
-Implementation modules live in `torch_kirigami.dep_graph`. Public classes are
-exported from `torch_kirigami`; rule authors can import specialized helpers from
-`torch_kirigami.dep_graph.operators` and its submodules.
+Implementation modules live in `torch_kirigami.dep_graph`.
+The root package, `torch_kirigami`, exports public classes.
+Rule authors can import specialized helpers from `torch_kirigami.dep_graph.operators` and its submodules.
 
-Build a snapshot with `DependencyGraph.build(model, args=..., kwargs=..., operators=...)`. The default registry contains the built-in rules. Build copies the registry tables, but rule callables must remain deterministic and must not mutate shared state.
+Build a snapshot with `DependencyGraph.build(model, args=..., kwargs=..., operators=...)`.
+The default registry contains the built-in rules.
+Build copies the registry tables, but retains the registered rule instances.
+Rule methods must remain deterministic and must not mutate shared state.
 
 The build completes structural records before it constructs the queryable graph.
 Calling `DependencyGraph()` without those internal records is not supported.
-Construction scratch tables are then released; the graph owns a solver with local
-indexes and caches. Every public propagation request checks model freshness first.
+Construction releases its temporary tables.
+The graph owns a solver with local indexes and caches.
+Every public propagation request checks model freshness first.
 See [the implementation responsibilities](architecture.md#dependency-analysis) for
 the internal module boundaries.
 
 ```python
 import torch
 from torch import nn
+
 from torch_kirigami import DependencyGraph, Fixed
 
 model = nn.Sequential(nn.Linear(4, 8), nn.ReLU(), nn.Linear(8, 2)).eval()
@@ -262,15 +267,19 @@ The main inspection methods are:
 | Method | Contract |
 | --- | --- |
 | `parameter(path)`, `buffer(path)` | Return the graph reference for an original registered path. Aliases of one tensor object return the same reference. |
-| `calls(module_path=None)` | Return operation calls, including repeated calls to a shared module. Module paths identify aliases, not the exact Python attribute spelling used by each call. |
+| `operations(module_path=None)` | Return `Operation` records, including repeated calls to a shared module. The optional path filter accepts original module aliases. |
 | `values()`, `metadata(ref)`, `interfaces()` | Return known tensor references, captured shape/stride/dtype/device facts, and external inputs/outputs. The graph does not retain activation tensors. |
-| `operations()`, `operator_spec()`, `operator_rule()` | Inspect calls and their semantics. Returned FX nodes and argument containers are copies. |
+| `operator_spec(operation)`, `operator_rule(operation)` | Return a call's structural specification or registered rule. Either query can return `None` when that information is absent. |
 | `relations`, `constraints`, `diagnostics`, `shape_expressions` | Inspect the structural facts recorded during build. |
 | `tensor(ref)`, `tensor_bindings()`, `bindings(ref)` | Access live registered tensors or their owner slots after freshness checks. The returned tensors are live objects. |
 | `constants()`, `constant_guards()` | Inspect lifted FX constants and registered integer tensors whose values act as structural premises. |
 | `validate()`, `invalidate()` | Check the source snapshot or explicitly invalidate it. |
 
-The `fx_graph` property returns an inspection copy. `validate_impact()` checks that an impact belongs to this graph. It does not create a fresh query or prove that a plan can execute.
+`operations()` returns copies of FX nodes and argument containers.
+Module paths identify aliases, not the exact Python attribute spelling used by each call.
+The `fx_graph` property also returns an inspection copy.
+`validate_impact()` checks that an impact belongs to this graph.
+It does not create a fresh query or prove that a plan can execute.
 
 ## Capture boundary
 
@@ -314,8 +323,8 @@ Relations describe forced coordinate changes. They are deterministic, monotone, 
 
 `AxisPort.is_full` reports whether the scope covers the entire original tensor.
 An explicit full region has the same coverage as an omitted scope. Optimization
-proofs additionally require native records at every nested field; value equality
-alone does not establish the behavior of extension objects.
+proofs additionally require native records at every nested field.
+Value equality alone does not establish the behavior of extension objects.
 
 Constraints check the accumulated closure. They do not add removals. A planner can choose additional candidates to satisfy an unresolved condition.
 
@@ -401,6 +410,10 @@ The supported provenance covers a small set of dimension reads and integer opera
 
 `Requirement` describes an edit or execution obligation. It contains a kind, target, determining tensors, detail, immutable named data, and any argument locations the executor may change. Requirements do not mutate the model and do not guarantee that an executor can perform the edit. An executor must implement or reject each activated requirement.
 
+`AttributeBinding(path, expression)` describes a structural module attribute through a `ShapeExpr`.
+The compiler evaluates the expression on retained shapes and checks assignments across shared module calls.
+Both `OperatorSpec.requirements` and `Impact.requirements` can contain `Requirement` and `AttributeBinding` records.
+
 Requirement payloads accept supported scalar and structural records, slices, and nested sequences. The record freezes nested sequences and rejects opaque mutable objects. `refs` also includes tensor sources embedded in payloads. This lets the graph check ownership for every referenced tensor.
 
 `ArgumentRef` identifies a canonical parameter name and its positional slot. Method positions include the Tensor receiver. Set `variadic=True` when the argument consumes the remaining positional values. Native aliases such as `axis` for `dim` resolve through the same table during analysis and validation.
@@ -411,22 +424,59 @@ Requirement payloads accept supported scalar and structural records, slices, and
 
 Unknown layout is conservative. The validator cannot infer a compact stride from the captured CPU or CUDA example. A later `view` can still pass when its operation works for every legal input stride. A merge of distinct non-singleton axes needs a layout proof.
 
-`TensorEffects` identifies written arguments using `ArgumentRef` and declares whether all tensor results have independent storage. `writes_inputs=()` declares read-only inputs; `None` means unknown. `outputs_are_fresh=True` guarantees independence from inputs, module state, and other outputs, not contiguous layout. Capture uses mutation facts before metadata execution. Compact execution uses allocation facts for alias safety. A rule author must describe effects truthfully.
+`TensorEffects` identifies written arguments through `ArgumentRef`.
+`writes_inputs=()` declares read-only inputs.
+`writes_inputs=None` means unknown writes.
+`outputs_are_fresh=True` guarantees that each tensor result has storage independent of inputs, module state, and other outputs.
+It does not guarantee contiguous layout.
+
+Capture uses mutation facts before metadata execution.
+The planner uses allocation facts to check alias safety for compact execution.
+A rule author must describe effects truthfully.
 
 An operation can return a view even when it succeeds on the example input. A rule must not claim fresh output unless it guarantees independent storage for all supported calls. The executor still checks downstream consumers and alias relationships before it accepts an in-place path.
 
 ## Extending operator semantics
 
-Register exact module classes, function objects, or Tensor method names in a local `OperatorRegistry`. Subclasses do not inherit a module rule automatically. Implement `OperatorRule.build_spec(operation)`; optional methods cover capture validation, tensor effects, and special physical recipes. The dependency core does not import the pruning executor.
+Register exact module classes, function objects, or Tensor method names in a local `OperatorRegistry`.
+Subclasses do not inherit a module rule automatically.
+Implement `OperatorRule.build_spec(operation)`.
+Optional methods cover capture checks, tensor effects, and special physical recipes.
+The dependency core does not import the pruning executor.
 
-`Operation` is the single record for one captured call. `graph.operations()` returns all calls; `graph.operations(module_path)` includes every call of that module, including aliases. `inputs` and `outputs` flatten tensor trees, while `result` retains the original result structure. `bindings[name]` accesses a module parameter or buffer. `argument()` resolves normalized positional and keyword arguments; `raw_argument()` resolves their original FX operands using the same existing `ArgumentRef` convention.
+`Operation` describes one captured call.
+It supplies the FX node, called module, original module paths, graph identity, and capture-time effects.
+It also provides shape expressions, tensor metadata, and small integer constants.
+Inspection copies retain graph ownership.
 
-The record also provides the FX node, called module, all original module paths, shape expressions, tensor metadata, small integer constants, capture-time effects, and graph identity. Inspection copies retain ownership. `operator_spec()` returns `None` when no structural specification was established; it never substitutes an empty success record.
+| Accessor | Meaning |
+| --- | --- |
+| `inputs`, `outputs` | Tensor references from flattened argument and result trees. |
+| `args`, `kwargs`, `result` | Argument and result trees with tensor references instead of tensor values. |
+| `bindings[name]` | A module parameter or buffer reference. |
+| `argument(name, position, ...)` | A normalized positional or keyword argument. |
+| `raw_argument(name, position, ...)` | The original FX operand, with the same argument resolution rules. |
 
-`build_spec()` returns an `OperatorSpec`: relations, constraints, requirements, candidates, layouts, output contract, scalar expression, and guarded integer constants. Use `AttributeBinding(path, expression)` in `requirements` to bind a module attribute to existing `ShapeExpr` dimension expressions. The compiler evaluates that expression on retained shapes. Other execution obligations use `Requirement`; no untyped attribute payload or separate attribute propagation mechanism is needed.
+`build_spec()` returns an `OperatorSpec` with relations, constraints, requirements, candidate axes, layouts, an output contract, a scalar expression, and guarded integer constants.
+The graph returns `None` from `operator_spec(operation)` when a call has no structural specification.
+An absent specification differs from an empty specification returned by a rule.
 
-`register()` accepts an exact module class or function; `register_method()` accepts a Tensor method name. Duplicate registrations fail. Inspection tables are read-only. Building a graph copies the registration tables; shared rule objects must remain deterministic and unchanged. No process-global registry is used.
+`register()` accepts an exact module class or function.
+`register_method()` accepts a Tensor method name.
+Duplicate registrations fail.
+Inspection tables expose read-only mappings.
 
-Use existing descriptors first. Ordinary parameter cuts, bound attributes, and declared partitions require no custom recipe method. `build_recipe(operation, spec, impact)` may return partial special edits; shared compilation handles the rest. Return `None` for no special edits. Raise `UnsupportedOperation` to reject an unsupported request. The compiler checks recipes against joint removals and rejects conflicting layouts and shared-attribute updates. Rules never modify weights directly.
+Each build copies the tables and retains the rule instances.
+Keep those instances unchanged during graph use.
+There is no process-global registry.
+
+Use existing descriptors first.
+Ordinary parameter cuts, bound attributes, and declared partitions require no custom recipe method.
+`build_recipe(operation, spec, impact)` can return special edits, which the compiler combines with standard edits.
+Return `None` for no special edits.
+Raise `UnsupportedOperation` to reject an unsupported request.
+
+The compiler checks recipes against joint removals and rejects conflicting layouts and shared-attribute updates.
+Rules never change weights directly.
 
 Opaque registration is a capture boundary, not a proof of internal semantics. Authors remain responsible for truthful coordinate relations, write/allocation declarations, and original-forward compatibility. See [operator support and extension](operator-support.md) for a runnable example.

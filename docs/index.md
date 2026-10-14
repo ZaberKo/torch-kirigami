@@ -19,7 +19,7 @@ The diagrams use Mermaid 11, including block diagrams for tensor coordinates.
 - [Operator support](operator-support.md): supported operator forms and custom rules.
 - [Persistence](persistence.md): saved plans, compact checkpoints, and training state.
 - [Sparse training](sparse-training.md): penalties, gates, parameter operations, and repeated pruning.
-- [Measurement](measurement.md): parameter counts, MACs, and inference latency.
+- [Measurement](measurement.md): parameter counts, FLOPs, MACs, and inference latency.
 
 ## Workflows and development
 

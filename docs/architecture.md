@@ -32,7 +32,7 @@ Both paths use the same dependency analysis and execution checks.
 
 ### Dependency analysis
 
-`DependencyGraph.build()` captures one forward with PyTorch FX and example metadata.
+`DependencyGraph.build()` captures the model's forward with PyTorch FX and example metadata.
 Operator rules describe structural relationships between tensor coordinates.
 Propagation adds all removals that those relationships require.
 Constraints check the complete selection.
@@ -42,54 +42,49 @@ Analysis does not rank candidates or change weights.
 An `Impact` reports the removals, constraints, requirements, and diagnostics.
 A resolved impact does not guarantee an executable plan or unchanged model outputs.
 
-The `torch_kirigami.dep_graph` package owns capture, structural coordinates,
-relations, constraints, operator semantics, and graph queries. It separates
-construction from repeated queries:
+The `torch_kirigami.dep_graph` package owns capture, coordinates, relations, constraints, operator semantics, and graph queries.
+Construction and repeated queries have separate responsibilities:
 
 | Component | Responsibility and lifetime |
 | --- | --- |
 | `_Analyzer` in `construction.py` | Collect original aliases, capture with FX, apply operator rules, and populate one `DependencyGraphState`. Release temporary value and alias tables on success or failure. |
 | `DependencyGraphState` in `graph_state.py` | Own structural tables throughout construction and subsequent queries. It contains neither construction scratch tables nor solver caches. |
 | `DependencySolver` in `solver.py` | Own relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
-| `DependencyGraph` in `dependency_graph.py` | Provide public queries, inspection copies, model freshness checks, and invalidation. It is initialized with complete records. |
+| `DependencyGraph` in `dependency_graph.py` | Accept complete records. Provide public queries, inspection copies, model freshness checks, and invalidation. |
 
-`DependencyGraph.build()` remains the public construction entry. The other components
-are internal and import shared records without importing the public graph.
-The analyzer creates one `DependencyGraphState`, writes directly into its tables, and
-returns that same object. It does not mirror the tables in its own attributes or
-copy them into a second record at completion. Only completed data can initialize
-`DependencyGraph`; the analyzer cannot be reused after success or failure.
-Public queries expose tuples, read-only views, or inspection copies. The data
-references the original model and records structural resource settings; it is
-neither a weight backup nor a checkpoint.
-`Operation` represents one invocation and its rule inputs, avoiding separate call
-and context wrappers. `OperatorRule` owns operator-specific declarations;
-`OperatorSpec` contains structural facts. `AttributeBinding` reuses `ShapeExpr`
-for structural attributes and `TensorEffects` reuses `ArgumentRef` for input writes.
-Static physical recipe records live in `operator_recipes.py`, below analysis and
-execution, so extensions do not introduce reverse imports.
+`DependencyGraph.build()` is the public construction entry.
+The other components import shared records without importing the public graph.
+The analyzer creates one `DependencyGraphState` and returns that same object after construction.
+It releases temporary tables on success or failure and cannot run again.
+
+Public queries expose tuples, read-only views, or inspection copies.
+The state references the original model and records structural resource settings.
+It is neither a weight backup nor a checkpoint.
+
+`Operation` describes one captured call and supplies its inputs to a rule.
+`OperatorRule` defines reusable operator semantics.
+`OperatorSpec` contains the structural facts that the rule returns for that call.
+`AttributeBinding` uses `ShapeExpr` to describe structural attributes.
+`TensorEffects` uses `ArgumentRef` to identify input writes.
+The [operator guide](operator-support.md#rule-contract) shows how these records connect.
+
+`operator_recipes.py` defines static records for physical edits.
+Dependency analysis can import these records without importing the pruning executor.
 
 Within this package, `selection.py` defines coordinates, region unions, and region
 shape/gather operations. `relations.py` defines index mappings. `contracts.py` defines constraints
 and analysis results. `operation.py`, `registry.py`, and `operators/` define and
 register operation semantics. Pruning and sparsity consume these contracts.
 
-`eligibility.py` checks nested native semantics before an optimization reuses
-structural computations. It is shared by propagation and planning; it is not a
-data-record definition or a general validity check. Extensions that fail this
-check still use ordinary analysis. Keeping this helper below both consumers
-avoids importing the solver into pruning code.
+`eligibility.py` checks native records, including nested fields, before an optimization reuses structural computations.
+Propagation and planning share this check.
+Extensions that fail this optimization check still use ordinary analysis.
+The helper does not import the solver or pruning code.
 
-The construction helper retains only temporary working state in addition to the
-single analysis record. The solver owns reusable query indexes and caches; the
-public graph owns validation and inspection. Coordinate types and their small
-region operations share one module; no separate region facade is needed.
-
-`settings.py` exports one process-global `config` for resource limits, scoring
-batches, and cache bounds. It has no scopes or per-owner option objects. Settings
-are read when work starts; changes during an operation are unsupported. See
-[global configuration](pruning.md#global-resource-configuration) for invalidation
-and validation rules.
+`settings.py` exports one process-global `config` for resource limits, scoring batches, and cache bounds.
+Library operations read settings when work starts.
+Do not change settings during an operation.
+See [global configuration](pruning.md#global-resource-configuration) for validation and invalidation rules.
 
 Package initialization in `dep_graph/__init__.py` performs no eager imports.
 Internal consumers import concrete submodules. Public imports such as
@@ -97,9 +92,10 @@ Internal consumers import concrete submodules. Public imports such as
 root package. Shared model binding and configuration utilities remain outside
 `dep_graph` because capture, physical execution, and persistence all use them.
 
-Each build copies its operator registry tables. There is no global registration
-singleton. Rule callables and original model objects retain their identities;
-read-only record containers do not make those objects immutable.
+Each build copies its operator registry tables.
+There is no global registration singleton.
+Rule instances and original model objects retain their identities.
+Read-only record containers do not make those objects immutable.
 
 ### Pruning policy and planning
 
@@ -136,7 +132,7 @@ The caller owns the task loss, optimizer, training loop, and phase transitions.
 Research workflows also own bias correction and weight reconstruction.
 Save their corrected or reconstructed values in the final model checkpoint.
 
-Measurement reports parameter counts, theoretical MACs, and inference latency.
+Measurement reports parameter counts, theoretical FLOPs and MACs, and inference latency.
 Task accuracy requires separate evaluation with task data.
 Fewer parameters or MACs do not guarantee lower latency or preserved accuracy.
 
@@ -158,7 +154,7 @@ It can apply the same coordinates to another model with compatible structure.
 
 ## Extension boundary
 
-One `OperatorRule` describes analysis, candidate axes, effects, and any custom rewrite.
+One `OperatorRule` defines structural facts, candidate axes, tensor effects, and any special edits for an operator family.
 The dependency core does not import pruning policy or sparse-training algorithms.
 The pruning layer consumes the dependency contracts.
 Sparse-training components consume graph and pruning contracts.

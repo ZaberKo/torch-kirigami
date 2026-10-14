@@ -207,18 +207,20 @@ Incomplete influence raises an error. The metric does not treat unsupported regi
 
 `DynamicGreedy(metric, max_trials=10_000)` uses the same checks. It rescores unselected candidates after each accepted complete commitment. It scores against the accepted joint impact. It does not physically compact or recalibrate the model during planning. Dynamic rescoring can cost more and does not guarantee better accuracy.
 
-For built-in `GroupMagnitude`, proved independent axis components use batched weight
-statistics on the parameters' devices. Dynamic selection recomputes normalization
-over the surviving positions after each commitment. Ordinary convolution scopes
-that cover an entire tensor qualify; partial group partitions do not. Nested
-extension objects in mappings, constraints, or candidate selections use ordinary
-analysis and scoring. A failed optimization proof does not make the model
-unsupported. Every accepted combination still requires joint execution checks.
-Cross-axis or last-position changes invalidate only the affected cached component;
-other proved components retain their statistics. Candidate coordinates and sparse
-axis summaries are immutable and reused within one selection call. Scores and
-ranking are still updated after every dynamic commitment. Metric or tracked tensor
-changes invalidate the statistics snapshot as a whole.
+For built-in `GroupMagnitude`, proved independent axis components use batched weight statistics on the parameters' devices.
+Dynamic selection recomputes normalization over the surviving positions after each commitment.
+Ordinary convolution scopes that cover an entire tensor qualify.
+Partial group partitions do not.
+
+Nested extension objects in mappings, constraints, or candidate selections use ordinary analysis and scoring.
+A failed optimization proof does not make the model unsupported.
+Every accepted combination still requires joint execution checks.
+
+Cross-axis or last-position changes invalidate only the affected cached component.
+Other proved components retain their statistics.
+The strategy reuses immutable candidate coordinates and sparse axis summaries within one selection call.
+It still updates scores and ranking after every dynamic commitment.
+Metric or tracked tensor changes invalidate the entire statistics snapshot.
 
 A commitment can contain several candidates to satisfy a grouping constraint. Their scores come from before that full commitment. A candidate's score does not need to predict whether its joint combination is valid. The strategy checks the combination before acceptance.
 
@@ -249,8 +251,9 @@ The planner checks graph freshness around user callbacks. It also checks tracked
 
 ### Global resource configuration
 
-Use the single process-global `config` object. All library consumers read the
-same object; no configuration is passed to graphs, pruners, or metrics.
+Use the single process-global `config` object.
+All library consumers read the same object.
+Graph, pruner, and metric constructors do not accept separate configuration objects.
 
 ```python
 from torch_kirigami import config
@@ -262,8 +265,8 @@ settings = config.as_dict()  # Independent dictionary for inspection.
 config.reset()  # Restore declared defaults when finished.
 ```
 
-`update()` validates every supplied name and value before committing any change.
-Unknown names, booleans, non-integers, and out-of-range values are rejected.
+`update()` checks every supplied name and value before committing any change.
+It rejects unknown names, booleans, non-integers, and out-of-range values.
 `as_dict()` and `update(**settings)` allow explicit saving and restoration of
 configuration in application code. Settings are not included in saved plans.
 
@@ -283,32 +286,36 @@ configuration in application code. Settings are not included in saved plans.
 | `taylor_cache_positions` | 262,144 | Scalar positions across Taylor vectors. |
 | `taylor_chunk_elements` | 1,048,576 | Elements per Taylor statistics chunk. |
 
-The first six fields require positive Python integers. Cache capacities accept
-zero to disable retention. Zero Taylor position/chunk limits use ordinary region
-scoring. Generic batching does not constrain native vectorized scoring or a
-custom strategy's explicit calls to `context.score()`. Custom metrics must remain
-independent of batching. Taylor chunking bounds statistics work, not memory used
-by ordinary region scoring. Different reduction chunks can change floating-point
-rounding; bitwise invariance for near-tied rankings is not guaranteed.
+The first six fields require positive Python integers.
+Cache capacities accept zero to disable retention.
+Zero Taylor position/chunk limits use ordinary region scoring.
 
-Change settings **between library operations**. All threads share the object;
-concurrent updates and updates from operator/metric callbacks are unsupported.
-Existing contexts and metrics discard affected caches on their next use after
-cache settings change. Structural settings (the five `max_*` fields) are recorded
-at graph construction. Queries and planning reject a graph while these differ
-from its build settings, including cache hits; rebuild under the desired settings.
-Captured metadata remains available for inspection. Existing coordinate records
-are not retroactively revalidated by an update.
+Generic batching does not constrain native vectorized scoring or a custom strategy's explicit calls to `context.score()`.
+Custom metrics must remain independent of batching.
+Taylor chunking bounds statistics work, not memory used by ordinary region scoring.
+Different reduction chunks can change floating-point rounding.
+Near-tied rankings can therefore differ between chunk sizes.
 
-An oversized literal has no captured values; operations requiring those values
-report unsupported semantics. Other structural limits raise errors or produce
+Change settings **between library operations**.
+All threads share the object.
+Do not update settings concurrently or from operator or metric callbacks.
+Existing contexts and metrics discard affected caches on their next use after cache settings change.
+
+Graph construction records structural settings, which are the five `max_*` fields.
+Queries and planning reject a graph while these differ from its build settings, including on cache hits.
+Rebuild under the desired settings.
+Captured metadata remains available for inspection.
+An update does not recheck existing coordinate records.
+
+An oversized literal has no captured values.
+Operations requiring those values report unsupported semantics. Other structural limits raise errors or produce
 analysis diagnostics at the affected operation. Raising a limit permits more
 work, but adds no operator support and guarantees no memory or stack capacity.
 Plan/checkpoint restoration uses current settings and never overrides them.
 
 `Greedy.max_trials` and `DynamicGreedy.max_trials` remain explicit algorithm
 parameters. Operator/type tables and codec schemas stay with their semantic
-owners; they are definitions, not resource settings.
+owners. They are definitions, not resource settings.
 
 ### Custom metrics
 
@@ -370,13 +377,22 @@ The plan separates analysis from execution. It does not promise that arbitrary u
 
 Complete dependency analysis is necessary but not sufficient for execution. Planning also checks tensor layouts, attributes, static arguments, shared bindings, and the affected original forward. Unsupported execution cases raise `PlanningError` with a diagnostic.
 
-An operator can implement `build_recipe(operation, spec, impact)` and return an `OperatorRecipe`. These shared data records live in `torch_kirigami.operator_recipes`, below both the dependency core and pruning executor. No additional execution context or requirement-acknowledgment callback is needed.
+An operator rule can implement `build_recipe(operation, spec, impact)` and return an `OperatorRecipe`.
+These static records live in `torch_kirigami.operator_recipes`.
+Both dependency analysis and pruning execution import the records.
 
 The compiler handles `AttributeBinding` expressions and `PartitionedLayout` descriptors centrally. Ordinary rectangular removals also need no custom recipe. Custom recipes supply only special tensor edits, attribute assignments, notes, or proved output strides. The compiler merges them with standard edits and checks coordinate mappings, shared bindings, attribute preconditions, and original-call requirements. A custom recipe cannot bypass an unknown requirement or contradict a declared partition.
 
-An attribute binding that evaluates to its old value still participates in shared-owner consistency checks. Output-stride declarations must refer to the declaring operation's outputs. Original-call shape/index obligations cannot be skipped by disabling meta evaluation.
+An attribute binding that evaluates to its old value still participates in shared-owner consistency checks.
+Output-stride declarations must refer to the declaring operation's outputs.
+The compiler rejects original-call shape or index requirements when the rule disables their required meta evaluation.
 
-`build_recipe()` returns `None` when it adds nothing, or raises `UnsupportedOperation` when the request cannot be executed. Rejection does not fall back to a different recipe. The compiler translates it into a planning diagnostic; automatic strategies can try other candidates. Custom hooks must be pure. Dependency propagation never invokes this method.
+`build_recipe()` returns `None` when it adds no special edits.
+It raises `UnsupportedOperation` when it cannot support the request.
+The compiler translates rejection into a planning diagnostic instead of trying a different recipe.
+Automatic strategies can try other candidates.
+Custom hooks must be pure.
+Dependency propagation never invokes this method.
 
 Planning checks the affected original forward with compact metadata where the rule declares that evaluation. It checks static indices and slices against original coordinates. It rejects a static argument when compaction would make it select different values.
 

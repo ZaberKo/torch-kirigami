@@ -84,7 +84,12 @@ Normalization, softmax, reductions, and attention can recompute statistics or pr
 
 Unknown operators and unsupported axes block requests that reach them. They do not invalidate every independent branch. Tensor-dependent Python control flow, dynamic index remapping, quantized or sparse storage compaction, RNN/PackedSequence, MoE routing, and optimizer-state migration have no general built-in support.
 
-Capture safety is a separate prerequisite. An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant. In that case building the graph fails before sample execution. A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`; the resulting structural barrier then blocks only related pruning requests.
+Capture safety is a separate prerequisite.
+An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.
+In that case, graph construction fails before sample execution.
+
+A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`.
+The resulting structural barrier blocks only related pruning requests.
 
 ## Implementing an operator rule
 
@@ -97,13 +102,13 @@ import torch
 from torch import fx, nn
 
 from torch_kirigami import (
-    TensorEffects,
     DependencyGraph,
     Operation,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
     ReshapeRelation,
+    TensorEffects,
 )
 from torch_kirigami.pruning import Pruner
 
@@ -139,18 +144,56 @@ This rule proves semantics only for `Half`. Equal input/output shapes do not pro
 
 ### Rule contract
 
-Subclass `OperatorRule`. Only `build_spec` is required:
+Subclass `OperatorRule` and implement `build_spec()`.
+The other methods have default implementations.
+
+The registry selects a rule for each captured call.
+An `Operation` supplies that call's arguments and metadata.
+The rule returns an `OperatorSpec`, which the graph uses for structural analysis.
+
+```mermaid
+flowchart TD
+    Registry["OperatorRegistry"] -- selects --> Rule["OperatorRule"]
+    Operation["Operation"] -- call facts --> Rule
+    Rule -- returns --> Spec["OperatorSpec"]
+    Spec -- structural facts --> Graph["DependencyGraph"]
+    classDef input fill:#edf3fd,stroke:#97afd0,color:#20364d
+    classDef semantics fill:#f1edfa,stroke:#b4a2d0,color:#38284f
+    classDef analysis fill:#eaf5ee,stroke:#98bba3,color:#213f2c
+    class Registry,Operation input
+    class Rule,Spec semantics
+    class Graph analysis
+```
+
+One rule instance can serve several calls.
+Each captured call has its own `Operation`.
+The rule supplies structural facts separately for each call.
+The arrows show information flow, not inheritance or the order of every rule method.
 
 | Part | Contract |
 | --- | --- |
 | `validate_capture(node, module)` | Reject recognized unsafe calls before metadata execution. |
 | `tensor_effects(node, module)` | Declare input mutation and fresh output storage before output metadata exists. |
 | `build_spec(operation)` | Return pure structural facts in an `OperatorSpec`. |
-| `build_recipe(operation, spec, impact)` | Optionally return declarative recipes. Return `None` to add no special edits; shared compilation always checks declared obligations. Do not mutate the model. |
+| `build_recipe(operation, spec, impact)` | Return special edits or `None`. The compiler combines these edits with standard edits and checks all obligations. Do not mutate the model. |
 
-Rules can opt into meta execution for compact-call validation. Third-party rules use declared output facts by default. A rule can cache a meta output only when that output is fresh, non-mutating, and depends only on argument metadata and captured module configuration.
+Capture calls `validate_capture()` and `tensor_effects()` before metadata execution.
+After metadata execution, analysis supplies an `Operation` to `build_spec()`.
+Planning calls `build_recipe()` with the joint `Impact` when it compiles affected operations.
+Dependency propagation does not call `build_recipe()`.
 
-The inherited `tensor_effects()` declares read-only inputs without promising fresh output storage. Override it for writes, using existing `ArgumentRef` argument locations. Effects are captured once and reused during planning. In-place alias checks apply even when meta execution is disabled. A declared reshape, slice, index, or partition validation requirement needs `evaluate_on_meta=True`; a successful custom recipe cannot acknowledge that check away.
+Set `evaluate_on_meta=True` to permit compact-call checks on metadata tensors.
+Third-party rules use declared output facts by default.
+Set `cache_meta_output=True` only when evaluation depends on argument metadata and captured module configuration alone.
+Cache reuse also requires fresh output storage and no input writes.
+
+The inherited `tensor_effects()` declares read-only inputs without promising fresh output storage.
+Override it for writes, using `ArgumentRef` argument locations.
+Capture records these effects once, and planning reuses them.
+In-place alias checks apply even with `evaluate_on_meta=False`.
+
+A declared reshape, slice, index, or partition validation requirement needs `evaluate_on_meta=True`.
+A successful custom recipe cannot bypass that check.
 
 An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered integer constants. Register structural integer tensors as buffers so the graph can guard their values.
 
@@ -158,7 +201,11 @@ For a parameterized affine module, relate input features to weight columns and o
 
 Supply an alignment axis when a physical candidate axis uses partitioned packing and cannot determine retained logical width. The alignment axis must belong to the graph and match the seed's original width. Relations must couple both axes.
 
-Implement custom lowering only when shared descriptors cannot express a required edit. Return an `OperatorRecipe` from `torch_kirigami.operator_recipes`; ordinary cuts and declared attributes/layouts need no override. Every activated requirement must be implemented or rejected. See [pruning](pruning.md) for physical lowering and plan behavior.
+Implement `build_recipe()` only when shared descriptors cannot express a required edit.
+Return an `OperatorRecipe` from `torch_kirigami.operator_recipes`.
+Ordinary cuts and declared attributes or layouts need no override.
+The compiler must implement or reject every activated requirement.
+See [pruning](pruning.md#recipe-validation-and-application) for recipe compilation and plan behavior.
 
 ### Proof obligations
 

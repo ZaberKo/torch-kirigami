@@ -128,8 +128,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph, OperatorRegistry
-from torch_kirigami.pruning import CandidateSpace, Greedy, GroupMagnitude
-from torch_kirigami.pruning import Pruner
+from torch_kirigami.pruning import CandidateSpace, Greedy, GroupMagnitude, Pruner
 from torch_kirigami.sparsity import CumulativeChannelBudget
 
 model = nn.Sequential(nn.Conv2d(3, 8, 1), nn.ReLU(), nn.Conv2d(8, 4, 1))

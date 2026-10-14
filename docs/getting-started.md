@@ -104,8 +104,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import Pruner
-from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
+from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, Pruner
 
 
 def make_model() -> nn.Sequential:
