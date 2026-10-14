@@ -92,10 +92,12 @@ This example registers a module that multiplies each input coordinate by a fixed
 
 ```python
 import torch
-from torch import nn
+from torch import fx, nn
+
 from torch_kirigami import (
     CallEffects,
     DependencyGraph,
+    OperationContext,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
@@ -105,11 +107,11 @@ from torch_kirigami.pruning import Pruner
 
 
 class Half(nn.Module):
-    def forward(self, input):
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
         return input * 0.5
 
 
-def analyze_half(context):
+def analyze_half(context: OperationContext) -> OperatorSpec:
     return OperatorSpec(
         relations=(
             ReshapeRelation(
@@ -119,7 +121,7 @@ def analyze_half(context):
     )
 
 
-def half_effects(node, module):
+def half_effects(node: fx.Node, module: nn.Module | None) -> CallEffects:
     return CallEffects(fresh_output=True)
 
 

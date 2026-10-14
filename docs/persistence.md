@@ -34,7 +34,7 @@ from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import Pruner, PruningPlan
 
 
-def make_model():
+def make_model() -> nn.Sequential:
     return nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
 
 

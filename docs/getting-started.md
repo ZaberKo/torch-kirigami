@@ -27,7 +27,7 @@ from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import Pruner, load_checkpoint, save_checkpoint
 
 
-def make_model():
+def make_model() -> nn.Sequential:
     return nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 3)).eval()
 
 
@@ -108,7 +108,7 @@ from torch_kirigami.pruning import Pruner
 from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude
 
 
-def make_model():
+def make_model() -> nn.Sequential:
     return nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 3)).eval()
 
 
