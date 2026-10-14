@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from tests.support.models import _context
+from tests.support.operators import with_rule
 from tests.support.pruning import StaticMetric
 from torch_kirigami import (
     CandidateAxis,
@@ -166,13 +167,13 @@ def test_candidate_domains_use_axes_not_keys(conflict):
     base = registry.modules[nn.Linear]
 
     class DuplicateDomains(OperatorRule):
-        def analyze(self, ctx):
-            spec = base.analyze(ctx)
+        def build_spec(self, ctx):
+            spec = base.build_spec(ctx)
             domain = spec.candidates[0]
             if ctx.module_path == "a":
                 twin = CandidateAxis(
                     domain.key if conflict == "key" else "duplicate",
-                    ctx.binding("weight").axis(1) if conflict == "key" else domain.axis,
+                    ctx.bindings.get("weight").axis(1) if conflict == "key" else domain.axis,
                     2 if conflict == "block" else domain.block_size,
                 )
                 return replace(spec, candidates=(domain, twin))
@@ -187,7 +188,7 @@ def test_candidate_domains_use_axes_not_keys(conflict):
         def forward(self, x):
             return self.a(x), self.b(x)
 
-    registry.modules[nn.Linear] = DuplicateDomains()
+    registry = with_rule(registry, nn.Linear, DuplicateDomains())
     model = Model()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),), operators=registry)
     pruner = Pruner(model, graph=graph, preserve_io=False)

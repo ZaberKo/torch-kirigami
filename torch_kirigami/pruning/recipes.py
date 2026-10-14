@@ -4,7 +4,8 @@ import torch
 
 from ..dep_graph.contracts import Impact
 from ..dep_graph.selection import IndexSet, Region, Selection, concatenated_shape, full_region
-from .types import CoordinateSegment, PlanningError, TensorRecipe
+from ..operator_recipes import TensorRecipe
+from .types import CoordinateSegment, PlanningError
 
 
 def compact_stride(shape: tuple[int, ...], memory_format: str) -> tuple[int, ...]:

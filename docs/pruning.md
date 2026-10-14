@@ -370,13 +370,13 @@ The plan separates analysis from execution. It does not promise that arbitrary u
 
 Complete dependency analysis is necessary but not sufficient for execution. Planning also checks tensor layouts, attributes, static arguments, shared bindings, and the affected original forward. Unsupported execution cases raise `PlanningError` with a diagnostic.
 
-A custom operator lowerer receives `RewriteContext` and returns a `RewriteResult`. The result must supply verified tensor or attribute recipes and acknowledge every requirement. A custom lowerer owns the proof that the original forward remains valid. Acknowledging a requirement does not remove its meaning.
+An operator can implement `build_recipe(operation, spec, impact)` and return an `OperatorRecipe`. These shared data records live in `torch_kirigami.operator_recipes`, below both the dependency core and pruning executor. No additional execution context or requirement-acknowledgment callback is needed.
 
-`RewriteContext.spec` exposes the operator's shared structural description. `compact_shape(ref)` returns an ordinary rectangular result shape. It raises when a tensor requires a partitioned layout.
+The compiler handles `AttributeBinding` expressions and `PartitionedLayout` descriptors centrally. Ordinary rectangular removals also need no custom recipe. Custom recipes supply only special tensor edits, attribute assignments, notes, or proved output strides. The compiler merges them with standard edits and checks coordinate mappings, shared bindings, attribute preconditions, and original-call requirements. A custom recipe cannot bypass an unknown requirement or contradict a declared partition.
 
-Every requirement supplied to the lowerer must appear in `RewriteResult.handled`. The lowerer can also supply output strides when it proves them. Those strides help check downstream views. They do not replace checks on shapes, coordinates, or aliases.
+An attribute binding that evaluates to its old value still participates in shared-owner consistency checks. Output-stride declarations must refer to the declaring operation's outputs. Original-call shape/index obligations cannot be skipped by disabling meta evaluation.
 
-The standard lowering path handles declared layouts and attributes. A custom rule can add operator-specific recipes. It must not mutate the model. The dependency graph does not call the lowering function during propagation.
+`build_recipe()` returns `None` when it adds nothing, or raises `UnsupportedOperation` when the request cannot be executed. Rejection does not fall back to a different recipe. The compiler translates it into a planning diagnostic; automatic strategies can try other candidates. Custom hooks must be pure. Dependency propagation never invokes this method.
 
 Planning checks the affected original forward with compact metadata where the rule declares that evaluation. It checks static indices and slices against original coordinates. It rejects a static argument when compaction would make it select different values.
 

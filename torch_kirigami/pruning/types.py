@@ -6,20 +6,18 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 import torch
 
-from ..configuration import FrozenDict, FrozenList, FrozenScalar, freeze, thaw
-from ..dep_graph.contracts import Impact, Requirement
+from ..configuration import FrozenDict, FrozenList, FrozenScalar
+from ..dep_graph.contracts import Impact
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import OperationContext, OperatorSpec
 from ..dep_graph.selection import (
     AxisRef,
     Region,
     Selection,
     TensorRef,
-    concatenated_shape,
     resolve_reference,
 )
 from ..errors import KirigamiError
@@ -296,75 +294,6 @@ class MetricContext(Protocol):
 
 
 @dataclass(frozen=True)
-class TensorRecipe:
-    """Gather Cartesian retained segments and concatenate in original group order.
-
-    Segments are disjoint regions in the original tensor. Concatenation defines
-    the old-to-new coordinate mapping without allocating an elementwise map.
-    """
-
-    tensor: TensorRef
-    segments: tuple[Region, ...]
-    concat_dim: int = 0
-    memory_format: str = "contiguous"
-
-    def __post_init__(self) -> None:
-        segments = tuple(self.segments)
-        if not segments or not isinstance(self.tensor, TensorRef):
-            raise ValueError("Tensor recipe requires a tensor and nonempty segments")
-        if type(self.concat_dim) is not int or not 0 <= self.concat_dim < max(
-            1, len(self.tensor.shape)
-        ):
-            raise ValueError("Invalid recipe concatenation dimension")
-        if self.memory_format not in ("contiguous", "channels_last", "channels_last_3d"):
-            raise ValueError("Unsupported recipe memory format")
-        rank = len(self.tensor.shape)
-        if self.memory_format != "contiguous" and rank != (
-            4 if self.memory_format == "channels_last" else 5
-        ):
-            raise ValueError("Memory format is incompatible with tensor rank")
-        for region in segments:
-            if not isinstance(region, Region) or region.empty:
-                raise ValueError("Recipe segments must be nonempty regions")
-            Selection(self.tensor, (region,))
-        try:
-            concatenated_shape(segments, self.concat_dim)
-        except ValueError as error:
-            raise ValueError("Recipe segments cannot concatenate") from error
-        object.__setattr__(self, "segments", segments)
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        """Return the resulting tensor shape without allocating tensor data."""
-        return concatenated_shape(self.segments, self.concat_dim)
-
-
-@dataclass(frozen=True)
-class AttributeRecipe:
-    """Assign a verified attribute; lists use detached FrozenList configuration."""
-
-    path: str
-    old: Any
-    new: Any
-
-    def __post_init__(self) -> None:
-        def frozen(value: object) -> object:
-            """Freeze supported configuration values for portable storage."""
-            if isinstance(value, (dict, FrozenDict, list, FrozenList, FrozenScalar, torch.Size)):
-                return freeze(thaw(value))
-            if isinstance(value, tuple):
-                return tuple(frozen(v) for v in value)
-            if value is None or type(value) in (int, float, bool, str):
-                return value
-            raise ValueError("Attribute recipes require scalar/list/tuple configuration values")
-
-        if not isinstance(self.path, str) or not self.path:
-            raise ValueError("Attribute recipes require a path")
-        object.__setattr__(self, "old", frozen(self.old))
-        object.__setattr__(self, "new", frozen(self.new))
-
-
-@dataclass(frozen=True)
 class CoordinateSegment:
     """Map an old Cartesian region into a compact Cartesian region in order."""
 
@@ -621,66 +550,3 @@ def require_compact_shape(impact: Impact, ref: TensorRef) -> tuple[int, ...]:
     if result is None:
         raise PlanningError(f"No rectangular tensor layout for {ref.id}")
     return result
-
-
-@dataclass(frozen=True)
-class RewriteContext:
-    """One captured call, its affected requirements, and the combined Impact."""
-
-    graph: DependencyGraph
-    operation: OperationContext
-    impact: Impact
-    requirements: tuple[Requirement, ...]
-
-    def __post_init__(self) -> None:
-        requirements = tuple(self.requirements)
-        if any(not isinstance(item, Requirement) for item in requirements):
-            raise TypeError("Rewrite requirements must be Requirement records")
-        object.__setattr__(self, "requirements", requirements)
-
-    @property
-    def spec(self) -> OperatorSpec:
-        """Return the operator's single shared structural description."""
-        return self.graph.operator_spec(self.operation)
-
-    def compact_shape(self, ref: TensorRef) -> tuple[int, ...]:
-        """Return the ordinary compact shape, rejecting partitioned layouts."""
-        return require_compact_shape(self.impact, ref)
-
-
-@dataclass(frozen=True)
-class RewriteResult:
-    """Pure extension result; every supplied requirement must be acknowledged.
-
-    Custom rules are responsible for proving original-forward compatibility.
-    Output strides can be supplied when proved, allowing downstream view checks.
-    """
-
-    tensors: tuple[TensorRecipe, ...] = ()
-    attributes: tuple[AttributeRecipe, ...] = ()
-    handled: tuple[Requirement, ...] = ()
-    notes: tuple[str, ...] = ()
-    output_strides: tuple[tuple[TensorRef, tuple[int, ...]], ...] = ()
-
-    def __post_init__(self) -> None:
-        for name, cls in (
-            ("tensors", TensorRecipe),
-            ("attributes", AttributeRecipe),
-            ("handled", Requirement),
-            ("notes", str),
-        ):
-            values = tuple(getattr(self, name))
-            if any(not isinstance(value, cls) for value in values):
-                raise TypeError(f"Invalid rewrite {name}")
-            object.__setattr__(self, name, values)
-        strides = tuple((ref, tuple(stride)) for ref, stride in self.output_strides)
-        if any(
-            not isinstance(ref, TensorRef)
-            or len(stride) != len(ref.shape)
-            or any(type(n) is not int or n < 0 for n in stride)
-            for ref, stride in strides
-        ):
-            raise ValueError("Output strides must match tensor ranks")
-        if len({ref for ref, _ in strides}) != len(strides):
-            raise ValueError("Duplicate output stride declarations")
-        object.__setattr__(self, "output_strides", strides)

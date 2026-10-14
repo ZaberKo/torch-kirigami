@@ -9,21 +9,17 @@ import torch
 from torch import nn
 
 from ..configuration import freeze, thaw
-from ..dep_graph.contracts import Impact
+from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import OperationContext, TensorFacts, argument
+from ..dep_graph.operation import Operation, OperatorSpec, TensorFacts, argument
 from ..dep_graph.operators.coordinates import narrow_index, retained_indices
+from ..dep_graph.operators.effects import written_inputs
 from ..dep_graph.operators.shapes import evaluate, reevaluate
 from ..dep_graph.selection import TensorRef
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from .layouts import view_preserves_stride_boundaries
 from .recipes import compact_stride
-from .types import (
-    AttributeRecipe,
-    PlanningError,
-    RewriteContext,
-    TensorRecipe,
-    require_compact_shape,
-)
+from .types import PlanningError, require_compact_shape
 
 
 def _meta_key(value: object) -> object:
@@ -88,11 +84,12 @@ def _restore_meta_output(value: object) -> object:
     return value
 
 
-def _check_slice_coordinates(ctx: RewriteContext, new_index: object) -> None:
+def _check_slice_coordinates(
+    op: Operation, requirements: tuple[Requirement, ...], impact: Impact, new_index: object
+) -> None:
     """Reject slices that select different original coordinates after compaction."""
-    op, impact = ctx.operation, ctx.impact
     x, y = op.inputs[0], op.outputs[0]
-    expanded = dict(next(r for r in ctx.requirements if r.kind == "slice_arguments").data)["index"]
+    expanded = dict(next(r for r in requirements if r.kind == "slice_arguments").data)["index"]
     new_raw = new_index if isinstance(new_index, tuple) else (new_index,)
     new_expanded = []
     for item in new_raw:
@@ -119,7 +116,7 @@ def _check_slice_coordinates(ctx: RewriteContext, new_index: object) -> None:
 
 
 def _meta_module(
-    operation: OperationContext,
+    operation: Operation,
     attributes: Mapping[str, AttributeRecipe],
     tensor: Callable[[TensorRef], torch.Tensor],
 ) -> nn.Module:
@@ -154,8 +151,10 @@ def _meta_module(
 
 def check_forward(
     graph: DependencyGraph,
-    operations: Sequence[OperationContext],
-    active: Iterable[tuple[RewriteContext, bool]],
+    operations: Sequence[Operation],
+    active: Iterable[
+        tuple[Operation, OperatorSpec, tuple[Requirement | AttributeBinding, ...], bool]
+    ],
     impact: Impact,
     recipes: Mapping[str, TensorRecipe],
     attributes: Mapping[str, AttributeRecipe],
@@ -165,7 +164,8 @@ def check_forward(
 ) -> None:
     """Verify declared call contracts using compact metadata and original coordinates."""
     active_by_name = {
-        ctx.operation.node.name: (ctx, evaluate_on_meta) for ctx, evaluate_on_meta in active
+        op.name: (spec, requirements, evaluate_on_meta)
+        for op, spec, requirements, evaluate_on_meta in active
     }
     operations_by_name = {op.node.name: op for op in operations}
     values, uncertain = {}, set()
@@ -244,10 +244,39 @@ def check_forward(
         entry = active_by_name.get(op.node.name)
         if entry is None:
             continue
-        ctx, evaluate_on_meta = entry
-        if ctx.spec.expression is not None:
+        spec, requirements, evaluate_on_meta = entry
+        requirements = tuple(r for r in requirements if isinstance(r, Requirement))
+        if spec.expression is not None:
             continue
+        rule = graph.operator_rule(op)
+        effects = op.effects
+        inplace = effects.writes_inputs is None or bool(effects.writes_inputs)
+        if inplace:
+            for source in written_inputs(op.node, effects):
+                producer = operations_by_name.get(source.name)
+                if (
+                    producer is None
+                    or not producer.effects.outputs_are_fresh
+                    or len(source.users) != 1
+                ):
+                    raise PlanningError(
+                        f"{op.name}: cannot prove in-place alias/consumer safety. "
+                        "If no consumer relies on modifying the original tensor, use an "
+                        "out-of-place operation and rebuild the dependency graph."
+                    )
         if not evaluate_on_meta:
+            forward_checks = {
+                "shape_arguments",
+                "dimension_transform",
+                "partition_arguments",
+                "slice_arguments",
+                "index_arguments",
+            }
+            if any(req.kind in forward_checks for req in requirements):
+                raise PlanningError(
+                    f"{op.name}: declared original-call checks require evaluate_on_meta=True; "
+                    "they cannot be acknowledged by a custom recipe"
+                )
             for ref in op.outputs:
                 if ref.id in strides:
                     values[ref.id] = torch.empty_strided(
@@ -259,7 +288,7 @@ def check_forward(
             continue
         normalized_args = reevaluate(op.node.args, op.args, op.expressions, shape)
         normalized_kwargs = reevaluate(op.node.kwargs, op.kwargs, op.expressions, shape)
-        for req in ctx.requirements:
+        for req in requirements:
             data = dict(req.data)
             if req.kind == "index_arguments":
                 kept = list(retained_indices(impact, data["axis"]))
@@ -286,7 +315,9 @@ def check_forward(
                         raise PlanningError(f"{op.node.name}: {error}") from error
                 else:
                     index = normalized_args[1]
-                _check_slice_coordinates(ctx, tuple(index) if isinstance(index, list) else index)
+                _check_slice_coordinates(
+                    op, requirements, impact, tuple(index) if isinstance(index, list) else index
+                )
             if req.kind == "partition_arguments":
                 axis = data["axis"]
                 # AxisPort identity is unchanged only if the original static split
@@ -317,7 +348,7 @@ def check_forward(
                         )
         args, kwargs = tree(normalized_args), tree(normalized_kwargs)
         shape_hint = ""
-        for req in ctx.requirements:
+        for req in requirements:
             data = dict(req.data)
             if req.kind == "shape_arguments":
                 dimensions = evaluate(data["expression"], shape)
@@ -354,30 +385,12 @@ def check_forward(
                     args, kwargs = (tensor(op.inputs[0]), dimensions), {}
                 else:
                     args, kwargs = (tensor(op.inputs[0]), *dimensions), {}
-        rule = graph.operator_rule(op)
-        effects = rule.effects(op.node, op.module)
-        inplace = effects.mutates_input
-        if inplace:
-            source = op.raw_argument("input", 0)
-            producer = operations_by_name.get(getattr(source, "name", None))
-            fresh = (
-                producer is not None
-                and graph.operator_rule(producer)
-                .effects(producer.node, producer.module)
-                .fresh_output
-            )
-            if not fresh or len(source.users) != 1:
-                raise PlanningError(
-                    f"{op.node.name}: cannot prove in-place alias/consumer safety. "
-                    "If no consumer relies on modifying the original tensor, use an "
-                    "out-of-place operation and rebuild the dependency graph."
-                )
-        contract = ctx.spec.contract
+        contract = spec.contract
         key = None
         if (
             meta_outputs is not None
             and rule.cache_meta_output
-            and effects.fresh_output
+            and effects.outputs_are_fresh
             and not inplace
         ):
             try:
@@ -419,7 +432,7 @@ def check_forward(
                 output = getattr(args[0], str(op.node.target))(*args[1:], **kwargs)
             else:
                 output = op.node.target(*args, **kwargs)
-            record(op.output, output, shape_hint)
+            record(op.result, output, shape_hint)
             if key is not None and (cached is None or cached[0] != key):
                 try:
                     facts = _freeze_meta_output(output)

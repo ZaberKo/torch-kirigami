@@ -7,14 +7,14 @@ import torch
 from torch import nn
 from torch.nn.modules.module import register_module_buffer_registration_hook
 
+from tests.support.operators import make_rule
 from tests.support.pruning import build
 from torch_kirigami import (
-    CallEffects,
     CaptureError,
     DependencyGraph,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
+    TensorEffects,
 )
 from torch_kirigami.dep_graph.capture import _reject_parameter_writes
 from torch_kirigami.dep_graph.operators.effects import native_effects
@@ -86,7 +86,7 @@ def test_non_none_output_is_rejected_before_execution(form, execution_device):
             return output_writer(x, self.target)
 
     registry = OperatorRegistry.default().register(
-        output_writer, OperatorRule(lambda ctx: OperatorSpec())
+        output_writer, make_rule(lambda ctx: OperatorSpec())
     )
     model = Model()
     original = model.target
@@ -182,7 +182,7 @@ def test_shared_effect_detection_still_rejects_real_parameter_writes(target):
     model = nn.Module()
     model.weight = nn.Parameter(torch.ones(3))
     gm = torch.fx.GraphModule(model, graph)
-    assert native_effects(node, None, fresh_output=False).mutates_input
+    assert native_effects(node, None, fresh_output=False).writes_inputs
     with pytest.raises(CaptureError, match="write"):
         _reject_parameter_writes(gm, OperatorRegistry.default(), set())
     torch.testing.assert_close(model.weight, torch.ones(3))
@@ -207,17 +207,17 @@ def test_capture_queries_each_call_effect_once(fresh_output, execution_device):
 
     def effects(node, module):
         calls.append((node.name, module))
-        return CallEffects(fresh_output=fresh_output)
+        return TensorEffects(writes_inputs=(), outputs_are_fresh=fresh_output)
 
     registry = OperatorRegistry.default().register(
-        Copy, OperatorRule(lambda ctx: OperatorSpec(), effects=effects)
+        Copy, make_rule(lambda ctx: OperatorSpec(), tensor_effects=effects)
     )
     model = Model()
     original = model.weight.detach().clone()
     sample = torch.ones(2, 4)
     if fresh_output:
         graph = DependencyGraph.build(model, args=(sample,), operators=registry)
-        assert calls == [(graph.calls("copy")[0].name, model.copy)]
+        assert calls == [(graph.operations("copy")[0].name, model.copy)]
         torch.testing.assert_close(model(sample), sample @ original.clamp_min(0))
     else:
         with pytest.raises(CaptureError, match="Parameter/alias write"):

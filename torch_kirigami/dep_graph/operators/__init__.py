@@ -1,21 +1,21 @@
 """Reusable operator families and the public extension interface."""
 
 from ..operation import (
-    CallEffects,
     CandidateAxis,
-    OperationContext,
+    Operation,
     OperatorRule,
     OperatorSpec,
     OutputContract,
     PartitionedLayout,
+    TensorEffects,
 )
 
 __all__ = [
-    "CallEffects",
     "CandidateAxis",
-    "OperationContext",
+    "Operation",
     "OperatorRule",
     "OperatorSpec",
     "OutputContract",
     "PartitionedLayout",
+    "TensorEffects",
 ]

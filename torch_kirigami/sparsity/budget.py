@@ -19,7 +19,10 @@ def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None =
         graph.metadata(axis.tensor)
     declarations = {}
     for op in graph.operations():
-        for domain in graph.operator_spec(op).candidates:
+        spec = graph.operator_spec(op)
+        if spec is None:
+            continue
+        for domain in spec.candidates:
             declarations.setdefault(domain.axis, set()).add((domain.key, domain.block_size))
     if any(not a.tensor.paths or a.tensor.kind != "parameter" for a in axes):
         raise ValueError("Cumulative budgets require named parameter axes")

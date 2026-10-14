@@ -32,7 +32,7 @@ def test_static_loop_mode_and_freshness():
 
     model = Static()
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    assert len(graph.calls("layer")) == 3
+    assert len(graph.operations("layer")) == 3
     with torch.no_grad():
         model.layer.weight.add_(1)
     graph.propagate(remove=[])

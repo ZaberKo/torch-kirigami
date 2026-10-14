@@ -1,5 +1,6 @@
 """Plan and apply structural pruning on the original PyTorch Module."""
 
+from ..operator_recipes import AttributeRecipe, OperatorRecipe, TensorRecipe
 from .axis_domains import IdentityAxisIndex
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
@@ -12,7 +13,6 @@ from .pruner import Pruner
 from .strategies import DynamicGreedy, Greedy
 from .types import (
     AnalysisSummary,
-    AttributeRecipe,
     Candidate,
     ChannelCount,
     ChannelRatio,
@@ -24,12 +24,9 @@ from .types import (
     ParameterBudget,
     ParameterReport,
     PlanningError,
-    RewriteContext,
-    RewriteResult,
     SelectionReport,
     Strategy,
     StrategyResult,
-    TensorRecipe,
 )
 
 __all__ = [
@@ -50,6 +47,7 @@ __all__ = [
     "Metric",
     "MetricContext",
     "ModelStructure",
+    "OperatorRecipe",
     "ParameterBudget",
     "ParameterGroup",
     "ParameterReport",
@@ -58,8 +56,6 @@ __all__ = [
     "Pruner",
     "PruningPlan",
     "PruningResult",
-    "RewriteContext",
-    "RewriteResult",
     "SelectionReport",
     "Strategy",
     "StrategyResult",

@@ -3,7 +3,8 @@
 import pytest
 from torch import fx, nn
 
-from torch_kirigami import CallEffects, OperatorRegistry, OperatorRule, OperatorSpec
+from tests.support.operators import make_rule
+from torch_kirigami import OperatorRegistry, OperatorRule, OperatorSpec, TensorEffects
 
 
 def custom_identity(value):
@@ -17,7 +18,7 @@ def test_registry_copies_own_tables_and_matches_exact_types():
     registry = OperatorRegistry.default()
     original_keys = set(registry.modules), set(registry.functions), set(registry.methods)
     clone = registry.copy()
-    rule = OperatorRule(lambda _: OperatorSpec())
+    rule = make_rule(lambda _: OperatorSpec())
     clone.register(Child, rule).register(custom_identity, rule).register_method(
         "custom_method", rule
     )
@@ -44,45 +45,47 @@ def test_registry_copies_own_tables_and_matches_exact_types():
         clone.register(nn.Identity, object())
 
 
-def test_rule_callbacks_receive_exact_context_and_defaults_are_readonly():
-    context, node, module, lowered = object(), fx.Graph().placeholder("x"), nn.Identity(), object()
+def test_rule_subclass_contract_and_readonly_defaults():
+    operation, spec, impact = object(), OperatorSpec(), object()
+    node, module = fx.Graph().placeholder("x"), nn.Identity()
     events = []
 
-    def analyze(actual):
-        assert actual is context
-        events.append("analyze")
-        return OperatorSpec()
+    class Rule(OperatorRule):
+        def validate_capture(self, actual_node, actual_module):
+            assert actual_node is node and actual_module is module
+            events.append("capture")
 
-    def preflight(actual_node, actual_module):
-        assert actual_node is node and actual_module is module
-        events.append("preflight")
+        def build_spec(self, actual):
+            assert actual is operation
+            events.append("spec")
+            return spec
 
-    rule = OperatorRule(
-        analyze,
-        preflight=preflight,
-        lower=lambda value: lowered if value is context else None,
-        effects=lambda actual_node, actual_module: CallEffects(fresh_output=True),
-    )
-    rule.preflight(node, module)
-    assert isinstance(rule.analyze(context), OperatorSpec)
-    assert rule.lower(context) is lowered
-    assert not rule.uses_default_lowering
-    assert rule.effects(node, module) == CallEffects(fresh_output=True)
-    assert events == ["preflight", "analyze"]
-    default = OperatorRule(analyze)
-    assert default.preflight(node, module) is None
-    assert default.lower(context) is None and default.effects(node, module) == CallEffects()
-    assert default.uses_default_lowering
-    assert not default.evaluate_on_meta
-    with pytest.raises(NotImplementedError):
-        OperatorRule().analyze(context)
+        def build_recipe(self, actual, actual_spec, actual_impact):
+            assert (actual, actual_spec, actual_impact) == (operation, spec, impact)
+            events.append("recipe")
+            return None
+
+    rule = Rule()
+    rule.validate_capture(node, module)
+    assert rule.build_spec(operation) is spec
+    assert rule.build_recipe(operation, spec, impact) is None
+    assert rule.tensor_effects(node, module) == TensorEffects(writes_inputs=())
+    assert events == ["capture", "spec", "recipe"]
+    default = make_rule(lambda _: spec)
+    assert default.validate_capture(node, module) is None
+    assert default.build_recipe(operation, spec, impact) is None
+    assert not default.evaluate_on_meta and not default.cache_meta_output
+    with pytest.raises(TypeError, match="abstract"):
+        OperatorRule()
 
 
-def test_subclass_and_instance_lowering_overrides_are_extension_boundaries():
-    class DelegatingRule(OperatorRule):
-        pass
-
-    assert not DelegatingRule().uses_default_lowering
-    rule = OperatorRule()
-    rule.lower = lambda _: None
-    assert not rule.uses_default_lowering
+def test_registry_views_cannot_bypass_registration():
+    registry = OperatorRegistry.default()
+    rule = registry.modules[nn.Linear]
+    for table, key in (
+        (registry.modules, nn.Linear),
+        (registry.functions, custom_identity),
+        (registry.methods, "view"),
+    ):
+        with pytest.raises(TypeError):
+            table[key] = rule

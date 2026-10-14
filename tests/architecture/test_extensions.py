@@ -5,6 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule
 from torch_kirigami import (
     AxisRelation,
     CandidateAxis,
@@ -13,7 +14,6 @@ from torch_kirigami import (
     Fixed,
     IndexSet,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
     PermuteRelation,
     Region,
@@ -41,7 +41,7 @@ class Opaque(nn.Module):
 
 
 def opaque_rule(ctx):
-    x, y, w = ctx.inputs[0], ctx.outputs[0], ctx.binding("weight")
+    x, y, w = ctx.inputs[0], ctx.outputs[0], ctx.bindings.get("weight")
     return OperatorSpec(
         (
             AxisRelation.equal(x.axis(1), w.axis(1), "opaque input"),
@@ -70,11 +70,11 @@ def test_custom_torch_prefix_does_not_enable_native_aliases(namespace, monkeypat
         def forward(self, x):
             return namespace_swap(x, axis=0)
 
-    registry = OperatorRegistry.default().register(namespace_swap, OperatorRule(analyze))
+    registry = OperatorRegistry.default().register(namespace_swap, make_rule(analyze))
     graph = DependencyGraph.build(Model(), args=(torch.ones(4, 4),), operators=registry)
-    call = graph.calls()[0]
-    impact = graph.propagate(remove=[call.input().axis(1).select([1])])
-    assert tuple(impact.selection(call.output()).fully_selected_indices(0)) == (1,)
+    call = graph.operations()[0]
+    impact = graph.propagate(remove=[call.inputs[0].axis(1).select([1])])
+    assert tuple(impact.selection(call.outputs[0]).fully_selected_indices(0)) == (1,)
 
 
 @pytest.mark.parametrize(
@@ -112,13 +112,13 @@ def test_extension_spec_rejects_foreign_references(field):
         name = {"payload": "requirements", "alignment_axis": "candidates"}.get(field, field)
         return OperatorSpec(**{name: values[field]})
 
-    registry = OperatorRegistry().register(nn.Linear, OperatorRule(analyze))
+    registry = OperatorRegistry().register(nn.Linear, make_rule(analyze))
     with pytest.raises(ValueError, match="another graph"):
         DependencyGraph.build(nn.Linear(4, 4), args=(torch.randn(2, 4),), operators=registry)
 
 
 def test_external_root_and_nested_module_use_one_rule_interface():
-    rules = OperatorRegistry.default().register(Opaque, OperatorRule(opaque_rule))
+    rules = OperatorRegistry.default().register(Opaque, make_rule(opaque_rule))
     for model, path in ((Opaque(), "weight"), (nn.Sequential(Opaque()), "0.weight")):
         graph = DependencyGraph.build(model, args=(torch.randn(2, 4),), operators=rules)
         assert (
@@ -127,9 +127,9 @@ def test_external_root_and_nested_module_use_one_rule_interface():
     graph = DependencyGraph.build(
         Opaque(), args=(torch.ones(2, 4),), kwargs={"scale": 2.0}, operators=rules
     )
-    assert graph.calls("")[0].output().shape == (2, 4)
+    assert graph.operations("")[0].outputs[0].shape == (2, 4)
     with pytest.raises(ValueError):
-        rules.register(Opaque, OperatorRule(opaque_rule))
+        rules.register(Opaque, make_rule(opaque_rule))
 
 
 def test_external_function_capture_is_local():
@@ -139,11 +139,12 @@ def test_external_function_capture_is_local():
 
     rules = OperatorRegistry.default().register(
         opaque_function,
-        OperatorRule(lambda c: OperatorSpec((ReshapeRelation(c.inputs[0], c.outputs[0]),))),
+        make_rule(lambda c: OperatorSpec((ReshapeRelation(c.inputs[0], c.outputs[0]),))),
     )
     graph = DependencyGraph.build(Model(), args=(torch.ones(2, 4),), operators=rules)
     assert (
-        graph.propagate(remove=[graph.calls()[0].input().axis(1).select([1])]).status == "resolved"
+        graph.propagate(remove=[graph.operations()[0].inputs[0].axis(1).select([1])]).status
+        == "resolved"
     )
     with pytest.raises(CaptureError):
         DependencyGraph.build(Model(), args=(torch.ones(2, 4),))

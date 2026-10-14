@@ -61,7 +61,9 @@
             "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring"
           ],
           "conditions": "Exact declared relations; proper subsets for full-component reuse; equivalent seeds checked through actual CPU/CUDA propagation, planning, replay and execution.",
-          "gaps": ["Scoped mappings and extension semantics are not inferred. Equivalent seeds do not prove uniform behavior across different positions; full-axis changes still require ordinary joint analysis."]
+          "gaps": [
+            "Scoped mappings and extension semantics are not inferred. Equivalent seeds do not prove uniform behavior across different positions; full-axis changes still require ordinary joint analysis."
+          ]
         }
       ]
     },
@@ -101,20 +103,6 @@
           "gaps": [
             "Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."
           ]
-        }
-      ]
-    },
-    {
-      "object": "torch_kirigami.dep_graph.operation.OperatorRegistrar",
-      "contracts": [
-        {
-          "behavior": "Type-only registration contract keeps built-in rules independent of the concrete registry.",
-          "tests": [
-            "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic",
-            "tests/architecture/test_coverage_inventory.py::test_registered_entry_inventory_has_no_missing_or_obsolete_targets"
-          ],
-          "conditions": "Static protocol; concrete registration is exercised by the default registry inventory.",
-          "gaps": []
         }
       ]
     },
@@ -524,7 +512,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.OperationContext",
+      "object": "torch_kirigami.Operation",
       "contracts": [
         {
           "behavior": "真实 dtype/stride 与捕获上下文；查询隔离；命名/位置/别名参数",
@@ -533,6 +521,19 @@
             "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
             "tests/operators/test_arguments.py::test_native_keyword_spellings_have_same_coordinates",
             "tests/architecture/test_extensions.py::test_custom_torch_prefix_does_not_enable_native_aliases"
+          ],
+          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
+          "tests": [
+            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/integration/test_shared_constraints.py::test_shared_module_paths_and_calls",
+            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests",
+            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
+            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -635,13 +636,13 @@
       ]
     },
     {
-      "object": "torch_kirigami.CallEffects",
+      "object": "torch_kirigami.TensorEffects",
       "contracts": [
         {
           "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
           "tests": [
             "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
-            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/architecture/test_registry.py::test_rule_subclass_contract_and_readonly_defaults",
             "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
@@ -671,6 +672,16 @@
           ],
           "conditions": "CPU/CUDA；公共生命周期与失败状态检查",
           "gaps": []
+        },
+        {
+          "behavior": "Pure direct methods; targeted input writes; partial recipe composition and conservative failure.",
+          "tests": [
+            "tests/integration/test_operator_contract.py::test_partial_recipe_preserves_declarations_and_persistence",
+            "tests/integration/test_operator_contract.py::test_write_argument_locator_and_alias_checks_apply_without_meta",
+            "tests/integration/test_operator_contract.py::test_opaque_module_parameter_result_cannot_hide_a_write"
+          ],
+          "conditions": "CPU/CUDA; success, unsupported request, preserved failure state, independent numerical reference.",
+          "gaps": []
         }
       ]
     },
@@ -690,10 +701,20 @@
           "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
           "tests": [
             "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
-            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/architecture/test_registry.py::test_rule_subclass_contract_and_readonly_defaults",
             "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "Pure direct methods; targeted input writes; partial recipe composition and conservative failure.",
+          "tests": [
+            "tests/integration/test_operator_contract.py::test_partial_recipe_preserves_declarations_and_persistence",
+            "tests/integration/test_operator_contract.py::test_write_argument_locator_and_alias_checks_apply_without_meta",
+            "tests/integration/test_operator_contract.py::test_opaque_module_parameter_result_cannot_hide_a_write"
+          ],
+          "conditions": "CPU/CUDA; success, unsupported request, preserved failure state, independent numerical reference.",
           "gaps": []
         }
       ]
@@ -705,26 +726,8 @@
           "behavior": "回调默认值/传参、注册复制隔离/准确匹配/重复拒绝、执行前写入诊断",
           "tests": [
             "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
-            "tests/architecture/test_registry.py::test_rule_callbacks_receive_exact_context_and_defaults_are_readonly",
+            "tests/architecture/test_registry.py::test_rule_subclass_contract_and_readonly_defaults",
             "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
-          ],
-          "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
-          "gaps": []
-        }
-      ]
-    },
-    {
-      "object": "torch_kirigami.CallRef",
-      "contracts": [
-        {
-          "behavior": "查询归属/快照隔离、共享别名、闭包/幂等、过期检查、来源可重放",
-          "tests": [
-            "tests/graph/test_queries.py::test_graph_queries_reject_foreign_and_altered_references",
-            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
-            "tests/integration/test_shared_constraints.py::test_shared_module_paths_and_calls",
-            "tests/graph/test_propagation.py::test_linear_chain_and_joint_requests",
-            "tests/graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
-            "tests/graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -1199,7 +1202,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.pruning.RewriteContext",
+      "object": "torch_kirigami.pruning.OperatorRecipe",
       "contracts": [
         {
           "behavior": "自定义 lowering 紧凑形状、声明处理要求、结果字段验证",
@@ -1210,12 +1213,7 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
-        }
-      ]
-    },
-    {
-      "object": "torch_kirigami.pruning.RewriteResult",
-      "contracts": [
+        },
         {
           "behavior": "自定义 lowering 紧凑形状、声明处理要求、结果字段验证",
           "tests": [
@@ -1224,6 +1222,16 @@
             "tests/core/test_records.py::test_static_records_validate_and_freeze_construction_inputs"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "Pure direct methods; targeted input writes; partial recipe composition and conservative failure.",
+          "tests": [
+            "tests/integration/test_operator_contract.py::test_partial_recipe_preserves_declarations_and_persistence",
+            "tests/integration/test_operator_contract.py::test_write_argument_locator_and_alias_checks_apply_without_meta",
+            "tests/integration/test_operator_contract.py::test_opaque_module_parameter_result_cannot_hide_a_write"
+          ],
+          "conditions": "CPU/CUDA; success, unsupported request, preserved failure state, independent numerical reference.",
           "gaps": []
         }
       ]
@@ -2315,6 +2323,566 @@
             "tests/pruning/test_options.py::test_configured_public_plans_restore_and_apply",
             "tests/integration/test_resource_limits.py::test_cached_analysis_rejects_changed_analysis_settings"
           ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.AttributeBinding",
+      "contracts": [
+        {
+          "behavior": "Bind attributes through existing shape expressions; validate shared demands including unchanged values.",
+          "tests": [
+            "tests/operators/test_shapes.py::test_unflatten_has_explicit_attribute_binding",
+            "tests/integration/test_operator_contract.py::test_partial_recipe_preserves_declarations_and_persistence",
+            "tests/integration/test_operator_contract.py::test_unchanged_attribute_declaration_conflicts_with_another_demand"
+          ],
+          "conditions": "Root and nested GQA, CPU/CUDA, static plan round trip and checkpoint restoration.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.NativeRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.IdentityRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.AddmmRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.BatchNormRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.CastRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ChannelOperatorRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ChannelShuffleRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ChunkRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ConcatenateRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ConvolutionRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.EinsumRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.EmbeddingRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.AttributeReadRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.IndexRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.GluRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.GroupNormRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.IndexSelectRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.InstanceNormRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.LayerNormRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.LinearRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.MatmulRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.MultiheadAttentionRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.NarrowRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.NormalizeRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.PaddingRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.PermuteRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.PixelShuffleRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.PointwiseRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.PreluRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ReductionRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.RepeatRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ReshapeRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.AttentionRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.ShapeOnlyRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.SoftmaxRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.SplitRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.StackRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.UnfoldFoldRule",
+      "contracts": [
+        {
+          "behavior": "Provide exact native semantics without callback wrappers or a second registry.",
+          "tests": [
+            "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+            "tests/integration/test_extensions.py::test_default_lowering_does_not_rescan_model_after_every_operation"
+          ],
+          "conditions": "Registered module/function/method inventory and ordinary public execution; per-entry coverage is rule-level.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.gates.ChannelGateRule",
+      "contracts": [
+        {
+          "behavior": "Declare gate coordinate relations, bound width and fresh storage.",
+          "tests": [
+            "tests/sparsity/test_operations_gates.py::test_gate_training_pruning_independent_reference_and_checkpoint"
+          ],
+          "conditions": "Shared extension contracts; gate-specific lifecycle is covered by the existing sparsity tests.",
+          "gaps": []
         }
       ]
     }
@@ -4780,7 +5348,7 @@
   ],
   "operator_verification": {
     "level": "rule",
-    "scope": "手工 OperationContext 的规则匹配、关系闭包和约束断言",
+    "scope": "手工 Operation 的规则匹配、关系闭包和约束断言",
     "limits": "不代表完整捕获、规划、执行或持久化组合覆盖；跨层专项见 verification.md"
   }
 }

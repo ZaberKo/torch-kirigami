@@ -7,8 +7,8 @@ from uuid import uuid4
 from torch import fx, nn
 
 from ..settings import config
-from .contracts import Constraint, Diagnostic, Requirement, ShapeExpr
-from .operation import CallRef, OperationContext, OperatorSpec, TensorFacts
+from .contracts import AttributeBinding, Constraint, Diagnostic, Requirement, ShapeExpr
+from .operation import Operation, OperatorSpec, TensorFacts
 from .registry import OperatorRegistry
 from .relations import Relation
 from .selection import TensorRef
@@ -54,10 +54,9 @@ class DependencyGraphState:
     literal_values: dict[str, tuple[int, ...]] = field(default_factory=dict)
     relations: list[Relation] = field(default_factory=list)
     constraints: list[Constraint] = field(default_factory=list)
-    requirements: list[Requirement] = field(default_factory=list)
+    requirements: list[Requirement | AttributeBinding] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
-    calls: list[CallRef] = field(default_factory=list)
-    operations: dict[str, OperationContext] = field(default_factory=dict)
+    operations: dict[str, Operation] = field(default_factory=dict)
     specs: dict[str, OperatorSpec] = field(default_factory=dict)
     constant_refs: tuple[TensorRef, ...] = ()
     interfaces: set[str] = field(default_factory=set)

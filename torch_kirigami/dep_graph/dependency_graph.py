@@ -15,9 +15,9 @@ from ..settings import config
 from .capture import fingerprint
 from .capture import validate_attribute_changes as _validate_attribute_changes
 from .construction import _Analyzer
-from .contracts import Constraint, Diagnostic, Impact, ShapeExpr
+from .contracts import AttributeBinding, Constraint, Diagnostic, Impact, ShapeExpr
 from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
-from .operation import CallRef, OperationContext, OperatorRule, OperatorSpec, TensorFacts
+from .operation import Operation, OperatorRule, OperatorSpec, TensorFacts
 from .registry import OperatorRegistry
 from .relations import Relation
 from .selection import Selection, TensorRef
@@ -133,23 +133,6 @@ class DependencyGraph:
         """Return the buffer reference for an original path, or raise KeyError."""
         return self._data.buffers[path]
 
-    def calls(self, module_path: str | None = None) -> tuple[CallRef, ...]:
-        """Return operation calls, optionally filtered by an original module alias.
-
-        Args:
-            module_path: Module path to match, or None for all operation calls.
-                An empty string matches calls to a root module captured as a leaf.
-
-        Returns:
-            All matching calls, including repeated uses of a shared module.
-            Aliases do not identify which Python attribute spelling each call used.
-        """
-        return (
-            tuple(self._data.calls)
-            if module_path is None
-            else tuple(call for call in self._data.calls if module_path in call.module_paths)
-        )
-
     def metadata(self, tensor: TensorRef) -> TensorFacts:
         """Return captured tensor metadata without retaining its activation.
 
@@ -250,19 +233,19 @@ class DependencyGraph:
         """
         return self._data.constants
 
-    def operator_spec(self, operation: OperationContext) -> OperatorSpec:
+    def operator_spec(self, operation: Operation) -> OperatorSpec | None:
         """Return shared structural descriptors for a captured operation."""
         operation = self._canonical_operation(operation)
-        return self._data.specs.get(operation.node.name, OperatorSpec())
+        return self._data.specs.get(operation.node.name)
 
-    def operator_rule(self, operation: OperationContext) -> OperatorRule | None:
+    def operator_rule(self, operation: Operation) -> OperatorRule | None:
         """Return the exact operator definition used during capture."""
         operation = self._canonical_operation(operation)
         return self._data.registry.lookup(operation.node, operation.module)
 
-    def _canonical_operation(self, operation: OperationContext) -> OperationContext:
+    def _canonical_operation(self, operation: Operation) -> Operation:
         """Accept inspection copies only when their captured call identity matches."""
-        if not isinstance(operation, OperationContext) or operation.graph_id != self.id:
+        if not isinstance(operation, Operation) or operation.graph_id != self.id:
             raise ValueError("Operation belongs to another graph")
         original = self._data.operations.get(operation.node.name)
         if original is None:
@@ -285,7 +268,7 @@ class DependencyGraph:
 
         return self._solver.affected_operations(impact.selections)
 
-    def operations(self) -> tuple[OperationContext, ...]:
+    def operations(self, module_path: str | None = None) -> tuple[Operation, ...]:
         """Return inspection contexts with copied FX nodes and argument containers.
 
         Module and tensor bindings refer to the original model. No activations are
@@ -301,11 +284,12 @@ class DependencyGraph:
                 node=nodes[ctx.node.name],
                 args=copy.deepcopy(ctx.args),
                 kwargs=copy.deepcopy(ctx.kwargs),
-                output=copy.deepcopy(ctx.output),
+                result=copy.deepcopy(ctx.result),
                 bindings=dict(ctx.bindings),
                 expressions=expressions,
             )
             for ctx in self._data.operations.values()
+            if module_path is None or module_path in ctx.module_paths
         )
 
     def _check_fresh(self) -> None:
@@ -374,5 +358,8 @@ class DependencyGraph:
         for step in impact.provenance:
             lines.append(f"  via {step.reason}: {step.source.tensor.id} -> {step.target.tensor.id}")
         lines.extend(f"- {d}" for d in impact.diagnostics)
-        lines.extend(f"- requires {r.kind}: {r.target}: {r.detail}" for r in impact.requirements)
+        lines.extend(
+            f"- requires {'attribute' if isinstance(r, AttributeBinding) else r.kind}: {r.target}: {r.detail}"
+            for r in impact.requirements
+        )
         return "\n".join(lines)

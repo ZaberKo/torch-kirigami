@@ -36,7 +36,7 @@ def test_physical_axis_constraints_do_not_guess_partitioned_sizes():
     from torch_kirigami import Fixed
 
     graph = DependencyGraph.build(nn.Conv1d(12, 4, 1, groups=2), args=(torch.randn(2, 12, 5),))
-    request = graph.calls("")[0].input().axis(1).select([0, 1, 2, 9, 10, 11])
+    request = graph.operations("")[0].inputs[0].axis(1).select([0, 1, 2, 9, 10, 11])
     axis = graph.parameter("weight").axis(1)
     assert graph.propagate(remove=[request]).status == "resolved"
     for constraint in (Fixed(axis), Divisible(axis, 2)):

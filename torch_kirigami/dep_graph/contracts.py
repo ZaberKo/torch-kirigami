@@ -513,12 +513,42 @@ class ArgumentRef:
 
 
 @dataclass(frozen=True)
+class AttributeBinding:
+    """Bind a qualified module attribute to a structural size expression.
+
+    The expression uses the existing shape-provenance representation. During
+    planning it is evaluated against retained dimensions, without model edits.
+    Bindings travel with execution requirements so propagation has one source
+    of truth for which edits a joint request activates.
+    """
+
+    target: str
+    expression: ShapeExpr
+    detail: str = "Update the bound structural attribute"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.target, str)
+            or not self.target
+            or any(not part for part in self.target.split("."))
+        ):
+            raise ValueError("Attribute binding requires a qualified attribute path")
+        if not isinstance(self.expression, ShapeExpr):
+            raise TypeError("Attribute binding requires a ShapeExpr")
+
+    @property
+    def refs(self) -> tuple[TensorRef, ...]:
+        """Return the tensor dimensions determining this attribute."""
+        return self.expression.refs
+
+
+@dataclass(frozen=True)
 class Requirement:
     """Describe a modification an executor needs to implement.
 
     Attributes:
-        kind: Modification category, such as attribute, layout, or graph argument.
-        target: Module attribute or graph location to change.
+        kind: Execution obligation category, such as layout or graph argument.
+        target: Graph location to check. Module attributes use AttributeBinding.
         tensors: Tensor entities determining the modification.
         detail: Human-readable explanation and limitations.
         data: Unique named values containing scalar data, slices, structural
@@ -540,6 +570,8 @@ class Requirement:
     arguments: tuple[ArgumentRef, ...] = ()
 
     def __post_init__(self) -> None:
+        if self.kind == "attribute":
+            raise ValueError("Declare module attributes with AttributeBinding")
         if not isinstance(self.kind, str) or not self.kind or not isinstance(self.target, str):
             raise ValueError("Requirement kind and target must be strings")
         data = tuple(tuple(item) for item in self.data)
@@ -618,7 +650,7 @@ class Impact:
     requested: tuple[Selection, ...]
     selections: Mapping[str, Selection]
     diagnostics: tuple[Diagnostic, ...]
-    requirements: tuple[Requirement, ...]
+    requirements: tuple[Requirement | AttributeBinding, ...]
     provenance: tuple[Provenance, ...]
     interfaces: tuple[TensorRef, ...]
     status: str

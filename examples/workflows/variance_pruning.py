@@ -58,13 +58,15 @@ from tqdm.auto import tqdm
 
 from torch_kirigami import (
     AxisRef,
+    AxisRelation,
     CaptureError,
     DependencyGraph,
     Impact,
+    Operation,
     OperatorRegistry,
     OperatorRule,
+    OperatorSpec,
 )
-from torch_kirigami.dep_graph.operation import OperationContext
 from torch_kirigami.pruning import (
     Candidate,
     Granularity,
@@ -78,17 +80,10 @@ from torch_kirigami.pruning import (
 )
 
 
-def vbp_operators() -> OperatorRegistry:
-    """Add torchvision stochastic depth with an explicit evaluation-only contract.
+class EvaluationStochasticDepthRule(OperatorRule):
+    """Describe torchvision stochastic depth only while it acts as identity."""
 
-    Both `row` and `batch` modes return their input unchanged in evaluation.
-    Reuse the built-in identity relations and preserve alias/layout uncertainty.
-    The original module remains in the compact model and still samples its
-    usual masks during subsequent fine-tuning; only graph capture requires eval.
-    """
-    registry = OperatorRegistry.default()
-
-    def require_evaluation(node: fx.Node, module: nn.Module | None) -> None:
+    def validate_capture(self, node: fx.Node, module: nn.Module | None) -> None:
         """Reject training capture before its stochastic sample can run."""
         training = node.kwargs.get("training", node.args[3] if len(node.args) > 3 else True)
         if training is not False:
@@ -96,13 +91,18 @@ def vbp_operators() -> OperatorRegistry:
                 "VBP stochastic_depth capture requires model.eval() and training=False"
             )
 
-    return registry.register(
-        stochastic_depth,
-        OperatorRule(
-            registry.modules[nn.Identity].analyze,
-            preflight=require_evaluation,
-            evaluate_on_meta=True,
-        ),
+    def build_spec(self, operation: Operation) -> OperatorSpec:
+        """Preserve every axis without promising independent output storage."""
+        x, y = operation.inputs[0], operation.outputs[0]
+        return OperatorSpec(
+            relations=tuple(AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape)))
+        )
+
+
+def vbp_operators() -> OperatorRegistry:
+    """Register evaluation semantics; subsequent fine-tuning retains stochastic depth."""
+    return OperatorRegistry.default().register(
+        stochastic_depth, EvaluationStochasticDepthRule(evaluate_on_meta=True)
     )
 
 
@@ -150,7 +150,7 @@ class ActivationMoments:
         return result
 
 
-def _coordinatewise(operation: OperationContext) -> bool:
+def _coordinatewise(operation: Operation) -> bool:
     """Recognize coordinatewise transforms without writes or active randomness."""
     module = operation.module
     if module is not None:

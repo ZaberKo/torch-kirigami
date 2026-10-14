@@ -19,6 +19,7 @@ from ..bindings import (
     storage_key,
 )
 from ..configuration import STRUCTURE_ATTRIBUTE, thaw
+from ..operator_recipes import AttributeRecipe
 from ..settings import config
 from .serialization import decode, encode
 from .state import (
@@ -28,7 +29,7 @@ from .state import (
     snapshot,
     validate_managed,
 )
-from .types import AttributeRecipe, ExecutionError, ModelStructure, TensorState
+from .types import ExecutionError, ModelStructure, TensorState
 
 
 def _check_state_contract(model: nn.Module) -> None:

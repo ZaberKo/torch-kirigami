@@ -30,9 +30,9 @@ from ..configuration import (
     slot_names,
 )
 from ..errors import CaptureError
-from .operation import CallEffects, TensorFacts
+from .operation import TensorEffects, TensorFacts
 from .operation import argument as call_argument
-from .operators.effects import named_inplace
+from .operators.effects import named_inplace, written_inputs
 from .registry import OperatorRegistry
 
 
@@ -577,8 +577,9 @@ def validate_attribute_changes(
 
 def _reject_parameter_writes(
     gm: fx.GraphModule, registry: OperatorRegistry, isolated_buffers: set[int]
-) -> set[int]:
+) -> tuple[set[int], dict[fx.Node, TensorEffects]]:
     """Reject parameter or unisolated constant writes before metadata execution."""
+    declarations = {}
     tainted = set()
     aliases, written = {}, set()
     buffers = {id(b) for b in gm.buffers()}
@@ -587,8 +588,16 @@ def _reject_parameter_writes(
         module = gm.get_submodule(str(node.target)) if node.op == "call_module" else None
         rule = registry.lookup(node, module)
         if rule is not None:
-            rule.preflight(node, module)
-        effects = rule.effects(node, module) if rule is not None else CallEffects()
+            rule.validate_capture(node, module)
+        if rule is not None:
+            effects = rule.tensor_effects(node, module)
+        elif node.op in ("placeholder", "get_attr", "output"):
+            effects = TensorEffects(writes_inputs=())
+        else:
+            effects = TensorEffects()
+        if not isinstance(effects, TensorEffects):
+            raise TypeError("tensor_effects must return TensorEffects")
+        declarations[node] = effects
         if node.op == "get_attr":
             value = gm
             for component in str(node.target).split("."):
@@ -598,16 +607,24 @@ def _reject_parameter_writes(
             if id(value) in buffers:
                 aliases[node] = {id(value)}
         inputs = set(node.all_input_nodes)
-        mutates = effects.mutates_input or named_inplace(node) or node.kwargs.get("inplace") is True
+        write_nodes = written_inputs(node, effects)
+        recognized_write = named_inplace(node) or node.kwargs.get("inplace") is True
         if node.op == "call_module":
-            mutates = mutates or getattr(module, "inplace", False)
+            recognized_write = recognized_write or getattr(module, "inplace", False)
+        if recognized_write and effects.writes_inputs == ():
+            raise CaptureError(f"Input mutation contradicts tensor_effects at {node.name}")
         sources = set().union(*(aliases.get(n, set()) for n in inputs))
-        if mutates:
-            written.update(sources)
-            if sources - isolated_buffers:
-                raise CaptureError(f"Unisolated Tensor constant write at {node.name}")
-        if mutates and inputs & tainted:
+        write_sources = set().union(*(aliases.get(n, set()) for n in write_nodes))
+        written.update(write_sources)
+        if write_sources - isolated_buffers:
+            raise CaptureError(f"Unisolated Tensor constant write at {node.name}")
+        if write_nodes & tainted:
             raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
+        # Opaque modules may return their own parameters/buffers, not only inputs.
+        if module is not None and not effects.outputs_are_fresh:
+            if any(True for _ in module.parameters()):
+                tainted.add(node)
+            sources.update(id(buffer) for buffer in module.buffers())
         out = node.kwargs.get("out")
         if node.op == "call_function":
             try:
@@ -618,12 +635,12 @@ def _reject_parameter_writes(
                 out = bound.arguments.get("out", out)
         if out is not None:
             raise CaptureError(f"out= mutation is unsupported at {node.name}")
-        if not effects.fresh_output and sources:
+        if not effects.outputs_are_fresh and sources:
             aliases.setdefault(node, set()).update(sources)
-        if inputs & tainted and not effects.fresh_output:
+        if inputs & tainted and not effects.outputs_are_fresh:
             # Conservative over-approximation: no unsafe alias write is assumed harmless.
             tainted.add(node)
-    return written
+    return written, declarations
 
 
 class _MetadataPropagator(ShapeProp):
@@ -687,6 +704,7 @@ class CaptureResult:
     buffer_aliases: dict[int, torch.Tensor]
     signature: tuple
     mutable_buffers: frozenset[int]
+    effects: dict[fx.Node, TensorEffects]
 
 
 def capture(
@@ -722,7 +740,7 @@ def capture(
         try:
             gm = trace_module(model, registry, buffer_sources=aliases)
             captured_signature = capture_signature(gm, model)
-            written = _reject_parameter_writes(gm, registry, set(aliases))
+            written, effects = _reject_parameter_writes(gm, registry, set(aliases))
             versions = [(b, _tensor_version(b)) for b in gm.buffers()]
             bound = signature.bind(*safe_args, **safe_kwargs)
             metadata = _MetadataPropagator(gm, bound.arguments)
@@ -735,4 +753,6 @@ def capture(
                 f"FX capture/metadata execution failed: {error}. "
                 "Tensor-dependent Python control flow is not specialized from examples."
             ) from error
-    return CaptureResult(gm, metadata.facts, aliases, captured_signature, frozenset(written))
+    return CaptureResult(
+        gm, metadata.facts, aliases, captured_signature, frozenset(written), effects
+    )

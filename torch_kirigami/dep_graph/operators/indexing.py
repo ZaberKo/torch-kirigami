@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import replace
 from math import prod
 
@@ -13,7 +12,7 @@ from torch.nn import functional as F
 from ...errors import UnsupportedOperation
 from ...settings import config
 from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
-from ..operation import OperationContext, OperatorSpec, OutputContract
+from ..operation import Operation, OperatorSpec, OutputContract
 from ..relations import (
     AxisPort,
     AxisRelation,
@@ -27,51 +26,55 @@ from .coordinates import narrow_index
 from .native import equal, one, split
 
 
-def stack(ctx: OperationContext) -> OperatorSpec:
+def stack(operation: Operation) -> OperatorSpec:
     """Align every stacked input and protect the newly introduced port axis."""
-    items, y = ctx.argument("tensors", 0), one(ctx.output)
-    dim = ctx.argument("dim", 1, 0) % len(y.shape)
+    items, y = operation.argument("tensors", 0), one(operation.result)
+    dim = operation.argument("dim", 1, 0) % len(y.shape)
     relations = []
     for x in items:
         for d in range(len(x.shape)):
-            relations.append(equal(x, d, y, d + (d >= dim), ctx.node.name))
+            relations.append(equal(x, d, y, d + (d >= dim), operation.node.name))
     return OperatorSpec(
         tuple(relations),
         (
             AxisBarrier(
-                y.axis(dim), "Removing stack inputs requires editing forward", ctx.node.name
+                y.axis(dim), "Removing stack inputs requires editing forward", operation.node.name
             ),
         ),
     )
 
 
-def chunk(ctx: OperationContext) -> OperatorSpec:
+def chunk(operation: Operation) -> OperatorSpec:
     """Describe captured chunk ports and retain their original coordinate identity."""
-    x = one(ctx.argument("input", 0))
-    dim = ctx.argument("dim", 2, 0) % len(x.shape)
-    width = ctx.outputs[0].shape[dim]
-    result = split(replace(ctx, args=(x, width, dim), kwargs={}))
+    x = one(operation.argument("input", 0))
+    dim = operation.argument("dim", 2, 0) % len(x.shape)
+    width = operation.outputs[0].shape[dim]
+    result = split(replace(operation, args=(x, width, dim), kwargs={}))
     requirements = tuple(
-        replace(r, data=(*r.data, ("chunks", ctx.argument("chunks", 1))), arguments=())
+        replace(r, data=(*r.data, ("chunks", operation.argument("chunks", 1))), arguments=())
         for r in result.requirements
     )
     return replace(result, requirements=requirements)
 
 
-def narrow(ctx: OperationContext) -> OperatorSpec:
+def narrow(operation: Operation) -> OperatorSpec:
     """Map a fixed contiguous interval and verify it after upstream compaction."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    dim, start, length = ctx.argument("dim", 1), ctx.argument("start", 2), ctx.argument("length", 3)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dim, start, length = (
+        operation.argument("dim", 1),
+        operation.argument("start", 2),
+        operation.argument("length", 3),
+    )
     if not all(type(v) is int for v in (dim, start, length)):
         raise UnsupportedOperation("narrow requires static integer arguments")
     dim %= len(x.shape)
     index = narrow_index(x.shape, dim, start, length)
     return OperatorSpec(
-        (SliceRelation(x, y, tuple(index), ctx.node.name),),
+        (SliceRelation(x, y, tuple(index), operation.node.name),),
         requirements=(
             Requirement(
                 "slice_arguments",
-                ctx.node.name,
+                operation.node.name,
                 (x, y),
                 "Preserve narrow coordinates",
                 (("index", tuple(index)), ("narrow_dim", dim)),
@@ -81,21 +84,21 @@ def narrow(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def repeat(ctx: OperationContext) -> OperatorSpec:
+def repeat(operation: Operation) -> OperatorSpec:
     """Map repeated positions through compressed block relations."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    target = ctx.node.target
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    target = operation.node.target
     if target in ("expand", "expand_as", torch.broadcast_to):
-        relations = [BroadcastRelation(x, y, ctx.node.name)]
+        relations = [BroadcastRelation(x, y, operation.node.name)]
         if target == "expand_as":
-            template = one(ctx.argument("other", 1))
-            relations.append(BroadcastRelation(template, y, ctx.node.name))
+            template = one(operation.argument("other", 1))
+            relations.append(BroadcastRelation(template, y, operation.node.name))
         return OperatorSpec(
             tuple(relations),
             requirements=(
                 Requirement(
                     "call_arguments",
-                    ctx.node.name,
+                    operation.node.name,
                     (x, y),
                     "Validate compact broadcast dimensions",
                     arguments=(
@@ -110,8 +113,8 @@ def repeat(ctx: OperationContext) -> OperatorSpec:
         )
     relations, constraints = [], []
     if target in ("repeat_interleave", torch.repeat_interleave):
-        count = ctx.argument("repeats", 1)
-        dim = ctx.argument("dim", 2)
+        count = operation.argument("repeats", 1)
+        dim = operation.argument("dim", 2)
         if type(count) is not int or count < 1 or type(dim) is not int:
             raise UnsupportedOperation(
                 "repeat_interleave requires scalar repeats and an explicit dim"
@@ -123,12 +126,12 @@ def repeat(ctx: OperationContext) -> OperatorSpec:
                     AxisPort(x.axis(d)),
                     AxisPort(y.axis(d)),
                     (BlockMap(0, 0, size, 1, count if d == dim else 1),),
-                    ctx.node.name,
+                    operation.node.name,
                 )
             )
     else:
         # Repetition factors come from the arguments, never coincidentally equal shapes.
-        factors = ctx.argument(
+        factors = operation.argument(
             "dims" if target in (torch.tile, "tile") else "sizes", 1, variadic=True
         )
         if len(factors) == 1 and isinstance(factors[0], (tuple, list)):
@@ -141,7 +144,7 @@ def repeat(ctx: OperationContext) -> OperatorSpec:
         leading = len(factors) - len(x.shape)
         for d in range(leading):
             constraints.append(
-                AxisBarrier(y.axis(d), "Repeat factor is fixed in forward", ctx.node.name)
+                AxisBarrier(y.axis(d), "Repeat factor is fixed in forward", operation.node.name)
             )
         for d, size in enumerate(x.shape):
             relations.append(
@@ -149,26 +152,28 @@ def repeat(ctx: OperationContext) -> OperatorSpec:
                     AxisPort(x.axis(d)),
                     AxisPort(y.axis(d + leading)),
                     tuple(BlockMap(0, k * size, size) for k in range(factors[d + leading])),
-                    ctx.node.name,
+                    operation.node.name,
                 )
             )
     return OperatorSpec(tuple(relations), tuple(constraints))
 
 
-def index_select(ctx: OperationContext) -> OperatorSpec:
+def index_select(operation: Operation) -> OperatorSpec:
     """Map captured constant indices and guard their values for portable replay."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    dim = ctx.argument("dim", 1)
-    index = one(ctx.argument("index", 2))
-    indices = ctx.constants.get(index.id)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dim = operation.argument("dim", 1)
+    index = one(operation.argument("index", 2))
+    indices = operation.constants.get(index.id)
     if indices is None or len(index.shape) != 1:
         raise UnsupportedOperation("index_select requires a captured constant integer vector")
     if not x.shape:
         return OperatorSpec(
-            (ReshapeRelation(x, y, ctx.node.name),),
+            (ReshapeRelation(x, y, operation.node.name),),
             (
                 AxisBarrier(
-                    index.axis(0), "Static index vector entries cannot be deleted", ctx.node.name
+                    index.axis(0),
+                    "Static index vector entries cannot be deleted",
+                    operation.node.name,
                 ),
             ),
             constants=(index,),
@@ -176,26 +181,26 @@ def index_select(ctx: OperationContext) -> OperatorSpec:
     dim %= len(x.shape)
     if any(type(i) is not int or not 0 <= i < x.shape[dim] for i in indices):
         raise UnsupportedOperation("Invalid static index_select coordinates")
-    relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != dim]
+    relations = [equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != dim]
     relations.append(
         AxisRelation(
             AxisPort(x.axis(dim)),
             AxisPort(y.axis(dim)),
             tuple(BlockMap(i, j, 1) for j, i in enumerate(indices)),
-            ctx.node.name,
+            operation.node.name,
         )
     )
     return OperatorSpec(
         tuple(relations),
         (
             AxisBarrier(
-                index.axis(0), "Static index vector entries cannot be deleted", ctx.node.name
+                index.axis(0), "Static index vector entries cannot be deleted", operation.node.name
             ),
         ),
         (
             Requirement(
                 "index_arguments",
-                ctx.node.name,
+                operation.node.name,
                 (x, y),
                 "Preserve static index coordinates",
                 (("axis", x.axis(dim)), ("indices", indices)),
@@ -205,33 +210,37 @@ def index_select(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def glu(ctx: OperationContext) -> OperatorSpec:
+def glu(operation: Operation) -> OperatorSpec:
     """Tie both gate halves to the same compact output positions."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    dim = (ctx.module.dim if ctx.module is not None else ctx.argument("dim", 1, -1)) % len(x.shape)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dim = (
+        operation.module.dim if operation.module is not None else operation.argument("dim", 1, -1)
+    ) % len(x.shape)
     width = y.shape[dim]
-    relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != dim]
+    relations = [equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != dim]
     relations.append(
         AxisRelation(
             AxisPort(y.axis(dim)),
             AxisPort(x.axis(dim)),
             (BlockMap(0, 0, width), BlockMap(0, width, width)),
-            ctx.node.name,
+            operation.node.name,
         )
     )
     return OperatorSpec(tuple(relations))
 
 
-def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
+def channel_shuffle(operation: Operation) -> OperatorSpec:
     """Represent shuffle as a channel permutation with fixed group partitions."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    groups = ctx.module.groups if ctx.module is not None else ctx.argument("groups", 1)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    groups = (
+        operation.module.groups if operation.module is not None else operation.argument("groups", 1)
+    )
     if type(groups) is not int:
         raise UnsupportedOperation("ChannelShuffle groups must be constant")
     width = x.shape[1] // groups
     if x.shape[1] > config.max_shuffle_channels:
         raise UnsupportedOperation("ChannelShuffle compressed map limit exceeded")
-    relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != 1]
+    relations = [equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != 1]
     # Group-local removal patterns must match: equal counts alone would change
     # the original channel correspondence after transposing the compact groups.
     for local in range(width):
@@ -241,7 +250,7 @@ def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
                     AxisPort(x.axis(1)),
                     AxisPort(y.axis(1)),
                     (BlockMap(group * width + local, local * groups + group, 1),),
-                    ctx.node.name,
+                    operation.node.name,
                 )
             )
             if group:
@@ -250,7 +259,7 @@ def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
                         AxisPort(x.axis(1)),
                         AxisPort(x.axis(1)),
                         (BlockMap(local, group * width + local, 1),),
-                        ctx.node.name,
+                        operation.node.name,
                     )
                 )
     return OperatorSpec(
@@ -264,30 +273,34 @@ def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def pixel_shuffle(ctx: OperationContext) -> OperatorSpec:
+def pixel_shuffle(operation: Operation) -> OperatorSpec:
     """Connect complete channel blocks while fixing spatial coordinates."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    inverse = type(ctx.module) is nn.PixelUnshuffle or ctx.node.target in (
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    inverse = type(operation.module) is nn.PixelUnshuffle or operation.node.target in (
         F.pixel_unshuffle,
         torch.pixel_unshuffle,
     )
     name = "downscale_factor" if inverse else "upscale_factor"
-    factor = getattr(ctx.module, name) if ctx.module is not None else ctx.argument(name, 1)
+    factor = (
+        getattr(operation.module, name)
+        if operation.module is not None
+        else operation.argument(name, 1)
+    )
     if type(factor) is not int or factor < 1:
         raise UnsupportedOperation("Pixel shuffle factor must be constant")
     a, b = (y, x) if inverse else (x, y)
     channel = len(x.shape) - 3
-    relations = [equal(x, d, y, d, ctx.node.name) for d in range(channel)]
+    relations = [equal(x, d, y, d, operation.node.name) for d in range(channel)]
     relations.append(
         AxisRelation(
             AxisPort(b.axis(channel)),
             AxisPort(a.axis(channel)),
             (BlockMap(0, 0, b.shape[channel], 1, factor * factor),),
-            ctx.node.name,
+            operation.node.name,
         )
     )
     constraints = tuple(
-        AxisBarrier(t.axis(d), "Pixel shuffle spatial coordinates are fixed", ctx.node.name)
+        AxisBarrier(t.axis(d), "Pixel shuffle spatial coordinates are fixed", operation.node.name)
         for t in (x, y)
         for d in range(channel + 1, len(x.shape))
     )
@@ -298,14 +311,14 @@ def pixel_shuffle(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def unfold_fold(ctx: OperationContext) -> OperatorSpec:
+def unfold_fold(operation: Operation) -> OperatorSpec:
     """Connect complete im2col channel blocks; spatial/kernel coordinates stay fixed."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    fold = type(ctx.module) is nn.Fold or ctx.node.target is F.fold
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    fold = type(operation.module) is nn.Fold or operation.node.target is F.fold
     kernel = (
-        ctx.module.kernel_size
-        if ctx.module is not None
-        else ctx.argument("kernel_size", 2 if fold else 1)
+        operation.module.kernel_size
+        if operation.module is not None
+        else operation.argument("kernel_size", 2 if fold else 1)
     )
     if isinstance(kernel, int):
         kernel = (kernel, kernel)
@@ -315,52 +328,19 @@ def unfold_fold(ctx: OperationContext) -> OperatorSpec:
     if len(image.shape) != 4 or len(columns.shape) != 3:
         raise UnsupportedOperation("Use batched Unfold/Fold tensors")
     relations = (
-        equal(x, 0, y, 0, ctx.node.name),
+        equal(x, 0, y, 0, operation.node.name),
         AxisRelation(
             AxisPort(image.axis(1)),
             AxisPort(columns.axis(1)),
             (BlockMap(0, 0, image.shape[1], 1, prod(kernel)),),
-            ctx.node.name,
+            operation.node.name,
         ),
     )
     constraints = tuple(
         AxisBarrier(
-            t.axis(d), "Unfold/Fold spatial and kernel coordinates are fixed", ctx.node.name
+            t.axis(d), "Unfold/Fold spatial and kernel coordinates are fixed", operation.node.name
         )
         for t in (x, y)
         for d in range(2, len(t.shape))
     )
     return OperatorSpec(relations, constraints)
-
-
-def register_indexing(
-    modules: Callable[..., None], functions: Callable[..., None], methods: Callable[..., None]
-) -> None:
-    """Register exact indexing-family API spellings."""
-    functions([torch.stack], stack, fresh=True)
-    functions([torch.chunk], chunk, fresh=False)
-    methods(["chunk"], chunk, fresh=False)
-    functions([torch.narrow], narrow, fresh=False)
-    methods(["narrow"], narrow, fresh=False)
-    functions([torch.index_select], index_select, fresh=True)
-    methods(["index_select"], index_select, fresh=True)
-    functions([torch.tile, torch.repeat_interleave], repeat, fresh=True)
-    functions([torch.broadcast_to], repeat, fresh=False)
-    methods(["repeat", "tile", "repeat_interleave"], repeat, fresh=True)
-    methods(["expand", "expand_as"], repeat, fresh=False)
-    modules([nn.GLU], glu, fresh=True)
-    functions([F.glu], glu, fresh=True)
-    modules([nn.ChannelShuffle], channel_shuffle, fresh=True)
-    functions([torch.channel_shuffle], channel_shuffle, fresh=True)
-    modules([nn.PixelShuffle, nn.PixelUnshuffle], pixel_shuffle, fresh=True)
-    functions(
-        list(
-            dict.fromkeys(
-                [F.pixel_shuffle, F.pixel_unshuffle, torch.pixel_shuffle, torch.pixel_unshuffle]
-            )
-        ),
-        pixel_shuffle,
-        fresh=True,
-    )
-    modules([nn.Unfold, nn.Fold], unfold_fold, fresh=False)
-    functions([F.unfold, F.fold], unfold_fold, fresh=False)

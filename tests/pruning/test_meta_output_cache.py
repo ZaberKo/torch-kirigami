@@ -8,7 +8,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from torch_kirigami import CallEffects, DependencyGraph, OperatorRegistry, OperatorRule
+from tests.support.operators import make_rule
+from torch_kirigami import DependencyGraph, OperatorRegistry, TensorEffects
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -145,10 +146,12 @@ def test_unchanged_native_call_reuses_metadata_but_extensions_default_to_reexecu
     if custom:
         registry.register(
             CustomLinear,
-            OperatorRule(
-                registry.modules[nn.Linear].analyze,
+            make_rule(
+                registry.modules[nn.Linear].build_spec,
                 evaluate_on_meta=True,
-                effects=lambda node, module: CallEffects(fresh_output=True),
+                tensor_effects=lambda node, module: TensorEffects(
+                    writes_inputs=(), outputs_are_fresh=True
+                ),
             ),
         )
     layer: Callable[..., nn.Module] = CustomLinear if custom else nn.Linear

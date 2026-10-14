@@ -5,7 +5,7 @@ import torch
 from torch import fx
 
 from tests.support.operator_cases import make_case
-from torch_kirigami import OperationContext, OperatorRegistry, Selection, TensorFacts, TensorRef
+from torch_kirigami import Operation, OperatorRegistry, Selection, TensorFacts, TensorRef
 
 REGISTRY = OperatorRegistry.default()
 ENTRIES = [
@@ -63,7 +63,7 @@ def native_context(kind, target, case):
     node = graph.create_node(
         f"call_{kind}", "op" if kind == "module" else target, raw_args, raw_kwargs
     )
-    REGISTRY.lookup(node, case.module).preflight(node, case.module)
+    REGISTRY.lookup(node, case.module).validate_capture(node, case.module)
     # Native execution validates the case signature and supplies metadata only.
     # Expected structural axes and indices come exclusively from make_case.
     if kind == "module":
@@ -83,7 +83,7 @@ def native_context(kind, target, case):
             for child in value.values():
                 yield from tensor_leaves(child)
 
-    if REGISTRY.lookup(node, case.module).effects(node, case.module).fresh_output:
+    if REGISTRY.lookup(node, case.module).tensor_effects(node, case.module).outputs_are_fresh:
         registered = (
             (*case.module.parameters(), *case.module.buffers()) if case.module is not None else ()
         )
@@ -109,13 +109,13 @@ def native_context(kind, target, case):
             return tuple(output_tree(v) for v in value)
         return value
 
-    context = OperationContext(
+    context = Operation(
         node,
         args,
         kwargs,
         output_tree(result),
         case.module,
-        "op" if kind == "module" else None,
+        ("op",) if kind == "module" else (),
         bindings,
         {},
         metadata,
@@ -137,8 +137,8 @@ def test_native_entry_matches_and_propagates_declared_axis(kind, target, executi
     }[kind]
     rule = REGISTRY.lookup(context.node, context.module)
     assert rule is table[target]
-    rule.preflight(context.node, context.module)
-    spec = rule.analyze(context)
+    rule.validate_capture(context.node, context.module)
+    spec = rule.build_spec(operation=context)
     seed = refs[id(case.seed)].axis(case.axis).select(case.removed)
     if case.expression:
         assert spec.expression is not None

@@ -5,16 +5,15 @@ from types import MappingProxyType
 
 from ..configuration import FrozenDict, FrozenList, FrozenScalar
 from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
 from .types import (
     AnalysisSummary,
-    AttributeRecipe,
     CoordinateSegment,
     ModelStructure,
     ModuleState,
     ParameterReport,
     SelectionReport,
-    TensorRecipe,
     TensorState,
 )
 

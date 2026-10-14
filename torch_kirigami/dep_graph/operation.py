@@ -2,41 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, cast
 
 import torch
 from torch import fx, nn
 
-from .contracts import Constraint, Requirement, ShapeExpr
+from ..operator_recipes import OperatorRecipe
+from .contracts import ArgumentRef, AttributeBinding, Constraint, Impact, Requirement, ShapeExpr
 from .relations import Relation
 from .selection import AxisRef, Region, Selection, TensorRef
-
-
-@dataclass(frozen=True)
-class CallRef:
-    """An operation invocation with flattened tensor ports.
-
-    Attributes:
-        name: FX node name, unique within this graph.
-        module_paths: Original aliases of the called module, or an empty tuple.
-        inputs: Tensor arguments in container traversal order.
-        outputs: Tensor results in container traversal order.
-    """
-
-    name: str
-    module_paths: tuple[str, ...]
-    inputs: tuple[TensorRef, ...]
-    outputs: tuple[TensorRef, ...]
-
-    def input(self, index: int = 0) -> TensorRef:
-        """Return the tensor at the given flattened input index."""
-        return self.inputs[index]
-
-    def output(self, index: int = 0) -> TensorRef:
-        """Return the tensor at the given flattened output index."""
-        return self.outputs[index]
 
 
 @dataclass(frozen=True)
@@ -54,20 +31,6 @@ class TensorFacts:
     stride: tuple[int, ...]
     dtype: torch.dtype
     device: torch.device
-
-
-class OperatorRegistrar(Protocol):
-    """Minimal registry surface required while assembling built-in rules."""
-
-    def register(
-        self, target: type[nn.Module] | Callable, rule: OperatorRule, *, opaque: bool = True
-    ) -> object:
-        """Register a module type or callable rule."""
-        ...
-
-    def register_method(self, name: str, rule: OperatorRule) -> object:
-        """Register a Tensor method rule."""
-        ...
 
 
 _KEYWORD_ALIASES = {
@@ -152,34 +115,41 @@ def tensors(value: object) -> Iterator[TensorRef]:
 
 
 @dataclass(frozen=True)
-class OperationContext:
+class Operation:
     """Inputs and capture facts provided to an operation semantics rule.
 
     Attributes:
         node: Original FX operation node.
         args: Positional arguments with tensor values replaced by references.
         kwargs: Keyword arguments with tensor values replaced by references.
-        output: Result tree containing references and scalar metadata.
+        result: Result tree containing references and scalar metadata.
         module: Called module, or None for functions and methods.
-        module_path: An original module alias; an empty string denotes the root.
+        module_paths: Original aliases; an empty string denotes the root module.
         bindings: Module-local parameter and buffer paths mapped to references.
         expressions: Read-only shape-expression table shared by inspection contexts.
         metadata: Captured tensor facts indexed by reference ID.
         constants: Small captured integer tensors, used only with declared value guards.
         graph_id: Owning snapshot identity, preserved by inspection copies.
+        effects: Write/allocation declaration captured once before metadata execution.
     """
 
     node: fx.Node
     args: tuple[Any, ...]
     kwargs: dict[str, Any]
-    output: Any
+    result: Any
     module: nn.Module | None
-    module_path: str | None
+    module_paths: tuple[str, ...]
     bindings: dict[str, TensorRef]
     expressions: Mapping[fx.Node, ShapeExpr]
     metadata: Mapping[str, TensorFacts]
     constants: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
     graph_id: str = ""
+    effects: TensorEffects = field(default_factory=lambda: TensorEffects(writes_inputs=()))
+
+    @property
+    def name(self) -> str:
+        """Return the FX call identity within this graph."""
+        return self.node.name
 
     @property
     def inputs(self) -> tuple[TensorRef, ...]:
@@ -189,7 +159,7 @@ class OperationContext:
     @property
     def outputs(self) -> tuple[TensorRef, ...]:
         """Return tensor results in flattened container traversal order."""
-        return tuple(tensors(self.output))
+        return tuple(tensors(self.result))
 
     def argument(
         self, name: str, position: int, default: object = None, *, variadic: bool = False
@@ -229,9 +199,10 @@ class OperationContext:
             variadic=variadic,
         )
 
-    def binding(self, name: str) -> TensorRef | None:
-        """Return a module-local parameter or buffer binding, or None."""
-        return self.bindings.get(name)
+    @property
+    def module_path(self) -> str | None:
+        """Return the canonical original module path, retaining all aliases separately."""
+        return self.module_paths[0] if self.module_paths else None
 
 
 @dataclass(frozen=True)
@@ -370,7 +341,7 @@ class OperatorSpec:
 
     relations: tuple[Relation, ...] = ()
     constraints: tuple[Constraint, ...] = ()
-    requirements: tuple[Requirement, ...] = ()
+    requirements: tuple[Requirement | AttributeBinding, ...] = ()
     candidates: tuple[CandidateAxis, ...] = ()
     layouts: tuple[PartitionedLayout, ...] = ()
     contract: OutputContract | None = None
@@ -388,7 +359,7 @@ class OperatorSpec:
         ):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         for name, expected in (
-            ("requirements", Requirement),
+            ("requirements", (Requirement, AttributeBinding)),
             ("candidates", CandidateAxis),
             ("layouts", PartitionedLayout),
             ("constants", TensorRef),
@@ -408,87 +379,69 @@ class OperatorSpec:
 
 
 @dataclass(frozen=True)
-class CallEffects:
-    """Effects available before capture for isolation and downstream alias safety.
+class TensorEffects:
+    """Declare writes and allocation guarantees, before metadata execution.
 
-    Native registrations declare allocation alongside their semantic rule.
-    Capture and execution consume this same contract; OutputContract only
-    describes layout and cannot replace pre-execution mutation checks.
+    `writes_inputs=None` means unknown; an empty tuple declares no input writes.
+    Argument references use the same positional/keyword resolver as shape guards.
+    `outputs_are_fresh` guarantees independent new storage for every Tensor
+    result, including independence from model state and other returned tensors.
+    False provides no allocation guarantee; it does not assert aliasing.
+    Declarations must hold throughout the rule's supported compact shapes.
     """
 
-    mutates_input: bool = False
-    fresh_output: bool = False
+    writes_inputs: tuple[ArgumentRef, ...] | None = None
+    outputs_are_fresh: bool = False
+
+    def __post_init__(self) -> None:
+        if self.writes_inputs is not None:
+            writes = tuple(self.writes_inputs)
+            if any(not isinstance(ref, ArgumentRef) for ref in writes):
+                raise TypeError("Input writes require ArgumentRef entries")
+            object.__setattr__(self, "writes_inputs", tuple(dict.fromkeys(writes)))
+        if type(self.outputs_are_fresh) is not bool:
+            raise TypeError("Output allocation guarantee must be boolean")
 
 
-_LowerContext = TypeVar("_LowerContext")
-_LowerResult = TypeVar("_LowerResult")
+class OperatorRule(ABC):
+    """Define one operator family without retaining per-call or planning state.
 
-
-class OperatorRule(Generic[_LowerContext, _LowerResult]):
-    """One definition for capture checks, structural analysis, and lowering.
+    Implement `build_spec`; other hooks are optional. Inheriting `tensor_effects`
+    declares that the operator does not modify its inputs. Rules that do modify
+    inputs must override it. This is an extension contract, not an automatic
+    proof of arbitrary Python behavior. All hooks must leave model state intact.
 
     Args:
-        analyze: Pure callback producing an OperatorSpec from capture metadata.
-        lower: Optional pure callback producing declarative rewrite descriptions.
-            Its context/result types are supplied by the execution layer; the
-            dependency core does not import that layer.
-        preflight: Optional callback accepting an FX node and its called module
-            before metadata execution. Raise CaptureError for recognized writes.
-        effects: Optional callback with the same arguments, returning CallEffects.
-        evaluate_on_meta: Whether the native operation is safe to evaluate on meta tensors.
-        cache_meta_output: Whether a fresh, non-mutating meta output depends only
-            on argument metadata and the captured module configuration. Extensions
-            default to executing every meta call; opt in only for pure metadata
-            computation without external state or tensor-value dependencies.
-            Third-party callbacks default to declared output facts instead.
+        evaluate_on_meta: Permit compact-call validation on metadata tensors.
+        cache_meta_output: Declare metadata evaluation depends only on argument
+            metadata and captured configuration. Allocation and mutation checks
+            remain mandatory even when this flag is true.
     """
 
-    def __init__(
-        self,
-        analyze: Callable[[OperationContext], OperatorSpec] | None = None,
-        *,
-        lower: Callable[[_LowerContext], _LowerResult] | None = None,
-        preflight: Callable[[fx.Node, nn.Module | None], None] | None = None,
-        effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = None,
-        evaluate_on_meta: bool = False,
-        cache_meta_output: bool = False,
-    ) -> None:
-        self._analyze: Callable[[OperationContext], OperatorSpec] | None = analyze
-        self._lower = lower
-        self._preflight: Callable[[fx.Node, nn.Module | None], None] | None = preflight
-        self._effects: Callable[[fx.Node, nn.Module | None], CallEffects] | None = effects
+    def __init__(self, *, evaluate_on_meta: bool = False, cache_meta_output: bool = False) -> None:
         self.evaluate_on_meta = evaluate_on_meta
         self.cache_meta_output = cache_meta_output
 
-    @property
-    def uses_default_lowering(self) -> bool:
-        """Whether lowering uses only the shared structural descriptors.
+    @abstractmethod
+    def build_spec(self, operation: Operation) -> OperatorSpec:
+        """Describe coordinates, constraints and bound attributes for one call."""
+        raise NotImplementedError
 
-        Subclasses and instance overrides remain extension boundaries even when
-        they currently delegate to the default method. This permits the executor
-        to avoid repeated state checks only when no custom lowering can run.
+    def validate_capture(self, node: fx.Node, module: nn.Module | None) -> None:
+        """Reject unsupported configurations before sample metadata execution."""
+        return None
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Declare a read-only input contract with no output allocation guarantee."""
+        return TensorEffects(writes_inputs=())
+
+    def build_recipe(
+        self, operation: Operation, spec: OperatorSpec, impact: Impact
+    ) -> OperatorRecipe | None:
+        """Supply special edits; omitted edits still use shared compilation.
+
+        Return None to provide no special edits. Raise UnsupportedOperation to
+        reject this request instead of falling back. Every edit is checked
+        against the joint Impact and structural declarations before execution.
         """
-        return type(self) is OperatorRule and self._lower is None and "lower" not in self.__dict__
-
-    def analyze(self, context: OperationContext) -> OperatorSpec:
-        """Produce shared structural facts without modifying model state."""
-        if self._analyze is None:
-            raise NotImplementedError("Implement OperatorRule.analyze")
-        return self._analyze(context)
-
-    def preflight(self, node: fx.Node, module: nn.Module | None) -> None:
-        """Check effects using call arguments and configuration, before ShapeProp."""
-        if self._preflight is not None:
-            self._preflight(node, module)
-
-    def effects(self, node: fx.Node, module: nn.Module | None) -> CallEffects:
-        """Describe writes/copies without requiring output metadata."""
-        return self._effects(node, module) if self._effects is not None else CallEffects()
-
-    def lower(self, context: _LowerContext) -> _LowerResult | None:
-        """Return custom recipes, or None for the shared descriptor compiler.
-
-        Default compilation belongs to pruning. Declaring standard structural
-        semantics does not require importing an executor into the analysis layer.
-        """
-        return self._lower(context) if self._lower is not None else None
+        return None

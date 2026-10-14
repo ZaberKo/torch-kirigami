@@ -46,8 +46,8 @@ def test_reshape_keeps_large_token_prefix_symbolic():
             return self.proj(x).reshape(x.shape[0], x.shape[1], 3, 4, 2)
 
     graph = DependencyGraph.build(Model(), args=(torch.randn(1, 5000, 8),))
-    call = next(c for c in graph.calls() if c.name == "reshape")
-    impact = graph.propagate(remove=[call.output().axis(3).select([1])])
+    call = next(c for c in graph.operations() if c.name == "reshape")
+    impact = graph.propagate(remove=[call.outputs[0].axis(3).select([1])])
     assert impact.status == "resolved"
     assert set(impact.selection(graph.parameter("proj.weight")).fully_selected_indices(0)) == {
         2,
@@ -122,8 +122,8 @@ def test_broadcast_does_not_delete_scalar_operand():
             return x + bias
 
     graph = DependencyGraph.build(Model(), args=(torch.randn(2, 4, 3), torch.randn(1, 4, 1)))
-    call = graph.calls()[0]
-    result = graph.propagate(remove=[call.output().axis(0).select([0])])
-    assert not result.selection(call.input(1))
-    result = graph.propagate(remove=[call.output().axis(1).select([1])])
-    assert removed(result, call.input(1), 1) == {1}
+    call = graph.operations()[0]
+    result = graph.propagate(remove=[call.outputs[0].axis(0).select([0])])
+    assert not result.selection(call.inputs[1])
+    result = graph.propagate(remove=[call.outputs[0].axis(1).select([1])])
+    assert removed(result, call.inputs[1], 1) == {1}

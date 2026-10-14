@@ -15,6 +15,8 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
+from tests.support.operators import make_rule
+
 pytest.importorskip("torchvision")
 pytest.importorskip("datasets")
 
@@ -30,11 +32,10 @@ from torch_kirigami import (
     Diagnostic,
     IndexSet,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
     TensorRef,
 )
-from torch_kirigami.dep_graph.operation import CallEffects
+from torch_kirigami.dep_graph.operation import TensorEffects
 from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
 from torch_kirigami.pruning import (
     Candidate,
@@ -127,7 +128,8 @@ def build(model, x, granularity=1):
         operation.module_path: granularity
         for operation in graph.operations()
         if operation.module_path is not None
-        and any(domain.axis in active for domain in graph.operator_spec(operation).candidates)
+        and (spec := graph.operator_spec(operation)) is not None
+        and any(domain.axis in active for domain in spec.candidates)
     }
     return graph, Pruner(model, graph=graph, granularity=Granularity(by_path=alignment)), space
 
@@ -793,8 +795,10 @@ def test_nested_mapping_preserves_distinct_isomorphic_families(execution_device)
 
     registry = OperatorRegistry.default().register(
         ConstantLast,
-        OperatorRule(
-            analyze, evaluate_on_meta=True, effects=lambda *args: CallEffects(fresh_output=True)
+        make_rule(
+            analyze,
+            evaluate_on_meta=True,
+            tensor_effects=lambda *args: TensorEffects(writes_inputs=(), outputs_are_fresh=True),
         ),
     )
     source = (

@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule
 from tests.support.pruning import KeyStrategy, StaticMetric
 from torch_kirigami import (
     AxisRelation,
@@ -16,7 +17,6 @@ from torch_kirigami import (
     Divisible,
     NonEmpty,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
 )
 from torch_kirigami.pruning import (
@@ -356,8 +356,8 @@ def test_fused_module_alignment_applies_to_all_declared_axes(execution_device):
 
     def analyze(ctx):
         domains, relations, constraints = [], [], []
-        for name, output in zip(("a", "b"), ctx.output, strict=True):
-            weight = ctx.binding(name)
+        for name, output in zip(("a", "b"), ctx.result, strict=True):
+            weight = ctx.bindings.get(name)
             domains.append(CandidateAxis(name, weight.axis(0), alignment_axis=output.axis(1)))
             relations.extend(
                 (
@@ -373,7 +373,7 @@ def test_fused_module_alignment_applies_to_all_declared_axes(execution_device):
     model = TwoProjections()
     original = copy.deepcopy(model)
     x = torch.randn(2, 4)
-    registry = OperatorRegistry.default().register(TwoProjections, OperatorRule(analyze=analyze))
+    registry = OperatorRegistry.default().register(TwoProjections, make_rule(build_spec=analyze))
     graph = DependencyGraph.build(model, args=(x,), operators=registry)
     pruner = Pruner(
         model, graph=graph, preserve_io=False, granularity=Granularity(by_type={TwoProjections: 4})

@@ -62,8 +62,12 @@ copy them into a second record at completion. Only completed data can initialize
 Public queries expose tuples, read-only views, or inspection copies. The data
 references the original model and records structural resource settings; it is
 neither a weight backup nor a checkpoint.
-`CallRef`, the record for one operation invocation, lives with the other operation
-contracts in `operation.py`.
+`Operation` represents one invocation and its rule inputs, avoiding separate call
+and context wrappers. `OperatorRule` owns operator-specific declarations;
+`OperatorSpec` contains structural facts. `AttributeBinding` reuses `ShapeExpr`
+for structural attributes and `TensorEffects` reuses `ArgumentRef` for input writes.
+Static physical recipe records live in `operator_recipes.py`, below analysis and
+execution, so extensions do not introduce reverse imports.
 
 Within this package, `selection.py` defines coordinates, region unions, and region
 shape/gather operations. `relations.py` defines index mappings. `contracts.py` defines constraints

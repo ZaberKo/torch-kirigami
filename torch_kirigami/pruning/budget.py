@@ -6,6 +6,7 @@ from typing import Literal
 
 from ..dep_graph.contracts import Impact
 from ..dep_graph.selection import AxisRef
+from ..operator_recipes import TensorRecipe
 from .types import (
     ChannelCount,
     ChannelRatio,
@@ -14,7 +15,6 @@ from .types import (
     PlanningError,
     SelectionReport,
     StrategyResult,
-    TensorRecipe,
     _decimal_ratio,
 )
 

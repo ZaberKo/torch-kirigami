@@ -5,37 +5,36 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule
 from tests.support.pruning import build
 from torch_kirigami import (
     AxisRelation,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
-    Requirement,
     StaleGraphError,
 )
+from torch_kirigami.dep_graph.contracts import AttributeBinding, ShapeExpr
 from torch_kirigami.pruning import (
     AttributeRecipe,
+    OperatorRecipe,
     PlanningError,
     Pruner,
-    RewriteResult,
 )
 
 
 def fused_analysis(ctx):
-    x, y, w = ctx.inputs[0], ctx.outputs[0], ctx.binding("weight")
+    x, y, w = ctx.inputs[0], ctx.outputs[0], ctx.bindings.get("weight")
     return OperatorSpec(
         (
             AxisRelation.equal(x.axis(1), w.axis(1), "input"),
             AxisRelation.equal(y.axis(1), w.axis(0), "output"),
         ),
         requirements=(
-            Requirement(
-                "attribute",
+            AttributeBinding(
                 f"{ctx.module_path}.width".lstrip("."),
-                (y,),
+                ShapeExpr("dimension", (y.axis(1).tensor, y.axis(1).dim)),
                 "fused width",
-                (("axis", y.axis(1)),),
             ),
         ),
     )
@@ -51,13 +50,10 @@ class Fused(nn.Module):
         return F.linear(x, self.weight).reshape(x.size(0), self.width)
 
 
-def fused_rewrite(ctx):
-    op = ctx.operation
-    new = ctx.compact_shape(op.outputs[0])[1]
+def fused_rewrite(op, spec, impact):
+    new = impact.selection(op.outputs[0]).compact_shape()[1]
     path = f"{op.module_path}.width".lstrip(".")
-    return RewriteResult(
-        attributes=(AttributeRecipe(path, op.module.width, new),), handled=ctx.requirements
-    )
+    return OperatorRecipe(attributes=(AttributeRecipe(path, op.module.width, new),))
 
 
 def fused_function(x):
@@ -69,7 +65,7 @@ def test_custom_root_nested_extension(nested, execution_device):
     model = nn.Sequential(Fused(), nn.Linear(6, 2)) if nested else Fused()
     x = torch.randn(2, 4)
     rules = OperatorRegistry.default().register(
-        Fused, OperatorRule(fused_analysis, lower=fused_rewrite)
+        Fused, make_rule(fused_analysis, build_recipe=fused_rewrite)
     )
     graph, pruner = build(model, x, rules)
     path = "0.weight" if nested else "weight"
@@ -79,7 +75,7 @@ def test_custom_root_nested_extension(nested, execution_device):
     pruner.apply(plan)
     assert model(x).shape == (2, 2 if nested else 4)
     with pytest.raises(ValueError, match="already"):
-        rules.register(Fused, OperatorRule(fused_analysis))
+        rules.register(Fused, make_rule(fused_analysis))
 
 
 def test_custom_function_rule_does_not_require_core_changes():
@@ -93,7 +89,7 @@ def test_custom_function_rule_does_not_require_core_changes():
 
     rules = OperatorRegistry.default().register(
         fused_function,
-        OperatorRule(
+        make_rule(
             lambda c: OperatorSpec(
                 (AxisRelation.equal(c.inputs[0].axis(1), c.outputs[0].axis(1), "channels"),)
             )
@@ -116,21 +112,23 @@ def test_default_lowering_and_delegating_extensions_preserve_compact_values(
 ):
     calls = []
 
-    def lower(ctx):
-        calls.append(ctx.operation.node.name)
+    def lower(op, spec, impact):
+        calls.append(op.node.name)
         return None
 
     class DelegatingRule(OperatorRule):
-        def lower(self, ctx):
-            return lower(ctx)
+        build_spec = staticmethod(fused_analysis)
+
+        def build_recipe(self, op, spec, impact):
+            return lower(op, spec, impact)
 
     rule = (
-        DelegatingRule(fused_analysis)
+        DelegatingRule()
         if lowering == "subclass"
-        else OperatorRule(fused_analysis, lower=lower if lowering == "callback" else None)
+        else make_rule(fused_analysis, build_recipe=lower if lowering == "callback" else None)
     )
     if lowering == "instance":
-        rule.lower = lower
+        rule.build_recipe = lower
     rules = OperatorRegistry.default().register(Fused, rule)
     model = nn.Sequential(Fused(), nn.Linear(6, 2))
     x = torch.randn(2, 4)
@@ -149,8 +147,8 @@ def test_default_lowering_and_delegating_extensions_preserve_compact_values(
 @pytest.mark.parametrize("lowering", ["callback", "subclass", "instance"])
 @pytest.mark.parametrize("outcome", ["return", "reject", "raise"])
 def test_lowering_mutations_are_rejected_even_when_callback_raises(lowering, outcome):
-    def lower(ctx):
-        ctx.operation.module.width += 1
+    def lower(op, spec, impact):
+        op.module.width += 1
         if outcome == "reject":
             raise PlanningError("injected candidate rejection")
         if outcome == "raise":
@@ -158,16 +156,18 @@ def test_lowering_mutations_are_rejected_even_when_callback_raises(lowering, out
         return None
 
     class MutatingRule(OperatorRule):
-        def lower(self, ctx):
-            return lower(ctx)
+        build_spec = staticmethod(fused_analysis)
+
+        def build_recipe(self, op, spec, impact):
+            return lower(op, spec, impact)
 
     rule = (
-        MutatingRule(fused_analysis)
+        MutatingRule()
         if lowering == "subclass"
-        else OperatorRule(fused_analysis, lower=lower if lowering == "callback" else None)
+        else make_rule(fused_analysis, build_recipe=lower if lowering == "callback" else None)
     )
     if lowering == "instance":
-        rule.lower = lower
+        rule.build_recipe = lower
     rules = OperatorRegistry.default().register(Fused, rule)
     model = nn.Sequential(Fused(), nn.Linear(6, 2))
     graph, pruner = build(model, torch.randn(2, 4), rules)
@@ -181,10 +181,12 @@ def test_lowering_mutations_are_rejected_even_when_callback_raises(lowering, out
 
 @pytest.mark.parametrize("error_type", [PlanningError, RuntimeError])
 def test_readonly_lowering_exceptions_keep_their_original_failure(error_type):
-    def lower(ctx):
+    def lower(op, spec, impact):
         raise error_type("extension rejected this compaction")
 
-    rules = OperatorRegistry.default().register(Fused, OperatorRule(fused_analysis, lower=lower))
+    rules = OperatorRegistry.default().register(
+        Fused, make_rule(fused_analysis, build_recipe=lower)
+    )
     model = nn.Sequential(Fused(), nn.Linear(6, 2))
     graph, pruner = build(model, torch.randn(2, 4), rules)
     old = tuple(model.parameters())

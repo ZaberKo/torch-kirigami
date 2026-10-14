@@ -13,6 +13,7 @@ from tests.support.pruning import build
 from torch_kirigami import (
     DependencyGraph,
 )
+from torch_kirigami.dep_graph.contracts import Requirement
 from torch_kirigami.pruning import (
     Pruner,
 )
@@ -168,10 +169,12 @@ def test_cat_split_slice_permute_chain(execution_device):
     inputs = [v for v in graph.values() if v.kind == "input"]
     impact = graph.propagate(remove=[inputs[1].axis(1).select([1])])
     assert impact.status == "resolved"
-    sliced = next(c for c in graph.calls() if c.name == "getitem_2")
-    assert removed(impact, sliced.output(), 1) == {0}
+    sliced = next(c for c in graph.operations() if c.name == "getitem_2")
+    assert removed(impact, sliced.outputs[0], 1) == {0}
     assert not impact.selection(inputs[0])
-    assert any(r.kind == "slice_arguments" for r in impact.requirements)
+    assert any(
+        isinstance(r, Requirement) and r.kind == "slice_arguments" for r in impact.requirements
+    )
 
 
 def test_matmul_cat_residual_and_fixed_loop_execution(execution_device):

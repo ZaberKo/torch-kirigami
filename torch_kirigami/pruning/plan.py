@@ -9,17 +9,16 @@ from types import MappingProxyType
 from torch import nn
 
 from ..dep_graph.selection import TensorRef, TensorRefMap
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from .serialization import RECORD_TYPES, decode, encode
 from .state import validate_plan
 from .types import (
     AnalysisSummary,
-    AttributeRecipe,
     CoordinateSegment,
     ModelStructure,
     ParameterReport,
     PlanningError,
     SelectionReport,
-    TensorRecipe,
 )
 
 

@@ -13,6 +13,7 @@ from ..bindings import has_tensor_hooks, storage_key
 from ..dep_graph.contracts import Constraint, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import Selection, TensorRef, gather_region
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from .candidates import CandidateSpace, discover_candidates, interface_constraints, parameter_groups
 from .granularity import Granularity, alignment_constraints
 from .groups import ParameterGroup
@@ -31,7 +32,6 @@ from .state import (
 )
 from .types import (
     AnalysisSummary,
-    AttributeRecipe,
     Candidate,
     ChannelCount,
     ChannelRatio,
@@ -43,7 +43,6 @@ from .types import (
     SelectionReport,
     Strategy,
     StrategyResult,
-    TensorRecipe,
 )
 
 _TensorVersions = tuple[tuple[TensorRef, torch.Tensor, int | None, bool], ...]

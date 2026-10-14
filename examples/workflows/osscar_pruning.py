@@ -55,7 +55,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, RandomSampler
 from tqdm.auto import tqdm
 
-from torch_kirigami import DependencyGraph, OperationContext
+from torch_kirigami import DependencyGraph, Operation
 from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
     Granularity,
@@ -67,7 +67,7 @@ from torch_kirigami.pruning import (
 )
 
 
-def _preserves_channels(operation: OperationContext, convolution: bool) -> bool:
+def _preserves_channels(operation: Operation, convolution: bool) -> bool:
     """Recognize paths whose retained channels do not depend on removed channels.
 
     This numerical contract is stronger than structural dependency propagation:
@@ -159,7 +159,7 @@ def discover_reconstruction_pairs(
             if tensor.kind in ("parameter", "buffer") and tensor.shape:
                 binding_users[tensor.id].add(operation.node.name)
 
-    def independent(operation: OperationContext) -> bool:
+    def independent(operation: Operation) -> bool:
         return (operation.module is None or calls[id(operation.module)] == 1) and all(
             len(binding_users[tensor.id]) == 1
             for tensor in operation.bindings.values()

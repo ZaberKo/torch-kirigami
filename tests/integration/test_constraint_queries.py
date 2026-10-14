@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule, with_rule
 from torch_kirigami import (
     Balanced,
     DependencyGraph,
@@ -18,12 +19,11 @@ from torch_kirigami import (
     IndexSet,
     NonEmpty,
     OperatorRegistry,
-    OperatorRule,
     Selection,
     StaleGraphError,
 )
 from torch_kirigami.dep_graph.contracts import Constraint
-from torch_kirigami.dep_graph.operation import OperationContext, OperatorSpec
+from torch_kirigami.dep_graph.operation import Operation, OperatorSpec
 from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, PlanningError, Pruner
 
 
@@ -87,11 +87,11 @@ def test_untouched_initial_constraint_failure_survives_until_completed(kind, exe
     registry = OperatorRegistry.default()
     linear = registry.modules[nn.Linear]
 
-    def analyze(context: OperationContext) -> OperatorSpec:
-        spec = linear.analyze(context)
+    def analyze(context: Operation) -> OperatorSpec:
+        spec = linear.build_spec(context)
         if context.module_path != "left.0":
             return spec
-        axis = context.binding("weight").axis(0)
+        axis = context.bindings.get("weight").axis(0)
         constraint = (
             Divisible(axis, 4)
             if kind == "divisible"
@@ -99,7 +99,7 @@ def test_untouched_initial_constraint_failure_survives_until_completed(kind, exe
         )
         return replace(spec, constraints=(*spec.constraints, constraint))
 
-    registry.modules[nn.Linear] = OperatorRule(analyze, lower=linear.lower)
+    registry = with_rule(registry, nn.Linear, make_rule(analyze, build_recipe=linear.build_recipe))
     model = Parallel().eval()
     reference = copy.deepcopy(model)
     x = torch.randn(2, 3)
@@ -159,20 +159,20 @@ def test_custom_constraint_subclasses_run_for_unrelated_queries_and_keep_order(e
                 return Diagnostic("global_check", "Global extension rejects the change", "conflict")
             return None
 
-    def analyze(context: OperationContext) -> OperatorSpec:
-        spec = linear.analyze(context)
+    def analyze(context: Operation) -> OperatorSpec:
+        spec = linear.build_spec(context)
         if context.module_path != "left.0":
             return spec
         return replace(
             spec,
             constraints=(
                 *spec.constraints,
-                GlobalFixed(context.binding("weight").axis(0)),
+                GlobalFixed(context.bindings.get("weight").axis(0)),
                 GlobalConstraint(),
             ),
         )
 
-    registry.modules[nn.Linear] = OperatorRule(analyze, lower=linear.lower)
+    registry = with_rule(registry, nn.Linear, make_rule(analyze, build_recipe=linear.build_recipe))
     model = Parallel().eval()
     x = torch.randn(2, 3)
     graph = DependencyGraph.build(model, args=(x,), operators=registry)
@@ -215,11 +215,11 @@ def test_nested_constraint_extensions_are_not_cached(kind, execution_device):
             calls.append("factor")
             return value % int(self) + int(blocked[0])
 
-    def analyze(context: OperationContext) -> OperatorSpec:
-        spec = native.analyze(context)
+    def analyze(context: Operation) -> OperatorSpec:
+        spec = native.build_spec(context)
         if context.module_path != "left.0":
             return spec
-        axis = context.binding("weight").axis(0)
+        axis = context.bindings.get("weight").axis(0)
         constraint = (
             Balanced(axis, (DynamicPartition.span(0, 5), IndexSet.span(5, 10)))
             if kind == "partition"
@@ -227,7 +227,7 @@ def test_nested_constraint_extensions_are_not_cached(kind, execution_device):
         )
         return replace(spec, constraints=(*spec.constraints, constraint))
 
-    registry.modules[nn.Linear] = OperatorRule(analyze, lower=native.lower)
+    registry = with_rule(registry, nn.Linear, make_rule(analyze, build_recipe=native.build_recipe))
     model = Parallel().to(execution_device).eval()
     reference = copy.deepcopy(model)
     x = torch.randn(2, 3, device=execution_device)

@@ -9,15 +9,15 @@ import pytest
 import torch
 from torch import nn
 
+from tests.support.operators import make_rule
 from torch_kirigami import (
     AxisRelation,
     DependencyGraph,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
 )
 from torch_kirigami.dep_graph.contracts import AxisBarrier, Diagnostic, Divisible
-from torch_kirigami.dep_graph.operation import CallEffects
+from torch_kirigami.dep_graph.operation import TensorEffects
 from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
 from torch_kirigami.dep_graph.selection import AxisRef, Selection, TensorRef
 from torch_kirigami.errors import StaleGraphError
@@ -149,10 +149,10 @@ def test_nested_mapping_arithmetic_uses_real_dependency_scores(strategy_type, ex
 
     registry = OperatorRegistry.default().register(
         ConstantLast,
-        OperatorRule(
+        make_rule(
             analyze,
             evaluate_on_meta=True,
-            effects=lambda *args: CallEffects(fresh_output=True),
+            tensor_effects=lambda *args: TensorEffects(writes_inputs=(), outputs_are_fresh=True),
         ),
     )
     source = Parallel().double().eval()

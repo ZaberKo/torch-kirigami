@@ -372,7 +372,7 @@ def _weight_bindings(context: MetricContext) -> set[TensorRef]:
     refs = set()
     for operation in context.graph.operations():
         if type(operation.module) in _WEIGHT_MODULES:
-            ref = operation.binding("weight")
+            ref = operation.bindings.get("weight")
         elif operation.module is None and operation.node.target in _WEIGHT_FUNCTIONS:
             ref = operation.argument("weight", _WEIGHT_FUNCTIONS[operation.node.target])
         else:

@@ -1,6 +1,6 @@
 # Dependency graph package review
 
-Review date: 2026-10-14. This note records implementation decisions; the public
+Historical review dated 2026-10-14. The later operator refactor replaces the call/context and registrar records described below; see the current dependency guide. This note records implementation decisions; the public
 contract is defined in [the dependency guide](../dependency-graph.md).
 
 ## Package boundary

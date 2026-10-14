@@ -2,10 +2,10 @@
 
 The custom operator rule describes Q/K/V and output-projection relations,
 whole-KV-group candidate units, and head-count/projection attributes. The
-registered rule feeds ``DependencyGraph.build`` and ``Pruner`` discovery;
-``Pruner.prune`` then plans, verifies and applies magnitude-ranked removals
-under a ``ChannelRatio`` budget. Finally, ``save_checkpoint`` and
-``load_checkpoint`` exercise structural checkpoint restoration against a fresh
+registered rule feeds `DependencyGraph.build` and `Pruner` discovery;
+`Pruner.prune` then plans, verifies and applies magnitude-ranked removals
+under a `ChannelRatio` budget. Finally, `save_checkpoint` and
+`load_checkpoint` exercise structural checkpoint restoration against a fresh
 module skeleton. This example covers the declared GQA layout and its supported
 rewrite; it does not promise arbitrary fused attention or mask semantics.
 """
@@ -17,16 +17,16 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_kirigami import (
+    AttributeBinding,
     AxisPort,
     AxisRelation,
     BlockMap,
     CandidateAxis,
     DependencyGraph,
-    OperationContext,
+    Operation,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
-    Requirement,
     ShapeExpr,
 )
 from torch_kirigami.pruning import (
@@ -59,71 +59,65 @@ class FusedGQA(nn.Module):
         return self.out(y.transpose(1, 2).reshape(x.size(0), x.size(1), -1))
 
 
-def fused_gqa(ctx: OperationContext) -> OperatorSpec:
-    """Declare group linkage and attribute bindings once; no rewrite/save callback."""
-    x, y = ctx.inputs[0], ctx.outputs[0]
-    q, k, v, out = (ctx.binding(f"{name}.weight") for name in ("q", "k", "v", "out"))
-    d = ctx.module.head_dim
-    multiplier = ctx.module.q_heads // ctx.module.kv_heads
-    relations = [AxisRelation.equal(x.axis(-1), w.axis(1)) for w in (q, k, v)]
-    relations.extend(
-        (
-            AxisRelation.equal(q.axis(0), out.axis(1)),
-            AxisRelation.equal(k.axis(0), v.axis(0)),
-            AxisRelation.equal(out.axis(0), y.axis(-1)),
-            AxisRelation(
-                AxisPort(k.axis(0)),
-                AxisPort(q.axis(0)),
-                (BlockMap(0, 0, ctx.module.kv_heads, d, multiplier * d),),
-            ),
-        )
-    )
-    relations.extend(AxisRelation.equal(x.axis(i), y.axis(i)) for i in range(len(x.shape) - 1))
-    requirements = []
-    for name, tensor in (("q_heads", q), ("kv_heads", k)):
-        requirements.append(
-            Requirement(
-                "attribute",
-                f"{ctx.module_path}.{name}".lstrip("."),
-                (tensor,),
-                "Update declared head count",
-                (
-                    (
-                        "expression",
-                        ShapeExpr(
-                            "floordiv",
-                            args=(
-                                ShapeExpr("dimension", (tensor, 0)),
-                                ShapeExpr("constant", d),
-                            ),
-                        ),
-                    ),
+class FusedGQARule(OperatorRule):
+    """Bind the fused attention structure without custom mutation callbacks."""
+
+    def build_spec(self, operation: Operation) -> OperatorSpec:
+        """Declare group linkage and attribute bindings once."""
+        x, y = operation.inputs[0], operation.outputs[0]
+        q, k, v, out = (operation.bindings[f"{name}.weight"] for name in ("q", "k", "v", "out"))
+        head_dim = operation.module.head_dim
+        multiplier = operation.module.q_heads // operation.module.kv_heads
+        relations = [AxisRelation.equal(x.axis(-1), w.axis(1)) for w in (q, k, v)]
+        relations.extend(
+            (
+                AxisRelation.equal(q.axis(0), out.axis(1)),
+                AxisRelation.equal(k.axis(0), v.axis(0)),
+                AxisRelation.equal(out.axis(0), y.axis(-1)),
+                AxisRelation(
+                    AxisPort(k.axis(0)),
+                    AxisPort(q.axis(0)),
+                    (BlockMap(0, 0, operation.module.kv_heads, head_dim, multiplier * head_dim),),
                 ),
             )
         )
-    for name, tensor in (("q", q), ("k", k), ("v", v), ("out", out)):
-        for attr, dim in (("out_features", 0), ("in_features", 1)):
+        relations.extend(AxisRelation.equal(x.axis(i), y.axis(i)) for i in range(len(x.shape) - 1))
+        requirements = []
+        for name, tensor in (("q_heads", q), ("kv_heads", k)):
             requirements.append(
-                Requirement(
-                    "attribute",
-                    f"{ctx.module_path}.{name}.{attr}".lstrip("."),
-                    (tensor,),
-                    "Update explicitly bound projection dimensions",
-                    (("axis", tensor.axis(dim)),),
+                AttributeBinding(
+                    f"{operation.module_path}.{name}".lstrip("."),
+                    ShapeExpr(
+                        "floordiv",
+                        args=(
+                            ShapeExpr("dimension", (tensor, 0)),
+                            ShapeExpr("constant", head_dim),
+                        ),
+                    ),
+                    "Update declared head count",
                 )
             )
-    return OperatorSpec(
-        tuple(relations),
-        requirements=tuple(requirements),
-        candidates=(CandidateAxis(f"{k.paths[0]}:0", k.axis(0), d),),
-    )
+        for name, tensor in (("q", q), ("k", k), ("v", v), ("out", out)):
+            for attr, dim in (("out_features", 0), ("in_features", 1)):
+                requirements.append(
+                    AttributeBinding(
+                        f"{operation.module_path}.{name}.{attr}".lstrip("."),
+                        ShapeExpr("dimension", (tensor, dim)),
+                        "Update explicitly bound projection dimensions",
+                    )
+                )
+        return OperatorSpec(
+            tuple(relations),
+            requirements=tuple(requirements),
+            candidates=(CandidateAxis(f"{k.paths[0]}:0", k.axis(0), head_dim),),
+        )
 
 
 def main() -> None:
     """Prune whole KV groups and verify checkpoint reconstruction."""
     model = FusedGQA()
     x = torch.randn(2, 3, 8)
-    operators = OperatorRegistry.default().register(FusedGQA, OperatorRule(fused_gqa))
+    operators = OperatorRegistry.default().register(FusedGQA, FusedGQARule())
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates()

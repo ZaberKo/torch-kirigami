@@ -7,7 +7,8 @@ import operator
 
 from torch import fx, nn
 
-from ..operation import CallEffects
+from ..contracts import ArgumentRef
+from ..operation import TensorEffects, argument
 
 
 def named_inplace(node: fx.Node) -> bool:
@@ -41,7 +42,7 @@ def named_inplace(node: fx.Node) -> bool:
     return name.endswith("_") and not name.endswith("__")
 
 
-def native_effects(node: fx.Node, module: nn.Module | None, *, fresh_output: bool) -> CallEffects:
+def native_effects(node: fx.Node, module: nn.Module | None, *, fresh_output: bool) -> TensorEffects:
     """Declare public in-place arguments and guaranteed allocations in one place."""
     target = node.target
     mutates = named_inplace(node)
@@ -53,4 +54,29 @@ def native_effects(node: fx.Node, module: nn.Module | None, *, fresh_output: boo
             mutates = mutates or (value is not False and value is not None)
         except (TypeError, ValueError):
             mutates = mutates or node.kwargs.get("inplace") is True
-    return CallEffects(mutates, fresh_output and not mutates)
+    return TensorEffects(
+        writes_inputs=(ArgumentRef("input", 0),) if mutates else (),
+        outputs_are_fresh=fresh_output and not mutates,
+    )
+
+
+def written_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
+    """Resolve declared writes using the existing canonical argument locator.
+
+    Container arguments conservatively include every FX-valued leaf. Unknown
+    writes include all inputs; they are never silently treated as read-only.
+    """
+    if effects.writes_inputs is None:
+        return set(node.all_input_nodes)
+    result = set()
+    for ref in effects.writes_inputs:
+        locations = argument(
+            node.args,
+            node.kwargs,
+            ref.name,
+            ref.position,
+            target=node.target,
+            variadic=ref.variadic,
+        )
+        fx.map_arg(locations, lambda item: result.add(item) or item)
+    return result

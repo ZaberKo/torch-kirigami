@@ -11,6 +11,7 @@ from tests.support.pruning import build
 from torch_kirigami import (
     DependencyGraph,
 )
+from torch_kirigami.dep_graph.contracts import AttributeBinding, Requirement
 from torch_kirigami.pruning import (
     PlanningError,
     Pruner,
@@ -26,7 +27,9 @@ def test_squeeze_requires_rank_preserving_rewrite_when_axis_becomes_one():
     input_ = next(v for v in graph.values() if v.kind == "input")
     impact = graph.propagate(remove=[input_.axis(1).select([0, 1])])
     assert impact.status == "resolved"
-    assert any(r.kind == "dimension_transform" for r in impact.requirements)
+    assert any(
+        isinstance(r, Requirement) and r.kind == "dimension_transform" for r in impact.requirements
+    )
 
 
 def test_unflatten_has_explicit_attribute_binding():
@@ -34,9 +37,9 @@ def test_unflatten_has_explicit_attribute_binding():
     input_ = next(v for v in graph.values() if v.kind == "input")
     impact = graph.propagate(remove=[input_.axis(1).select([2, 3])])
     assert impact.status == "resolved"
-    req = next(r for r in impact.requirements if r.kind == "attribute")
+    req = next(r for r in impact.requirements if isinstance(r, AttributeBinding))
     assert req.target == "unflattened_size"
-    assert tuple(a.dim for a in dict(req.data)["axes"]) == (1, 2)
+    assert tuple(a.value[1] for a in req.expression.args) == (1, 2)
 
 
 @pytest.mark.parametrize(
@@ -102,9 +105,15 @@ def test_same_shape_different_reshape_provenance():
         input_ = next(v for v in graph.values() if v.kind == "input")
         impact = graph.propagate(remove=[input_.axis(1).select([1, 3])])
         assert impact.status == "resolved"
-        results.append(next(r for r in impact.requirements if r.kind == "shape_arguments"))
+        results.append(
+            next(
+                r
+                for r in impact.requirements
+                if isinstance(r, Requirement) and r.kind == "shape_arguments"
+            )
+        )
     assert dict(results[0].data)["expression"] != dict(results[1].data)["expression"]
-    assert all(r.kind != "attribute" for r in results)
+    assert all(not isinstance(r, AttributeBinding) for r in results)
 
 
 def test_shape_arithmetic_and_squeeze_unsqueeze():

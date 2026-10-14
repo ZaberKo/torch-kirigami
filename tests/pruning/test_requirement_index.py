@@ -8,16 +8,16 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule
 from torch_kirigami import (
     AxisRelation,
     DependencyGraph,
     Impact,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
-    Requirement,
 )
-from torch_kirigami.dep_graph.operation import OperationContext
+from torch_kirigami.dep_graph.contracts import AttributeBinding, Requirement, ShapeExpr
+from torch_kirigami.dep_graph.operation import Operation
 from torch_kirigami.dep_graph.selection import TensorRef
 from torch_kirigami.pruning import Pruner
 from torch_kirigami.pruning import rewrite as rewrite_module
@@ -32,13 +32,13 @@ def test_requirement_index_matches_exhaustive_ownership(function_call: bool) -> 
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
     calls = graph.operations()
     operations = (
-        replace(calls[0], module_path=""),
+        replace(calls[0], module_paths=("",)),
         replace(
             calls[1],
             module=None if function_call else calls[1].module,
-            module_path=None if function_call else "block",
+            module_paths=() if function_call else ("block",),
         ),
-        replace(calls[2], module_path="block.inner"),
+        replace(calls[2], module_paths=("block.inner",)),
     )
     targets = (
         "width",
@@ -50,7 +50,9 @@ def test_requirement_index_matches_exhaustive_ownership(function_call: bool) -> 
         *(op.node.name for op in operations),
     )
     requirements = tuple(
-        Requirement(kind, target, (), f"{kind}:{target}")
+        AttributeBinding(target, ShapeExpr("constant", 1))
+        if kind == "attribute"
+        else Requirement(kind, target, (), f"{kind}:{target}")
         for target in targets
         for kind in ("attribute", "call_arguments", "metadata_layout")
     )
@@ -61,12 +63,12 @@ def test_requirement_index_matches_exhaustive_ownership(function_call: bool) -> 
         expected = tuple(
             req
             for req in requirements
-            if req.kind != "metadata_layout"
+            if (isinstance(req, AttributeBinding) or req.kind != "metadata_layout")
             and (
                 req.target == op.node.name
                 or (
                     op.module is not None
-                    and req.kind == "attribute"
+                    and isinstance(req, AttributeBinding)
                     and (
                         req.target.rpartition(".")[0] == (op.module_path or "")
                         or req.target.startswith(f"{op.module_path}." if op.module_path else "")
@@ -88,21 +90,19 @@ class _OpaqueBlock(nn.Module):
         return self.inner(x).reshape(x.size(0), self.inner.out_features)
 
 
-def _block_spec(ctx: OperationContext) -> OperatorSpec:
+def _block_spec(ctx: Operation) -> OperatorSpec:
     """Bind the opaque block's width to its descendant Linear attribute."""
-    source, result, weight = ctx.inputs[0], ctx.outputs[0], ctx.binding("inner.weight")
+    source, result, weight = ctx.inputs[0], ctx.outputs[0], ctx.bindings.get("inner.weight")
     return OperatorSpec(
         (
             AxisRelation.equal(source.axis(1), weight.axis(1), "input"),
             AxisRelation.equal(result.axis(1), weight.axis(0), "output"),
         ),
         requirements=(
-            Requirement(
-                "attribute",
+            AttributeBinding(
                 f"{ctx.module_path}.inner.out_features".lstrip("."),
-                (result,),
+                ShapeExpr("dimension", (result.axis(1).tensor, result.axis(1).dim)),
                 "nested width",
-                (("axis", result.axis(1)),),
             ),
         ),
     )
@@ -131,7 +131,7 @@ def test_descendant_attribute_requirement_survives_plan_apply(
     expected = F.linear(x, block.inner.weight[keep])
     if nested:
         expected = F.linear(expected * 2, model.out.weight[:, keep], model.out.bias)
-    operators = OperatorRegistry.default().register(_OpaqueBlock, OperatorRule(_block_spec))
+    operators = OperatorRegistry.default().register(_OpaqueBlock, make_rule(_block_spec))
     graph = DependencyGraph.build(model, args=(x,), operators=operators)
     path = "block.inner.weight" if nested else "inner.weight"
     old = tuple(model.parameters())

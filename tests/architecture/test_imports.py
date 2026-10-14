@@ -73,5 +73,5 @@ def test_public_record_annotations_resolve_at_runtime():
             if inspect.isclass(value) and is_dataclass(value):
                 get_type_hints(value)
 
-    hints = get_type_hints(torch_kirigami.OperationContext)
+    hints = get_type_hints(torch_kirigami.Operation)
     assert hints["metadata"].__args__[1] is torch_kirigami.TensorFacts

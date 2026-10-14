@@ -71,7 +71,7 @@ from torch_kirigami import (
     IndexSet,
     LayoutConstraint,
     NonEmpty,
-    OperationContext,
+    Operation,
     TensorRef,
 )
 from torch_kirigami.dep_graph.eligibility import has_native_semantics
@@ -314,7 +314,10 @@ def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> Candi
     for operation in graph.operations():
         if type(operation.module) is not torch.nn.MultiheadAttention:
             continue
-        for constraint in graph.operator_spec(operation).constraints:
+        spec = graph.operator_spec(operation)
+        if spec is None:
+            continue
+        for constraint in spec.constraints:
             if type(constraint) is not Balanced:
                 continue
             partitions = constraint.partitions
@@ -354,9 +357,7 @@ def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> Candi
     )
 
 
-def dependency_signature(
-    operations: tuple[OperationContext, ...], impact: Impact
-) -> tuple[object, ...]:
+def dependency_signature(operations: tuple[Operation, ...], impact: Impact) -> tuple[object, ...]:
     """Compare ordered typed DAGs, preserving directions, adjacency and sharing.
 
     Names, widths and selected indices are excluded. Different branch capture
@@ -375,7 +376,7 @@ def dependency_signature(
     return _signature(affected, impact)
 
 
-def _signature(affected: tuple[OperationContext, ...], impact: Impact) -> tuple[object, ...]:
+def _signature(affected: tuple[Operation, ...], impact: Impact) -> tuple[object, ...]:
     """Describe only affected calls; memoize repeated dimension inspections."""
     selected = {selection.tensor: selection for selection in impact.selections.values()}
     dimensions_by_tensor: dict[TensorRef, tuple[int, ...]] = {}
@@ -957,7 +958,8 @@ def main() -> None:
         operation.module_path: options.granularity
         for operation in graph.operations()
         if operation.module_path is not None
-        and any(domain.axis in active_axes for domain in graph.operator_spec(operation).candidates)
+        and (spec := graph.operator_spec(operation)) is not None
+        and any(domain.axis in active_axes for domain in spec.candidates)
     }
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path=alignment))
     config["discovery_exclusions"] = space.exclusions

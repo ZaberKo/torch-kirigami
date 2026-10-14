@@ -10,7 +10,7 @@ from torch import nn
 
 from ..dep_graph.contracts import Constraint, Fixed
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import CandidateAxis, OperationContext
+from ..dep_graph.operation import CandidateAxis, Operation
 from ..dep_graph.selection import AxisRef, TensorRef
 from .axis_domains import IdentityAxisIndex
 from .groups import ParameterGroup, unique_groups
@@ -27,13 +27,16 @@ def interface_constraints(graph: DependencyGraph, preserve_io: bool) -> tuple[Fi
 
 
 def discover(
-    graph: DependencyGraph, operations: tuple[OperationContext, ...]
+    graph: DependencyGraph, operations: tuple[Operation, ...]
 ) -> tuple[CandidateAxis, ...]:
     """Collect logical domains before instantiating individual candidate requests."""
     domains: dict[AxisRef, CandidateAxis] = {}
     keys: dict[str, tuple[TensorRef | AxisRef, int, int]] = {}
     for op in operations:
-        for domain in graph.operator_spec(op).candidates:
+        spec = graph.operator_spec(op)
+        if spec is None:
+            continue
+        for domain in spec.candidates:
             axis, block = domain.axis, domain.block_size
             identity = (
                 domain.binding if domain.binding is not None else axis,
@@ -126,7 +129,8 @@ def discover_candidates(
                 for p in targets
                 if any(fnmatchcase(path, p) for path in aliases[id(operation.module)])
             }
-            if hits and graph.operator_spec(operation).candidates:
+            spec = graph.operator_spec(operation)
+            if hits and spec is not None and spec.candidates:
                 selected.append(operation)
                 matching.update(hits)
         if set(targets) - matching:

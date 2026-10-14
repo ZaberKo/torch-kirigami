@@ -25,7 +25,7 @@ def test_sdpa_gqa_group_and_multiplier_pruning(execution_device):
     for remove in ([0], [0, 2]):
         q, k, v = torch.randn(2, 4, 3, 4), torch.randn(2, 2, 5, 4), torch.randn(2, 2, 5, 6)
         graph = DependencyGraph.build(Net(), args=(q, k, v))
-        call = next(c for c in graph.calls() if len(c.inputs) == 3)
+        call = next(c for c in graph.operations() if len(c.inputs) == 3)
         seed = (
             call.inputs[1].axis(1).select(remove)
             if remove == [0]

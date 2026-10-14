@@ -11,16 +11,18 @@ from torch.nn import functional as F
 from ...errors import UnsupportedOperation
 from ..contracts import (
     ArgumentRef,
+    AttributeBinding,
     AxisBarrier,
     Balanced,
     BlockBalance,
     LayoutConstraint,
     NonEmpty,
     Requirement,
+    ShapeExpr,
 )
 from ..operation import (
     CandidateAxis,
-    OperationContext,
+    Operation,
     OperatorSpec,
     OutputContract,
     PartitionedLayout,
@@ -36,7 +38,7 @@ from ..relations import (
     SliceRelation,
 )
 from ..selection import IndexSet, Region, TensorRef, full_region
-from .shapes import has_known_provenance, shape_expression
+from .shapes import has_known_provenance, scalar_spec, shape_expression
 
 
 def one(value: object) -> TensorRef:
@@ -52,104 +54,131 @@ def equal(a: TensorRef, da: int, b: TensorRef, db: int, reason: str) -> AxisRela
 
 
 def requirement(
-    ctx: OperationContext,
+    operation: Operation,
     name: str,
     tensor: TensorRef,
     dim: int,
     *,
-    kind: str = "attribute",
     position: int | None = None,
-) -> Requirement:
+) -> Requirement | AttributeBinding:
     """Bind an axis change to a module attribute or functional operator argument."""
-    target = f"{ctx.module_path}.{name}".lstrip(".") if ctx.module is not None else ctx.node.name
+    target = (
+        f"{operation.module_path}.{name}".lstrip(".")
+        if operation.module is not None
+        else operation.node.name
+    )
+    if operation.module is not None:
+        return AttributeBinding(target, ShapeExpr("dimension", (tensor, dim)))
     return Requirement(
-        kind if ctx.module is not None else "operator_argument",
+        "operator_argument",
         target,
         (tensor,),
         f"Update {name} from the retained axis size",
         (("axis", tensor.axis(dim)),),
         arguments=(ArgumentRef(name, position),)
-        if ctx.module is None and position is not None
+        if operation.module is None and position is not None
         else (),
     )
 
 
 def bind(
-    ctx: OperationContext, name: str, position: int, default: object = None
+    operation: Operation, name: str, position: int, default: object = None
 ) -> TensorRef | None:
     """Resolve a module-local binding or a normalized functional argument."""
-    return ctx.binding(name) if ctx.module is not None else ctx.argument(name, position, default)
+    return (
+        operation.bindings.get(name)
+        if operation.module is not None
+        else operation.argument(name, position, default)
+    )
 
 
-def _identity(ctx: OperationContext) -> OperatorSpec:
+def _identity(operation: Operation) -> OperatorSpec:
     """Preserve tensor coordinates for a shape-preserving operation."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
     if x.shape != y.shape:
         raise UnsupportedOperation("Identity rule requires equal shapes")
-    return OperatorSpec((ReshapeRelation(x, y, ctx.node.name),))
+    return OperatorSpec((ReshapeRelation(x, y, operation.node.name),))
 
 
-def pointwise(ctx: OperationContext) -> OperatorSpec:
+def pointwise(operation: Operation) -> OperatorSpec:
     """Connect broadcast-compatible inputs to an elementwise output."""
-    y = one(ctx.output)
+    scalar = scalar_spec(operation)
+    if scalar is not None:
+        return scalar
+    y = one(operation.result)
     relations = []
-    for x in ctx.inputs:
+    for x in operation.inputs:
         try:
-            relations.append(BroadcastRelation(x, y, ctx.node.name))
+            relations.append(BroadcastRelation(x, y, operation.node.name))
         except ValueError as error:
             raise UnsupportedOperation("Unproven broadcast correspondence") from error
-    return OperatorSpec(tuple(relations))
+    contract = (
+        OutputContract(output_layout="contiguous")
+        if operation.node.target == "contiguous"
+        else None
+    )
+    return OperatorSpec(tuple(relations), contract=contract)
 
 
 def layout(
-    ctx: OperationContext, tensor: TensorRef, ports: tuple[object, ...] = ()
+    operation: Operation, tensor: TensorRef, ports: tuple[object, ...] = ()
 ) -> LayoutConstraint:
     """Declare the compact layouts accepted by a particular tensor use."""
-    return LayoutConstraint(tensor, tuple(ports), node=ctx.node.name)
+    return LayoutConstraint(tensor, tuple(ports), node=operation.node.name)
 
 
-def affine_layouts(ctx: OperationContext) -> tuple[LayoutConstraint, ...]:
+def affine_layouts(operation: Operation) -> tuple[LayoutConstraint, ...]:
     """Require ordinary axis compaction for each input and bound affine tensor."""
-    return tuple(layout(ctx, ref) for ref in dict.fromkeys((*ctx.inputs, *ctx.bindings.values())))
+    return tuple(
+        layout(operation, ref)
+        for ref in dict.fromkeys((*operation.inputs, *operation.bindings.values()))
+    )
 
 
-def linear(ctx: OperationContext) -> OperatorSpec:
+def linear(operation: Operation) -> OperatorSpec:
     """Connect Linear feature axes, batch dimensions, weight, and bias."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    w, b = one(bind(operation, "weight", 1)), bind(operation, "bias", 2)
     if len(w.shape) not in (1, 2):
         raise UnsupportedOperation("Linear requires rank-one or rank-two weight")
-    relations = [equal(x, -1, w, -1, ctx.node.name)]
+    relations = [equal(x, -1, w, -1, operation.node.name)]
     if len(w.shape) == 2:
-        relations.append(equal(y, -1, w, 0, ctx.node.name))
-    relations.extend(equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape) - 1))
+        relations.append(equal(y, -1, w, 0, operation.node.name))
+    relations.extend(equal(x, d, y, d, operation.node.name) for d in range(len(x.shape) - 1))
     if b is not None:
-        relations.append(BroadcastRelation(one(b), y, ctx.node.name))
+        relations.append(BroadcastRelation(one(b), y, operation.node.name))
     reqs = (
         ()
-        if ctx.module is None
-        else (requirement(ctx, "in_features", x, -1), requirement(ctx, "out_features", y, -1))
+        if operation.module is None
+        else (
+            requirement(operation, "in_features", x, -1),
+            requirement(operation, "out_features", y, -1),
+        )
     )
-    candidates = () if ctx.module is None else (CandidateAxis(f"{w.paths[0]}:0", w.axis(0)),)
+    candidates = () if operation.module is None else (CandidateAxis(f"{w.paths[0]}:0", w.axis(0)),)
     return OperatorSpec(
         tuple(relations),
-        (layout(ctx, x), layout(ctx, y), layout(ctx, w)),
+        (layout(operation, x), layout(operation, y), layout(operation, w)),
         reqs,
         candidates=candidates,
         contract=OutputContract(output_layout="contiguous"),
     )
 
 
-def convolution(ctx: OperationContext) -> OperatorSpec:
+def convolution(operation: Operation) -> OperatorSpec:
     """Describe ordinary/transposed groups once for mapping, channel counting, and packing."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    w, b = one(bind(ctx, "weight", 1)), bind(ctx, "bias", 2)
-    transposed = type(ctx.module) in (
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    w, b = one(bind(operation, "weight", 1)), bind(operation, "bias", 2)
+    transposed = type(operation.module) in (
         nn.ConvTranspose1d,
         nn.ConvTranspose2d,
         nn.ConvTranspose3d,
-    ) or ctx.node.target in (F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d)
-    groups = ctx.module.groups if ctx.module is not None else ctx.argument("groups", 6, 1)
+    ) or operation.node.target in (F.conv_transpose1d, F.conv_transpose2d, F.conv_transpose3d)
+    groups = (
+        operation.module.groups
+        if operation.module is not None
+        else operation.argument("groups", 6, 1)
+    )
     if not isinstance(groups, int):
         raise UnsupportedOperation("Convolution groups must be static")
     channel = len(x.shape) - len(w.shape) + 1
@@ -160,12 +189,12 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
     global_tensor, global_size = (x, cin) if transposed else (y, cout)
     local_tensor, local_size = (y, cout) if transposed else (x, cin)
     global_block, local_block = global_size // groups, local_size // groups
-    relations = [equal(global_tensor, channel, w, 0, ctx.node.name)]
+    relations = [equal(global_tensor, channel, w, 0, operation.node.name)]
     constraints, requirements, partitions = [], [], []
     if channel == 1:
-        relations.append(equal(x, 0, y, 0, ctx.node.name))
+        relations.append(equal(x, 0, y, 0, operation.node.name))
     if b is not None:
-        relations.append(equal(y, channel, one(b), 0, ctx.node.name))
+        relations.append(equal(y, channel, one(b), 0, operation.node.name))
     for group in range(groups):
         axes = list(full_region(w.shape).axes)
         axes[0] = IndexSet.span(group * global_block, (group + 1) * global_block)
@@ -177,7 +206,7 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
                     AxisPort(local_tensor.axis(channel)),
                     AxisPort(w.axis(1), region),
                     (BlockMap(group * local_block, 0, local_block),),
-                    ctx.node.name,
+                    operation.node.name,
                 )
             )
         elif transposed:
@@ -187,7 +216,7 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
                     AxisPort(y.axis(channel)),
                     AxisPort(w.axis(1), region),
                     (BlockMap(group * local_block, 0, local_block),),
-                    ctx.node.name,
+                    operation.node.name,
                 )
             )
     if depthwise:
@@ -196,13 +225,13 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
                 AxisPort(x.axis(channel)),
                 AxisPort(y.axis(channel)),
                 (BlockMap(0, 0, cin, 1, cout // cin, require_full_target=True),),
-                ctx.node.name,
+                operation.node.name,
             )
         )
         constraints.append(
-            BlockBalance(x.axis(channel), y.axis(channel), cout // cin, ctx.node.name)
+            BlockBalance(x.axis(channel), y.axis(channel), cout // cin, operation.node.name)
         )
-        requirements.append(requirement(ctx, "groups", x, channel, position=6))
+        requirements.append(requirement(operation, "groups", x, channel, position=6))
     elif groups > 1:
         for tensor, width in ((x, cin // groups), (y, cout // groups)):
             constraints.append(
@@ -218,15 +247,17 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
     ):
         constraints.extend(
             AxisBarrier(
-                tensor.axis(d), "Convolution spatial/kernel resizing is unsupported", ctx.node.name
+                tensor.axis(d),
+                "Convolution spatial/kernel resizing is unsupported",
+                operation.node.name,
             )
             for d in dims
         )
-    if ctx.module is not None:
+    if operation.module is not None:
         requirements.extend(
             (
-                requirement(ctx, "in_channels", x, channel),
-                requirement(ctx, "out_channels", y, channel),
+                requirement(operation, "in_channels", x, channel),
+                requirement(operation, "out_channels", y, channel),
             )
         )
     weight_ports = tuple(
@@ -236,14 +267,16 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
         for port in (relation.left, relation.right)
         if port.tensor == w
     )
-    constraints.extend((layout(ctx, x), layout(ctx, y), layout(ctx, w, weight_ports)))
+    constraints.extend(
+        (layout(operation, x), layout(operation, y), layout(operation, w, weight_ports))
+    )
     # Ordinary kernels expose the logical output as a physical row axis.
     # Transposed groups require the activation axis, not local weight columns.
     axis = y.axis(channel) if transposed else w.axis(0)
     key = f"{w.paths[0]}:{'output' if transposed else '0'}" if w.paths else ""
     candidates = (
         ()
-        if ctx.module is None
+        if operation.module is None
         else (
             CandidateAxis(
                 key,
@@ -264,121 +297,136 @@ def convolution(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def batch_norm(ctx: OperationContext) -> OperatorSpec:
+def batch_norm(operation: Operation) -> OperatorSpec:
     """Connect channel positions to affine parameters and running statistics."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    relations = [ReshapeRelation(x, y, ctx.node.name)]
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    relations = [ReshapeRelation(x, y, operation.node.name)]
     positions = {"running_mean": 1, "running_var": 2, "weight": 3, "bias": 4}
     for name, position in positions.items():
-        value = bind(ctx, name, position)
+        value = bind(operation, name, position)
         if value is not None:
-            relations.append(equal(x, 1, one(value), 0, ctx.node.name))
-    reqs = (requirement(ctx, "num_features", x, 1),) if ctx.module is not None else ()
+            relations.append(equal(x, 1, one(value), 0, operation.node.name))
+    reqs = (requirement(operation, "num_features", x, 1),) if operation.module is not None else ()
     return OperatorSpec(
         tuple(relations),
-        (*affine_layouts(ctx), layout(ctx, y)),
+        (*affine_layouts(operation), layout(operation, y)),
         reqs,
         contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
-def layer_norm(ctx: OperationContext) -> OperatorSpec:
+def layer_norm(operation: Operation) -> OperatorSpec:
     """Connect normalized axes and record normalized-shape attribute changes."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
     normalized = (
-        ctx.module.normalized_shape
-        if ctx.module is not None
-        else ctx.argument("normalized_shape", 1)
+        operation.module.normalized_shape
+        if operation.module is not None
+        else operation.argument("normalized_shape", 1)
     )
     if isinstance(normalized, int):
         normalized = (normalized,)
     if not isinstance(normalized, (tuple, list)) or not all(isinstance(v, int) for v in normalized):
         raise UnsupportedOperation("normalized_shape must have a static provenance")
     rank = len(normalized)
-    relations = [ReshapeRelation(x, y, ctx.node.name)]
+    relations = [ReshapeRelation(x, y, operation.node.name)]
     positions = (
         (("weight", 2),)
-        if type(ctx.module) is nn.RMSNorm or ctx.node.target is F.rms_norm
+        if type(operation.module) is nn.RMSNorm or operation.node.target is F.rms_norm
         else (("weight", 2), ("bias", 3))
     )
     for name, position in positions:
-        value = bind(ctx, name, position)
+        value = bind(operation, name, position)
         if value is not None:
             value = one(value)
             relations.extend(
-                equal(x, len(x.shape) - rank + d, value, d, ctx.node.name) for d in range(rank)
+                equal(x, len(x.shape) - rank + d, value, d, operation.node.name)
+                for d in range(rank)
             )
-    requirements = (
-        Requirement(
-            "attribute" if ctx.module is not None else "operator_argument",
-            f"{ctx.module_path}.normalized_shape".lstrip(".")
-            if ctx.module is not None
-            else ctx.node.name,
+    axes = tuple(x.axis(len(x.shape) - rank + d) for d in range(rank))
+    detail = "Update normalized_shape; compact normalization is not zero-mask equivalence"
+    if operation.module is not None:
+        binding = AttributeBinding(
+            f"{operation.module_path}.normalized_shape".lstrip("."),
+            ShapeExpr("tuple", args=tuple(ShapeExpr("dimension", (x, a.dim)) for a in axes)),
+            detail,
+        )
+    else:
+        binding = Requirement(
+            "operator_argument",
+            operation.node.name,
             (x,),
-            "Update normalized_shape; compact normalization is not zero-mask equivalence",
-            (("axes", tuple(x.axis(len(x.shape) - rank + d) for d in range(rank))),),
-            arguments=(ArgumentRef("normalized_shape", 1),) if ctx.module is None else (),
-        ),
+            detail,
+            (("axes", axes),),
+            arguments=(ArgumentRef("normalized_shape", 1),),
+        )
+    requirements = (binding,)
+    return OperatorSpec(
+        tuple(relations), (*affine_layouts(operation), layout(operation, y)), requirements
     )
-    return OperatorSpec(tuple(relations), (*affine_layouts(ctx), layout(ctx, y)), requirements)
 
 
-def group_norm(ctx: OperationContext) -> OperatorSpec:
+def group_norm(operation: Operation) -> OperatorSpec:
     """Connect normalization channels and preserve fixed group balance."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    groups = ctx.module.num_groups if ctx.module is not None else ctx.argument("num_groups", 1)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    groups = (
+        operation.module.num_groups
+        if operation.module is not None
+        else operation.argument("num_groups", 1)
+    )
     if not isinstance(groups, int):
         raise UnsupportedOperation("GroupNorm groups must be static")
-    relations = [ReshapeRelation(x, y, ctx.node.name)]
+    relations = [ReshapeRelation(x, y, operation.node.name)]
     for name, position in (("weight", 2), ("bias", 3)):
-        value = bind(ctx, name, position)
+        value = bind(operation, name, position)
         if value is not None:
-            relations.append(equal(x, 1, one(value), 0, ctx.node.name))
+            relations.append(equal(x, 1, one(value), 0, operation.node.name))
     width = x.shape[1] // groups
     constraints = (
         Balanced(
             x.axis(1), tuple(IndexSet.span(g * width, (g + 1) * width) for g in range(groups))
         ),
     )
-    reqs = (requirement(ctx, "num_channels", x, 1),) if ctx.module is not None else ()
+    reqs = (requirement(operation, "num_channels", x, 1),) if operation.module is not None else ()
     return OperatorSpec(
         tuple(relations),
-        (*constraints, *affine_layouts(ctx), layout(ctx, y)),
+        (*constraints, *affine_layouts(operation), layout(operation, y)),
         reqs,
         contract=OutputContract(output_layout="backend_dependent"),
     )
 
 
-def matmul(ctx: OperationContext) -> OperatorSpec:
+def matmul(operation: Operation) -> OperatorSpec:
     """Connect contracting, free, and broadcast batch axes of matrix products."""
-    a = one(ctx.argument("input", 0))
-    b = one(ctx.argument("other", 1, ctx.kwargs.get("mat2")))
-    y = one(ctx.output)
+    a = one(operation.argument("input", 0))
+    b = one(operation.argument("other", 1, operation.kwargs.get("mat2")))
+    y = one(operation.result)
     ra, rb = len(a.shape), len(b.shape)
     if not ra or not rb:
         raise UnsupportedOperation("matmul requires tensor ranks >= 1")
-    relations = [equal(a, -1, b, -2 if rb > 1 else 0, ctx.node.name)]
+    relations = [equal(a, -1, b, -2 if rb > 1 else 0, operation.node.name)]
     free = int(ra > 1) + int(rb > 1)
     if ra > 1:
-        relations.append(equal(a, -2, y, -free, ctx.node.name))
+        relations.append(equal(a, -2, y, -free, operation.node.name))
     if rb > 1:
-        relations.append(equal(b, -1, y, -1, ctx.node.name))
+        relations.append(equal(b, -1, y, -1, operation.node.name))
     batchrank = len(y.shape) - free
     for tensor in (a, b):
         batch = max(0, len(tensor.shape) - 2)
         for d in range(batch):
             target = batchrank - batch + d
             if tensor.shape[d] == y.shape[target]:
-                relations.append(equal(tensor, d, y, target, ctx.node.name))
+                relations.append(equal(tensor, d, y, target, operation.node.name))
             elif tensor.shape[d] != 1:
                 raise UnsupportedOperation("Unproven matmul batch broadcast")
-    return OperatorSpec(tuple(relations), (layout(ctx, a), layout(ctx, b), layout(ctx, y)))
+    return OperatorSpec(
+        tuple(relations), (layout(operation, a), layout(operation, b), layout(operation, y))
+    )
 
 
-def permute(ctx: OperationContext) -> OperatorSpec:
+def permute(operation: Operation) -> OperatorSpec:
     """Normalize static transpose and permutation forms into one axis relation."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    target = ctx.node.target
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    target = operation.node.target
     rank = len(x.shape)
     if target in (
         "transpose",
@@ -388,15 +436,15 @@ def permute(ctx: OperationContext) -> OperatorSpec:
         "swapdims",
         torch.swapdims,
     ):
-        d0 = ctx.argument("dim0", 1)
-        d1 = ctx.argument("dim1", 2)
+        d0 = operation.argument("dim0", 1)
+        d1 = operation.argument("dim1", 2)
         dims = list(range(rank))
         if rank:
             dims[d0 % rank], dims[d1 % rank] = dims[d1 % rank], dims[d0 % rank]
     elif target in ("t", torch.t):
         dims = list(reversed(range(rank)))
     else:
-        dims = ctx.argument("dims", 1, variadic=True)
+        dims = operation.argument("dims", 1, variadic=True)
         if len(dims) == 1 and isinstance(dims[0], (tuple, list)):
             dims = dims[0]
         if not isinstance(dims, (tuple, list)):
@@ -404,34 +452,35 @@ def permute(ctx: OperationContext) -> OperatorSpec:
     dims = tuple(d % rank for d in dims)
     if sorted(dims) != list(range(rank)):
         raise UnsupportedOperation("Invalid dimension permutation")
-    return OperatorSpec((PermuteRelation(x, y, dims, ctx.node.name),))
+    return OperatorSpec((PermuteRelation(x, y, dims, operation.node.name),))
 
 
-def reshape(ctx: OperationContext) -> OperatorSpec:
+def reshape(operation: Operation) -> OperatorSpec:
     """Map reshape coordinates and record dimension-source update requirements."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
     if prod(x.shape) != prod(y.shape):
         raise UnsupportedOperation("Reshape must preserve the original element count")
-    relation = ReshapeRelation(x, y, ctx.node.name)
-    if isinstance(ctx.module, nn.Unflatten):
-        dim = ctx.module.dim
+    relation = ReshapeRelation(x, y, operation.node.name)
+    if isinstance(operation.module, nn.Unflatten):
+        dim = operation.module.dim
         if not isinstance(dim, int):
             raise UnsupportedOperation("Named unflatten dimensions are unsupported")
         axes = tuple(
-            y.axis(dim % len(x.shape) + i) for i in range(len(ctx.module.unflattened_size))
+            y.axis(dim % len(x.shape) + i) for i in range(len(operation.module.unflattened_size))
         )
-        requirement_ = Requirement(
-            "attribute",
-            f"{ctx.module_path}.unflattened_size".lstrip("."),
-            (x, y),
+        requirement_ = AttributeBinding(
+            f"{operation.module_path}.unflattened_size".lstrip("."),
+            ShapeExpr(
+                "tuple",
+                args=tuple(ShapeExpr("dimension", (axis.tensor, axis.dim)) for axis in axes),
+            ),
             "Update explicitly bound unflatten factors from retained output dimensions",
-            (("axes", axes),),
         )
         return OperatorSpec((relation,), requirements=(requirement_,))
-    target = ctx.node.target
+    target = operation.node.target
     if target in ("reshape", "view", torch.reshape):
-        raw = ctx.raw_argument("shape", 1, variadic=True)
-        expression = shape_expression(ctx, raw)
+        raw = operation.raw_argument("shape", 1, variadic=True)
+        expression = shape_expression(operation, raw)
         if not has_known_provenance(expression):
             raise UnsupportedOperation(
                 "Cannot prove reshape size argument provenance. Express dimensions using "
@@ -440,7 +489,7 @@ def reshape(ctx: OperationContext) -> OperatorSpec:
             )
         requirement_ = Requirement(
             "shape_arguments",
-            ctx.node.name,
+            operation.node.name,
             (x, y),
             "Recompute shape arguments from retained dimensions; source Python attributes "
             "are not inferred from equal integers",
@@ -457,7 +506,7 @@ def reshape(ctx: OperationContext) -> OperatorSpec:
     if target in ("squeeze", torch.squeeze):
         requirement_ = Requirement(
             "dimension_transform",
-            ctx.node.name,
+            operation.node.name,
             (x, y),
             "Preserve captured output rank: newly singleton axes may require replacing squeeze "
             "with an explicit reshape of the retained output shape",
@@ -468,59 +517,59 @@ def reshape(ctx: OperationContext) -> OperatorSpec:
     return OperatorSpec((relation,))
 
 
-def concatenate(ctx: OperationContext) -> OperatorSpec:
+def concatenate(operation: Operation) -> OperatorSpec:
     """Connect each input to its original offset region in the concatenation."""
-    items = ctx.argument("tensors", 0)
-    y = one(ctx.output)
-    dim = ctx.argument("dim", 1, 0) % len(y.shape)
+    items = operation.argument("tensors", 0)
+    y = one(operation.result)
+    dim = operation.argument("dim", 1, 0) % len(y.shape)
     relations, offset = [], 0
     for x in items:
         x = one(x)
         index = [slice(None)] * len(y.shape)
         index[dim] = slice(offset, offset + x.shape[dim])
-        relations.append(SliceRelation(y, x, tuple(index), ctx.node.name))
+        relations.append(SliceRelation(y, x, tuple(index), operation.node.name))
         offset += x.shape[dim]
     return OperatorSpec(tuple(relations))
 
 
-def split(ctx: OperationContext) -> OperatorSpec:
+def split(operation: Operation) -> OperatorSpec:
     """Connect static split or unbind outputs to their source partitions."""
-    x = one(ctx.argument("input", 0))
-    dim = ctx.argument("dim", 2, 0) % len(x.shape)
-    target = ctx.node.target
+    x = one(operation.argument("input", 0))
+    dim = operation.argument("dim", 2, 0) % len(x.shape)
+    target = operation.node.target
     if target in ("unbind", torch.unbind):
-        dim = ctx.argument("dim", 1, 0) % len(x.shape)
+        dim = operation.argument("dim", 1, 0) % len(x.shape)
         relations = []
-        for i, y in enumerate(ctx.outputs):
+        for i, y in enumerate(operation.outputs):
             index = [slice(None)] * len(x.shape)
             index[dim] = i
-            relations.append(SliceRelation(x, y, tuple(index), ctx.node.name))
+            relations.append(SliceRelation(x, y, tuple(index), operation.node.name))
         # Removing an unbound position changes the number and identity of output ports.
         constraints = (
             AxisBarrier(
                 x.axis(dim),
                 "Deleting unbind output ports needs an explicit graph rewrite",
-                ctx.node.name,
+                operation.node.name,
             ),
         )
     else:
-        sections = ctx.argument("split_size_or_sections", 1)
+        sections = operation.argument("split_size_or_sections", 1)
         if not isinstance(sections, (int, tuple, list)):
             raise UnsupportedOperation("Split sections must be static")
         relations, offset, constraints = [], 0, ()
-        for y in ctx.outputs:
+        for y in operation.outputs:
             index = [slice(None)] * len(x.shape)
             index[dim] = slice(offset, offset + y.shape[dim])
-            relations.append(SliceRelation(x, y, tuple(index), ctx.node.name))
+            relations.append(SliceRelation(x, y, tuple(index), operation.node.name))
             offset += y.shape[dim]
     requirement_ = Requirement(
         "partition_arguments",
-        ctx.node.name,
-        (x, *ctx.outputs),
+        operation.node.name,
+        (x, *operation.outputs),
         "Update split sizes/port bindings while preserving original partition order",
         (
             ("axis", x.axis(dim)),
-            ("outputs", ctx.outputs),
+            ("outputs", operation.outputs),
             ("unbound", target in ("unbind", torch.unbind)),
         ),
         arguments=()
@@ -530,16 +579,19 @@ def split(ctx: OperationContext) -> OperatorSpec:
     return OperatorSpec(tuple(relations), tuple(constraints), (requirement_,))
 
 
-def getitem(ctx: OperationContext) -> OperatorSpec:
+def getitem(operation: Operation) -> OperatorSpec:
     """Normalize container access and supported basic tensor indexing."""
-    source, index = ctx.args
+    scalar = scalar_spec(operation)
+    if scalar is not None:
+        return scalar
+    source, index = operation.args
     if not isinstance(source, TensorRef):
         selected = source[index]
-        a, b = tuple(tensors(selected)), ctx.outputs
+        a, b = tuple(tensors(selected)), operation.outputs
         if len(a) != len(b):
             raise UnsupportedOperation("Container indexing mismatch")
         return OperatorSpec(
-            tuple(ReshapeRelation(x, y, ctx.node.name) for x, y in zip(a, b, strict=False))
+            tuple(ReshapeRelation(x, y, operation.node.name) for x, y in zip(a, b, strict=False))
         )
     if not isinstance(index, tuple):
         index = (index,)
@@ -575,24 +627,24 @@ def getitem(ctx: OperationContext) -> OperatorSpec:
             normalized.append(slice(start, max(start, stop), step))
         else:
             raise UnsupportedOperation("Only static basic tensor indexing is supported")
-    y = one(ctx.output)
+    y = one(operation.result)
     req = Requirement(
         "slice_arguments",
-        ctx.node.name,
+        operation.node.name,
         (source, y),
         "Remap slice coordinates after upstream compaction",
         (("index", tuple(normalized)),),
         arguments=(ArgumentRef("index", 1),),
     )
     return OperatorSpec(
-        (SliceRelation(source, y, tuple(normalized), ctx.node.name),), requirements=(req,)
+        (SliceRelation(source, y, tuple(normalized), operation.node.name),), requirements=(req,)
     )
 
 
-def reduction(ctx: OperationContext) -> OperatorSpec:
+def reduction(operation: Operation) -> OperatorSpec:
     """Connect retained axes while recording changes to the reduction domain."""
-    x, y = one(ctx.argument("input", 0)), one(ctx.output)
-    dims = ctx.argument("dim", 1)
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dims = operation.argument("dim", 1)
     if dims is None or (isinstance(dims, (tuple, list)) and not dims):
         dims = tuple(range(len(x.shape)))
     elif isinstance(dims, int):
@@ -600,18 +652,18 @@ def reduction(ctx: OperationContext) -> OperatorSpec:
     if not isinstance(dims, (tuple, list)) or not all(isinstance(d, int) for d in dims):
         raise UnsupportedOperation("Reduction axes must be static")
     dims = tuple(d % len(x.shape) for d in dims) if x.shape else ()
-    keep = ctx.argument("keepdim", 2, False)
+    keep = operation.argument("keepdim", 2, False)
     relations, outdim = [], 0
     for dim in range(len(x.shape)):
         if dim not in dims:
-            relations.append(equal(x, dim, y, outdim, ctx.node.name))
+            relations.append(equal(x, dim, y, outdim, operation.node.name))
             outdim += 1
         elif keep:
             outdim += 1
     constraints = tuple(NonEmpty(x.axis(d)) for d in dims)
     req = Requirement(
         "reduction_domain",
-        ctx.node.name,
+        operation.node.name,
         (x,),
         "Recompute the reduction on retained positions; zero masking may differ",
         (("axes", dims),),
@@ -619,34 +671,40 @@ def reduction(ctx: OperationContext) -> OperatorSpec:
     return OperatorSpec(tuple(relations), constraints, (req,))
 
 
-def getattr_rule(ctx: OperationContext) -> OperatorSpec:
+def getattr_rule(operation: Operation) -> OperatorSpec:
     """Handle supported tensor attributes and the transpose property."""
-    name = ctx.args[1]
+    scalar = scalar_spec(operation)
+    if scalar is not None:
+        return scalar
+    name = operation.args[1]
     if name == "T":
-        x, y = one(ctx.argument("input", 0)), one(ctx.output)
+        x, y = one(operation.argument("input", 0)), one(operation.result)
         return OperatorSpec(
-            (PermuteRelation(x, y, tuple(reversed(range(len(x.shape)))), ctx.node.name),)
+            (PermuteRelation(x, y, tuple(reversed(range(len(x.shape)))), operation.node.name),)
         )
     if name in ("shape", "ndim", "dtype", "device"):
         return OperatorSpec()
     raise UnsupportedOperation(f"Tensor attribute {name} has no structural rule")
 
 
-def shape_only(ctx: OperationContext) -> OperatorSpec:
+def shape_only(operation: Operation) -> OperatorSpec:
     """Leave supported dimension-only operations without tensor relationships."""
+    scalar = scalar_spec(operation)
+    if scalar is not None:
+        return scalar
     return OperatorSpec()
 
 
-def softmax(ctx: OperationContext) -> OperatorSpec:
+def softmax(operation: Operation) -> OperatorSpec:
     """Preserve coordinates and record changes to the normalization domain."""
-    result = pointwise(ctx)
-    x = one(ctx.argument("input", 0))
-    dim = ctx.module.dim if ctx.module is not None else ctx.argument("dim", 1)
+    result = pointwise(operation)
+    x = one(operation.argument("input", 0))
+    dim = operation.module.dim if operation.module is not None else operation.argument("dim", 1)
     if not isinstance(dim, int):
         raise UnsupportedOperation("Softmax requires an explicit static reduction dimension")
     requirement_ = Requirement(
         "reduction_domain",
-        ctx.node.name,
+        operation.node.name,
         (x,),
         "Recompute softmax/log_softmax over retained positions; zero masks are not equivalent",
         (("axes", (dim % len(x.shape),) if x.shape else ()),),

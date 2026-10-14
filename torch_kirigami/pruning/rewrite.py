@@ -11,16 +11,18 @@ from torch import nn
 
 from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
-from ..dep_graph.contracts import Impact, Requirement
+from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import OperationContext
+from ..dep_graph.operation import Operation, OperatorSpec
 from ..dep_graph.operators.coordinates import retained_indices as _keep
+from ..dep_graph.operators.rules import is_native_rule
 from ..dep_graph.operators.shapes import evaluate
 from ..dep_graph.operators.shapes import reevaluate as _reevaluate
-from ..dep_graph.selection import IndexSet, Region, Selection
-from ..errors import CaptureError
+from ..dep_graph.selection import IndexSet, Region, Selection, TensorRef
+from ..errors import CaptureError, UnsupportedOperation
+from ..operator_recipes import AttributeRecipe, OperatorRecipe, TensorRecipe
 from .recipes import compact_stride, memory_format, same_mapping, validate_recipe
-from .types import AttributeRecipe, PlanningError, RewriteContext, RewriteResult, TensorRecipe
+from .types import PlanningError, require_compact_shape
 from .validation import check_forward
 
 
@@ -44,12 +46,21 @@ def ordinary_recipe(selection: Selection) -> TensorRecipe:
     )
 
 
-def lower_spec(ctx: RewriteContext) -> RewriteResult:
+def default_recipe(
+    graph: DependencyGraph,
+    op: Operation,
+    spec: OperatorSpec,
+    impact: Impact,
+    requirements: tuple[Requirement | AttributeBinding, ...],
+) -> OperatorRecipe:
     """Lower shared layouts and bound attributes without dispatching on operators."""
-    op, impact = ctx.operation, ctx.impact
+
+    def compact_shape(ref: TensorRef) -> tuple[int, ...]:
+        """Evaluate existing size expressions against the joint removal."""
+        return require_compact_shape(impact, ref)
+
     recipes, attributes, notes = [], [], []
     known = {
-        "attribute",
         "operator_argument",
         "partitioned_compaction",
         "shape_arguments",
@@ -60,33 +71,27 @@ def lower_spec(ctx: RewriteContext) -> RewriteResult:
         "call_arguments",
         "index_arguments",
     }
-    for req in ctx.requirements:
+    for req in requirements:
+        if isinstance(req, AttributeBinding):
+            path, _, name = req.target.rpartition(".")
+            owner = graph.model.get_submodule(path) if path else graph.model
+            old = getattr(owner, name)
+            new = evaluate(req.expression, compact_shape)
+            if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
+                new = type(old)(new)
+            # An unchanged binding is still a demand. A shared owner may have
+            # another call requiring a different value for the same attribute.
+            attributes.append(AttributeRecipe(req.target, old, new))
+            continue
         if req.kind not in known:
             raise PlanningError(f"Unhandled requirement {req.kind}: {req.target}")
         data = dict(req.data)
-        if req.kind == "attribute":
-            path, _, name = req.target.rpartition(".")
-            owner = ctx.graph.model.get_submodule(path) if path else ctx.graph.model
-            old = getattr(owner, name)
-            new = (
-                evaluate(data["expression"], ctx.compact_shape)
-                if "expression" in data
-                else len(_keep(impact, data["axis"]))
-                if "axis" in data
-                else tuple(len(_keep(impact, a)) for a in data["axes"])
-            )
-            if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
-                new = type(old)(new)
-            if freeze(new) != freeze(old):
-                attributes.append(AttributeRecipe(req.target, old, new))
-        elif req.kind == "operator_argument":
+        if req.kind == "operator_argument":
             if len(req.arguments) != 1:
                 raise PlanningError(f"Expected one functional argument binding for {req.target}")
             name, position = req.arguments[0].name, req.arguments[0].position
             raw = op.raw_argument(name, position)
-            current = _reevaluate(
-                raw, op.argument(name, position), op.expressions, ctx.compact_shape
-            )
+            current = _reevaluate(raw, op.argument(name, position), op.expressions, compact_shape)
             expected = (
                 len(_keep(impact, data["axis"]))
                 if "axis" in data
@@ -100,7 +105,7 @@ def lower_spec(ctx: RewriteContext) -> RewriteResult:
                 )
         elif req.kind == "reduction_domain":
             notes.append(req.detail)
-    for descriptor in ctx.spec.layouts:
+    for descriptor in spec.layouts:
         if impact.selection(descriptor.tensor):
             recipes.append(
                 TensorRecipe(
@@ -109,23 +114,26 @@ def lower_spec(ctx: RewriteContext) -> RewriteResult:
                     descriptor.concat_dim,
                 )
             )
-    return RewriteResult(tuple(recipes), tuple(attributes), ctx.requirements, tuple(notes))
+    return OperatorRecipe(tuple(recipes), tuple(attributes), notes=tuple(notes))
 
 
 def _requirements_by_operation(
-    operations: Sequence[OperationContext], requirements: Sequence[Requirement]
-) -> dict[str, tuple[Requirement, ...]]:
+    operations: Sequence[Operation], requirements: Sequence[Requirement | AttributeBinding]
+) -> dict[str, tuple[Requirement | AttributeBinding, ...]]:
     """Index call and descendant-attribute requirements in declaration order."""
-    by_name: dict[str, list[Requirement]] = {op.node.name: [] for op in operations}
+    by_name: dict[str, list[Requirement | AttributeBinding]] = {
+        op.node.name: [] for op in operations
+    }
     by_path: dict[str, list[str]] = {}
     for op in operations:
         if op.module is not None:
-            by_path.setdefault(op.module_path or "", []).append(op.node.name)
+            for path in op.module_paths:
+                by_path.setdefault(path, []).append(op.node.name)
     for requirement in requirements:
-        if requirement.kind == "metadata_layout":
+        if isinstance(requirement, Requirement) and requirement.kind == "metadata_layout":
             continue
         names = {requirement.target} if requirement.target in by_name else set()
-        if requirement.kind == "attribute":
+        if isinstance(requirement, AttributeBinding):
             # An opaque module owns requirements for its descendants too. Root
             # modules use the empty path; repeated calls must all receive them.
             path = requirement.target.rpartition(".")[0]
@@ -141,7 +149,7 @@ def _requirements_by_operation(
 
 def compile_recipes(
     graph: DependencyGraph,
-    operations: Sequence[OperationContext],
+    operations: Sequence[Operation],
     impact: Impact,
     *,
     attribute_checks: OrderedDict[tuple[tuple[str, object], ...], str | None] | None = None,
@@ -176,25 +184,43 @@ def compile_recipes(
         rule = graph.operator_rule(op)
         if rule is None:
             raise PlanningError(f"No execution rule for {op.node.target}")
-        ctx = RewriteContext(graph, op, impact, reqs)
-        if rule.uses_default_lowering:
-            result = lower_spec(ctx)
-        else:
+        spec = graph.operator_spec(op)
+        if spec is None:
+            raise PlanningError(f"No structural specification for {op.name}")
+        custom = None
+        if not is_native_rule(rule):
             try:
-                result = rule.lower(ctx)
+                custom = rule.build_recipe(op, spec, impact)
+            except UnsupportedOperation as error:
+                raise PlanningError(str(error)) from error
             finally:
-                # User lowering remains a state boundary, including when it
-                # rejects a candidate that the strategy might otherwise skip.
                 graph.validate()
-            if result is None:
-                result = lower_spec(ctx)
-        if not isinstance(result, RewriteResult):
-            raise PlanningError("Rewrite rule must return RewriteResult")
-        if any(r not in result.handled for r in reqs):
-            raise PlanningError(f"{op.node.name}: execution rule left requirements unhandled")
+        result = default_recipe(graph, op, spec, impact, reqs)
+        if custom is not None:
+            if not isinstance(custom, OperatorRecipe):
+                raise TypeError("build_recipe must return OperatorRecipe or None")
+            # Explicit partition layouts remain authoritative, even for custom edits.
+            declared = {r.tensor.id: r for r in result.tensors}
+            for recipe in custom.tensors:
+                if recipe.tensor.id in declared and not same_mapping(
+                    declared[recipe.tensor.id], recipe
+                ):
+                    raise PlanningError("Custom recipe contradicts declared partition layout")
+            result = OperatorRecipe(
+                tuple(
+                    r for r in result.tensors if r.tensor not in {c.tensor for c in custom.tensors}
+                )
+                + custom.tensors,
+                result.attributes + custom.attributes,
+                result.notes + custom.notes,
+                custom.output_strides,
+            )
         handled.update(id(r) for r in reqs)
         notes.extend(result.notes)
-        strides.update((r.id, s) for r, s in result.output_strides)
+        for ref, stride in result.output_strides:
+            if ref not in op.outputs:
+                raise PlanningError("Output stride declarations must name this operation's outputs")
+            strides[ref.id] = stride
         explicit = {r.tensor.id: r for r in result.tensors}
         if len(explicit) != len(result.tensors):
             raise PlanningError("A rewrite rule returned duplicate tensor recipes")
@@ -224,8 +250,9 @@ def compile_recipes(
             if previous is not None and (previous.old != attr.old or previous.new != attr.new):
                 raise PlanningError(f"Shared attribute update disagrees: {attr.path}")
             attribute_bindings[identity] = attr
-            attributes[attr.path] = attr
-        active.append((ctx, rule.evaluate_on_meta))
+            if attr.old != attr.new:
+                attributes[attr.path] = attr
+        active.append((op, spec, reqs, rule.evaluate_on_meta))
     for selection in (*impact.parameters, *impact.buffers):
         if selection.tensor.id not in recipes:
             recipe = ordinary_recipe(selection)
@@ -237,7 +264,7 @@ def compile_recipes(
         for key, recipe in recipes.items()
     }
     for req in impact.requirements:
-        if req.kind != "metadata_layout":
+        if not isinstance(req, Requirement) or req.kind != "metadata_layout":
             continue
         ref = req.tensors[0]
         recipe = recipes[ref.id]

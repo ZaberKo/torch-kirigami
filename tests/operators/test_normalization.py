@@ -72,7 +72,9 @@ def test_normalization_rules(module, shape, axis, execution_device):
     module = module.to(execution_device)
     graph = DependencyGraph.build(module, args=(torch.randn(shape),))
     selection = [0, 3] if isinstance(module, nn.GroupNorm) else [1, 4]
-    impact = graph.propagate(remove=[graph.calls("")[0].input().axis(axis).select(selection)])
+    impact = graph.propagate(
+        remove=[graph.operations("")[0].inputs[0].axis(axis).select(selection)]
+    )
     assert impact.status == "resolved"
     assert removed(impact, graph.parameter("weight"), len(module.weight.shape) - 1) == set(
         selection

@@ -19,16 +19,15 @@ from ..configuration import (
     thaw,
 )
 from ..configuration import attributes as configuration_attributes
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from .recipes import compact_stride, validate_recipe
 from .types import (
     AnalysisSummary,
-    AttributeRecipe,
     ExecutionError,
     ModelStructure,
     ModuleState,
     ParameterReport,
     SelectionReport,
-    TensorRecipe,
     TensorState,
 )
 

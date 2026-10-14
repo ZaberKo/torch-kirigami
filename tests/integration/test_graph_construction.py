@@ -7,13 +7,13 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from tests.support.operators import make_rule, with_rule
 from torch_kirigami import (
     CaptureError,
     DependencyGraph,
     Fixed,
-    OperationContext,
+    Operation,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
     StaleGraphError,
     TensorRef,
@@ -42,19 +42,19 @@ def test_graphs_keep_independent_rules_queries_and_invalidation(execution_device
     registry = OperatorRegistry.default()
     native = registry.modules[nn.Linear]
 
-    def protect_hidden(context: OperationContext) -> OperatorSpec:
-        spec = native.analyze(context)
+    def protect_hidden(context: Operation) -> OperatorSpec:
+        spec = native.build_spec(context)
         if context.module is model.hidden:
             spec = replace(
                 spec,
-                constraints=(*spec.constraints, Fixed(context.binding("weight").axis(0))),
+                constraints=(*spec.constraints, Fixed(context.bindings.get("weight").axis(0))),
             )
         return spec
 
-    registry.modules[nn.Linear] = OperatorRule(protect_hidden)
+    registry = with_rule(registry, nn.Linear, make_rule(protect_hidden))
     protected = DependencyGraph.build(model, args=(x,), operators=registry)
     # A later table edit applies to future builds, including on the same model.
-    registry.modules[nn.Linear] = native
+    registry = with_rule(registry, nn.Linear, native)
     graph = DependencyGraph.build(model, args=(x,), operators=registry)
     protected_seed = protected.parameter("hidden.weight").axis(0).select([1, 5])
     seed = graph.parameter("hidden.weight").axis(0).select([1, 5])
@@ -72,7 +72,7 @@ def test_graphs_keep_independent_rules_queries_and_invalidation(execution_device
     assert all(a is b for a, b in zip(original_parameters, model.parameters(), strict=True))
     torch.testing.assert_close(model(x), original_output, rtol=0, atol=0)
     assert graph.parameter("alias.weight") is graph.parameter("hidden.weight")
-    assert len(graph.calls("alias")) == 2
+    assert len(graph.operations("alias")) == 2
 
     kept = [0, 2, 3, 4, 6, 7]
     expected = F.linear(
@@ -108,14 +108,14 @@ def test_failed_analysis_does_not_publish_or_contaminate_a_graph(execution_devic
     registry = OperatorRegistry.default()
     native = registry.modules[nn.Linear]
 
-    def invalid_reference(context: OperationContext) -> OperatorSpec:
-        spec = native.analyze(context)
+    def invalid_reference(context: Operation) -> OperatorSpec:
+        spec = native.build_spec(context)
         if context.module is model.output:
             foreign = TensorRef("foreign", (2, 8))
             return replace(spec, constraints=(*spec.constraints, Fixed(foreign.axis(0))))
         return spec
 
-    registry.modules[nn.Linear] = OperatorRule(invalid_reference)
+    registry = with_rule(registry, nn.Linear, make_rule(invalid_reference))
     with pytest.raises(ValueError, match="another graph"):
         DependencyGraph.build(model, args=(x,), operators=registry)
     assert graph.propagate(remove=[seed]) == expected_impact
@@ -147,7 +147,7 @@ def test_analyzer_owns_one_record_and_releases_scratch():
     assert not analyzer._unused and not analyzer._module_paths
     assert not hasattr(analyzer, "refs") and not hasattr(analyzer, "relations")
     graph = DependencyGraph(data)
-    for container in (graph.relations, graph.constraints, graph.diagnostics, graph.calls()):
+    for container in (graph.relations, graph.constraints, graph.diagnostics, graph.operations()):
         assert isinstance(container, tuple)
     with pytest.raises(TypeError):
         graph.context["grad_enabled"] = False

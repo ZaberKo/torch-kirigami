@@ -84,6 +84,8 @@ Normalization, softmax, reductions, and attention can recompute statistics or pr
 
 Unknown operators and unsupported axes block requests that reach them. They do not invalidate every independent branch. Tensor-dependent Python control flow, dynamic index remapping, quantized or sparse storage compaction, RNN/PackedSequence, MoE routing, and optimizer-state migration have no general built-in support.
 
+Capture safety is a separate prerequisite. An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant. In that case building the graph fails before sample execution. A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`; the resulting structural barrier then blocks only related pruning requests.
+
 ## Implementing an operator rule
 
 Prefer a small declarative `OperatorSpec`. Reuse existing relations, constraints, requirements, candidate axes, and layouts. Keep third-party-specific definitions outside the dependency core.
@@ -95,9 +97,9 @@ import torch
 from torch import fx, nn
 
 from torch_kirigami import (
-    CallEffects,
+    TensorEffects,
     DependencyGraph,
-    OperationContext,
+    Operation,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
@@ -111,22 +113,17 @@ class Half(nn.Module):
         return input * 0.5
 
 
-def analyze_half(context: OperationContext) -> OperatorSpec:
-    return OperatorSpec(
-        relations=(
-            ReshapeRelation(
-                context.inputs[0], context.outputs[0], reason="same element coordinates"
-            ),
-        ),
-    )
+class HalfRule(OperatorRule):
+    def build_spec(self, operation: Operation) -> OperatorSpec:
+        return OperatorSpec(
+            relations=(ReshapeRelation(operation.inputs[0], operation.outputs[0]),),
+        )
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
 
 
-def half_effects(node: fx.Node, module: nn.Module | None) -> CallEffects:
-    return CallEffects(fresh_output=True)
-
-
-registry = OperatorRegistry.default()
-registry.register(Half, OperatorRule(analyze_half, effects=half_effects))
+registry = OperatorRegistry.default().register(Half, HalfRule())
 
 model = nn.Sequential(nn.Linear(4, 8), Half(), nn.Linear(8, 2)).eval()
 x = torch.randn(2, 4)
@@ -142,24 +139,26 @@ This rule proves semantics only for `Half`. Equal input/output shapes do not pro
 
 ### Rule contract
 
-An `OperatorRule` can provide four callbacks or behaviors:
+Subclass `OperatorRule`. Only `build_spec` is required:
 
 | Part | Contract |
 | --- | --- |
-| `preflight(node, module)` | Reject recognized unsafe calls before metadata execution. |
-| `effects(node, module)` | Declare input mutation and fresh output storage before output metadata exists. |
-| `analyze(context)` | Return pure structural facts in an `OperatorSpec`. |
-| `lower(context)` | Optionally return declarative recipes. Return `None` to use shared compilation. Do not mutate the model. |
+| `validate_capture(node, module)` | Reject recognized unsafe calls before metadata execution. |
+| `tensor_effects(node, module)` | Declare input mutation and fresh output storage before output metadata exists. |
+| `build_spec(operation)` | Return pure structural facts in an `OperatorSpec`. |
+| `build_recipe(operation, spec, impact)` | Optionally return declarative recipes. Return `None` to add no special edits; shared compilation always checks declared obligations. Do not mutate the model. |
 
-Native rules can opt into meta execution for compact-call validation. Third-party rules use declared output facts by default. A rule can cache a meta output only when that output is fresh, non-mutating, and depends only on argument metadata and captured module configuration.
+Rules can opt into meta execution for compact-call validation. Third-party rules use declared output facts by default. A rule can cache a meta output only when that output is fresh, non-mutating, and depends only on argument metadata and captured module configuration.
+
+The inherited `tensor_effects()` declares read-only inputs without promising fresh output storage. Override it for writes, using existing `ArgumentRef` argument locations. Effects are captured once and reused during planning. In-place alias checks apply even when meta execution is disabled. A declared reshape, slice, index, or partition validation requirement needs `evaluate_on_meta=True`; a successful custom recipe cannot acknowledge that check away.
 
 An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered integer constants. Register structural integer tensors as buffers so the graph can guard their values.
 
-For a parameterized affine module, relate input features to weight columns and output features to weight rows and bias positions. Add a requirement when the module stores width in an attribute. Use scopes and `PartitionedLayout` for packed or grouped storage. Use a stable candidate key for a logical channel domain. Add a registered binding when repeated calls share that logical coordinate system.
+For a parameterized affine module, relate input features to weight columns and output features to weight rows and bias positions. Add an `AttributeBinding` with a `ShapeExpr` when the module stores width in an attribute. Use scopes and `PartitionedLayout` for packed or grouped storage. Use a stable candidate key for a logical channel domain. Add a registered binding when repeated calls share that logical coordinate system.
 
 Supply an alignment axis when a physical candidate axis uses partitioned packing and cannot determine retained logical width. The alignment axis must belong to the graph and match the seed's original width. Relations must couple both axes.
 
-Implement custom lowering only when shared descriptors cannot express a required edit. Return declarative recipe records from the pruning package. Every activated requirement must be implemented or rejected. See [pruning](pruning.md) for physical lowering and plan behavior.
+Implement custom lowering only when shared descriptors cannot express a required edit. Return an `OperatorRecipe` from `torch_kirigami.operator_recipes`; ordinary cuts and declared attributes/layouts need no override. Every activated requirement must be implemented or rejected. See [pruning](pruning.md) for physical lowering and plan behavior.
 
 ### Proof obligations
 

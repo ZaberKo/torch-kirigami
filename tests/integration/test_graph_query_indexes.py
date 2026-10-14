@@ -9,18 +9,18 @@ import pytest
 import torch
 from torch import nn
 
+from tests.support.operators import make_rule, with_rule
 from torch_kirigami import (
     DependencyGraph,
     IndexSet,
     OperatorRegistry,
-    OperatorRule,
     Region,
     Selection,
     ShapeExpr,
     TensorRef,
     config,
 )
-from torch_kirigami.dep_graph.operation import OperationContext, OperatorSpec
+from torch_kirigami.dep_graph.operation import Operation, OperatorSpec
 from torch_kirigami.errors import AnalysisLimitError
 from torch_kirigami.pruning import Pruner
 
@@ -103,8 +103,8 @@ def test_reduction_keeps_downstream_calls_without_removed_output_coordinates() -
     affected = graph.affected_operations(impact)
     assert {"hidden", "sum_1", "reshape", "contiguous"} <= affected
     assert "independent" not in affected
-    reduction = next(call for call in graph.calls() if call.name == "sum_1")
-    assert reduction.output().id not in impact.selections
+    reduction = next(call for call in graph.operations() if call.name == "sum_1")
+    assert reduction.outputs[0].id not in impact.selections
 
 
 @pytest.mark.parametrize("nested", [False, True])
@@ -142,21 +142,23 @@ def test_shape_expression_subclasses_keep_query_time_truthiness_and_references(
     registry = OperatorRegistry.default()
     linear, size = registry.modules[nn.Linear], registry.methods["size"]
 
-    def analyze_linear(context: OperationContext) -> OperatorSpec:
+    def analyze_linear(context: Operation) -> OperatorSpec:
         """Capture the left parameter binding while retaining native analysis."""
         if context.module_path == "left":
-            references.append(context.binding("weight"))
-        return linear.analyze(context)
+            references.append(context.bindings.get("weight"))
+        return linear.build_spec(context)
 
-    def analyze_size(context: OperationContext) -> OperatorSpec:
+    def analyze_size(context: Operation) -> OperatorSpec:
         """Attach a direct or nested expression with dynamic extension properties."""
         expression = DynamicExpression("constant", 3)
         if nested:
             expression = ShapeExpr("add", args=(expression, ShapeExpr("constant", 0)))
-        return replace(size.analyze(context), expression=expression)
+        return replace(size.build_spec(context), expression=expression)
 
-    registry.modules[nn.Linear] = OperatorRule(analyze_linear, lower=linear.lower)
-    registry.methods["size"] = OperatorRule(analyze_size, lower=size.lower)
+    registry = with_rule(
+        registry, nn.Linear, make_rule(analyze_linear, build_recipe=linear.build_recipe)
+    )
+    registry = with_rule(registry, "size", make_rule(analyze_size, build_recipe=size.build_recipe))
     graph = DependencyGraph.build(
         Expressions().eval(), args=(torch.randn(3, 4),), operators=registry
     )

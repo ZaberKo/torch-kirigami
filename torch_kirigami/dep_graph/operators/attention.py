@@ -2,40 +2,51 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import replace
 
 import torch
-from torch import nn
-from torch.nn import functional as F
 
 from ...errors import UnsupportedOperation
-from ..contracts import AxisBarrier, Balanced, BlockBalance, Requirement, ShapeExpr
-from ..operation import CandidateAxis, OperationContext, OperatorSpec, OutputContract, tensors
+from ..contracts import (
+    AttributeBinding,
+    AxisBarrier,
+    Balanced,
+    BlockBalance,
+    Requirement,
+    ShapeExpr,
+)
+from ..operation import CandidateAxis, Operation, OperatorSpec, OutputContract, tensors
 from ..relations import AxisPort, AxisRelation, BlockMap, BroadcastRelation
 from ..selection import IndexSet
 from .native import equal, layout, matmul, one, requirement
 
 
-def addmm(ctx: OperationContext) -> OperatorSpec:
+def addmm(operation: Operation) -> OperatorSpec:
     """Share matrix-product relations and connect the broadcast additive operand."""
-    additive = one(ctx.argument("input", 0))
-    a = ctx.argument("batch1" if ctx.node.target in (torch.baddbmm, "baddbmm") else "mat1", 1)
-    b = ctx.argument("batch2" if ctx.node.target in (torch.baddbmm, "baddbmm") else "mat2", 2)
-    result = matmul(replace(ctx, args=(a, b), kwargs={}))
+    additive = one(operation.argument("input", 0))
+    a = operation.argument(
+        "batch1" if operation.node.target in (torch.baddbmm, "baddbmm") else "mat1", 1
+    )
+    b = operation.argument(
+        "batch2" if operation.node.target in (torch.baddbmm, "baddbmm") else "mat2", 2
+    )
+    result = matmul(replace(operation, args=(a, b), kwargs={}))
     return replace(
         result,
-        relations=(*result.relations, BroadcastRelation(additive, one(ctx.output), ctx.node.name)),
+        relations=(
+            *result.relations,
+            BroadcastRelation(additive, one(operation.result), operation.node.name),
+        ),
     )
 
 
-def einsum(ctx: OperationContext) -> OperatorSpec:
+def einsum(operation: Operation) -> OperatorSpec:
     """Map explicit einsum labels, including right-aligned broadcast ellipses."""
-    equation = ctx.argument("equation", 0)
+    equation = operation.argument("equation", 0)
     if not isinstance(equation, str) or "->" not in equation:
         raise UnsupportedOperation("einsum requires an explicit string output equation")
     inputs, output = equation.replace(" ", "").split("->")
-    operands = ctx.args[1:]
+    operands = operation.args[1:]
     if len(operands) == 1 and isinstance(operands[0], (tuple, list)):
         operands = operands[0]
     labels = inputs.split(",")
@@ -57,7 +68,7 @@ def einsum(ctx: OperationContext) -> OperatorSpec:
         return result
 
     occurrences = {}
-    y = one(ctx.output)
+    y = one(operation.result)
     for tensor, label in zip((*operands, y), (*labels, output), strict=True):
         for dim, key in enumerate(expand(label, len(tensor.shape))):
             occurrences.setdefault(key, []).append(tensor.axis(dim))
@@ -67,14 +78,16 @@ def einsum(ctx: OperationContext) -> OperatorSpec:
         aligned = [a for a in axes if a.tensor.shape[a.dim] == size]
         if any(a.tensor.shape[a.dim] not in (1, size) for a in axes):
             raise UnsupportedOperation("einsum label sizes disagree")
-        relations.extend(AxisRelation.equal(aligned[0], a, ctx.node.name) for a in aligned[1:])
+        relations.extend(
+            AxisRelation.equal(aligned[0], a, operation.node.name) for a in aligned[1:]
+        )
     return OperatorSpec(
         tuple(relations),
-        tuple(layout(ctx, t) for t in (*operands, y)),
+        tuple(layout(operation, t) for t in (*operands, y)),
         requirements=(
             Requirement(
                 "reduction_domain",
-                ctx.node.name,
+                operation.node.name,
                 tuple(operands),
                 "Contract the retained einsum domain",
             ),
@@ -82,46 +95,48 @@ def einsum(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def sdpa(ctx: OperationContext) -> OperatorSpec:
+def sdpa(operation: Operation) -> OperatorSpec:
     """Bind Q/K contractions, V features, masks, and optional grouped-query heads."""
-    q, k, v = (one(ctx.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
-    y = one(ctx.output)
+    q, k, v = (one(operation.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
+    y = one(operation.result)
     if min(len(t.shape) for t in (q, k, v)) < 3:
         raise UnsupportedOperation("SDPA requires explicit head, sequence, and feature dimensions")
     relations = [
-        equal(q, -1, k, -1, ctx.node.name),
-        equal(k, -2, v, -2, ctx.node.name),
-        equal(q, -2, y, -2, ctx.node.name),
-        equal(v, -1, y, -1, ctx.node.name),
+        equal(q, -1, k, -1, operation.node.name),
+        equal(k, -2, v, -2, operation.node.name),
+        equal(q, -2, y, -2, operation.node.name),
+        equal(v, -1, y, -1, operation.node.name),
     ]
     constraints = []
-    if ctx.argument("is_causal", 5, False):
+    if operation.argument("is_causal", 5, False):
         constraints.extend(
-            AxisBarrier(t.axis(-2), "Implicit causal token coordinates are fixed", ctx.node.name)
+            AxisBarrier(
+                t.axis(-2), "Implicit causal token coordinates are fixed", operation.node.name
+            )
             for t in (q, k)
         )
-    gqa = ctx.argument("enable_gqa", 7, False)
+    gqa = operation.argument("enable_gqa", 7, False)
     if gqa:
         if k.shape[-3] != v.shape[-3] or q.shape[-3] % k.shape[-3]:
             raise UnsupportedOperation("Invalid GQA head grouping")
         multiplier = q.shape[-3] // k.shape[-3]
         relations.extend(
             (
-                equal(k, -3, v, -3, ctx.node.name),
-                equal(q, -3, y, -3, ctx.node.name),
+                equal(k, -3, v, -3, operation.node.name),
+                equal(q, -3, y, -3, operation.node.name),
                 AxisRelation(
                     AxisPort(k.axis(-3)),
                     AxisPort(q.axis(-3)),
                     (BlockMap(0, 0, k.shape[-3], 1, multiplier, require_full_target=True),),
-                    ctx.node.name,
+                    operation.node.name,
                 ),
             )
         )
-        constraints.append(BlockBalance(k.axis(-3), q.axis(-3), multiplier, ctx.node.name))
+        constraints.append(BlockBalance(k.axis(-3), q.axis(-3), multiplier, operation.node.name))
     else:
         for tensor in (q, k, v):
             if tensor.shape[-3] == y.shape[-3]:
-                relations.append(equal(tensor, -3, y, -3, ctx.node.name))
+                relations.append(equal(tensor, -3, y, -3, operation.node.name))
             elif tensor.shape[-3] != 1:
                 raise UnsupportedOperation("Unproven attention head broadcast")
     for tensor in (q, k, v):
@@ -129,10 +144,10 @@ def sdpa(ctx: OperationContext) -> OperatorSpec:
         for d in range(batch):
             target = len(y.shape) - 3 - batch + d
             if tensor.shape[d] == y.shape[target]:
-                relations.append(equal(tensor, d, y, target, ctx.node.name))
+                relations.append(equal(tensor, d, y, target, operation.node.name))
             elif tensor.shape[d] != 1:
                 raise UnsupportedOperation("Unproven attention batch broadcast")
-    mask = ctx.argument("attn_mask", 3)
+    mask = operation.argument("attn_mask", 3)
     if mask is not None:
         mask = one(mask)
         destinations = [y.axis(d) for d in range(len(y.shape) - 1)] + [k.axis(-2)]
@@ -141,7 +156,7 @@ def sdpa(ctx: OperationContext) -> OperatorSpec:
         for d, size in enumerate(mask.shape):
             axis = destinations[len(destinations) - len(mask.shape) + d]
             if size == axis.tensor.shape[axis.dim]:
-                relations.append(AxisRelation.equal(mask.axis(d), axis, ctx.node.name))
+                relations.append(AxisRelation.equal(mask.axis(d), axis, operation.node.name))
             elif size != 1:
                 raise UnsupportedOperation("Attention mask cannot broadcast")
     return OperatorSpec(
@@ -150,7 +165,7 @@ def sdpa(ctx: OperationContext) -> OperatorSpec:
         requirements=(
             Requirement(
                 "reduction_domain",
-                ctx.node.name,
+                operation.node.name,
                 (q, k, v),
                 "Recompute attention logits, default scale, softmax and weighted values on compact domains",
             ),
@@ -159,85 +174,76 @@ def sdpa(ctx: OperationContext) -> OperatorSpec:
     )
 
 
-def multihead_attention(ctx: OperationContext) -> OperatorSpec:
+def multihead_attention(operation: Operation) -> OperatorSpec:
     """Shrink native MHA width with fixed heads and explicitly tied projection axes.
 
     Batch/sequence/token pruning is excluded. Packed and separate projections
     retain their original representation; no Python forward or module replacement
     is needed. Dense self- and cross-attention share the same width descriptor.
     """
-    module = ctx.module
-    q, k, v = (one(ctx.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
-    y = one(ctx.outputs[0])
-    out = one(ctx.binding("out_proj.weight"))
+    module = operation.module
+    q, k, v = (one(operation.argument(name, i)) for i, name in enumerate(("query", "key", "value")))
+    y = one(operation.outputs[0])
+    out = one(operation.bindings.get("out_proj.weight"))
     axis = out.axis(0)
     width, heads = module.embed_dim, module.num_heads
     relations = [
-        AxisRelation.equal(axis, out.axis(1), ctx.node.name),
-        AxisRelation.equal(axis, q.axis(-1), ctx.node.name),
-        AxisRelation.equal(axis, y.axis(-1), ctx.node.name),
+        AxisRelation.equal(axis, out.axis(1), operation.node.name),
+        AxisRelation.equal(axis, q.axis(-1), operation.node.name),
+        AxisRelation.equal(axis, y.axis(-1), operation.node.name),
     ]
-    requirements = [requirement(ctx, "embed_dim", y, -1)]
+    requirements = [requirement(operation, "embed_dim", y, -1)]
     for name in ("in_features", "out_features"):
         requirements.append(
-            Requirement(
-                "attribute",
-                f"{ctx.module_path}.out_proj.{name}".lstrip("."),
-                (out,),
+            AttributeBinding(
+                f"{operation.module_path}.out_proj.{name}".lstrip("."),
+                ShapeExpr("dimension", (axis.tensor, axis.dim)),
                 "Bind output projection width",
-                (("axis", axis),),
             )
         )
     requirements.append(
-        Requirement(
-            "attribute",
-            f"{ctx.module_path}.head_dim".lstrip("."),
-            (out,),
-            "Derive per-head width with fixed head count",
-            (
-                (
-                    "expression",
-                    ShapeExpr(
-                        "floordiv",
-                        args=(
-                            ShapeExpr("dimension", (out, 0)),
-                            ShapeExpr("constant", heads),
-                        ),
-                    ),
+        AttributeBinding(
+            f"{operation.module_path}.head_dim".lstrip("."),
+            ShapeExpr(
+                "floordiv",
+                args=(
+                    ShapeExpr("dimension", (out, 0)),
+                    ShapeExpr("constant", heads),
                 ),
             ),
+            "Derive per-head width with fixed head count",
         )
     )
     if module.in_proj_weight is not None:
-        packed = one(ctx.binding("in_proj_weight"))
-        relations.append(AxisRelation.equal(axis, packed.axis(1), ctx.node.name))
+        packed = one(operation.bindings.get("in_proj_weight"))
+        relations.append(AxisRelation.equal(axis, packed.axis(1), operation.node.name))
         relations.append(
             AxisRelation(
                 AxisPort(axis),
                 AxisPort(packed.axis(0)),
                 tuple(BlockMap(0, i * width, width) for i in range(3)),
-                ctx.node.name,
+                operation.node.name,
             )
         )
         relations.extend(
             (
-                AxisRelation.equal(axis, k.axis(-1), ctx.node.name),
-                AxisRelation.equal(axis, v.axis(-1), ctx.node.name),
+                AxisRelation.equal(axis, k.axis(-1), operation.node.name),
+                AxisRelation.equal(axis, v.axis(-1), operation.node.name),
             )
         )
     else:
         for name, input_ in (("q", q), ("k", k), ("v", v)):
-            weight = one(ctx.binding(f"{name}_proj_weight"))
+            weight = one(operation.bindings.get(f"{name}_proj_weight"))
             relations.extend(
                 (
-                    AxisRelation.equal(axis, weight.axis(0), ctx.node.name),
-                    equal(input_, -1, weight, 1, ctx.node.name),
+                    AxisRelation.equal(axis, weight.axis(0), operation.node.name),
+                    equal(input_, -1, weight, 1, operation.node.name),
                 )
             )
     for name, tensor in (("kdim", k), ("vdim", v)):
-        requirements.append(requirement(ctx, name, tensor, -1))
+        requirements.append(requirement(operation, name, tensor, -1))
     for name in ("in_proj_bias", "out_proj.bias", "bias_k", "bias_v"):
-        bias = ctx.binding(name)
+        bias = operation.bindings.get(name)
         if bias is not None:
             if name == "in_proj_bias":
                 relations.append(
@@ -245,24 +251,26 @@ def multihead_attention(ctx: OperationContext) -> OperatorSpec:
                         AxisPort(axis),
                         AxisPort(bias.axis(0)),
                         tuple(BlockMap(0, i * width, width) for i in range(3)),
-                        ctx.node.name,
+                        operation.node.name,
                     )
                 )
             else:
-                relations.append(AxisRelation.equal(axis, bias.axis(-1), ctx.node.name))
+                relations.append(AxisRelation.equal(axis, bias.axis(-1), operation.node.name))
     block = width // heads
     constraints = [
         Balanced(axis, tuple(IndexSet.span(h * block, (h + 1) * block) for h in range(heads)))
     ]
     constraints.extend(
-        AxisBarrier(t.axis(d), "Native MHA batch/token positions are fixed", ctx.node.name)
+        AxisBarrier(t.axis(d), "Native MHA batch/token positions are fixed", operation.node.name)
         for t in (q, k, v, y)
         for d in range(len(t.shape) - 1)
     )
-    masks = tuple(tensors((ctx.argument("key_padding_mask", 3), ctx.argument("attn_mask", 5))))
-    for ref in (*masks, *ctx.outputs[1:]):
+    masks = tuple(
+        tensors((operation.argument("key_padding_mask", 3), operation.argument("attn_mask", 5)))
+    )
+    for ref in (*masks, *operation.outputs[1:]):
         constraints.extend(
-            AxisBarrier(ref.axis(d), "Native MHA mask/weight axes are fixed", ctx.node.name)
+            AxisBarrier(ref.axis(d), "Native MHA mask/weight axes are fixed", operation.node.name)
             for d in range(len(ref.shape))
         )
     return OperatorSpec(
@@ -272,14 +280,3 @@ def multihead_attention(ctx: OperationContext) -> OperatorSpec:
         candidates=(CandidateAxis(f"{out.paths[0]}:0", axis),),
         contract=OutputContract(output_layout="backend_dependent"),
     )
-
-
-def register_attention(
-    modules: Callable[..., None], functions: Callable[..., None], methods: Callable[..., None]
-) -> None:
-    """Register matrix and attention APIs without extending the executor registry."""
-    functions([torch.addmm, torch.baddbmm], addmm, fresh=True)
-    methods(["addmm", "baddbmm"], addmm, fresh=True)
-    functions([torch.einsum], einsum, fresh=True)
-    functions([F.scaled_dot_product_attention], sdpa, fresh=True)
-    modules([nn.MultiheadAttention], multihead_attention, fresh=True)

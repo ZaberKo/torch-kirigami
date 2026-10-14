@@ -85,10 +85,10 @@ def test_shared_module_paths_and_calls(execution_device):
 
     graph = DependencyGraph.build(Shared(), args=(torch.randn(2, 4),))
     assert graph.parameter("left.weight") is graph.parameter("right.weight")
-    assert len(graph.calls("left")) == len(graph.calls("right")) == 2
+    assert len(graph.operations("left")) == len(graph.operations("right")) == 2
     result = graph.propagate(remove=[graph.parameter("left.weight").axis(0).select([2])])
     assert result.status == "resolved"
-    assert all(indices(result, c.output(), 1) == {2} for c in graph.calls("left"))
+    assert all(indices(result, c.outputs[0], 1) == {2} for c in graph.operations("left"))
 
 
 def test_residual_and_shared_weight_cycle_reaches_fixed_point(execution_device):
@@ -103,9 +103,9 @@ def test_residual_and_shared_weight_cycle_reaches_fixed_point(execution_device):
             return self.a(x) + self.b(x)
 
     graph = DependencyGraph.build(Residual(), args=(torch.randn(2, 4),))
-    impact = graph.propagate(remove=[graph.calls("a")[0].output().axis(1).select([1, 3])])
+    impact = graph.propagate(remove=[graph.operations("a")[0].outputs[0].axis(1).select([1, 3])])
     assert impact.status == "resolved"
-    assert indices(impact, graph.calls("b")[0].output(), 1) == {1, 3}
+    assert indices(impact, graph.operations("b")[0].outputs[0], 1) == {1, 3}
 
 
 def test_shared_module_parameters_and_aliases(execution_device):

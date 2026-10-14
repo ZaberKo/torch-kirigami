@@ -13,6 +13,7 @@ from torch_kirigami import (
     DependencyGraph,
     IndexSet,
 )
+from torch_kirigami.dep_graph.contracts import Requirement
 from torch_kirigami.pruning import (
     Pruner,
 )
@@ -20,10 +21,12 @@ from torch_kirigami.pruning import (
 
 def test_softmax_reports_reduced_domain():
     graph = DependencyGraph.build(nn.Softmax(dim=1), args=(torch.randn(2, 4),))
-    call = graph.calls("")[0]
-    impact = graph.propagate(remove=[call.input().axis(1).select([1])])
+    call = graph.operations("")[0]
+    impact = graph.propagate(remove=[call.inputs[0].axis(1).select([1])])
     assert impact.status == "resolved"
-    assert any(r.kind == "reduction_domain" for r in impact.requirements)
+    assert any(
+        isinstance(r, Requirement) and r.kind == "reduction_domain" for r in impact.requirements
+    )
 
 
 @pytest.mark.parametrize("method", [False, True])
@@ -171,10 +174,12 @@ def test_reduction_distinguishes_reduced_and_retained_axes(method):
             return getattr(x, method)(dim=2)
 
     graph = DependencyGraph.build(Model(), args=(torch.randn(2, 4, 6),))
-    call = graph.calls()[0]
-    reduced = graph.propagate(remove=[call.input().axis(2).select([1])])
+    call = graph.operations()[0]
+    reduced = graph.propagate(remove=[call.inputs[0].axis(2).select([1])])
     assert reduced.status == "resolved"
-    assert not reduced.selection(call.output())
-    kept = graph.propagate(remove=[call.input().axis(1).select([1])])
-    assert removed(kept, call.output(), 1) == {1}
-    assert any(r.kind == "reduction_domain" for r in reduced.requirements)
+    assert not reduced.selection(call.outputs[0])
+    kept = graph.propagate(remove=[call.inputs[0].axis(1).select([1])])
+    assert removed(kept, call.outputs[0], 1) == {1}
+    assert any(
+        isinstance(r, Requirement) and r.kind == "reduction_domain" for r in reduced.requirements
+    )

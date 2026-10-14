@@ -6,18 +6,18 @@ import pytest
 import torch
 from torch import nn
 
+from tests.support.operators import make_rule
 from torch_kirigami import (
     AxisRelation,
     DependencyGraph,
     Divisible,
     IndexSet,
     OperatorRegistry,
-    OperatorRule,
     OperatorSpec,
     Region,
     Selection,
 )
-from torch_kirigami.dep_graph.operation import CallEffects
+from torch_kirigami.dep_graph.operation import TensorEffects
 from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
 from torch_kirigami.pruning import (
     Candidate,
@@ -142,10 +142,10 @@ def test_discovery_does_not_protect_an_unused_input_channel(strategy_type, execu
 
     registry = OperatorRegistry.default().register(
         FirstThreeWithZero,
-        OperatorRule(
+        make_rule(
             analyze,
             evaluate_on_meta=True,
-            effects=lambda *args: CallEffects(fresh_output=True),
+            tensor_effects=lambda *args: TensorEffects(writes_inputs=(), outputs_are_fresh=True),
         ),
     )
     model = nn.Sequential(nn.Linear(2, 4, bias=False), FirstThreeWithZero()).double()

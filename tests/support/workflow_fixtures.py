@@ -6,16 +6,16 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from examples.fused_attention import FusedGQA, fused_gqa
+from examples.fused_attention import FusedGQA, FusedGQARule
+from tests.support.operators import make_rule
 from torch_kirigami import (
     AxisPort,
     AxisRelation,
     BlockMap,
     DependencyGraph,
     OperatorRegistry,
-    OperatorRule,
-    Requirement,
 )
+from torch_kirigami.dep_graph.contracts import AttributeBinding, ShapeExpr
 from torch_kirigami.pruning import Pruner, load_checkpoint, save_checkpoint
 from torch_kirigami.sparsity import ChannelGate, register_gate_operators
 
@@ -34,8 +34,8 @@ class GatedGQA(FusedGQA):
 
 
 def gated_gqa_rule(ctx):
-    spec = fused_gqa(ctx)
-    q, gate, mask = (ctx.binding(path) for path in ("q.weight", "gate.weight", "gate.mask"))
+    spec = FusedGQARule().build_spec(ctx)
+    q, gate, mask = (ctx.bindings.get(path) for path in ("q.weight", "gate.weight", "gate.mask"))
     return replace(
         spec,
         relations=(
@@ -49,12 +49,10 @@ def gated_gqa_rule(ctx):
         ),
         requirements=(
             *spec.requirements,
-            Requirement(
-                "attribute",
+            AttributeBinding(
                 f"{ctx.module_path}.gate.size".lstrip("."),
-                (gate,),
+                ShapeExpr("dimension", (gate.axis(0).tensor, gate.axis(0).dim)),
                 "Compact the explicit head gate",
-                (("axis", gate.axis(0)),),
             ),
         ),
     )
@@ -103,8 +101,8 @@ class Transformer(nn.Module):
 def registry():
     return (
         register_gate_operators(OperatorRegistry.default())
-        .register(FusedGQA, OperatorRule(analyze=fused_gqa))
-        .register(GatedGQA, OperatorRule(analyze=gated_gqa_rule))
+        .register(FusedGQA, FusedGQARule())
+        .register(GatedGQA, make_rule(build_spec=gated_gqa_rule))
     )
 
 

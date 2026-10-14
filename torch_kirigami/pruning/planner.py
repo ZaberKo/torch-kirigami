@@ -9,13 +9,13 @@ import torch
 
 from ..dep_graph.contracts import Constraint, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import OperationContext
+from ..dep_graph.operation import Operation
 from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
+from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
 from .budget import remaining_parameters, resolve_budget
 from .rewrite import compile_recipes
 from .types import (
-    AttributeRecipe,
     Candidate,
     ChannelCount,
     ChannelRatio,
@@ -25,7 +25,6 @@ from .types import (
     PlanningError,
     SelectionReport,
     StrategyResult,
-    TensorRecipe,
 )
 
 
@@ -101,7 +100,7 @@ class PlanningContext:
         return self._graph
 
     @property
-    def operations(self) -> tuple[OperationContext, ...]:
+    def operations(self) -> tuple[Operation, ...]:
         """Return captured calls used for recipe compilation."""
         return self._operations
 

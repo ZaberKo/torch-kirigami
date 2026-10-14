@@ -53,8 +53,9 @@ def alignment_constraints(
     modules = dict(graph.model.named_modules(remove_duplicate=False))
     declarations = {}
     for operation in graph.operations():
-        if operation.module is not None:
-            domains = graph.operator_spec(operation).candidates
+        spec = graph.operator_spec(operation)
+        if operation.module is not None and spec is not None:
+            domains = spec.candidates
             if domains:
                 entry = declarations.setdefault(id(operation.module), [])
                 entry.extend(domains)

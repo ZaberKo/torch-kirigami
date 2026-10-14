@@ -19,7 +19,7 @@ from torch_kirigami.pruning import (
     AttributeRecipe,
     CandidateSpace,
     CoordinateSegment,
-    RewriteResult,
+    OperatorRecipe,
     SelectionReport,
     TensorRecipe,
 )
@@ -45,7 +45,7 @@ def test_static_records_validate_and_freeze_construction_inputs():
             channel_axes=[ref.axis(0)], widths=[4], removed=[], targets=[1], scope="local"
         )
     with pytest.raises(ValueError):
-        RewriteResult(output_strides=[(ref, (1, 1))])
+        OperatorRecipe(output_strides=[(ref, (1, 1))])
     with pytest.raises(ValueError):
         ModuleState([""], "Model", [("a", 1), ("a", 2)], [])
     with pytest.raises(ValueError):

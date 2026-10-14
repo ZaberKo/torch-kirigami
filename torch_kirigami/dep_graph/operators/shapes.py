@@ -13,7 +13,7 @@ from torch import fx
 
 from ...errors import UnsupportedOperation
 from ..contracts import ArgumentRef, Diagnostic, ShapeExpr
-from ..operation import OperationContext, PartitionedLayout, argument_locations
+from ..operation import Operation, OperatorSpec, PartitionedLayout, argument_locations
 from ..selection import Selection, TensorRef, concatenated_shape
 
 
@@ -21,12 +21,12 @@ class _PendingLayout(Exception):
     """Known structure whose partition counts still need a legal completion."""
 
 
-def shape_expression(ctx: OperationContext, value: object) -> ShapeExpr:
+def shape_expression(operation: Operation, value: object) -> ShapeExpr:
     """Resolve dimension provenance without guessing from numeric equality."""
     if isinstance(value, fx.Node):
-        return ctx.expressions.get(value, ShapeExpr("unknown", value.name))
+        return operation.expressions.get(value, ShapeExpr("unknown", value.name))
     if isinstance(value, (tuple, list)):
-        return ShapeExpr("tuple", args=tuple(shape_expression(ctx, v) for v in value))
+        return ShapeExpr("tuple", args=tuple(shape_expression(operation, v) for v in value))
     if isinstance(value, int):
         return ShapeExpr("infer" if value == -1 else "constant", value)
     return ShapeExpr("unknown", repr(value))
@@ -37,23 +37,23 @@ def has_known_provenance(expr: ShapeExpr) -> bool:
     return expr.kind != "unknown" and all(has_known_provenance(arg) for arg in expr.args)
 
 
-def expression_for(ctx: OperationContext) -> ShapeExpr | None:
+def expression_for(operation: Operation) -> ShapeExpr | None:
     """Recognize public dimension reads and scalar integer arithmetic."""
-    node = ctx.node
-    x = ctx.args[0] if ctx.args else None
+    node = operation.node
+    x = operation.args[0] if operation.args else None
     expression = None
     if (
         node.op == "call_function"
         and node.target is builtins.getattr
         and isinstance(x, TensorRef)
-        and ctx.args[1] in ("shape", "ndim")
+        and operation.args[1] in ("shape", "ndim")
     ):
-        expression = ShapeExpr("shape" if ctx.args[1] == "shape" else "dim", x)
+        expression = ShapeExpr("shape" if operation.args[1] == "shape" else "dim", x)
     if node.op == "call_method" and isinstance(x, TensorRef):
         if node.target == "size":
-            dim = ctx.argument("dim", 1)
-            raw_dim = ctx.raw_argument("dim", 1)
-            if isinstance(raw_dim, fx.Node) and raw_dim not in ctx.expressions:
+            dim = operation.argument("dim", 1)
+            raw_dim = operation.raw_argument("dim", 1)
+            if isinstance(raw_dim, fx.Node) and raw_dim not in operation.expressions:
                 raise UnsupportedOperation("Dimension selector has unknown provenance")
             expression = (
                 ShapeExpr("shape", x)
@@ -63,12 +63,12 @@ def expression_for(ctx: OperationContext) -> ShapeExpr | None:
         elif node.target in ("dim", "numel"):
             expression = ShapeExpr(node.target, x)
     if node.op == "call_function" and node.target is operator.getitem:
-        source = ctx.expressions.get(node.args[0])
-        if source and source.kind == "shape" and isinstance(ctx.args[1], int):
-            if isinstance(node.args[1], fx.Node) and node.args[1] not in ctx.expressions:
+        source = operation.expressions.get(node.args[0])
+        if source and source.kind == "shape" and isinstance(operation.args[1], int):
+            if isinstance(node.args[1], fx.Node) and node.args[1] not in operation.expressions:
                 raise UnsupportedOperation("Dimension selector has unknown provenance")
             expression = ShapeExpr(
-                "dimension", (source.value, ctx.args[1] % len(source.value.shape))
+                "dimension", (source.value, operation.args[1] % len(source.value.shape))
             )
     arithmetic = {
         operator.add: "add",
@@ -77,13 +77,13 @@ def expression_for(ctx: OperationContext) -> ShapeExpr | None:
         operator.floordiv: "floordiv",
         operator.mod: "mod",
     }
-    if node.op == "call_function" and node.target in arithmetic and not ctx.outputs:
+    if node.op == "call_function" and node.target in arithmetic and not operation.outputs:
         expressions = []
         for arg in node.args:
             if isinstance(arg, int):
                 expressions.append(ShapeExpr("constant", arg))
-            elif arg in ctx.expressions:
-                expressions.append(ctx.expressions[arg])
+            elif arg in operation.expressions:
+                expressions.append(operation.expressions[arg])
             else:
                 break
         else:
@@ -142,14 +142,14 @@ def reevaluate(
     return normalized
 
 
-def dependencies(ctx: OperationContext) -> tuple[TensorRef, ...]:
+def dependencies(operation: Operation) -> tuple[TensorRef, ...]:
     """Return dimension-source tensors used by scalar arguments of a call."""
     return tuple(
         dict.fromkeys(
             ref
-            for node in ctx.node.all_input_nodes
-            if node in ctx.expressions
-            for ref in ctx.expressions[node].refs
+            for node in operation.node.all_input_nodes
+            if node in operation.expressions
+            for ref in operation.expressions[node].refs
         )
     )
 
@@ -159,7 +159,7 @@ class CallArgumentConstraint:
     """Check immutable scalar provenance independently of removal propagation.
 
     Expressions, observed values, layouts, and an optional conditional hint are
-    retained. No FX node, model, or mutable OperationContext escapes through graph
+    retained. No FX node, model, or mutable Operation escapes through graph
     and impact constraint inspection. The hint is displayed only on a violation.
     """
 
@@ -186,7 +186,7 @@ class CallArgumentConstraint:
 
     @classmethod
     def from_operation(
-        cls, context: OperationContext, *, checked_arguments: tuple[ArgumentRef, ...] = ()
+        cls, context: Operation, *, checked_arguments: tuple[ArgumentRef, ...] = ()
     ) -> CallArgumentConstraint:
         """Detach the used shape expressions and observed values from capture."""
         arguments = []
@@ -281,3 +281,18 @@ class CallArgumentConstraint:
                 self.node,
             )
         return None
+
+
+def scalar_spec(operation: Operation) -> OperatorSpec | None:
+    """Describe scalar dimension reads and arithmetic before Tensor overload handling."""
+    expression = expression_for(operation)
+    if expression is None or operation.outputs:
+        return None
+    constraints = ()
+    if expression.kind == "dimension":
+        guard = CallArgumentConstraint.from_operation(
+            operation, checked_arguments=(ArgumentRef("input", 0),)
+        )
+        if guard.refs:
+            constraints = (guard,)
+    return OperatorSpec(expression=expression, constraints=constraints)

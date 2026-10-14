@@ -23,7 +23,7 @@ from .contracts import (
     ShapeExpr,
 )
 from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
-from .operation import CallRef, OperationContext, OperatorSpec, TensorFacts, tensors
+from .operation import Operation, OperatorSpec, TensorFacts, tensors
 from .operators.shapes import CallArgumentConstraint, dependencies
 from .registry import OperatorRegistry
 from .relations import AxisRelation
@@ -217,20 +217,21 @@ class _Analyzer:
                     ref = self._by_object.get(id(value))
                     if ref is not None:
                         bindings[name] = ref
-            ctx = OperationContext(
+            ctx = Operation(
                 node,
                 self._resolve(node.args),
                 self._resolve(node.kwargs),
                 self._values[node],
                 called_module,
-                paths[0] if paths else None,
+                paths,
                 bindings,
                 MappingProxyType(self.data.expressions),
                 MappingProxyType(self.data.tensor_facts),
                 MappingProxyType(self.data.literal_values),
                 self.data.id,
+                captured.effects[node],
             )
-            self._analyze_operation(ctx, paths)
+            self._analyze_operation(ctx)
 
     def _record_literal(self, ref: TensorRef, value: object) -> None:
         """Retain small integer constants used by shape and indexing rules."""
@@ -271,22 +272,21 @@ class _Analyzer:
             for constraint in self.data.constraints
         ]
 
-    def _analyze_operation(self, ctx: OperationContext, paths: tuple[str, ...]) -> None:
+    def _analyze_operation(self, ctx: Operation) -> None:
         """Validate one call's semantics and collect its structural facts.
 
         Unsupported calls become barriers on their data dependencies. Other calls
         remain analyzable, and their declared shape expressions feed later nodes.
         """
         node = ctx.node
-        self.data.calls.append(CallRef(node.name, paths, ctx.inputs, ctx.outputs))
         self.data.operations[node.name] = ctx
         rule = self.data.registry.lookup(node, ctx.module)
         try:
             if rule is None:
                 raise UnsupportedOperation(f"No semantics registered for {node.target}")
-            result = rule.analyze(ctx)
+            result = rule.build_spec(ctx)
             if not isinstance(result, OperatorSpec):
-                raise TypeError("OperatorRule.analyze must return OperatorSpec")
+                raise TypeError("OperatorRule.build_spec must return OperatorSpec")
             self._validate_spec(result)
             if any(not ref.paths for ref in result.constants):
                 raise UnsupportedOperation(
@@ -331,7 +331,12 @@ class _Analyzer:
             self.data.constraints.append(
                 CallArgumentConstraint.from_operation(
                     ctx,
-                    checked_arguments=tuple(a for r in result.requirements for a in r.arguments),
+                    checked_arguments=tuple(
+                        a
+                        for r in result.requirements
+                        if isinstance(r, Requirement)
+                        for a in r.arguments
+                    ),
                 )
             )
         for relation in result.relations:

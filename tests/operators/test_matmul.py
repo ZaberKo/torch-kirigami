@@ -57,7 +57,7 @@ def test_matmul_contraction_and_batch_broadcast(a, b, operation, execution_devic
             return operation(x, y)
 
     graph = DependencyGraph.build(Model(), args=(torch.randn(a), torch.randn(b)))
-    call = next(c for c in graph.calls() if len(c.inputs) == 2)
-    impact = graph.propagate(remove=[call.input().axis(-1).select([1])])
+    call = next(c for c in graph.operations() if len(c.inputs) == 2)
+    impact = graph.propagate(remove=[call.inputs[0].axis(-1).select([1])])
     assert impact.status == "resolved"
-    assert removed(impact, call.input(1), len(b) - 2 if len(b) > 1 else 0) == {1}
+    assert removed(impact, call.inputs[1], len(b) - 2 if len(b) > 1 else 0) == {1}

@@ -6,7 +6,8 @@ import pytest
 import torch
 from torch import nn
 
-from torch_kirigami import DependencyGraph, Divisible, Fixed, OperatorRegistry, OperatorRule
+from tests.support.operators import make_rule, with_rule
+from torch_kirigami import DependencyGraph, Divisible, Fixed, OperatorRegistry
 from torch_kirigami.dep_graph.relations import AxisRelation
 
 
@@ -77,7 +78,7 @@ def test_axis_extensions_reexecute_and_limits_remain_incomplete() -> None:
     native = registry.modules[nn.Linear]
 
     def analyze(context):
-        spec = native.analyze(context)
+        spec = native.build_spec(context)
         return replace(
             spec,
             relations=tuple(
@@ -88,7 +89,7 @@ def test_axis_extensions_reexecute_and_limits_remain_incomplete() -> None:
             ),
         )
 
-    registry.modules[nn.Linear] = OperatorRule(analyze)
+    registry = with_rule(registry, nn.Linear, make_rule(analyze))
     graph = DependencyGraph.build(Flattened(), args=(torch.zeros(5_000, 3),), operators=registry)
     request = graph.parameter("fc.weight").axis(0).select([0])
     first = graph.propagate(remove=[request])

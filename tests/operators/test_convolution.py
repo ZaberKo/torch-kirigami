@@ -12,6 +12,7 @@ from tests.support.pruning import StaticMetric, build
 from torch_kirigami import (
     DependencyGraph,
 )
+from torch_kirigami.dep_graph.contracts import Requirement
 from torch_kirigami.pruning import (
     ChannelRatio,
     Greedy,
@@ -32,7 +33,7 @@ def test_depthwise_partial_outputs_do_not_choose_input_removal():
     x = torch.randn(2, 4, 5)
     graph = DependencyGraph.build(model, args=(x,))
     root = graph.parameter("weight").axis(0)
-    input_ = graph.calls("")[0].input()
+    input_ = graph.operations("")[0].inputs[0]
     partial = graph.propagate(remove=[root.select([2])])
     assert partial.status == "unresolved"
     assert not partial.selection(input_)
@@ -64,10 +65,10 @@ def test_grouped_transpose_independent_input_and_output_positions(cls, shape, ex
     old = copy.deepcopy(model)
     x = torch.randn(shape)
     graph = DependencyGraph.build(model, args=(x,))
-    call = graph.calls("")[0]
+    call = graph.operations("")[0]
     Pruner(model, graph=graph, preserve_io=False).apply(
         Pruner(model, graph=graph, preserve_io=False).plan_remove(
-            [call.input().axis(1).select([0, 4]), call.output().axis(1).select([1, 6])]
+            [call.inputs[0].axis(1).select([0, 4]), call.outputs[0].axis(1).select([1, 6])]
         )
     )
     weight = torch.cat((old.weight[[1, 2]][:, [0, 2, 3]], old.weight[[3, 5]][:, [0, 1, 3]]))
@@ -107,7 +108,7 @@ def test_partitioned_group_convolution_and_numerical_oracle(conv, shape, executi
     model = conv(6, 4, 1, groups=2)
     x = torch.randn(shape)
     graph = DependencyGraph.build(model, args=(x,))
-    impact = graph.propagate(remove=[graph.calls("")[0].input().axis(1).select([0, 4])])
+    impact = graph.propagate(remove=[graph.operations("")[0].inputs[0].axis(1).select([0, 4])])
     assert impact.status == "resolved"
     regions = impact.selection(graph.parameter("weight")).regions
     assert len(regions) == 2
@@ -120,15 +121,18 @@ def test_partitioned_group_convolution_and_numerical_oracle(conv, shape, executi
     reference_input = x.clone()
     reference_input[:, [0, 4]] = 0
     torch.testing.assert_close(compact(x[:, [1, 2, 3, 5]]), model(reference_input))
-    assert any(r.kind == "partitioned_compaction" for r in impact.requirements)
+    assert any(
+        isinstance(r, Requirement) and r.kind == "partitioned_compaction"
+        for r in impact.requirements
+    )
 
 
 def test_depthwise_input_removal_forces_whole_output_blocks(execution_device):
     graph = DependencyGraph.build(nn.Conv2d(4, 8, 1, groups=4), args=(torch.randn(2, 4, 3, 3),))
-    impact = graph.propagate(remove=[graph.calls("")[0].input().axis(1).select([1])])
+    impact = graph.propagate(remove=[graph.operations("")[0].inputs[0].axis(1).select([1])])
     assert impact.status == "resolved"
     assert indices(impact, graph.parameter("weight"), 0) == {2, 3}
-    assert indices(impact, graph.calls("")[0].input(), 1) == {1}
+    assert indices(impact, graph.operations("")[0].inputs[0], 1) == {1}
     assert any(r.target == "groups" for r in impact.requirements)
 
 
@@ -142,7 +146,7 @@ def test_grouped_rows_and_different_local_columns(conv, shape, execution_device)
     graph, pruner = build(model, x)
     plan = Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan_remove(
         [
-            graph.calls("")[0].input().axis(1).select([0, 4]),
+            graph.operations("")[0].inputs[0].axis(1).select([0, 4]),
             graph.parameter("weight").axis(0).select([1, 5]),
         ]
     )

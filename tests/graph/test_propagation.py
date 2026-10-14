@@ -30,7 +30,7 @@ def test_linear_chain_and_joint_requests(execution_device):
 
 def test_unequal_group_choices_are_not_silently_completed():
     graph = DependencyGraph.build(nn.Conv2d(6, 4, 1, groups=2), args=(torch.randn(2, 6, 3, 3),))
-    request = graph.calls("")[0].input().axis(1).select([0])
+    request = graph.operations("")[0].inputs[0].axis(1).select([0])
     impact = graph.propagate(remove=[request])
     assert impact.status == "unresolved"
     assert indices(impact, request.tensor, 1) == {0}

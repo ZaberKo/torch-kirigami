@@ -7,9 +7,9 @@ from dataclasses import dataclass
 import torch
 from torch import fx, nn
 
-from ..dep_graph.contracts import Impact, Requirement
+from ..dep_graph.contracts import AttributeBinding, Impact, ShapeExpr
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
+from ..dep_graph.operation import Operation, OperatorRule, OperatorSpec, TensorEffects
 from ..dep_graph.registry import OperatorRegistry
 from ..dep_graph.relations import AxisRelation
 from ..dep_graph.selection import gather_region
@@ -57,41 +57,46 @@ class ChannelGate(nn.Module):
         self.mask.copy_(value)
 
 
-def _gate_rule(ctx: OperationContext) -> OperatorSpec:
+def _gate_rule(operation: Operation) -> OperatorSpec:
     """Describe coordinate and width requirements for a ChannelGate call."""
-    x, y = ctx.inputs[0], ctx.outputs[0]
-    weight, mask = ctx.binding("weight"), ctx.binding("mask")
+    x, y = operation.inputs[0], operation.outputs[0]
+    weight, mask = operation.bindings.get("weight"), operation.bindings.get("mask")
     relations = [AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape))]
     relations.extend(
         (
-            AxisRelation.equal(x.axis(ctx.module.axis), weight.axis(0)),
+            AxisRelation.equal(x.axis(operation.module.axis), weight.axis(0)),
             AxisRelation.equal(weight.axis(0), mask.axis(0)),
         )
     )
     return OperatorSpec(
         relations=tuple(relations),
         requirements=(
-            Requirement(
-                "attribute",
-                f"{ctx.module_path}.size".lstrip("."),
-                (weight,),
+            AttributeBinding(
+                f"{operation.module_path}.size".lstrip("."),
+                ShapeExpr("dimension", (weight.axis(0).tensor, weight.axis(0).dim)),
                 "Update the explicit gate width",
-                (("axis", weight.axis(0)),),
             ),
         ),
     )
 
 
-def _gate_effects(node: fx.Node, module: nn.Module | None) -> CallEffects:
+def _gate_effects(node: fx.Node, module: nn.Module | None) -> TensorEffects:
     """Declare that gate multiplication always produces a fresh activation."""
     # Multiplication always allocates, even when every scale equals one. This
     # lets an immediate in-place activation prove its input is not an alias.
-    return CallEffects(fresh_output=True)
+    return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
+
+
+class ChannelGateRule(OperatorRule):
+    """Declare gate coordinates, width binding and independent output storage."""
+
+    build_spec = staticmethod(_gate_rule)
+    tensor_effects = staticmethod(_gate_effects)
 
 
 def register_gate_operators(operators: OperatorRegistry) -> OperatorRegistry:
     """Register ChannelGate as an explicit leaf without adding a logical candidate axis."""
-    return operators.register(ChannelGate, OperatorRule(analyze=_gate_rule, effects=_gate_effects))
+    return operators.register(ChannelGate, ChannelGateRule())
 
 
 @dataclass(frozen=True)

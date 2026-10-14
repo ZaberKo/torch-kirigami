@@ -187,7 +187,9 @@ def test_unsupported_branch_stays_fixed_and_counts_toward_parameter_limit(execut
     original = copy.deepcopy(model)
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    pruner = Pruner(model, graph=graph)
+    unknown = next(op for op in graph.operations() if op.node.target is torch.special.gammaln)
+    assert graph.operator_spec(unknown) is None
+    pruner = Pruner(model, graph=graph, granularity=Granularity(default=1))
     space = pruner.discover_candidates()
 
     @StaticMetric

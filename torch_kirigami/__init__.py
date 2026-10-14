@@ -2,6 +2,7 @@
 
 from .dep_graph.contracts import (
     ArgumentRef,
+    AttributeBinding,
     AxisBarrier,
     Balanced,
     Barrier,
@@ -17,14 +18,13 @@ from .dep_graph.contracts import (
 )
 from .dep_graph.dependency_graph import DependencyGraph
 from .dep_graph.operation import (
-    CallEffects,
-    CallRef,
     CandidateAxis,
-    OperationContext,
+    Operation,
     OperatorRule,
     OperatorSpec,
     OutputContract,
     PartitionedLayout,
+    TensorEffects,
     TensorFacts,
 )
 from .dep_graph.registry import OperatorRegistry
@@ -50,6 +50,7 @@ from .settings import config
 __all__ = [
     "AnalysisLimitError",
     "ArgumentRef",
+    "AttributeBinding",
     "AxisBarrier",
     "AxisPort",
     "AxisRef",
@@ -59,8 +60,6 @@ __all__ = [
     "BlockBalance",
     "BlockMap",
     "BroadcastRelation",
-    "CallEffects",
-    "CallRef",
     "CandidateAxis",
     "CaptureError",
     "DependencyGraph",
@@ -72,7 +71,7 @@ __all__ = [
     "KirigamiError",
     "LayoutConstraint",
     "NonEmpty",
-    "OperationContext",
+    "Operation",
     "OperatorRegistry",
     "OperatorRule",
     "OperatorSpec",
@@ -86,6 +85,7 @@ __all__ = [
     "ShapeExpr",
     "SliceRelation",
     "StaleGraphError",
+    "TensorEffects",
     "TensorFacts",
     "TensorRef",
     "UnsupportedOperation",
