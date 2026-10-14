@@ -1,13 +1,59 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.dep_graph.builder.GraphBuilder",
+      "contracts": [
+        {
+          "behavior": "Collect original aliases and analyze FX calls in temporary build state; publish only completed records.",
+          "tests": [
+            "tests/integration/test_graph_construction.py::test_failed_analysis_does_not_publish_or_contaminate_a_graph",
+            "tests/integration/test_graph_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation"
+          ],
+          "conditions": "CPU and CUDA builds, failed extension analysis, shared module aliases, and successful subsequent physical pruning.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.data.GraphData",
+      "contracts": [
+        {
+          "behavior": "Share completed structural records without retaining per-node construction values or mixing query caches into the snapshot.",
+          "tests": [
+            "tests/integration/test_graph_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation",
+            "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
+            "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic"
+          ],
+          "conditions": "Read-only structural tables; original model objects and extension callables retain their identities.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.propagation.DependencySolver",
+      "contracts": [
+        {
+          "behavior": "Keep indexed propagation and bounded relation reuse identical to complete joint queries, including extension behavior and failures.",
+          "tests": [
+            "tests/graph/test_relation_output_cache.py::test_cached_joint_queries_match_full_recomputation",
+            "tests/integration/test_graph_query_indexes.py::test_public_plans_and_applied_models_match_sequential_seeds",
+            "tests/integration/test_graph_query_indexes.py::test_shape_expression_subclasses_keep_query_time_truthiness_and_references",
+            "tests/integration/test_constraint_queries.py::test_nested_constraint_extensions_are_not_cached",
+            "tests/integration/test_graph_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation"
+          ],
+          "conditions": "Original coordinates, accumulated selections, graph-local caches, and freshness checks at the public graph boundary. Constraint reuse requires exact immutable built-in records at every depth; nested extensions run on each query.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.IdentityAxisIndex",
       "contracts": [
         {
           "behavior": "Prove immutable full-axis identity components without inferring constraints or execution support.",
           "tests": [
             "tests/pruning/test_identity_axes.py::test_identity_component_matches_every_single_position",
-            "tests/pruning/test_identity_axes.py::test_identity_component_rejects_scopes_extensions_and_full_width",
+            "tests/pruning/test_identity_axes.py::test_identity_component_rejects_partial_scopes_extensions_and_full_width",
             "tests/pruning/test_identity_axes.py::test_equivalent_seeds_keep_full_closure_with_nonidentity_relations",
             "tests/integration/test_isomorphic_workflow.py::test_identity_family_reuse_matches_generic_plan_and_reduces_queries",
             "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring"
@@ -41,7 +87,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.operation.OperatorRegistrar",
+      "object": "torch_kirigami.dep_graph.operation.OperatorRegistrar",
       "contracts": [
         {
           "behavior": "Type-only registration contract keeps built-in rules independent of the concrete registry.",
@@ -1475,7 +1521,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.capture._LeafTracer",
+      "object": "torch_kirigami.dep_graph.capture._LeafTracer",
       "contracts": [
         {
           "behavior": "根/嵌套扩展一致、函数捕获局部性、动态控制流边界",
@@ -1490,7 +1536,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.capture._MetadataPropagator",
+      "object": "torch_kirigami.dep_graph.capture._MetadataPropagator",
       "contracts": [
         {
           "behavior": "成功/失败隔离输入 buffer RNG 模式，释放中间激活/临时壳，正确元数据",
@@ -1507,7 +1553,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.capture.CaptureResult",
+      "object": "torch_kirigami.dep_graph.capture.CaptureResult",
       "contracts": [
         {
           "behavior": "成功/失败隔离输入 buffer RNG 模式，释放中间激活/临时壳，正确元数据",
@@ -1542,7 +1588,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.contracts.Constraint",
+      "object": "torch_kirigami.dep_graph.contracts.Constraint",
       "contracts": [
         {
           "behavior": "具体关系/约束及扩展；外图引用拒绝和局部传播",
@@ -1557,7 +1603,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.relations.Relation",
+      "object": "torch_kirigami.dep_graph.relations.Relation",
       "contracts": [
         {
           "behavior": "具体关系/约束及扩展；外图引用拒绝和局部传播",
@@ -1572,7 +1618,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.contracts.Provenance",
+      "object": "torch_kirigami.dep_graph.contracts.Provenance",
       "contracts": [
         {
           "behavior": "只记录新增目标区域；来源已知，全部步骤重建闭包",
@@ -1585,7 +1631,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.operators.shapes.CallArgumentConstraint",
+      "object": "torch_kirigami.dep_graph.operators.shapes.CallArgumentConstraint",
       "contracts": [
         {
           "behavior": "捕获状态隔离、精确参数角色、相同 shape 不同坐标拒绝",
@@ -1613,7 +1659,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.operators.shapes._PendingLayout",
+      "object": "torch_kirigami.dep_graph.operators.shapes._PendingLayout",
       "contracts": [
         {
           "behavior": "延迟布局证明在最终编译中解决或明确拒绝",
@@ -1657,7 +1703,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.selection.TensorRefMap",
+      "object": "torch_kirigami.dep_graph.selection.TensorRefMap",
       "contracts": [
         {
           "behavior": "不可变坐标查询统一接受原图和静态引用，拒绝未知标签",
@@ -2157,7 +2203,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.capture._TraceDataGuard",
+      "object": "torch_kirigami.dep_graph.capture._TraceDataGuard",
       "contracts": [
         {
           "behavior": "未记录的 Tensor 数据决策拒绝；元数据配置允许；捕获失败保持状态",

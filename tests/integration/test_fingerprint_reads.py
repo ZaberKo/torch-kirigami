@@ -7,7 +7,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from torch_kirigami import DependencyGraph, StaleGraphError, bindings, capture, configuration
+from torch_kirigami import DependencyGraph, StaleGraphError, bindings, configuration
+from torch_kirigami.dep_graph import capture
 from torch_kirigami.pruning import ExecutionError, Pruner
 
 

@@ -22,7 +22,17 @@ import isomorphic_pruning as workflow
 from torchvision.models.resnet import BasicBlock, ResNet
 from torchvision.models.vision_transformer import VisionTransformer
 
-from torch_kirigami import AxisRef, DependencyGraph, Diagnostic
+from torch_kirigami import (
+    AxisRef,
+    AxisRelation,
+    DependencyGraph,
+    Diagnostic,
+    OperatorRegistry,
+    OperatorRule,
+    OperatorSpec,
+)
+from torch_kirigami.dep_graph.operation import CallEffects
+from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -566,6 +576,171 @@ def test_identity_family_reuse_matches_generic_plan_and_reduces_queries(executio
         torch.testing.assert_close(values, second.state_dict()[path], rtol=0, atol=0)
     torch.testing.assert_close(first(x), second(x), rtol=0, atol=0)
     first(x).sum().backward()
+
+
+@pytest.mark.parametrize("groups", [1, 2])
+def test_convolution_family_reuse_matches_generic_and_preserves_partitions(
+    groups, execution_device, monkeypatch, tmp_path
+):
+    """Full scopes permit reuse; true grouped partitions retain ordinary analysis."""
+
+    class GenericTaylor(workflow.PaperTaylor):
+        """Use ordinary per-candidate analysis with the same score formula."""
+
+    first = (
+        nn.Sequential(
+            nn.Conv2d(4, 32, 1, groups=groups, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(32, 2, 1, bias=False),
+        )
+        .double()
+        .eval()
+    )
+    # Identical ranks in each partition produce a legal, balanced fixed quota.
+    # This also tests tied ranks without relying on random grouped allocations.
+    with torch.no_grad():
+        for parameter in first.parameters():
+            parameter.fill_(1)
+            parameter.grad = torch.ones_like(parameter)
+        first[0].weight.grad.copy_(
+            torch.arange(1, 32 // groups + 1, dtype=torch.float64)
+            .repeat(groups)[:, None, None, None]
+            .expand_as(first[0].weight)
+        )
+    second = copy.deepcopy(first)
+    for original, copied in zip(first.parameters(), second.parameters(), strict=True):
+        copied.grad = original.grad.clone()
+    dense = copy.deepcopy(first)
+    x = torch.randn(2, 4, 5, 5, dtype=torch.float64)
+    template_calls = []
+    original_scores = workflow.PaperTaylor._scores_for_axes
+
+    def observed_scores(metric, context, axes):
+        template_calls.append(axes)
+        return original_scores(metric, context, axes)
+
+    monkeypatch.setattr(workflow.PaperTaylor, "_scores_for_axes", observed_scores)
+    plans, counts = [], []
+    for model, metric in ((first, workflow.PaperTaylor()), (second, GenericTaylor())):
+        graph, pruner, space = build(model, x, granularity=4)
+        calls = []
+        propagate = graph.propagate
+
+        def counted(*args, _calls=calls, _propagate=propagate, **kwargs):
+            _calls.append(1)
+            return _propagate(*args, **kwargs)
+
+        monkeypatch.setattr(graph, "propagate", counted)
+        plan = pruner.plan(
+            space,
+            budget=ParameterBudget(1000),
+            strategy=workflow.Isomorphic(metric, ratio=0.25),
+        )
+        plans.append(plan)
+        counts.append(len(calls))
+        removed = tuple(
+            plan.analysis.selection(graph.parameter("0.weight")).fully_selected_indices(0)
+        )
+        assert removed == tuple(
+            group * (32 // groups) + offset
+            for group in range(groups)
+            for offset in range(8 // groups)
+        )
+        destination = tmp_path / f"conv-{groups}-{len(plans)}.json"
+        destination.write_text(json.dumps(plan.to_dict()))
+        pruner.apply(type(plan).from_dict(json.loads(destination.read_text())))
+    assert plans[0].selected == plans[1].selected
+    if groups == 1:
+        assert template_calls
+        assert counts[0] < counts[1] / 4
+    else:
+        assert not template_calls
+        assert counts[0] == counts[1]
+    for path, value in first.state_dict().items():
+        torch.testing.assert_close(value, second.state_dict()[path], rtol=0, atol=0)
+    with torch.no_grad():
+        dense[2].weight[:, removed] = 0
+    torch.testing.assert_close(first(x), dense(x))
+    torch.testing.assert_close(second(x), dense(x))
+    first(x).sum().backward()
+    assert all(parameter.grad is not None for parameter in first.parameters())
+
+
+def test_nested_mapping_preserves_distinct_isomorphic_families(execution_device):
+    """Partial correspondence must not turn a distinct channel into a cached family."""
+
+    class GenericTaylor(workflow.PaperTaylor):
+        """Use ordinary per-candidate analysis with the same score formula."""
+
+    class CroppedCount(int):
+        """Leave the last channel outside the declared correspondence."""
+
+        def __mul__(self, other):
+            return int(self) * other - 1
+
+    class ConstantLast(nn.Module):
+        """Keep the first channels and replace the final channel with zero."""
+
+        def forward(self, x):
+            result = x.clone()
+            result[:, -1] = 0
+            return result
+
+    def analyze(context):
+        source, output = context.inputs[0], context.outputs[0]
+        return OperatorSpec(
+            relations=(
+                AxisRelation.equal(source.axis(0), output.axis(0)),
+                AxisRelation(
+                    AxisPort(source.axis(1)),
+                    AxisPort(output.axis(1)),
+                    (BlockMap(0, 0, CroppedCount(source.shape[1])),),
+                ),
+            )
+        )
+
+    registry = OperatorRegistry.default().register(
+        ConstantLast,
+        OperatorRule(
+            analyze, evaluate_on_meta=True, effects=lambda *args: CallEffects(fresh_output=True)
+        ),
+    )
+    source = (
+        nn.Sequential(nn.Linear(2, 4, bias=False), ConstantLast(), nn.Linear(4, 2, bias=False))
+        .double()
+        .eval()
+    )
+    with torch.no_grad():
+        source[0].weight.fill_(1)
+        source[2].weight.copy_(torch.tensor([[1, 1, 1, 100], [1, 1, 1, 100]]))
+    x = torch.tensor([[1.0, 1.0], [2.0, -1.0]], dtype=torch.float64)
+    plans = []
+    for metric in (workflow.PaperTaylor(), GenericTaylor()):
+        model = copy.deepcopy(source)
+        for parameter in model.parameters():
+            parameter.grad = torch.ones_like(parameter)
+        graph = DependencyGraph.build(model, args=(x,), operators=registry)
+        pruner = Pruner(model, graph=graph)
+        space = pruner.discover_candidates(targets=("0",))
+        strategy = workflow.Isomorphic(metric, ratio=0.5)
+        plan = pruner.plan(space, budget=ParameterBudget(1000), strategy=strategy)
+        # Three channels share a producer/consumer family; the zeroed final
+        # channel affects only the producer and forms a different family.
+        # The independent quotas are floor(3/2)=1 and floor(1/2)=0, not 4/2=2.
+        assert sorted(
+            (family["actions"], family["selected_actions"]) for family in strategy.families
+        ) == [(1, 0), (3, 1)]
+        assert tuple(
+            plan.analysis.selection(graph.parameter("0.weight")).fully_selected_indices(0)
+        ) == (0,)
+        plans.append(plan)
+        pruner.apply(type(plan).from_dict(plan.to_dict()))
+        # Two surviving ordinary channels contribute; the last remains zero.
+        expected = 2 * x.sum(1, keepdim=True).expand(-1, 2)
+        torch.testing.assert_close(model(x), expected, rtol=0, atol=0)
+        model(x).sum().backward()
+        assert all(parameter.grad is not None for parameter in model.parameters())
+    assert plans[0].selected == plans[1].selected
 
 
 def test_axis_statistics_refresh_after_gradient_and_weight_changes(execution_device):

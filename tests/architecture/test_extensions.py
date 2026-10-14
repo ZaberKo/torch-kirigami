@@ -22,7 +22,7 @@ from torch_kirigami import (
     ShapeExpr,
     TensorRef,
 )
-from torch_kirigami.operation import PartitionedLayout
+from torch_kirigami.dep_graph.operation import PartitionedLayout
 
 
 def namespace_swap(input, dim=1, *, axis=0):

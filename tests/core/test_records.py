@@ -13,7 +13,7 @@ from torch_kirigami import (
     ShapeExpr,
     TensorRef,
 )
-from torch_kirigami.operation import OutputContract
+from torch_kirigami.dep_graph.operation import OutputContract
 from torch_kirigami.pruning import (
     AnalysisSummary,
     AttributeRecipe,

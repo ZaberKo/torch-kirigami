@@ -9,8 +9,17 @@ import pytest
 import torch
 from torch import nn
 
-from torch_kirigami import DependencyGraph
-from torch_kirigami.contracts import AxisBarrier, Diagnostic, Divisible
+from torch_kirigami import (
+    AxisRelation,
+    DependencyGraph,
+    OperatorRegistry,
+    OperatorRule,
+    OperatorSpec,
+)
+from torch_kirigami.dep_graph.contracts import AxisBarrier, Diagnostic, Divisible
+from torch_kirigami.dep_graph.operation import CallEffects
+from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
+from torch_kirigami.dep_graph.selection import AxisRef, Selection, TensorRef
 from torch_kirigami.errors import StaleGraphError
 from torch_kirigami.pruning import (
     Candidate,
@@ -27,7 +36,6 @@ from torch_kirigami.pruning import (
     PruningPlan,
 )
 from torch_kirigami.pruning.ranking import IndependentRanking
-from torch_kirigami.selection import AxisRef, Selection, TensorRef
 
 
 class ReferenceMagnitude(GroupMagnitude):
@@ -46,7 +54,11 @@ def context_for(
 @pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
 @pytest.mark.parametrize("convolution", [False, True])
 def test_public_plan_restore_apply_matches_generic_joint_scoring(
-    p: int, strategy_type: type[Greedy], convolution: bool, execution_device: str
+    p: int,
+    strategy_type: type[Greedy],
+    convolution: bool,
+    execution_device: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Both policies preserve complete plans and compact-model outputs on CPU/CUDA."""
     torch.manual_seed(17)
@@ -56,22 +68,131 @@ def test_public_plan_restore_apply_matches_generic_joint_scoring(
     ).eval()
     reference = copy.deepcopy(model)
     x = torch.randn(2, 4, 3, 3) if convolution else torch.randn(2, 3, 4)
-    plans, compact = [], []
+    plans, compact, propagation_counts = [], [], []
     for current, metric in ((model, GroupMagnitude(p)), (reference, ReferenceMagnitude(p))):
         graph = DependencyGraph.build(current, args=(x,))
         pruner = Pruner(current, graph=graph, granularity=Granularity(default=2))
         space = pruner.discover_candidates(targets=("0", "3"))
-        plan = pruner.plan(
-            space, budget=ParameterBudget.from_ratio(current, 0.25), strategy=strategy_type(metric)
-        )
+        if type(metric) is GroupMagnitude:
+            ranking = IndependentRanking.build(context_for(graph, space.candidates), metric)
+            assert ranking is not None
+            assert len(ranking.candidates) == len(space.candidates)
+        calls = []
+        propagate = graph.propagate
+
+        def counted(*args, _calls=calls, _propagate=propagate, **kwargs):
+            _calls.append(1)
+            return _propagate(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(graph, "propagate", counted)
+            plan = pruner.plan(
+                space,
+                budget=ParameterBudget.from_ratio(current, 0.25),
+                strategy=strategy_type(metric),
+            )
+        propagation_counts.append(len(calls))
         plans.append(plan)
         restored = PruningPlan.from_dict(plan.to_dict())
         compact.append(pruner.apply(restored)[0])
     assert plans[0].selected == plans[1].selected
     assert plans[0].selection_report == plans[1].selection_report
+    assert propagation_counts[0] < propagation_counts[1]
     for key, value in compact[0].state_dict().items():
         torch.testing.assert_close(value, compact[1].state_dict()[key], rtol=0, atol=0)
     torch.testing.assert_close(compact[0](x), compact[1](x), rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_nested_mapping_arithmetic_uses_real_dependency_scores(strategy_type, execution_device):
+    """A valid opaque operator must not acquire a false full-width identity proof."""
+
+    class CroppedCount(int):
+        """Represent a map whose actual multiplication omits the final position."""
+
+        def __mul__(self, other):
+            return int(self) * other - 1
+
+    class ConstantLast(nn.Module):
+        """Preserve the first channels and replace the final channel with zero."""
+
+        def forward(self, x):
+            result = x.clone()
+            result[:, -1] = 0
+            return result
+
+    class Parallel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.a = nn.Sequential(
+                nn.Linear(2, 4, bias=False), ConstantLast(), nn.Linear(4, 2, bias=False)
+            )
+            self.b = nn.Sequential(nn.Linear(2, 4, bias=False), nn.Linear(4, 2, bias=False))
+
+        def forward(self, x):
+            return self.a(x) + self.b(x)
+
+    def analyze(context):
+        x, y = context.inputs[0], context.outputs[0]
+        return OperatorSpec(
+            relations=(
+                AxisRelation.equal(x.axis(0), y.axis(0)),
+                AxisRelation(
+                    AxisPort(x.axis(1)),
+                    AxisPort(y.axis(1)),
+                    (BlockMap(0, 0, CroppedCount(x.shape[1])),),
+                ),
+            )
+        )
+
+    registry = OperatorRegistry.default().register(
+        ConstantLast,
+        OperatorRule(
+            analyze,
+            evaluate_on_meta=True,
+            effects=lambda *args: CallEffects(fresh_output=True),
+        ),
+    )
+    source = Parallel().double().eval()
+    with torch.no_grad():
+        source.a[0].weight.fill_(1)
+        source.a[2].weight.copy_(torch.tensor([[1, 1, 1, 100], [1, 1, 1, 100]]))
+        source.b[0].weight.copy_(torch.tensor([[1, 1], [2, 2], [2, 2], [2, 2]]))
+        source.b[1].weight.zero_()
+    x = torch.tensor([[1.0, 1.0], [2.0, -1.0]], dtype=torch.float64)
+    plans = []
+    for metric in (GroupMagnitude(), ReferenceMagnitude()):
+        model = copy.deepcopy(source)
+        graph = DependencyGraph.build(model, args=(x,), operators=registry)
+        pruner = Pruner(model, graph=graph)
+        space = pruner.discover_candidates(targets=("a.0", "b.0"))
+        original_parameters = tuple(model.parameters())
+        original_values = tuple(parameter.detach().clone() for parameter in original_parameters)
+        # Removing the input's constant-output position alone would change which
+        # surviving channel forward overwrites. It cannot preserve this mapping.
+        with pytest.raises(PlanningError, match="wrong compact shape"):
+            pruner.plan_remove((graph.parameter("a.0.weight").axis(0).select([3]),))
+        assert all(a is b for a, b in zip(original_parameters, model.parameters(), strict=True))
+        for parameter, value in zip(model.parameters(), original_values, strict=True):
+            torch.testing.assert_close(parameter, value, rtol=0, atol=0)
+        graph.validate()
+
+        plan = pruner.plan(
+            space,
+            budget=ChannelRatio(0.125, scope="global"),
+            strategy=strategy_type(metric),
+        )
+        assert plan.selected == ("b.0.weight:0:000000000000",)
+        plans.append(plan)
+        pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+        # Three identical linear rows survive in branch a; its last output and
+        # all branch-b outputs are zero. This reference uses neither graph nor metric.
+        expected = 3 * x.sum(1, keepdim=True).expand(-1, 2)
+        torch.testing.assert_close(model(x), expected, rtol=0, atol=0)
+        model(x).sum().backward()
+        assert all(parameter.grad is not None for parameter in model.parameters())
+    assert plans[0].selected == plans[1].selected
+    assert plans[0].selection_report == plans[1].selection_report
 
 
 @pytest.mark.parametrize("p", [1, 2])

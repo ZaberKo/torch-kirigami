@@ -3,15 +3,15 @@
 from collections import defaultdict, deque
 from collections.abc import Iterable
 
-from ..relations import (
-    AxisPort,
+from ..dep_graph._records import is_native_record
+from ..dep_graph.relations import (
     AxisRelation,
     BlockMap,
     BroadcastRelation,
     Relation,
     ReshapeRelation,
 )
-from ..selection import MAX_PARTS, AxisRef, TensorRef
+from ..dep_graph.selection import MAX_PARTS, AxisRef, TensorRef
 
 
 class IdentityAxisIndex:
@@ -19,8 +19,9 @@ class IdentityAxisIndex:
 
     This proves index correspondence only, not constraints or execution support.
     Callers must validate their graph and actual selections. `component()` is
-    limited to proper subsets on one axis per tensor, with no unknown or scoped
-    relations. `equivalent_axes()` only proves mutually implying seeds; other
+    limited to proper subsets on one axis per tensor, with no unknown or partially
+    scoped relations. Explicit full-tensor scopes are accepted. `equivalent_axes()`
+    only proves mutually implying seeds; other
     relations still require ordinary propagation. No tensor data or dependency
     impacts are retained.
 
@@ -30,7 +31,10 @@ class IdentityAxisIndex:
 
     def __init__(self, relations: Iterable[Relation]) -> None:
         self._adjacent: dict[TensorRef, list[Relation]] = defaultdict(list)
+        self._native_relations: set[int] = set()
         for relation in relations:
+            if is_native_record(relation):
+                self._native_relations.add(id(relation))
             for ref in dict.fromkeys(relation.refs):
                 self._adjacent[ref].append(relation)
         self._components: dict[AxisRef, tuple[AxisRef, ...] | None] = {}
@@ -44,7 +48,7 @@ class IdentityAxisIndex:
         This does not extrapolate between different positions, prove layout, or
         replace the analysis of at least one actual request.
         """
-        if type(root) is not AxisRef or type(root.tensor) is not TensorRef:
+        if type(root) is not AxisRef or not is_native_record(root):
             return (root,)
         if root in self._equivalent:
             return self._equivalent[root]
@@ -56,6 +60,8 @@ class IdentityAxisIndex:
                 continue
             members.add(axis)
             for relation in self._adjacent.get(axis.tensor, ()):
+                if id(relation) not in self._native_relations:
+                    continue
                 if type(relation) is BroadcastRelation:
                     target = _broadcast_axis(relation, axis)
                     if target is not None:
@@ -86,7 +92,7 @@ class IdentityAxisIndex:
         only when its width matches. Same-shape reshape correspondence comes
         from the declared relation, never from observed shapes alone.
         """
-        if type(root) is not AxisRef or type(root.tensor) is not TensorRef:
+        if type(root) is not AxisRef or not is_native_record(root):
             return None
         if root in self._components:
             return self._components[root]
@@ -106,8 +112,6 @@ class IdentityAxisIndex:
         pending = deque((root,))
         while pending:
             axis = pending.popleft()
-            if type(axis) is not AxisRef or type(axis.tensor) is not TensorRef:
-                return None
             if 0 in axis.tensor.shape:
                 return None
             if axis.tensor in members:
@@ -116,6 +120,8 @@ class IdentityAxisIndex:
                 continue
             members[axis.tensor] = axis
             for relation in self._adjacent.get(axis.tensor, ()):
+                if id(relation) not in self._native_relations:
+                    return None
                 if (
                     type(relation) is ReshapeRelation
                     and relation.left.shape == relation.right.shape
@@ -138,32 +144,20 @@ class IdentityAxisIndex:
 
 
 def _equal_endpoints(relation: Relation) -> tuple[AxisRef, AxisRef] | None:
-    """Recognize exact unscoped bidirectional identity relations once."""
+    """Recognize full-axis identity edges from already verified native records."""
     if type(relation) is not AxisRelation:
         return None
-    if type(relation.left) is not AxisPort or type(relation.right) is not AxisPort:
-        return None
-    if relation.left.scope is not None or relation.right.scope is not None:
+    if not relation.left.is_full or not relation.right.is_full:
         return None
     left, right = relation.left.axis, relation.right.axis
-    if any(
-        type(axis) is not AxisRef or type(axis.tensor) is not TensorRef for axis in (left, right)
-    ):
-        return None
     width = left.tensor.shape[left.dim]
-    if (
-        right.tensor.shape[right.dim] != width
-        or any(type(mapping) is not BlockMap for mapping in relation.maps)
-        or relation.maps != (BlockMap(0, 0, width),)
-    ):
+    if right.tensor.shape[right.dim] != width or relation.maps != (BlockMap(0, 0, width),):
         return None
     return left, right
 
 
 def _broadcast_axis(relation: BroadcastRelation, axis: AxisRef) -> AxisRef | None:
-    """Preserve a full structural axis only when its width is not broadcast."""
-    if type(relation.small) is not TensorRef or type(relation.big) is not TensorRef:
-        return None
+    """Preserve an axis of a verified native relation when its width is not broadcast."""
     offset = len(relation.big.shape) - len(relation.small.shape)
     forward = axis.tensor == relation.small
     target = relation.big if forward else relation.small

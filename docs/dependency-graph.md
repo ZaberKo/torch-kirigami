@@ -219,7 +219,18 @@ An unresolved balance check can have complete influence. An unknown operation ca
 
 ## Build and inspect a graph
 
+Implementation modules live in `torch_kirigami.dep_graph`. Public classes are
+exported from `torch_kirigami`; rule authors can import specialized helpers from
+`torch_kirigami.dep_graph.operators` and its submodules.
+
 Build a snapshot with `DependencyGraph.build(model, args=..., kwargs=..., operators=...)`. The default registry contains the built-in rules. Build copies the registry tables, but rule callables must remain deterministic and must not mutate shared state.
+
+The build completes structural records before it constructs the queryable graph.
+Calling `DependencyGraph()` without those internal records is not supported.
+Construction scratch tables are then released; the graph owns a solver with local
+indexes and caches. Every public propagation request checks model freshness first.
+See [the implementation responsibilities](architecture.md#dependency-analysis) for
+the internal module boundaries.
 
 ```python
 import torch
@@ -294,6 +305,11 @@ Relations describe forced coordinate changes. They are deterministic, monotone, 
 | `SliceRelation` | Maps normalized integer indexing and positive-step slices. Operator rules expand ellipses and handle inserted axes separately. Advanced indexing is outside this relation. |
 
 `AxisPort` exposes an axis within an optional region scope. Use a scope for a group or packed projection partition. `BlockMap` describes corresponding contiguous blocks and their completion rules. `PartitionedLayout` describes disjoint original-coordinate partitions that compact separately and concatenate in declared order.
+
+`AxisPort.is_full` reports whether the scope covers the entire original tensor.
+An explicit full region has the same coverage as an omitted scope. Optimization
+proofs additionally require native records at every nested field; value equality
+alone does not establish the behavior of extension objects.
 
 Constraints check the accumulated closure. They do not add removals. A planner can choose additional candidates to satisfy an unresolved condition.
 

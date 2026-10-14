@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..graph import DependencyGraph
+from ..dep_graph.graph import DependencyGraph
 from ..pruning.budget import channel_targets
 from ..pruning.candidates import CandidateSpace
 from ..pruning.plan import PruningResult

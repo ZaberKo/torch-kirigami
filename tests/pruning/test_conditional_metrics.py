@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.contracts import Diagnostic
+from torch_kirigami.dep_graph.contracts import Diagnostic
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,

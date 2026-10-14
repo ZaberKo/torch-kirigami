@@ -4,7 +4,7 @@ from dataclasses import fields, is_dataclass
 from types import MappingProxyType
 
 from ..configuration import FrozenDict, FrozenList, FrozenScalar
-from ..selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
 from .types import (
     AnalysisSummary,
     AttributeRecipe,

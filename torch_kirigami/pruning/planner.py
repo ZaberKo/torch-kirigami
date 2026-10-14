@@ -7,11 +7,11 @@ from collections import OrderedDict
 
 import torch
 
-from ..contracts import Constraint, Impact
-from ..graph import DependencyGraph
-from ..operation import OperationContext
-from ..regions import Region
-from ..selection import AxisRef, Selection, TensorRef
+from ..dep_graph.contracts import Constraint, Impact
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.operation import OperationContext
+from ..dep_graph.regions import Region
+from ..dep_graph.selection import AxisRef, Selection, TensorRef
 from .budget import remaining_parameters, resolve_budget
 from .rewrite import compile_recipes
 from .types import (

@@ -6,8 +6,8 @@ from typing import cast
 
 from torch import nn
 
-from ..graph import DependencyGraph
-from ..selection import Selection, TensorRef
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.selection import Selection, TensorRef
 
 
 @dataclass(frozen=True, eq=False)

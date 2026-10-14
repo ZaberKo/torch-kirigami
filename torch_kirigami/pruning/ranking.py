@@ -12,7 +12,8 @@ from dataclasses import dataclass
 
 import torch
 
-from ..contracts import (
+from ..dep_graph._records import is_native_record
+from ..dep_graph.contracts import (
     AxisBarrier,
     Balanced,
     Barrier,
@@ -23,15 +24,15 @@ from ..contracts import (
     LayoutConstraint,
     NonEmpty,
 )
-from ..operators.shapes import CallArgumentConstraint
-from ..relations import (
+from ..dep_graph.operators.shapes import CallArgumentConstraint
+from ..dep_graph.relations import (
     AxisRelation,
     BroadcastRelation,
     PermuteRelation,
     ReshapeRelation,
     SliceRelation,
 )
-from ..selection import AxisRef, IndexSet, TensorRef
+from ..dep_graph.selection import AxisRef, IndexSet, TensorRef
 from .axis_domains import IdentityAxisIndex
 from .metrics import (
     GroupMagnitude,
@@ -117,11 +118,17 @@ class IndependentRanking:
         if any(type(r) not in _RELATIONS for r in graph.relations):
             return None
         constraints = (*graph.constraints, *context.constraints)
-        if any(type(c) not in _CONSTRAINTS for c in constraints):
+        if any(type(c) not in _CONSTRAINTS or not is_native_record(c) for c in constraints):
             return None
         axis_index = IdentityAxisIndex(graph.relations)
         domains, candidates, owners = [], [], {}
         for candidate in context.candidates:
+            if (
+                type(candidate) is not Candidate
+                or not is_native_record(candidate.axis)
+                or not is_native_record(candidate.remove)
+            ):
+                continue
             try:
                 axis, indices = _candidate_domain(candidate)
             except PlanningError:

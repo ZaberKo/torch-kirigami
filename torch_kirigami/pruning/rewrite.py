@@ -11,14 +11,14 @@ from torch import nn
 
 from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
-from ..contracts import Impact, Requirement
+from ..dep_graph.contracts import Impact, Requirement
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.operation import OperationContext
+from ..dep_graph.operators.coordinates import retained_indices as _keep
+from ..dep_graph.operators.shapes import evaluate
+from ..dep_graph.operators.shapes import reevaluate as _reevaluate
+from ..dep_graph.selection import IndexSet, Region, Selection
 from ..errors import CaptureError
-from ..graph import DependencyGraph
-from ..operation import OperationContext
-from ..operators.coordinates import retained_indices as _keep
-from ..operators.shapes import evaluate
-from ..operators.shapes import reevaluate as _reevaluate
-from ..selection import IndexSet, Region, Selection
 from .recipes import compact_stride, memory_format, same_mapping, validate_recipe
 from .types import AttributeRecipe, PlanningError, RewriteContext, RewriteResult, TensorRecipe
 from .validation import check_forward

@@ -1,6 +1,6 @@
 """Structural dependency analysis for PyTorch, independent of pruning policy."""
 
-from .contracts import (
+from .dep_graph.contracts import (
     ArgumentRef,
     AxisBarrier,
     Balanced,
@@ -15,16 +15,10 @@ from .contracts import (
     Requirement,
     ShapeExpr,
 )
-from .errors import (
-    AnalysisLimitError,
-    CaptureError,
-    KirigamiError,
-    StaleGraphError,
-    UnsupportedOperation,
-)
-from .graph import CallRef, DependencyGraph
-from .operation import (
+from .dep_graph.graph import DependencyGraph
+from .dep_graph.operation import (
     CallEffects,
+    CallRef,
     CandidateAxis,
     OperationContext,
     OperatorRule,
@@ -33,8 +27,8 @@ from .operation import (
     PartitionedLayout,
     TensorFacts,
 )
-from .registry import OperatorRegistry
-from .relations import (
+from .dep_graph.registry import OperatorRegistry
+from .dep_graph.relations import (
     AxisPort,
     AxisRelation,
     BlockMap,
@@ -43,7 +37,14 @@ from .relations import (
     ReshapeRelation,
     SliceRelation,
 )
-from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from .dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from .errors import (
+    AnalysisLimitError,
+    CaptureError,
+    KirigamiError,
+    StaleGraphError,
+    UnsupportedOperation,
+)
 
 __all__ = [
     "AnalysisLimitError",

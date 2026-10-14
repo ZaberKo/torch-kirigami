@@ -11,8 +11,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ...errors import CaptureError, UnsupportedOperation
 from ..contracts import AxisBarrier, Requirement
-from ..errors import CaptureError, UnsupportedOperation
 from ..operation import (
     CandidateAxis,
     OperationContext,

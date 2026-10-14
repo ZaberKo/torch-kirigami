@@ -4,8 +4,8 @@ from dataclasses import dataclass
 from math import prod
 from typing import Literal
 
-from ..contracts import Impact
-from ..selection import AxisRef
+from ..dep_graph.contracts import Impact
+from ..dep_graph.selection import AxisRef
 from .types import (
     ChannelCount,
     ChannelRatio,

@@ -64,7 +64,7 @@ from torch_kirigami import (
     OperatorRegistry,
     OperatorRule,
 )
-from torch_kirigami.operation import OperationContext
+from torch_kirigami.dep_graph.operation import OperationContext
 from torch_kirigami.pruning import (
     Candidate,
     Granularity,

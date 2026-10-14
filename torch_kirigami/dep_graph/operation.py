@@ -15,6 +15,31 @@ from .selection import AxisRef, Region, Selection, TensorRef
 
 
 @dataclass(frozen=True)
+class CallRef:
+    """An operation invocation with flattened tensor ports.
+
+    Attributes:
+        name: FX node name, unique within this graph.
+        module_paths: Original aliases of the called module, or an empty tuple.
+        inputs: Tensor arguments in container traversal order.
+        outputs: Tensor results in container traversal order.
+    """
+
+    name: str
+    module_paths: tuple[str, ...]
+    inputs: tuple[TensorRef, ...]
+    outputs: tuple[TensorRef, ...]
+
+    def input(self, index: int = 0) -> TensorRef:
+        """Return the tensor at the given flattened input index."""
+        return self.inputs[index]
+
+    def output(self, index: int = 0) -> TensorRef:
+        """Return the tensor at the given flattened output index."""
+        return self.outputs[index]
+
+
+@dataclass(frozen=True)
 class TensorFacts:
     """Tensor metadata detached from activation storage.
 

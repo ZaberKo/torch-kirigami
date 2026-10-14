@@ -9,8 +9,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ...errors import UnsupportedOperation
 from ..contracts import AxisBarrier, Balanced, BlockBalance, Requirement, ShapeExpr
-from ..errors import UnsupportedOperation
 from ..operation import CandidateAxis, OperationContext, OperatorSpec, OutputContract, tensors
 from ..relations import AxisPort, AxisRelation, BlockMap, BroadcastRelation
 from ..selection import IndexSet

@@ -7,8 +7,8 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from ..contracts import Balanced, Constraint, Divisible, Impact
-from ..selection import AxisRef, IndexSet
+from ..dep_graph.contracts import Balanced, Constraint, Divisible, Impact
+from ..dep_graph.selection import AxisRef, IndexSet
 from .planner import PlanningContext
 from .ranking import IndependentRanking
 from .types import (

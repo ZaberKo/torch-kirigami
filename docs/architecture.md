@@ -42,6 +42,37 @@ Analysis does not rank candidates or change weights.
 An `Impact` reports the removals, constraints, requirements, and diagnostics.
 A resolved impact does not guarantee an executable plan or unchanged model outputs.
 
+The `torch_kirigami.dep_graph` package owns capture, structural coordinates,
+relations, constraints, operator semantics, and graph queries. It separates
+construction from repeated queries:
+
+| Component | Responsibility and lifetime |
+| --- | --- |
+| `GraphBuilder` in `builder.py` | Collect original aliases, capture with FX, apply operator rules, and complete cross-call constraints. Its temporary value and alias tables are released after the build. |
+| `GraphData` in `data.py` | Store completed records in tuples and read-only mappings. This internal data record contains no query caches. |
+| `DependencySolver` in `propagation.py` | Own relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
+| `DependencyGraph` in `graph.py` | Provide public queries, inspection copies, model freshness checks, and invalidation. It is initialized with complete records. |
+
+`DependencyGraph.build()` remains the public construction entry. The other components
+are internal and import shared records without importing the public graph.
+`CallRef`, the record for one operation invocation, lives with the other operation
+contracts in `operation.py`.
+
+Within this package, `selection.py` and `regions.py` define coordinates and region
+operations. `relations.py` defines index mappings. `contracts.py` defines constraints
+and analysis results. `operation.py`, `registry.py`, and `operators/` define and
+register operation semantics. Pruning and sparsity consume these contracts.
+
+Package initialization in `dep_graph/__init__.py` performs no eager imports.
+Internal consumers import concrete submodules. Public imports such as
+`from torch_kirigami import DependencyGraph, Selection` remain available from the
+root package. Shared model binding and configuration utilities remain outside
+`dep_graph` because capture, physical execution, and persistence all use them.
+
+Each build copies its operator registry tables. There is no global registration
+singleton. Rule callables and original model objects retain their identities;
+read-only record containers do not make those objects immutable.
+
 ### Pruning policy and planning
 
 A `Metric` returns importance scores for candidates.

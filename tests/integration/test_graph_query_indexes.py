@@ -9,7 +9,7 @@ import pytest
 import torch
 from torch import nn
 
-import torch_kirigami.selection as selection_module
+import torch_kirigami.dep_graph.selection as selection_module
 from torch_kirigami import (
     DependencyGraph,
     IndexSet,
@@ -20,17 +20,9 @@ from torch_kirigami import (
     ShapeExpr,
     TensorRef,
 )
+from torch_kirigami.dep_graph.operation import OperationContext, OperatorSpec
 from torch_kirigami.errors import AnalysisLimitError
-from torch_kirigami.operation import OperationContext, OperatorSpec
 from torch_kirigami.pruning import Pruner
-
-
-class SequentialSeedsGraph(DependencyGraph):
-    """Use original ordered seed merging as a public planning reference."""
-
-    def _seed_selections(self, requested: tuple[Selection, ...]) -> tuple[Selection, ...]:
-        """Retain each supplied seed, including duplicates and empty selections."""
-        return requested
 
 
 class Branched(nn.Module):
@@ -99,7 +91,9 @@ def test_affected_operation_index_matches_every_tensor_and_joint_queries(
     for query in queries:
         # Membership, rather than removed volume, is the activation contract.
         selections = {ref.id: Selection(ref) for ref in query}
-        assert graph._affected_operations(selections) == exhaustive_affected(graph, selections)
+        assert graph._solver.affected_operations(selections) == exhaustive_affected(
+            graph, selections
+        )
 
 
 def test_reduction_keeps_downstream_calls_without_removed_output_coordinates() -> None:
@@ -200,7 +194,7 @@ def test_batched_seeds_keep_requests_closure_provenance_and_diagnostics(
     if reverse:
         seeds.reverse()
     actual = graph.propagate(remove=seeds)
-    monkeypatch.setattr(graph, "_seed_selections", lambda requested: requested)
+    monkeypatch.setattr(graph._solver, "_seed_selections", lambda requested: requested)
     expected = graph.propagate(remove=seeds)
     assert actual.requested == tuple(seeds)
     assert actual == expected
@@ -222,7 +216,7 @@ def test_seed_subclasses_keep_incremental_methods() -> None:
 
     seed = ref.axis(0).select([1])
     custom = CheckedSelection(ref, seed.regions)
-    assert graph._seed_selections((custom, seed)) == (custom, seed)
+    assert graph._solver._seed_selections((custom, seed)) == (custom, seed)
     graph.propagate(remove=(custom, seed))
     assert calls == [custom]
 
@@ -260,7 +254,7 @@ def test_seed_coalescing_does_not_hide_intermediate_interval_limits(
 
 @pytest.mark.parametrize("grouped", [False, True])
 def test_public_plans_and_applied_models_match_sequential_seeds(
-    grouped: bool, execution_device: str
+    grouped: bool, execution_device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Compare portable plans, applied outputs and backward on CPU and CUDA."""
     if grouped:
@@ -273,8 +267,9 @@ def test_public_plans_and_applied_models_match_sequential_seeds(
     reference = copy.deepcopy(model)
     graphs = (
         DependencyGraph.build(model, args=(sample,)),
-        SequentialSeedsGraph.build(reference, args=(sample,)),
+        DependencyGraph.build(reference, args=(sample,)),
     )
+    monkeypatch.setattr(graphs[1]._solver, "_seed_selections", lambda requested: requested)
     pruners = [
         Pruner(module, graph=graph)
         for module, graph in zip((model, reference), graphs, strict=True)

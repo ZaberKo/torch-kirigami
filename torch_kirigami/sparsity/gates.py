@@ -7,14 +7,14 @@ from dataclasses import dataclass
 import torch
 from torch import fx, nn
 
-from ..contracts import Impact, Requirement
-from ..graph import DependencyGraph
-from ..operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
+from ..dep_graph.contracts import Impact, Requirement
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
+from ..dep_graph.regions import gather_region
+from ..dep_graph.registry import OperatorRegistry
+from ..dep_graph.relations import AxisRelation
 from ..pruning.pruner import Pruner
 from ..pruning.types import Candidate, MetricContext
-from ..regions import gather_region
-from ..registry import OperatorRegistry
-from ..relations import AxisRelation
 
 
 class ChannelGate(nn.Module):

@@ -9,7 +9,7 @@ from torch import nn
 from torch_kirigami import (
     DependencyGraph,
 )
-from torch_kirigami.operators.shapes import CallArgumentConstraint
+from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
 
 
 class SizeDivisor(nn.Module):

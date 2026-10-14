@@ -14,7 +14,7 @@ from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
 from torch.overrides import TorchFunctionMode
 
-from .bindings import (
+from ..bindings import (
     copy_module_state,
     ordinary_tensors,
     reference_edits,
@@ -22,14 +22,14 @@ from .bindings import (
     reference_signature,
     storage_key,
 )
-from .configuration import (
+from ..configuration import (
     attributes,
     forward_hook_paths,
     has_registration_hooks,
     object_attributes,
     slot_names,
 )
-from .errors import CaptureError
+from ..errors import CaptureError
 from .operation import CallEffects, TensorFacts
 from .operation import argument as call_argument
 from .operators.effects import named_inplace
@@ -254,7 +254,7 @@ class _TraceDataGuard(TorchFunctionMode):
     FX provenance and cannot silently select Python control flow.
     """
 
-    def __init__(self, registered: dict[int, torch.Tensor]) -> None:
+    def __init__(self, registered: dict[int, str]) -> None:
         super().__init__()
         self.computed: dict[int, torch.Tensor] = {}
         self.registered = registered

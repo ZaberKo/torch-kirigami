@@ -12,9 +12,9 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from ..contracts import Impact
-from ..regions import gather_region
-from ..selection import AxisRef, IndexSet, Selection, TensorRef
+from ..dep_graph.contracts import Impact
+from ..dep_graph.regions import gather_region
+from ..dep_graph.selection import AxisRef, IndexSet, Selection, TensorRef
 from .types import Candidate, MetricContext, PlanningError
 
 _TAYLOR_CACHE_ENTRIES = 128

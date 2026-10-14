@@ -149,7 +149,7 @@ def test_nonleaf_example_fails_instead_of_mutating_original():
 
 
 def test_buffer_aliases_and_input_alias_layout_are_preserved(execution_device):
-    from torch_kirigami.capture import isolated_execution
+    from torch_kirigami.dep_graph.capture import isolated_execution
 
     model = nn.BatchNorm1d(4)
     model.register_buffer("alias", model.running_mean)

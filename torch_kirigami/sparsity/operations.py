@@ -7,8 +7,8 @@ import math
 import torch
 
 from ..bindings import storage_key
+from ..dep_graph.regions import Region
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
-from ..regions import Region
 from .values import group_bindings, group_values, scaled_product
 
 

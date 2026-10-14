@@ -17,12 +17,12 @@ from torch_kirigami import (
     OperatorSpec,
     Requirement,
 )
-from torch_kirigami.operation import OperationContext
+from torch_kirigami.dep_graph.operation import OperationContext
+from torch_kirigami.dep_graph.selection import TensorRef
 from torch_kirigami.pruning import Pruner
 from torch_kirigami.pruning import rewrite as rewrite_module
 from torch_kirigami.pruning import validation as validation_module
 from torch_kirigami.pruning.rewrite import _requirements_by_operation
-from torch_kirigami.selection import TensorRef
 
 
 @pytest.mark.parametrize("function_call", [False, True])

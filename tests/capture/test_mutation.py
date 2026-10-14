@@ -16,8 +16,8 @@ from torch_kirigami import (
     OperatorRule,
     OperatorSpec,
 )
-from torch_kirigami.capture import _reject_parameter_writes
-from torch_kirigami.operators.effects import native_effects
+from torch_kirigami.dep_graph.capture import _reject_parameter_writes
+from torch_kirigami.dep_graph.operators.effects import native_effects
 from torch_kirigami.pruning import (
     PlanningError,
 )

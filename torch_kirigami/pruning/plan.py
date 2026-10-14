@@ -8,7 +8,7 @@ from types import MappingProxyType
 
 from torch import nn
 
-from ..selection import TensorRef, TensorRefMap
+from ..dep_graph.selection import TensorRef, TensorRefMap
 from .serialization import RECORD_TYPES, decode, encode
 from .state import validate_plan
 from .types import (

@@ -22,8 +22,8 @@ from torch_kirigami import (
     Selection,
     StaleGraphError,
 )
-from torch_kirigami.contracts import Constraint
-from torch_kirigami.operation import OperationContext, OperatorSpec
+from torch_kirigami.dep_graph.contracts import Constraint
+from torch_kirigami.dep_graph.operation import OperationContext, OperatorSpec
 from torch_kirigami.pruning import ChannelRatio, Greedy, Magnitude, PlanningError, Pruner
 
 
@@ -37,21 +37,8 @@ class Parallel(nn.Module):
         return self.left(x) + self.right(x)
 
 
-class ExhaustiveGraph(DependencyGraph):
-    """Independent reference: evaluate every declared constraint on each closure."""
-
-    def _constraint_diagnostics(
-        self, selections: Mapping[str, Selection], extra: tuple[Constraint, ...]
-    ) -> tuple[Diagnostic, ...]:
-        return tuple(
-            diagnostic
-            for constraint in (*self.constraints, *extra)
-            if (diagnostic := constraint.check(selections)) is not None
-        )
-
-
 @pytest.mark.parametrize("kind", ["parallel", "grouped", "depthwise"])
-def test_indexed_queries_match_exhaustive_public_planning(kind, execution_device):
+def test_indexed_queries_match_exhaustive_public_planning(kind, execution_device, monkeypatch):
     if kind == "parallel":
         model, x = Parallel().eval(), torch.randn(2, 3)
     else:
@@ -63,7 +50,20 @@ def test_indexed_queries_match_exhaustive_public_planning(kind, execution_device
         x = torch.randn(2, 3, 4)
     reference = copy.deepcopy(model)
     graph = DependencyGraph.build(model, args=(x,))
-    exhaustive = ExhaustiveGraph.build(reference, args=(x,))
+    exhaustive = DependencyGraph.build(reference, args=(x,))
+    checked = []
+
+    def check_every_constraint(
+        selections: Mapping[str, Selection], extra: tuple[Constraint, ...]
+    ) -> tuple[Diagnostic, ...]:
+        checked.append(None)
+        return tuple(
+            diagnostic
+            for constraint in (*exhaustive.constraints, *extra)
+            if (diagnostic := constraint.check(selections)) is not None
+        )
+
+    monkeypatch.setattr(exhaustive._solver, "_constraint_diagnostics", check_every_constraint)
     pruner, other = Pruner(model, graph=graph), Pruner(reference, graph=exhaustive)
     plans = [
         item.plan(
@@ -74,6 +74,7 @@ def test_indexed_queries_match_exhaustive_public_planning(kind, execution_device
         for item in (pruner, other)
     ]
     assert plans[0].to_dict() == plans[1].to_dict()
+    assert checked  # The reference must exercise exhaustive checks, not the same index.
     for item, plan in zip((pruner, other), plans, strict=True):
         item.apply(plan)
     torch.testing.assert_close(model(x), reference(x))
@@ -194,6 +195,82 @@ def test_custom_constraint_subclasses_run_for_unrelated_queries_and_keep_order(e
     with pytest.raises(StaleGraphError):
         graph.propagate(remove=())
     assert tuple(calls) == previous
+
+
+@pytest.mark.parametrize("kind", ["partition", "factor"])
+def test_nested_constraint_extensions_are_not_cached(kind, execution_device):
+    """Nested subclasses must reexecute even inside an exact built-in constraint."""
+    calls = []
+    blocked = [False]
+    registry = OperatorRegistry.default()
+    native = registry.modules[nn.Linear]
+
+    class DynamicPartition(IndexSet):
+        def __len__(self) -> int:
+            calls.append("partition")
+            return super().__len__() - int(blocked[0])
+
+    class DynamicFactor(int):
+        def __rmod__(self, value: int) -> int:
+            calls.append("factor")
+            return value % int(self) + int(blocked[0])
+
+    def analyze(context: OperationContext) -> OperatorSpec:
+        spec = native.analyze(context)
+        if context.module_path != "left.0":
+            return spec
+        axis = context.binding("weight").axis(0)
+        constraint = (
+            Balanced(axis, (DynamicPartition.span(0, 5), IndexSet.span(5, 10)))
+            if kind == "partition"
+            else Divisible(axis, DynamicFactor(2))
+        )
+        return replace(spec, constraints=(*spec.constraints, constraint))
+
+    registry.modules[nn.Linear] = OperatorRule(analyze, lower=native.lower)
+    model = Parallel().to(execution_device).eval()
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 3, device=execution_device)
+    graph = DependencyGraph.build(model, args=(x,), operators=registry)
+    assert calls == []  # Preparing indexes must not evaluate nested callbacks.
+    seed = graph.parameter("right.0.weight").axis(0).select([1])
+    failure = "unbalanced_groups" if kind == "partition" else "indivisible_axis"
+    for active in (False, True, False, True):
+        blocked[0] = active
+        for requests in ((), (seed,)):
+            previous = len(calls)
+            impact = graph.propagate(remove=requests)
+            assert len(calls) > previous
+            exhaustive = tuple(
+                dict.fromkeys(
+                    diagnostic
+                    for constraint in graph.constraints
+                    if (diagnostic := constraint.check(impact.selections)) is not None
+                )
+            )
+            assert impact.diagnostics == exhaustive
+            assert (impact.status == "unresolved") is active
+
+    original = tuple(model.parameters())
+    values = tuple(parameter.detach().clone() for parameter in original)
+    pruner = Pruner(model, graph=graph)
+    with pytest.raises(PlanningError, match=failure):
+        pruner.plan_remove([seed])
+    for before, value, after in zip(original, values, model.parameters(), strict=True):
+        assert before is after
+        torch.testing.assert_close(after, value, rtol=0, atol=0)
+
+    blocked[0] = False
+    pruner.apply(pruner.plan_remove([seed]))
+    keep = [index for index in range(10) if index != 1]
+    expected = reference.left(x) + F.linear(
+        F.linear(x, reference.right[0].weight[keep], reference.right[0].bias[keep]),
+        reference.right[1].weight[:, keep],
+        reference.right[1].bias,
+    )
+    torch.testing.assert_close(model(x), expected)
+    model(x).sum().backward()
+    assert all(parameter.grad is not None for parameter in model.parameters())
 
 
 def test_queries_check_only_touched_builtin_constraints(monkeypatch):

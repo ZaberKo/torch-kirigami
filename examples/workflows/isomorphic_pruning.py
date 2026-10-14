@@ -72,12 +72,12 @@ from torch_kirigami import (
     LayoutConstraint,
     NonEmpty,
     OperationContext,
-    Region,
-    Selection,
     TensorRef,
 )
+from torch_kirigami.dep_graph._records import is_native_record
+from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
+from torch_kirigami.dep_graph.regions import gather_region
 from torch_kirigami.measurement import count_parameters
-from torch_kirigami.operators.shapes import CallArgumentConstraint
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -93,7 +93,6 @@ from torch_kirigami.pruning import (
     load_checkpoint,
     save_checkpoint,
 )
-from torch_kirigami.regions import gather_region
 
 
 def collect_task_gradients(
@@ -570,7 +569,10 @@ class Isomorphic:
             and type(self.metric) is PaperTaylor
             and "score" not in vars(self.metric)
             and PaperTaylor.score is _PAPER_SCORE
-            and all(type(constraint) in native_constraints for constraint in all_constraints)
+            and all(
+                type(constraint) in native_constraints and is_native_record(constraint)
+                for constraint in all_constraints
+            )
         )
 
         def axis_seed(candidate: Candidate) -> tuple[AxisRef, IndexSet] | None:
@@ -580,14 +582,9 @@ class Isomorphic:
                 not reuse_axes
                 or type(candidate) is not Candidate
                 or type(axis) is not AxisRef
-                or type(axis.tensor) is not TensorRef
+                or not is_native_record(axis)
                 or len(candidate.remove) != 1
-                or type(candidate.remove[0]) is not Selection
-                or any(
-                    type(region) is not Region
-                    or any(type(indices) is not IndexSet for indices in region.axes)
-                    for region in candidate.remove[0].regions
-                )
+                or not is_native_record(candidate.remove)
             ):
                 return None
             indices = candidate.remove[0].fully_selected_indices(axis.dim)
@@ -604,9 +601,17 @@ class Isomorphic:
             for constraint in all_constraints:
                 if not refs.intersection(constraint.refs):
                     continue
+                # A proper subset on the proved channel axis never removes a
+                # complete position on a different (e.g. spatial/kernel) axis.
+                if type(constraint) is AxisBarrier and constraint.axis not in members:
+                    continue
                 if type(constraint) not in (NonEmpty, Fixed, Divisible, LayoutConstraint):
                     return None
-                if type(constraint) is LayoutConstraint and constraint.ports:
+                if (
+                    type(constraint) is LayoutConstraint
+                    and constraint.ports
+                    and not any(port.is_full and port.axis in members for port in constraint.ports)
+                ):
                     return None
             indices = impact.selection(axis.tensor).fully_selected_indices(axis.dim)
             expected = {member.tensor.id: member.select(indices) for member in members}

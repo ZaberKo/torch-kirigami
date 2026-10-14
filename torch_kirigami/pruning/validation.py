@@ -9,12 +9,12 @@ import torch
 from torch import nn
 
 from ..configuration import freeze, thaw
-from ..contracts import Impact
-from ..graph import DependencyGraph
-from ..operation import OperationContext, TensorFacts, argument
-from ..operators.coordinates import narrow_index, retained_indices
-from ..operators.shapes import evaluate, reevaluate
-from ..selection import TensorRef
+from ..dep_graph.contracts import Impact
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.operation import OperationContext, TensorFacts, argument
+from ..dep_graph.operators.coordinates import narrow_index, retained_indices
+from ..dep_graph.operators.shapes import evaluate, reevaluate
+from ..dep_graph.selection import TensorRef
 from .layouts import view_preserves_stride_boundaries
 from .recipes import compact_stride
 from .types import (

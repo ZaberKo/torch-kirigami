@@ -1,6 +1,6 @@
 """One candidate universe for planning, budget accounting and sparse training."""
 
-from collections import defaultdict, deque
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -8,11 +8,11 @@ from typing import cast
 
 from torch import nn
 
-from ..contracts import Constraint, Fixed
-from ..graph import DependencyGraph
-from ..operation import CandidateAxis, OperationContext
-from ..relations import AxisRelation, BlockMap, BroadcastRelation, ReshapeRelation
-from ..selection import AxisRef, TensorRef
+from ..dep_graph.contracts import Constraint, Fixed
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.operation import CandidateAxis, OperationContext
+from ..dep_graph.selection import AxisRef, TensorRef
+from .axis_domains import IdentityAxisIndex
 from .groups import ParameterGroup, unique_groups
 from .types import Candidate, PlanningError
 
@@ -63,40 +63,13 @@ def _candidates(domain: CandidateAxis) -> Iterator[Candidate]:
 
 
 def _protected_equal_axes(graph: DependencyGraph, defaults: tuple[Fixed, ...]) -> set[AxisRef]:
-    """Prove full IO protection through unscoped identity axis relationships.
+    """Prove full IO protection through the shared exact identity relationships.
 
     Keep axes distinct: removing an entire tensor would accidentally couple its
     otherwise independent row/column domains. Other maps use per-candidate proof.
     """
-    protected = {c.axis for c in defaults}
-    edges: list[tuple[AxisRef, AxisRef]] = []
-    for relation in graph.relations:
-        if isinstance(relation, (ReshapeRelation, BroadcastRelation)):
-            source, target = relation.refs
-            if source.shape == target.shape:
-                edges.extend((source.axis(d), target.axis(d)) for d in range(len(source.shape)))
-            continue
-        if not isinstance(relation, AxisRelation):
-            continue
-        left, right = relation.left, relation.right
-        width = left.tensor.shape[left.axis.dim]
-        if (
-            left.scope is None
-            and right.scope is None
-            and right.tensor.shape[right.axis.dim] == width
-            and relation.maps == (BlockMap(0, 0, width),)
-        ):
-            edges.append((left.axis, right.axis))
-    adjacent: defaultdict[AxisRef, set[AxisRef]] = defaultdict(set)
-    for left_axis, right_axis in edges:
-        adjacent[left_axis].add(right_axis)
-        adjacent[right_axis].add(left_axis)
-    pending = deque(protected)
-    while pending:
-        for axis in adjacent[pending.popleft()] - protected:
-            protected.add(axis)
-            pending.append(axis)
-    return protected
+    index = IdentityAxisIndex(graph.relations)
+    return {axis for constraint in defaults for axis in index.equivalent_axes(constraint.axis)}
 
 
 @dataclass(frozen=True)

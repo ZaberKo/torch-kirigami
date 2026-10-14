@@ -2,9 +2,9 @@
 
 import torch
 
-from ..contracts import Impact
-from ..regions import concatenated_shape
-from ..selection import IndexSet, Region, Selection, full_region
+from ..dep_graph.contracts import Impact
+from ..dep_graph.regions import concatenated_shape
+from ..dep_graph.selection import IndexSet, Region, Selection, full_region
 from .types import CoordinateSegment, PlanningError, TensorRecipe
 
 

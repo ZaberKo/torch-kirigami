@@ -7,7 +7,7 @@ import pytest
 from torch import fx
 
 from torch_kirigami import ArgumentRef, Requirement, ShapeExpr, TensorRef
-from torch_kirigami.operators.shapes import evaluate, reevaluate
+from torch_kirigami.dep_graph.operators.shapes import evaluate, reevaluate
 
 
 @pytest.mark.parametrize(

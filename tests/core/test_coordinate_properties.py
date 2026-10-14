@@ -5,7 +5,7 @@ from itertools import combinations, permutations, product
 import pytest
 
 from torch_kirigami import IndexSet, Region, Selection, TensorRef
-from torch_kirigami.relations import BroadcastRelation, PermuteRelation, ReshapeRelation
+from torch_kirigami.dep_graph.relations import BroadcastRelation, PermuteRelation, ReshapeRelation
 
 
 def subsets(values):

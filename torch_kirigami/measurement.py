@@ -16,7 +16,7 @@ from torch.profiler import ProfilerActivity, profile
 from torch.utils.flop_counter import FlopCounterMode
 
 from .bindings import ordinary_tensors, storage_key
-from .capture import isolated_execution, tensor_leaves
+from .dep_graph.capture import isolated_execution, tensor_leaves
 
 __all__ = [
     "ModelComplexity",

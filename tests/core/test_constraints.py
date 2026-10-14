@@ -17,7 +17,7 @@ from torch_kirigami import (
     Selection,
     TensorRef,
 )
-from torch_kirigami.operation import PartitionedLayout
+from torch_kirigami.dep_graph.operation import PartitionedLayout
 
 
 def test_divisibility_reports_choices_not_automatic_completion():

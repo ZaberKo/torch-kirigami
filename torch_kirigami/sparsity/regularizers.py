@@ -6,9 +6,9 @@ import math
 
 import torch
 
-from ..graph import DependencyGraph
+from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.selection import Selection, TensorRef, full_region
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
-from ..selection import Selection, TensorRef, full_region
 from .values import group_penalty, group_values, reduction_plan, squared_norm, stable_norm
 
 

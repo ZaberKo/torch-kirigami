@@ -11,8 +11,8 @@ from typing import Any, cast
 
 from torch import fx
 
+from ...errors import UnsupportedOperation
 from ..contracts import ArgumentRef, Diagnostic, ShapeExpr
-from ..errors import UnsupportedOperation
 from ..operation import OperationContext, PartitionedLayout, argument_locations
 from ..regions import concatenated_shape
 from ..selection import Selection, TensorRef

@@ -207,6 +207,14 @@ Incomplete influence raises an error. The metric does not treat unsupported regi
 
 `DynamicGreedy(metric, max_trials=10_000)` uses the same checks. It rescores unselected candidates after each accepted complete commitment. It scores against the accepted joint impact. It does not physically compact or recalibrate the model during planning. Dynamic rescoring can cost more and does not guarantee better accuracy.
 
+For built-in `GroupMagnitude`, proved independent axis components use batched weight
+statistics on the parameters' devices. Dynamic selection recomputes normalization
+over the surviving positions after each commitment. Ordinary convolution scopes
+that cover an entire tensor qualify; partial group partitions do not. Nested
+extension objects in mappings, constraints, or candidate selections use ordinary
+analysis and scoring. A failed optimization proof does not make the model
+unsupported. Every accepted combination still requires joint execution checks.
+
 A commitment can contain several candidates to satisfy a grouping constraint. Their scores come from before that full commitment. A candidate's score does not need to predict whether its joint combination is valid. The strategy checks the combination before acceptance.
 
 The trial limit bounds joint verification attempts. Score queries and projected checks do not count. A limit reached before the target causes `PlanningError`, not a partial plan. `StrategyResult` contains selected candidate keys, a stop reason, and optional exclusions. The planner independently checks keys, final budget, recipes, and execution requirements. A strategy cannot assert that a budget is met.

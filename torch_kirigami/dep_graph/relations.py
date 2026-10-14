@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import Protocol
 
-from .errors import AnalysisLimitError
+from ..errors import AnalysisLimitError
 from .selection import (
     MAX_PARTS,
     AxisRef,
@@ -71,6 +71,11 @@ class AxisPort:
     def region(self) -> Region:
         """Return the explicit partition scope or the full tensor region."""
         return self.scope or full_region(self.tensor.shape)
+
+    @property
+    def is_full(self) -> bool:
+        """Return whether this port covers the entire original tensor region."""
+        return self.scope is None or self.scope == full_region(self.tensor.shape)
 
     def fully_selected_indices(self, selection: Selection) -> IndexSet:
         """Return positions whose entire scoped cross sections are selected."""

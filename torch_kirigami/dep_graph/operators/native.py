@@ -8,6 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ...errors import UnsupportedOperation
 from ..contracts import (
     ArgumentRef,
     AxisBarrier,
@@ -17,7 +18,6 @@ from ..contracts import (
     NonEmpty,
     Requirement,
 )
-from ..errors import UnsupportedOperation
 from ..operation import (
     CandidateAxis,
     OperationContext,

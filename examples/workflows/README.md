@@ -479,6 +479,10 @@ The entry groups complete dependency impacts by ordered typed structural signatu
 These signatures are conservative comparisons, not a general graph-isomorphism solver.
 Equivalent closures count once.
 The entry inspects graph-declared domains under interface protections and execution checks.
+Proved identity components reuse per-position Taylor statistics, including ordinary
+CNN channel chains with full-tensor scopes. Partial partitions and nested extension
+behavior retain per-candidate analysis. This reuse does not alter family quotas or
+skip final joint verification.
 
 Calibration accumulates batch-mean cross-entropy gradients without updating weights or BatchNorm statistics.
 Defaults use 100 batches of 64 training images.

@@ -6,8 +6,9 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from itertools import product
 from math import prod
+from typing import TypeVar
 
-from .errors import AnalysisLimitError
+from ..errors import AnalysisLimitError
 
 MAX_PARTS = 4096
 
@@ -311,7 +312,7 @@ class TensorRef:
         return Selection(self, tuple(regions))
 
 
-def resolve_reference(query: str | TensorRef, references: Iterable[TensorRef]) -> TensorRef:
+def resolve_reference(query: TensorRef, references: Iterable[TensorRef]) -> TensorRef:
     """Resolve compatible portable labels; distinguish unknown from unaffected.
 
     Raises:
@@ -329,11 +330,14 @@ def resolve_reference(query: str | TensorRef, references: Iterable[TensorRef]) -
     raise KeyError(query.id)
 
 
+_Value = TypeVar("_Value")
+
+
 @dataclass(frozen=True)
-class TensorRefMap(Mapping):
+class TensorRefMap(Mapping[TensorRef, tuple[_Value, ...]]):
     """Immutable mapping accepting compatible live or portable tensor labels."""
 
-    entries: tuple
+    entries: tuple[tuple[TensorRef, tuple[_Value, ...]], ...]
 
     def __post_init__(self) -> None:
         entries = tuple((ref, tuple(value)) for ref, value in self.entries)
@@ -341,7 +345,7 @@ class TensorRefMap(Mapping):
             raise ValueError("Duplicate tensor mapping labels")
         object.__setattr__(self, "entries", entries)
 
-    def __getitem__(self, query: str | TensorRef) -> TensorRef:
+    def __getitem__(self, query: TensorRef) -> tuple[_Value, ...]:
         """Resolve a live or portable tensor label through this mapping."""
         ref = resolve_reference(query, self)
         return next(value for key, value in self.entries if key == ref)
