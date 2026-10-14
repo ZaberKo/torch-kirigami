@@ -37,6 +37,7 @@ import argparse
 import copy
 import json
 import math
+from bisect import bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sized
 from dataclasses import dataclass
@@ -701,10 +702,15 @@ def allocate_widths(
 
     def evaluate_fraction(fraction: Fraction) -> tuple[dict[str, int], int]:
         removed = {
-            path: max(
-                (n for n in choices[path] if Fraction(n, width) <= fraction),
-                default=choices[path][0],
-            )
+            # n / width <= fraction is exactly n <= floor(fraction * width).
+            # Preserve the smallest aligned choice when no breakpoint qualifies.
+            path: choices[path][
+                max(
+                    0,
+                    bisect_right(choices[path], fraction.numerator * width // fraction.denominator)
+                    - 1,
+                )
+            ]
             for path, width in widths.items()
         }
         plan = pruner.plan_remove(

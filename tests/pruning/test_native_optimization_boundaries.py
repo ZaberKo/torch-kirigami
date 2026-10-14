@@ -88,7 +88,7 @@ def test_nested_inputs_keep_generic_scoring_and_public_execution(
         context = PlanningContext(
             graph, space.candidates, ChannelRatio(0.25), space.channel_axes, pruner.constraints
         )
-        assert IndependentRanking.build(context, metric) is None
+        assert IndependentRanking.build(context, metric, context.channel_axes) is None
         original_parameters = tuple(model.parameters())
         plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(metric))
         assert all(a is b for a, b in zip(original_parameters, model.parameters(), strict=True))

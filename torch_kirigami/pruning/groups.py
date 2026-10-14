@@ -6,7 +6,7 @@ from typing import cast
 
 from torch import nn
 
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import Selection, TensorRef
 
 

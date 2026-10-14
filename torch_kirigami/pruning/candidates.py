@@ -9,7 +9,7 @@ from typing import cast
 from torch import nn
 
 from ..dep_graph.contracts import Constraint, Fixed
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import CandidateAxis, OperationContext
 from ..dep_graph.selection import AxisRef, TensorRef
 from .axis_domains import IdentityAxisIndex

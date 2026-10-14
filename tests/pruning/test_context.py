@@ -16,6 +16,7 @@ from torch_kirigami import (
     OperatorRegistry,
     OperatorRule,
     Selection,
+    config,
 )
 from torch_kirigami.pruning import (
     Candidate,
@@ -31,7 +32,6 @@ from torch_kirigami.pruning import (
     PruningPlan,
     StrategyResult,
     WeightTaylor,
-    strategies,
 )
 
 
@@ -275,14 +275,15 @@ def test_strategy_stop_reason_cannot_override_measured_budget():
 
 
 @pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
-def test_normalized_plans_are_independent_of_internal_score_batching(strategy_type, monkeypatch):
+def test_normalized_plans_are_independent_of_internal_score_batching(strategy_type):
     model = nn.Sequential(nn.Linear(3, 8), nn.ReLU(), nn.Linear(8, 6), nn.Linear(6, 2))
     graph = DependencyGraph.build(model, args=(torch.randn(2, 3),))
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates()
     plans = []
     for size in (1, 3, 32):
-        monkeypatch.setattr(strategies, "_SCORE_BATCH_SIZE", size)
+        config.update(score_batch_size=size)
+        pruner = Pruner(model, graph=graph)
         plan = pruner.plan(
             space, budget=ChannelRatio(0.25), strategy=strategy_type(GroupMagnitude())
         )

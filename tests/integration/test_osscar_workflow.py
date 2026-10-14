@@ -4,6 +4,7 @@ import copy
 import itertools
 import json
 import sys
+from fractions import Fraction
 
 import pytest
 import torch
@@ -25,6 +26,7 @@ from torch_kirigami.pruning import (
     ParameterBudget,
     PlanningError,
     Pruner,
+    PruningPlan,
     load_checkpoint,
     save_checkpoint,
 )
@@ -702,6 +704,85 @@ def test_width_allocation_checks_each_fraction_once_then_applies(monkeypatch, ex
     pruner.apply(plan)
     assert sum(parameter.numel() for parameter in model.parameters()) <= budget.max_params
     model(inputs).square().mean().backward()
+
+
+@pytest.mark.parametrize("granularity", [1, 4])
+@pytest.mark.parametrize("cap", [159, 158, 113, 57, 1])
+def test_width_allocation_matches_exhaustive_rational_breakpoints(
+    granularity, cap, execution_device, monkeypatch
+):
+    model = (
+        nn.Sequential(
+            nn.Linear(3, 10),
+            nn.ReLU(),
+            nn.Linear(10, 3),
+            nn.Linear(3, 14),
+            nn.ReLU(),
+            nn.Linear(14, 2),
+        )
+        .double()
+        .eval()
+    )
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 3, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(
+        model, graph=graph, granularity=Granularity(by_path={"0": granularity, "3": granularity})
+    )
+    choices = {
+        width: sorted(width - kept for kept in range(granularity, width + 1, granularity))
+        for width in (10, 14)
+    }
+    fractions = sorted({Fraction(n, width) for width, values in choices.items() for n in values})
+    expected = None
+    for fraction in fractions:
+        kept = [
+            width
+            - max(
+                (n for n in choices[width] if Fraction(n, width) <= fraction),
+                default=choices[width][0],
+            )
+            for width in (10, 14)
+        ]
+        # Independent parameter formula for the four Linear layers, including bias.
+        if 7 * kept[0] + 6 * kept[1] + 5 <= cap:
+            expected = dict(zip(("0", "3"), kept, strict=True))
+            break
+    constructions = []
+
+    def observed_fraction(n, width):
+        constructions.append((n, width))
+        return Fraction(n, width)
+
+    monkeypatch.setattr(workflow, "Fraction", observed_fraction)
+    old_parameters = tuple(model.parameters())
+    if expected is None:
+        with pytest.raises(PlanningError, match="unreachable"):
+            workflow.allocate_widths(
+                pruner, {"0": "2", "3": "5"}, ParameterBudget(cap), granularity
+            )
+        assert all(a is b for a, b in zip(old_parameters, model.parameters(), strict=True))
+        torch.testing.assert_close(model(x), reference(x))
+        graph.validate()
+        return
+    actual = workflow.allocate_widths(
+        pruner, {"0": "2", "3": "5"}, ParameterBudget(cap), granularity
+    )
+    assert actual == expected
+    # Construct fractions once for breakpoints, never during per-layer lookup.
+    assert len(constructions) == sum(map(len, choices.values()))
+    requests = []
+    with torch.no_grad():
+        for path, consumer, width in (("0", 2, 10), ("3", 5, 14)):
+            removed = width - actual[path]
+            if removed:
+                requests.append(graph.parameter(f"{path}.weight").axis(0).select(range(removed)))
+                reference[consumer].weight[:, :removed] = 0
+    plan = pruner.plan_remove(requests)
+    compact, _ = pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    torch.testing.assert_close(compact(x), reference(x), rtol=1e-12, atol=1e-12)
+    assert sum(parameter.numel() for parameter in compact.parameters()) <= cap
+    compact(x).sum().backward()
 
 
 def test_sampled_even_kernel_reconstruction_matches_independent_fit_and_checkpoint(

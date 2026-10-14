@@ -8,6 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from torch_kirigami import (
+    CaptureError,
     DependencyGraph,
     Fixed,
     OperationContext,
@@ -17,6 +18,7 @@ from torch_kirigami import (
     StaleGraphError,
     TensorRef,
 )
+from torch_kirigami.dep_graph.construction import _Analyzer
 from torch_kirigami.pruning import PlanningError, Pruner
 
 
@@ -131,3 +133,45 @@ def test_failed_analysis_does_not_publish_or_contaminate_a_graph(execution_devic
     )
     pruner.apply(plan)
     torch.testing.assert_close(model(x), expected)
+
+
+def test_analyzer_owns_one_record_and_releases_scratch():
+    model = SharedProjection()
+    analyzer = _Analyzer(model, None)
+    data = analyzer.data
+    with pytest.raises(ValueError, match="complete"):
+        DependencyGraph(data)
+    assert analyzer.build((torch.randn(2, 4),), {}) is data
+    assert data.complete
+    assert not analyzer._values and not analyzer._by_object
+    assert not analyzer._unused and not analyzer._module_paths
+    assert not hasattr(analyzer, "refs") and not hasattr(analyzer, "relations")
+    graph = DependencyGraph(data)
+    for container in (graph.relations, graph.constraints, graph.diagnostics, graph.calls()):
+        assert isinstance(container, tuple)
+    with pytest.raises(TypeError):
+        graph.context["grad_enabled"] = False
+    for context in graph.operations():
+        with pytest.raises(TypeError):
+            context.expressions[context.node] = None
+    before = graph.propagate(remove=[])
+    with pytest.raises(RuntimeError, match="only build once"):
+        analyzer.build((torch.randn(2, 4),), {})
+    assert graph.propagate(remove=[]) == before
+
+
+def test_failed_analyzer_is_unpublished_and_clears_scratch():
+    class Dynamic(nn.Module):
+        def forward(self, x):
+            return x if x.sum() > 0 else -x
+
+    analyzer = _Analyzer(Dynamic(), None)
+    with pytest.raises(CaptureError):
+        analyzer.build((torch.ones(2),), {})
+    assert not analyzer.data.complete
+    assert not analyzer._values and not analyzer._by_object
+    assert not analyzer._unused and not analyzer._module_paths
+    with pytest.raises(ValueError, match="complete"):
+        DependencyGraph(analyzer.data)
+    with pytest.raises(RuntimeError, match="only build once"):
+        analyzer.build((torch.ones(2),), {})

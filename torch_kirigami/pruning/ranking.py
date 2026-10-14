@@ -8,11 +8,12 @@ overlapping domain, extension, or full-axis removal uses ordinary ranking.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 import torch
 
-from ..dep_graph._records import is_native_record
 from ..dep_graph.contracts import (
     AxisBarrier,
     Balanced,
@@ -24,6 +25,7 @@ from ..dep_graph.contracts import (
     LayoutConstraint,
     NonEmpty,
 )
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operators.shapes import CallArgumentConstraint
 from ..dep_graph.relations import (
     AxisRelation,
@@ -90,6 +92,19 @@ def _norms(
 
 
 @dataclass(frozen=True)
+class IndependentScores:
+    """Scores for valid components, fixed summaries, and proved covered seeds.
+
+    A key absent from both `scores` and `covered` needs ordinary joint scoring.
+    Summary presence alone does not establish that its component is still valid.
+    """
+
+    scores: Mapping[str, float]
+    removals: Mapping[str, Mapping[AxisRef, IndexSet]]
+    covered: frozenset[str]
+
+
+@dataclass(frozen=True)
 class IndependentRanking:
     """Plan-local scalar statistics and immutable proofs, never mutable solver state."""
 
@@ -97,14 +112,17 @@ class IndependentRanking:
     metric: GroupMagnitude
     p: int
     domains: tuple[tuple[AxisRef, ...], ...]
-    candidates: tuple[tuple[Candidate, int, IndexSet], ...]
+    candidates: tuple[tuple[Candidate, int, int], ...]
+    removals: Mapping[str, Mapping[AxisRef, IndexSet]]
     norms: tuple[tuple[float, ...], ...]
     bindings: tuple[torch.Tensor, ...]
     versions: tuple[int, ...]
 
     @classmethod
-    def build(cls, context: PlanningContext, metric: Metric) -> IndependentRanking | None:
-        """Collect proved domains; other candidates retain ordinary joint scoring."""
+    def build(
+        cls, context: PlanningContext, metric: Metric, axes: tuple[AxisRef, ...]
+    ) -> IndependentRanking | None:
+        """Freeze proved domains and their summaries for the requested counting axes."""
         if (
             type(metric) is not GroupMagnitude
             or metric.parameter_filter is not None
@@ -118,15 +136,16 @@ class IndependentRanking:
         if any(type(r) not in _RELATIONS for r in graph.relations):
             return None
         constraints = (*graph.constraints, *context.constraints)
-        if any(type(c) not in _CONSTRAINTS or not is_native_record(c) for c in constraints):
+        if any(type(c) not in _CONSTRAINTS or not has_native_semantics(c) for c in constraints):
             return None
         axis_index = IdentityAxisIndex(graph.relations)
-        domains, candidates, owners = [], [], {}
+        domains, candidates, owners, removals = [], [], {}, {}
+        counted = []
         for candidate in context.candidates:
             if (
                 type(candidate) is not Candidate
-                or not is_native_record(candidate.axis)
-                or not is_native_record(candidate.remove)
+                or not has_native_semantics(candidate.axis)
+                or not has_native_semantics(candidate.remove)
             ):
                 continue
             try:
@@ -145,8 +164,10 @@ class IndependentRanking:
                     continue
                 group = len(domains)
                 domains.append(members)
+                counted.append(tuple(axis for axis in axes if axis in members))
                 owners.update((a.tensor, group) for a in members)
-            candidates.append((candidate, group, indices))
+            candidates.append((candidate, group, next(iter(indices))))
+            removals[candidate.key] = MappingProxyType(dict.fromkeys(counted[group], indices))
         if not domains:
             return None
         for constraint in constraints:
@@ -175,6 +196,7 @@ class IndependentRanking:
             metric.p,
             tuple(domains),
             tuple(candidates),
+            MappingProxyType(removals),
             norms,
             tuple(bindings.values()),
             versions,
@@ -183,13 +205,13 @@ class IndependentRanking:
     def score(
         self,
         accepted_impact: Impact,
-        axes: tuple[AxisRef, ...],
-    ) -> tuple[dict[str, float], dict[str, dict[AxisRef, IndexSet]]] | None:
-        """Score proved candidates; return None when accepted changes invalidate reuse.
+    ) -> IndependentScores | None:
+        """Rescore valid components and leave invalid components to ordinary scoring.
 
         A generic candidate may remove another axis of a cached parameter. Check
         the complete accepted closure, not just its original seeds or counts.
-        Any cross-axis or partitioned selection falls back to ordinary scoring.
+        Cross-axis, partitioned and last-position selections invalidate only their
+        component. Model/metric changes invalidate the entire statistics snapshot.
         """
         self.context.graph.validate()
         self.context.graph.validate_impact(accepted_impact)
@@ -202,8 +224,8 @@ class IndependentRanking:
             or tuple(t._version for t in self.bindings) != self.versions
         ):
             return None
-        removed, normalization, counted = [], [], []
-        for members, norms in zip(self.domains, self.norms, strict=True):
+        removed, normalization = {}, {}
+        for group, (members, norms) in enumerate(zip(self.domains, self.norms, strict=True)):
             root = members[0]
             # IndexSet stores intervals, so repeated membership would enumerate
             # removed positions. Only this bounded logical axis needs a set.
@@ -211,21 +233,23 @@ class IndependentRanking:
             if any(
                 accepted_impact.selection(axis.tensor) != axis.select(selected) for axis in members
             ):
-                return None
+                continue
             indices = frozenset(selected)
             surviving = [value for i, value in enumerate(norms) if i not in indices]
             if len(surviving) <= 1:
-                return None  # Completing an entire axis can activate other axes.
-            removed.append(indices)
-            normalization.append(_normalization(surviving, self.p))
-            counted.append(tuple(axis for axis in axes if axis in members))
-        scores, removals = {}, {}
-        for candidate, group, indices in self.candidates:
-            position = next(iter(indices))
+                continue  # Completing an entire axis can activate other axes.
+            removed[group] = indices
+            normalization[group] = _normalization(surviving, self.p)
+        if not normalization:
+            return None
+        scores, covered = {}, set()
+        for candidate, group, position in self.candidates:
+            if group not in normalization:
+                continue
             if position in removed[group]:
+                covered.add(candidate.key)
                 continue
             scale, mean = normalization[group]
             value = (self.norms[group][position] / scale) ** self.p / mean if scale else 0.0
             scores[candidate.key] = value
-            removals[candidate.key] = dict.fromkeys(counted[group], indices)
-        return scores, removals
+        return IndependentScores(MappingProxyType(scores), self.removals, frozenset(covered))

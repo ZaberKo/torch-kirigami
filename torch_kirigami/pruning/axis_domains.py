@@ -3,7 +3,7 @@
 from collections import defaultdict, deque
 from collections.abc import Iterable
 
-from ..dep_graph._records import is_native_record
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.relations import (
     AxisRelation,
     BlockMap,
@@ -11,7 +11,8 @@ from ..dep_graph.relations import (
     Relation,
     ReshapeRelation,
 )
-from ..dep_graph.selection import MAX_PARTS, AxisRef, TensorRef
+from ..dep_graph.selection import AxisRef, TensorRef
+from ..settings import config
 
 
 class IdentityAxisIndex:
@@ -30,10 +31,11 @@ class IdentityAxisIndex:
     """
 
     def __init__(self, relations: Iterable[Relation]) -> None:
+        self._max_parts = config.max_parts
         self._adjacent: dict[TensorRef, list[Relation]] = defaultdict(list)
         self._native_relations: set[int] = set()
         for relation in relations:
-            if is_native_record(relation):
+            if has_native_semantics(relation):
                 self._native_relations.add(id(relation))
             for ref in dict.fromkeys(relation.refs):
                 self._adjacent[ref].append(relation)
@@ -48,7 +50,7 @@ class IdentityAxisIndex:
         This does not extrapolate between different positions, prove layout, or
         replace the analysis of at least one actual request.
         """
-        if type(root) is not AxisRef or not is_native_record(root):
+        if type(root) is not AxisRef or not has_native_semantics(root):
             return (root,)
         if root in self._equivalent:
             return self._equivalent[root]
@@ -92,8 +94,13 @@ class IdentityAxisIndex:
         only when its width matches. Same-shape reshape correspondence comes
         from the declared relation, never from observed shapes alone.
         """
-        if type(root) is not AxisRef or not is_native_record(root):
+        if type(root) is not AxisRef or not has_native_semantics(root):
             return None
+        if self._max_parts != config.max_parts:
+            # This index is also public independently of DependencyGraph. A
+            # cached proof/failure must not bypass a changed expansion bound.
+            self._components.clear()
+            self._max_parts = config.max_parts
         if root in self._components:
             return self._components[root]
         result = self._component(root)
@@ -106,7 +113,7 @@ class IdentityAxisIndex:
     def _component(self, root: AxisRef) -> tuple[AxisRef, ...] | None:
         """Walk exact built-in relations without extrapolating extension behavior."""
         width = root.tensor.shape[root.dim]
-        if not 1 < width <= MAX_PARTS:
+        if not 1 < width <= self._max_parts:
             return None
         members: dict[TensorRef, AxisRef] = {}
         pending = deque((root,))

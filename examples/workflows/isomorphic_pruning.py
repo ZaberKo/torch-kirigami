@@ -43,7 +43,7 @@ import json
 import math
 import time
 import weakref
-from collections import Counter, OrderedDict, defaultdict, deque
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -74,9 +74,9 @@ from torch_kirigami import (
     OperationContext,
     TensorRef,
 )
-from torch_kirigami.dep_graph._records import is_native_record
+from torch_kirigami.dep_graph.eligibility import has_native_semantics
 from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
-from torch_kirigami.dep_graph.regions import gather_region
+from torch_kirigami.dep_graph.selection import gather_region
 from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
     Candidate,
@@ -463,7 +463,9 @@ def rounded_request(
     different pruning policy. The compiler still checks the complete proposal.
     """
     selected = requested.copy()
-    counts: dict[AxisRef, Counter[int]] = defaultdict(Counter)
+    counts: dict[AxisRef, set[int]] = defaultdict(set)
+    cursors = {axis: iter(indices) for axis, indices in contributors.items()}
+    single_family: dict[AxisRef, bool] = {}
     for index in sorted(selected):
         for axis, indices in actions[index].axes.items():
             counts[axis].update(indices)
@@ -476,15 +478,18 @@ def rounded_request(
             continue
         if remaining < factor:
             raise PlanningError("Retained-width rounding would delete an entire structural axis")
-        available = contributors[axis]
-        if len({actions[index].family for index in available}) != 1:
+        if axis not in single_family:
+            single_family[axis] = len({actions[i].family for i in contributors[axis]}) == 1
+        if not single_family[axis]:
             raise PlanningError(
                 "Alignment on this axis spans distinct structural families; use granularity 1"
             )
         addition = next(
             (
                 index
-                for index in available
+                # Selected actions and covered positions only grow. A skipped
+                # prefix can never become useful later, even across coupled axes.
+                for index in cursors[axis]
                 if index not in selected
                 and any(position not in counts[axis] for position in actions[index].axes[axis])
             ),
@@ -570,7 +575,7 @@ class Isomorphic:
             and "score" not in vars(self.metric)
             and PaperTaylor.score is _PAPER_SCORE
             and all(
-                type(constraint) in native_constraints and is_native_record(constraint)
+                type(constraint) in native_constraints and has_native_semantics(constraint)
                 for constraint in all_constraints
             )
         )
@@ -582,9 +587,9 @@ class Isomorphic:
                 not reuse_axes
                 or type(candidate) is not Candidate
                 or type(axis) is not AxisRef
-                or not is_native_record(axis)
+                or not has_native_semantics(axis)
                 or len(candidate.remove) != 1
-                or not is_native_record(candidate.remove)
+                or not has_native_semantics(candidate.remove)
             ):
                 return None
             indices = candidate.remove[0].fully_selected_indices(axis.dim)

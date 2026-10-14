@@ -12,17 +12,24 @@ import torch
 
 from ..configuration import FrozenDict, FrozenList, FrozenScalar, freeze, thaw
 from ..dep_graph.contracts import Impact, Requirement
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import OperationContext, OperatorSpec
-from ..dep_graph.regions import concatenated_shape
-from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef, resolve_reference
+from ..dep_graph.selection import (
+    AxisRef,
+    Region,
+    Selection,
+    TensorRef,
+    concatenated_shape,
+    resolve_reference,
+)
 from ..errors import KirigamiError
 from ..measurement import count_parameters
+from ..settings import config
 
 
 def _static(value: object, depth: int = 0) -> object:
     """Freeze static record trees without retaining arbitrary mutable objects."""
-    if depth > 100:
+    if depth > config.max_record_depth:
         raise ValueError("Structural configuration nesting limit exceeded")
     if isinstance(value, (tuple, list)):
         return tuple(_static(item, depth + 1) for item in value)

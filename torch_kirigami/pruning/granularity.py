@@ -7,7 +7,7 @@ from types import MappingProxyType
 from torch import nn
 
 from ..dep_graph.contracts import Divisible
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from .types import PlanningError
 
 

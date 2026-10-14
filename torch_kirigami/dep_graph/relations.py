@@ -7,8 +7,8 @@ from math import prod
 from typing import Protocol
 
 from ..errors import AnalysisLimitError
+from ..settings import config
 from .selection import (
-    MAX_PARTS,
     AxisRef,
     IndexSet,
     Region,
@@ -237,7 +237,7 @@ class AxisRelation:
                 intervals.extend(relation.map(indices, reverse).intervals)
                 # Bound temporary storage while amortizing normalization across
                 # blocks instead of repeatedly sorting the entire prefix.
-                if len(intervals) > MAX_PARTS:
+                if len(intervals) > config.max_parts:
                     intervals = list(IndexSet(tuple(intervals)).intervals)
             selected = target.select(IndexSet(tuple(intervals)))
             if selected:
@@ -398,7 +398,7 @@ def _stride_map(indices: IndexSet, start: int, step: int, reverse: bool) -> Inde
             if a < b:
                 result.append((a, b))
     else:
-        if len(indices) > MAX_PARTS:
+        if len(indices) > config.max_parts:
             raise AnalysisLimitError("Strided selection has too many intervals")
         result.extend((start + i * step, start + i * step + 1) for i in indices)
     return IndexSet(tuple(result))

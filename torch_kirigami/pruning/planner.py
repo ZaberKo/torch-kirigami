@@ -8,10 +8,10 @@ from collections import OrderedDict
 import torch
 
 from ..dep_graph.contracts import Constraint, Impact
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import OperationContext
-from ..dep_graph.regions import Region
-from ..dep_graph.selection import AxisRef, Selection, TensorRef
+from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
+from ..settings import config
 from .budget import remaining_parameters, resolve_budget
 from .rewrite import compile_recipes
 from .types import (
@@ -28,17 +28,15 @@ from .types import (
     TensorRecipe,
 )
 
-_IMPACT_CACHE_SIZE = 32
-
 
 class PlanningContext:
     """Read-only model access, candidates, joint analysis, scoring, and budget checks.
 
-    Metrics own their statistics and are never cached. Impact queries use a bounded
-    32-entry cache; four recent verified recipe sets and 32 configuration checks
-    may also be reused. Pure native metadata outputs retain at most one fact tree
-    per captured call. Caches retain no tensor data; version changes invalidate
-    compilation caches, and callback boundaries still validate state.
+    Metrics own their statistics and are never cached here. Global settings bound impact,
+    verified recipe, and attribute-check caches. Pure native metadata outputs
+    retain at most one fact tree per captured call. Caches retain no tensor data;
+    version changes invalidate compilation caches, and callback boundaries still
+    validate state.
 
     Args:
         graph: Fresh dependency snapshot supplying captured calls and bindings.
@@ -85,6 +83,17 @@ class PlanningContext:
         # One metadata-only result per captured call, never model tensor storage.
         self._meta_outputs: dict[str, tuple[object, object]] = {}
         self._compile_versions: tuple[tuple[int, int | None], ...] | None = None
+        self._cache_settings: tuple[int, ...] | None = None
+
+    def _sync_cache_settings(self) -> None:
+        """Discard retained work when global cache capacities change."""
+        settings = (config.impact_cache_size, config.recipe_cache_size, config.attribute_cache_size)
+        if settings != self._cache_settings:
+            self._cache.clear()
+            self._compiled.clear()
+            self._attribute_checks.clear()
+            self._meta_outputs.clear()
+            self._cache_settings = settings
 
     @property
     def graph(self) -> DependencyGraph:
@@ -147,18 +156,21 @@ class PlanningContext:
 
     def impact(self, remove: tuple[Selection, ...]) -> Impact:
         """Analyze joint original-coordinate seeds without executing the model."""
+        self._sync_cache_settings()
         remove = tuple(remove)
         for selection in remove:
             self.graph.metadata(selection.tensor)
         key = tuple((s.tensor, s.regions) for s in remove)
         if key not in self._cache:
-            self._cache[key] = self.graph.propagate(remove=remove, constraints=self.constraints)
-            if len(self._cache) > _IMPACT_CACHE_SIZE:
+            impact = self.graph.propagate(remove=remove, constraints=self.constraints)
+            self._cache[key] = impact
+            if len(self._cache) > config.impact_cache_size:
                 self._cache.popitem(last=False)
         else:
             self.graph.validate()  # propagate performs the entry check on cache misses.
             self._cache.move_to_end(key)
-        return self._cache[key]
+            impact = self._cache[key]
+        return impact
 
     def require_complete(self, impact: Impact) -> None:
         """Reject incomplete influence ranges while allowing repairable constraints."""
@@ -258,6 +270,7 @@ class PlanningContext:
         self, impact: Impact
     ) -> tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]]:
         """Return (tensor recipes, attribute recipes, notes), without new weights."""
+        self._sync_cache_settings()
         self.graph.validate()
         self.graph.validate_impact(impact)
         try:
@@ -273,21 +286,30 @@ class PlanningContext:
         # constraints can produce a different closure or execution requirements.
         key = id(impact)
         if key not in self._compiled:
-            self._compiled[key] = (
-                impact,
-                compile_recipes(
+            try:
+                recipes = compile_recipes(
                     self.graph,
                     self.operations,
                     impact,
-                    attribute_checks=self._attribute_checks if versions is not None else None,
+                    attribute_checks=(
+                        self._attribute_checks
+                        if versions is not None and config.attribute_cache_size
+                        else None
+                    ),
                     meta_outputs=self._meta_outputs if versions is not None else None,
-                ),
-            )
-            if len(self._compiled) > 4:
+                )
+            finally:
+                # Failed validation can also insert a diagnostic into this cache.
+                # Its owner enforces retention on both successful and failed calls.
+                while len(self._attribute_checks) > config.attribute_cache_size:
+                    self._attribute_checks.popitem(last=False)
+            self._compiled[key] = (impact, recipes)
+            if len(self._compiled) > config.recipe_cache_size:
                 self._compiled.popitem(last=False)
         else:
             self._compiled.move_to_end(key)
-        return self._compiled[key][1]
+            recipes = self._compiled[key][1]
+        return recipes
 
     def report(
         self,

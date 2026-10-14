@@ -1,6 +1,8 @@
 import pytest
 import torch
 
+from torch_kirigami import config
+
 
 def pytest_addoption(parser):
     parser.addoption(
@@ -26,3 +28,10 @@ def execution_device(request):
         yield request.param
         if request.param == "cuda":
             torch.cuda.synchronize()
+
+
+@pytest.fixture(autouse=True)
+def restore_global_config():
+    original = config.as_dict()
+    yield
+    config.update(**original)

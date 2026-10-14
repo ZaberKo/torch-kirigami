@@ -11,9 +11,8 @@ from torch import nn
 
 from ..bindings import has_tensor_hooks, storage_key
 from ..dep_graph.contracts import Constraint, Fixed, Impact
-from ..dep_graph.graph import DependencyGraph
-from ..dep_graph.regions import gather_region
-from ..dep_graph.selection import Selection, TensorRef
+from ..dep_graph.dependency_graph import DependencyGraph
+from ..dep_graph.selection import Selection, TensorRef, gather_region
 from .candidates import CandidateSpace, discover_candidates, interface_constraints, parameter_groups
 from .granularity import Granularity, alignment_constraints
 from .groups import ParameterGroup

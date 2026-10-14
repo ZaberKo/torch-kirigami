@@ -96,10 +96,10 @@ def test_mixed_head_ffn_reuse_matches_generic_global_selection(
         context = PlanningContext(
             graph, space.candidates, ParameterBudget(10000), space.channel_axes, pruner.constraints
         )
-        ranking = IndependentRanking.build(context, metric)
+        ranking = IndependentRanking.build(context, metric, space.channel_axes)
         if type(metric) is GroupMagnitude:
             assert ranking is not None
-            scores, _ = ranking.score(context.impact(()), space.channel_axes)
+            scores = ranking.score(context.impact(())).scores
             assert 0 < len(scores) < len(space.candidates)
         plan = pruner.plan(
             space,

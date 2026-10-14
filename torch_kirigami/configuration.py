@@ -10,6 +10,10 @@ from typing import cast
 import torch
 from torch.nn.modules import module as module_runtime
 
+from .settings import config
+
+STRUCTURE_ATTRIBUTE = "_kirigami_structure"
+
 
 @dataclass(frozen=True)
 class FrozenScalar:
@@ -59,7 +63,7 @@ def object_attributes(value: object, *, slots: tuple[str, ...] | None = None) ->
 
 def freeze(value: object, *, _depth: int = 0) -> object:
     """Freeze scalars and nested list/tuple/dict configuration, rejecting other objects."""
-    if _depth > 50:
+    if _depth > config.max_container_depth:
         raise TypeError("Configuration is cyclic or too deeply nested")
     if value is None:
         return value
@@ -117,7 +121,7 @@ def attributes(
     result = []
     values = object_attributes(module) if raw_attributes is None else raw_attributes
     for name, value in sorted(values.items()):
-        if name == "_kirigami_structure":
+        if name == STRUCTURE_ATTRIBUTE:
             continue
         try:
             result.append((name, freeze(value)))

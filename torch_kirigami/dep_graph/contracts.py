@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
+from ..settings import config
 from .relations import AxisPort
 from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
 
@@ -472,7 +473,7 @@ class ShapeExpr:
 
 def _requirement_value(value: object, depth: int = 0) -> object:
     """Detach nested payload sequences, rejecting mutable opaque state."""
-    if depth > 50:
+    if depth > config.max_container_depth:
         raise ValueError("Requirement data is cyclic or too deeply nested")
     if isinstance(value, (tuple, list)):
         return tuple(_requirement_value(item, depth + 1) for item in value)

@@ -7,7 +7,6 @@ from collections.abc import Iterable, Mapping
 from types import MappingProxyType
 
 from ..errors import AnalysisLimitError
-from ._records import is_native_record
 from .contracts import (
     AxisBarrier,
     Balanced,
@@ -23,7 +22,8 @@ from .contracts import (
     Provenance,
     ShapeExpr,
 )
-from .data import GraphData, validate_reference
+from .eligibility import has_native_semantics
+from .graph_state import DependencyGraphState, validate_reference
 from .relations import AxisRelation, Relation
 from .selection import (
     Region,
@@ -55,7 +55,7 @@ class DependencySolver:
             public graph before it delegates a query to this solver.
     """
 
-    def __init__(self, data: GraphData) -> None:
+    def __init__(self, data: DependencyGraphState) -> None:
         self._data = data
         adjacency: defaultdict[str, list[Relation]] = defaultdict(list)
         for relation in data.relations:
@@ -65,7 +65,7 @@ class DependencySolver:
         self._cacheable_relations = {
             id(relation)
             for relation in data.relations
-            if type(relation) is AxisRelation and is_native_record(relation)
+            if type(relation) is AxisRelation and has_native_semantics(relation)
         }
         self._relation_outputs: dict[
             tuple[int, str], tuple[tuple[Region, ...], tuple[Selection, ...]]
@@ -99,7 +99,7 @@ class DependencySolver:
                 expression = self._data.expressions.get(node)
                 if expression is None:
                     continue
-                if not is_native_record(expression):
+                if not has_native_semantics(expression):
                     dynamic.append((name, expression))
                 elif expression:
                     for ref in expression.refs:
@@ -117,7 +117,9 @@ class DependencySolver:
         empty_diagnostics = {}
         empty = MappingProxyType({})
         for index, constraint in enumerate(self._data.constraints):
-            if type(constraint) not in _LOCAL_CONSTRAINT_TYPES or not is_native_record(constraint):
+            if type(constraint) not in _LOCAL_CONSTRAINT_TYPES or not has_native_semantics(
+                constraint
+            ):
                 unindexed.append(index)
                 continue
             for ref in constraint.refs:
@@ -224,7 +226,7 @@ class DependencySolver:
             # jointly complete a block or a broadcast fiber on a shared path.
             source = current[identity]
             cacheable_source = type(source) is Selection and all(
-                is_native_record(region) for region in source.regions
+                has_native_semantics(region) for region in source.regions
             )
             for relation in self._adjacency.get(identity, ()):
                 if id(relation) in disabled:

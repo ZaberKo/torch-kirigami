@@ -2,7 +2,7 @@
 
 > 开发笔记，记录下述审阅日期的决策与验证结果，不定义当前 API 或支持契约。正式文档见[文档目录](../index.md)。
 
-> 2026-10-14 更新：下述建图组织是历史实现。当前已将临时建图状态移入 `GraphBuilder`，传播索引和缓存移入 `DependencySolver`；`DependencyGraph` 只在分析记录完整后初始化。当前职责见[架构文档](../architecture.md#dependency-analysis)。
+> 2026-10-14 更新：下述建图组织是历史实现。当前已将临时建图状态移入 `construction.py` 的 `_Analyzer`，传播索引和缓存移入 `DependencySolver`；`DependencyGraph` 只在分析记录完整后初始化。当前职责见[架构文档](../architecture.md#dependency-analysis)。
 
 审阅日期：2026-09-13。范围是 `torch_kirigami/` 全部生产 Python 模块，结合相关测试、公开使用流程，以及此前独立 review 记录中的优化建议。参考仓库和实验脚本不参与本次重构。
 
@@ -10,9 +10,9 @@
 
 ## 本轮已经修改
 
-- **建图流程分清职责。** [graph.py](../../torch_kirigami/dep_graph/graph.py) 的主流程负责捕获和绑定；`_analyze_operation()` 负责一次调用的规则及诊断；`_finalize_analysis()` 负责全图约束、邻接关系和只读记录。处理顺序与原来一致，没有引入 Builder。
+- **建图流程分清职责。** [graph.py](../../torch_kirigami/dep_graph/dependency_graph.py) 的主流程负责捕获和绑定；`_analyze_operation()` 负责一次调用的规则及诊断；`_finalize_analysis()` 负责全图约束、邻接关系和只读记录。处理顺序与原来一致，没有引入 Builder。
 - **删除不使用的数据。** [bindings.py](../../torch_kirigami/bindings.py) 的容器遍历不再构造所有调用方都丢弃的路径。循环、共享容器和字典键检查保留。[capture.py](../../torch_kirigami/dep_graph/capture.py) 对同一次调用只查询一次 `CallEffects`，复用同一份写入和新存储事实。
-- **尺寸语义集中维护。** reshape 的尺寸表达式解析移到已有的 [shapes.py](../../torch_kirigami/dep_graph/operators/shapes.py)，与求值和约束放在一起。分析、配方和执行前校验重复的分区拼接形状计算，统一使用 [regions.py](../../torch_kirigami/dep_graph/regions.py) 的 `concatenated_shape()`；各层仍决定如何报告错误。
+- **尺寸语义集中维护。** reshape 的尺寸表达式解析移到已有的 [shapes.py](../../torch_kirigami/dep_graph/operators/shapes.py)，与求值和约束放在一起。分析、配方和执行前校验重复的分区拼接形状计算，统一使用 [regions.py](../../torch_kirigami/dep_graph/selection.py) 的 `concatenated_shape()`；各层仍决定如何报告错误。
 - **索引算法表达清楚。** [relations.py](../../torch_kirigami/dep_graph/relations.py) 的块映射改用来源、目标和块宽度的完整名称。完整块与触及块分别明确向内、向外取整；压缩区间算法、双向语义和限额保持。
 - **验证流程减少嵌套和隐式依赖。** [validation.py](../../torch_kirigami/pruning/validation.py) 单独组织 meta 模块构造；错误提示作为参数传递；不再反复建立同一 requirement 字典或扫描所有操作寻找生产者。形状、原坐标、布局和原地写入检查保留。
 - **属性记录不再伪装成修改配方。** [state.py](../../torch_kirigami/pruning/state.py) 的受管理属性记录直接接收路径，checkpoint 不再创建 `AttributeRecipe(path, None, None)`。共享属性用一份明确的赋值字典检查冲突，包含“一个别名要求不变，另一个要求修改”的情况。这个精简同时修复了真实漏检；冲突现在在提交前拒绝。

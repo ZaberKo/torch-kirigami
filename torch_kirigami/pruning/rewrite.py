@@ -12,7 +12,7 @@ from torch import nn
 from ..bindings import has_tensor_hooks
 from ..configuration import freeze, thaw
 from ..dep_graph.contracts import Impact, Requirement
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import OperationContext
 from ..dep_graph.operators.coordinates import retained_indices as _keep
 from ..dep_graph.operators.shapes import evaluate
@@ -280,8 +280,6 @@ def compile_recipes(
             error = str(cause)
         if attribute_checks is not None:
             attribute_checks[key] = error
-            if len(attribute_checks) > 32:
-                attribute_checks.popitem(last=False)
         if error is not None:
             raise PlanningError(error)
     # tensor_bindings() checked entry state; check exit even when the cached

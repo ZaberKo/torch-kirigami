@@ -1,11 +1,13 @@
 {
   "objects": [
     {
-      "object": "torch_kirigami.dep_graph.builder.GraphBuilder",
+      "object": "torch_kirigami.dep_graph.construction._Analyzer",
       "contracts": [
         {
-          "behavior": "Collect original aliases and analyze FX calls in temporary build state; publish only completed records.",
+          "behavior": "Populate one analysis record, release construction scratch on success or failure, and reject reuse.",
           "tests": [
+            "tests/integration/test_graph_construction.py::test_analyzer_owns_one_record_and_releases_scratch",
+            "tests/integration/test_graph_construction.py::test_failed_analyzer_is_unpublished_and_clears_scratch",
             "tests/integration/test_graph_construction.py::test_failed_analysis_does_not_publish_or_contaminate_a_graph",
             "tests/integration/test_graph_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation"
           ],
@@ -15,7 +17,7 @@
       ]
     },
     {
-      "object": "torch_kirigami.dep_graph.data.GraphData",
+      "object": "torch_kirigami.dep_graph.graph_state.DependencyGraphState",
       "contracts": [
         {
           "behavior": "Share completed structural records without retaining per-node construction values or mixing query caches into the snapshot.",
@@ -24,13 +26,13 @@
             "tests/graph/test_queries.py::test_public_graph_queries_are_isolated_and_alias_aware",
             "tests/architecture/test_imports.py::test_package_import_dependencies_are_explicit_and_acyclic"
           ],
-          "conditions": "Read-only structural tables; original model objects and extension callables retain their identities.",
+          "conditions": "Internal tables have one construction writer; public views are read-only and model/extension identities are preserved.",
           "gaps": []
         }
       ]
     },
     {
-      "object": "torch_kirigami.dep_graph.propagation.DependencySolver",
+      "object": "torch_kirigami.dep_graph.solver.DependencySolver",
       "contracts": [
         {
           "behavior": "Keep indexed propagation and bounded relation reuse identical to complete joint queries, including extension behavior and failures.",
@@ -64,6 +66,20 @@
       ]
     },
     {
+      "object": "torch_kirigami.pruning.ranking.IndependentScores",
+      "contracts": [
+        {
+          "behavior": "Distinguish reusable scores, covered seeds and candidates requiring generic scoring while sharing immutable axis summaries.",
+          "tests": [
+            "tests/pruning/test_component_ranking.py::test_component_fallback_preserves_other_scores_and_fixed_summaries",
+            "tests/pruning/test_component_ranking.py::test_mixed_component_public_plan_apply_matches_generic"
+          ],
+          "conditions": "Internal plan-local record; CPU/CUDA cross-axis and last-position invalidation, immutable summaries, public planning failure and replay checks.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.ranking.IndependentRanking",
       "contracts": [
         {
@@ -77,6 +93,8 @@
             "tests/pruning/test_independent_ranking.py::test_last_position_and_weight_updates_disable_reuse",
             "tests/pruning/test_independent_ranking.py::test_cached_score_rejects_stale_graph",
             "tests/pruning/test_independent_ranking.py::test_partial_reuse_with_cross_axis_acceptance_matches_public_generic_plan",
+            "tests/pruning/test_component_ranking.py::test_component_fallback_preserves_other_scores_and_fixed_summaries",
+            "tests/pruning/test_component_ranking.py::test_mixed_component_public_plan_apply_matches_generic",
             "tests/integration/test_vit_head_workflow.py::test_mixed_head_ffn_reuse_matches_generic_global_selection"
           ],
           "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components, optionally mixed with ordinary candidates in one global ranking. Complete accepted projections guard conditional reuse. CPU and CUDA numerical and lifecycle references.",
@@ -2283,6 +2301,20 @@
             "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
           ],
           "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.config",
+      "contracts": [
+        {
+          "behavior": "Validated process-global analysis and planning resource settings",
+          "conditions": "Atomic updates, existing caches, CPU/CUDA build/plan/apply and restoration",
+          "tests": [
+            "tests/pruning/test_options.py::test_config_validates_every_field_atomically",
+            "tests/pruning/test_options.py::test_configured_public_plans_restore_and_apply",
+            "tests/integration/test_resource_limits.py::test_cached_analysis_rejects_changed_analysis_settings"
+          ]
         }
       ]
     }

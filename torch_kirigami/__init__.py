@@ -15,7 +15,7 @@ from .dep_graph.contracts import (
     Requirement,
     ShapeExpr,
 )
-from .dep_graph.graph import DependencyGraph
+from .dep_graph.dependency_graph import DependencyGraph
 from .dep_graph.operation import (
     CallEffects,
     CallRef,
@@ -45,6 +45,7 @@ from .errors import (
     StaleGraphError,
     UnsupportedOperation,
 )
+from .settings import config
 
 __all__ = [
     "AnalysisLimitError",
@@ -88,4 +89,5 @@ __all__ = [
     "TensorFacts",
     "TensorRef",
     "UnsupportedOperation",
+    "config",
 ]

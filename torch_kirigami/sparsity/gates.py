@@ -8,11 +8,11 @@ import torch
 from torch import fx, nn
 
 from ..dep_graph.contracts import Impact, Requirement
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import CallEffects, OperationContext, OperatorRule, OperatorSpec
-from ..dep_graph.regions import gather_region
 from ..dep_graph.registry import OperatorRegistry
 from ..dep_graph.relations import AxisRelation
+from ..dep_graph.selection import gather_region
 from ..pruning.pruner import Pruner
 from ..pruning.types import Candidate, MetricContext
 

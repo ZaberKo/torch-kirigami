@@ -48,20 +48,44 @@ construction from repeated queries:
 
 | Component | Responsibility and lifetime |
 | --- | --- |
-| `GraphBuilder` in `builder.py` | Collect original aliases, capture with FX, apply operator rules, and complete cross-call constraints. Its temporary value and alias tables are released after the build. |
-| `GraphData` in `data.py` | Store completed records in tuples and read-only mappings. This internal data record contains no query caches. |
-| `DependencySolver` in `propagation.py` | Own relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
-| `DependencyGraph` in `graph.py` | Provide public queries, inspection copies, model freshness checks, and invalidation. It is initialized with complete records. |
+| `_Analyzer` in `construction.py` | Collect original aliases, capture with FX, apply operator rules, and populate one `DependencyGraphState`. Release temporary value and alias tables on success or failure. |
+| `DependencyGraphState` in `graph_state.py` | Own structural tables throughout construction and subsequent queries. It contains neither construction scratch tables nor solver caches. |
+| `DependencySolver` in `solver.py` | Own relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
+| `DependencyGraph` in `dependency_graph.py` | Provide public queries, inspection copies, model freshness checks, and invalidation. It is initialized with complete records. |
 
 `DependencyGraph.build()` remains the public construction entry. The other components
 are internal and import shared records without importing the public graph.
+The analyzer creates one `DependencyGraphState`, writes directly into its tables, and
+returns that same object. It does not mirror the tables in its own attributes or
+copy them into a second record at completion. Only completed data can initialize
+`DependencyGraph`; the analyzer cannot be reused after success or failure.
+Public queries expose tuples, read-only views, or inspection copies. The data
+references the original model and records structural resource settings; it is
+neither a weight backup nor a checkpoint.
 `CallRef`, the record for one operation invocation, lives with the other operation
 contracts in `operation.py`.
 
-Within this package, `selection.py` and `regions.py` define coordinates and region
-operations. `relations.py` defines index mappings. `contracts.py` defines constraints
+Within this package, `selection.py` defines coordinates, region unions, and region
+shape/gather operations. `relations.py` defines index mappings. `contracts.py` defines constraints
 and analysis results. `operation.py`, `registry.py`, and `operators/` define and
 register operation semantics. Pruning and sparsity consume these contracts.
+
+`eligibility.py` checks nested native semantics before an optimization reuses
+structural computations. It is shared by propagation and planning; it is not a
+data-record definition or a general validity check. Extensions that fail this
+check still use ordinary analysis. Keeping this helper below both consumers
+avoids importing the solver into pruning code.
+
+The construction helper retains only temporary working state in addition to the
+single analysis record. The solver owns reusable query indexes and caches; the
+public graph owns validation and inspection. Coordinate types and their small
+region operations share one module; no separate region facade is needed.
+
+`settings.py` exports one process-global `config` for resource limits, scoring
+batches, and cache bounds. It has no scopes or per-owner option objects. Settings
+are read when work starts; changes during an operation are unsupported. See
+[global configuration](pruning.md#global-resource-configuration) for invalidation
+and validation rules.
 
 Package initialization in `dep_graph/__init__.py` performs no eager imports.
 Internal consumers import concrete submodules. Public imports such as

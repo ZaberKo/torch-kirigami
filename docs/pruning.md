@@ -214,6 +214,11 @@ that cover an entire tensor qualify; partial group partitions do not. Nested
 extension objects in mappings, constraints, or candidate selections use ordinary
 analysis and scoring. A failed optimization proof does not make the model
 unsupported. Every accepted combination still requires joint execution checks.
+Cross-axis or last-position changes invalidate only the affected cached component;
+other proved components retain their statistics. Candidate coordinates and sparse
+axis summaries are immutable and reused within one selection call. Scores and
+ranking are still updated after every dynamic commitment. Metric or tracked tensor
+changes invalidate the statistics snapshot as a whole.
 
 A commitment can contain several candidates to satisfy a grouping constraint. Their scores come from before that full commitment. A candidate's score does not need to predict whether its joint combination is valid. The strategy checks the combination before acceptance.
 
@@ -241,6 +246,69 @@ The context fixes the graph snapshot and policy inputs for one planning round. A
 `attempt()` counts joint verification calls, including cache hits. Scoring and ordinary `impact()` queries do not count. A strategy's `max_trials` therefore limits structural attempts, not total runtime or metric work.
 
 The planner checks graph freshness around user callbacks. It also checks tracked tensor identities, version counters, and `requires_grad` flags after selection. A detected change raises an error. These checks do not undo arbitrary callback side effects.
+
+### Global resource configuration
+
+Use the single process-global `config` object. All library consumers read the
+same object; no configuration is passed to graphs, pruners, or metrics.
+
+```python
+from torch_kirigami import config
+
+config.update(score_batch_size=64, impact_cache_size=64, max_literal_elements=8192)
+config.normalization_cache_size = 64  # Assignment uses the same validation.
+settings = config.as_dict()  # Independent dictionary for inspection.
+# Build, plan, and apply normally.
+config.reset()  # Restore declared defaults when finished.
+```
+
+`update()` validates every supplied name and value before committing any change.
+Unknown names, booleans, non-integers, and out-of-range values are rejected.
+`as_dict()` and `update(**settings)` allow explicit saving and restoration of
+configuration in application code. Settings are not included in saved plans.
+
+| Setting | Default | Purpose |
+| --- | ---: | --- |
+| `max_parts` | 4,096 | Compressed index intervals, intermediate region parts, and identity-proof axis expansion. |
+| `max_literal_elements` | 4,096 | Integer tensor elements retained as structural literals. |
+| `max_shuffle_channels` | 4,096 | Channels explicitly mapped by ChannelShuffle analysis. |
+| `max_container_depth` | 50 | Configuration, requirement payload, and checkpoint extra-state nesting. |
+| `max_record_depth` | 100 | Static pruning-record and encoded-record nesting. |
+| `score_batch_size` | 32 | Generic metric batch size. |
+| `impact_cache_size` | 32 | Retained joint planning queries. |
+| `recipe_cache_size` | 4 | Retained compiled recipe sets. |
+| `attribute_cache_size` | 32 | Retained attribute-validation results. |
+| `normalization_cache_size` | 32 | GroupMagnitude normalization entries. |
+| `taylor_cache_size` | 128 | WeightTaylor axis-statistic vectors. |
+| `taylor_cache_positions` | 262,144 | Scalar positions across Taylor vectors. |
+| `taylor_chunk_elements` | 1,048,576 | Elements per Taylor statistics chunk. |
+
+The first six fields require positive Python integers. Cache capacities accept
+zero to disable retention. Zero Taylor position/chunk limits use ordinary region
+scoring. Generic batching does not constrain native vectorized scoring or a
+custom strategy's explicit calls to `context.score()`. Custom metrics must remain
+independent of batching. Taylor chunking bounds statistics work, not memory used
+by ordinary region scoring. Different reduction chunks can change floating-point
+rounding; bitwise invariance for near-tied rankings is not guaranteed.
+
+Change settings **between library operations**. All threads share the object;
+concurrent updates and updates from operator/metric callbacks are unsupported.
+Existing contexts and metrics discard affected caches on their next use after
+cache settings change. Structural settings (the five `max_*` fields) are recorded
+at graph construction. Queries and planning reject a graph while these differ
+from its build settings, including cache hits; rebuild under the desired settings.
+Captured metadata remains available for inspection. Existing coordinate records
+are not retroactively revalidated by an update.
+
+An oversized literal has no captured values; operations requiring those values
+report unsupported semantics. Other structural limits raise errors or produce
+analysis diagnostics at the affected operation. Raising a limit permits more
+work, but adds no operator support and guarantees no memory or stack capacity.
+Plan/checkpoint restoration uses current settings and never overrides them.
+
+`Greedy.max_trials` and `DynamicGreedy.max_trials` remain explicit algorithm
+parameters. Operator/type tables and codec schemas stay with their semantic
+owners; they are definitions, not resource settings.
 
 ### Custom metrics
 

@@ -5,6 +5,7 @@ from types import MappingProxyType
 
 from ..configuration import FrozenDict, FrozenList, FrozenScalar
 from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from ..settings import config
 from .types import (
     AnalysisSummary,
     AttributeRecipe,
@@ -64,7 +65,7 @@ def decode(
     value: object, *, record_types: MappingProxyType = RECORD_TYPES, _depth: int = 0
 ) -> object:
     """Validate a closed data schema and reconstruct only approved record types."""
-    if _depth > 100:
+    if _depth > config.max_record_depth:
         raise ValueError("Pruning data nesting limit exceeded")
     if value is None or type(value) in (str, int, float, bool):
         return value

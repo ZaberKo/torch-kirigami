@@ -493,6 +493,8 @@ This follows the displayed equations rather than the [official code](https://git
 
 Each family requests its lowest-ranked `floor(family_pruning_ratio * action_count)` actions.
 Alignment can add removals beyond that quota.
+Rounding scans each axis's ordered contributors once as selected positions grow;
+it preserves the original action order and revisits coupled axes.
 The ratio is not a whole-model parameter reduction and is not derived through target search.
 The original parameter count supplies only a non-increase guard.
 An invalid joint allocation fails before mutation.
@@ -555,6 +557,9 @@ Statistics require memory quadratic in the consumer's input width times kernel a
 `--swap_steps 5` bounds local swaps and can stop earlier.
 These settings do not guarantee a global optimum or exhaustive local search.
 The sampled calibration, common-width allocation, and ViT FFN scope adapt the paper's experiments.
+Width allocation uses integer arithmetic and binary lookup in aligned-width
+breakpoints. Each tested allocation still uses a joint structural plan to measure
+the actual parameter count; layer costs are not approximated as additive.
 
 Each consumer is a separate operation, so earlier changes remain if a later consumer fails.
 

@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from torch_kirigami import DependencyGraph, IndexSet, Region, Selection, StaleGraphError
+from torch_kirigami import DependencyGraph, IndexSet, Region, Selection, StaleGraphError, config
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -24,7 +24,6 @@ from torch_kirigami.pruning import (
     load_checkpoint,
     save_checkpoint,
 )
-from torch_kirigami.pruning import metrics as metric_module
 
 
 class GenericTaylor(WeightTaylor):
@@ -358,7 +357,6 @@ def test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices(
     mode, execution_device, monkeypatch
 ):
     model, axis, candidates, context = linear_context(execution_device)
-    monkeypatch.setattr(metric_module, "_TAYLOR_STATISTIC_ELEMENTS", 7)
     promoted = []
     original_to = torch.Tensor.to
 
@@ -368,6 +366,7 @@ def test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices(
         return original_to(tensor, *args, **kwargs)
 
     monkeypatch.setattr(torch.Tensor, "to", record_to)
+    config.update(taylor_chunk_elements=7)
     metric = WeightTaylor(mode)
     assert context.score(metric, candidates) == pytest.approx(
         context.score(GenericTaylor(mode), candidates)
@@ -377,8 +376,8 @@ def test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices(
     assert context.score(metric, (column,)) == pytest.approx(
         context.score(GenericTaylor(mode), (column,))
     )
+    config.update(taylor_chunk_elements=2)
     metric = WeightTaylor(mode)
-    monkeypatch.setattr(metric_module, "_TAYLOR_STATISTIC_ELEMENTS", 2)
     assert context.score(metric, candidates[:1]) == pytest.approx(
         context.score(GenericTaylor(mode), candidates[:1])
     )
@@ -388,17 +387,15 @@ def test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices(
     )
 
 
-def test_position_capacity_evicts_vectors_and_oversized_axes_use_generic_path(
-    execution_device, monkeypatch
-):
+def test_position_capacity_evicts_vectors_and_oversized_axes_use_generic_path(execution_device):
     model, _axis, candidates, context = linear_context(execution_device)
-    monkeypatch.setattr(metric_module, "_TAYLOR_CACHE_POSITIONS", 8)
+    config.update(taylor_cache_positions=8)
     metric = WeightTaylor()
     for _ in range(3):
         model.weight.grad = torch.ones_like(model.weight)
         assert metric._axis_sums(model.weight, 0) is not None
         assert metric._statistic_positions == 5
-    monkeypatch.setattr(metric_module, "_TAYLOR_CACHE_POSITIONS", 4)
+    config.update(taylor_cache_positions=4)
     metric = WeightTaylor()
     assert context.score(metric, candidates) == pytest.approx(
         context.score(GenericTaylor(), candidates)

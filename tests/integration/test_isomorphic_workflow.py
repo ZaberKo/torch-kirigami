@@ -2,6 +2,7 @@
 
 import copy
 import json
+import random
 import sys
 import weakref
 from collections import OrderedDict
@@ -27,9 +28,11 @@ from torch_kirigami import (
     AxisRelation,
     DependencyGraph,
     Diagnostic,
+    IndexSet,
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
+    TensorRef,
 )
 from torch_kirigami.dep_graph.operation import CallEffects
 from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
@@ -42,6 +45,7 @@ from torch_kirigami.pruning import (
     PlanningContext,
     PlanningError,
     Pruner,
+    PruningPlan,
     load_checkpoint,
     save_checkpoint,
 )
@@ -167,7 +171,9 @@ def test_independent_family_quotas_are_not_global_early_stopping(execution_devic
 
 def test_reference_retained_width_rounding_adds_next_lowest_actions(execution_device):
     model = TwoFamilies((16, 16)).eval()
-    graph, pruner, space = build(model, torch.randn(2, 3), granularity=8)
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 3)
+    graph, pruner, space = build(model, x, granularity=8)
     strategy = workflow.Isomorphic(ExplicitScores(), ratio=Fraction(1, 16))
     plan = pruner.plan(space, budget=ParameterBudget.from_ratio(model, 0.01), strategy=strategy)
     assert strategy.ratio == Fraction(1, 16)
@@ -179,8 +185,94 @@ def test_reference_retained_width_rounding_adds_next_lowest_actions(execution_de
         assert tuple(
             plan.analysis.selection(graph.parameter(path)).fully_selected_indices(0)
         ) == tuple(range(8))
-    pruner.apply(plan)
+    pruner.apply(PruningPlan.from_dict(plan.to_dict()))
     assert model.a[0].out_features == model.b[0].out_features == 8
+    with torch.no_grad():
+        reference.a[2].weight[:, :8] = 0
+        reference.b[2].weight[:, :8] = 0
+    torch.testing.assert_close(model(x), reference(x))
+    model(x).sum().backward()
+
+
+def test_rounding_cursors_match_exhaustive_recount_with_coupled_actions():
+    """Overlaps cannot make an earlier skipped action useful on a later visit."""
+    rng = random.Random(41)
+    axes = tuple(TensorRef(f"axis{i}", (24,)).axis(0) for i in range(3))
+    for _ in range(40):
+        actions = []
+        for i in range(36):
+            contributions = {
+                axis: IndexSet.of(rng.sample(range(24), rng.randrange(1, 4)))
+                for axis in rng.sample(axes, rng.randrange(1, 4))
+            }
+            actions.append(
+                workflow.RemovalAction(
+                    Candidate(str(i), (axes[0].select([i % 24]),)), [str(i)], 0, contributions
+                )
+            )
+        contributors = {
+            axis: tuple(i for i, action in enumerate(actions) if axis in action.axes)
+            for axis in axes
+        }
+        factors = dict.fromkeys(axes, 4)
+        requested = {0, 3, 7}
+        selected = requested.copy()
+        pending = sorted(
+            {axis for i in selected for axis in actions[i].axes},
+            key=lambda axis: (axis.tensor.id, axis.dim),
+        )
+        failed = False
+        while pending:
+            axis = pending.pop(0)
+            # Recount from all selected actions, independently of incremental sets.
+            removed = set().union(*(set(actions[i].axes.get(axis, ())) for i in selected))
+            remaining = 24 - len(removed)
+            if remaining > 0 and remaining % 4 == 0:
+                continue
+            if remaining < 4:
+                failed = True
+                break
+            addition = next(
+                (
+                    i
+                    for i in contributors[axis]
+                    if i not in selected and set(actions[i].axes[axis]) - removed
+                ),
+                None,
+            )
+            if addition is None:
+                failed = True
+                break
+            selected.add(addition)
+            pending.extend(actions[addition].axes)
+        if failed:
+            with pytest.raises(PlanningError):
+                workflow.rounded_request(requested, actions, factors, contributors)
+        else:
+            assert workflow.rounded_request(requested, actions, factors, contributors) == selected
+
+
+def test_rounding_visits_each_contributor_at_most_twice():
+    axis = TensorRef("wide", (1024,)).axis(0)
+    actions = [
+        workflow.RemovalAction(
+            Candidate(str(i), (axis.select([i]),)), [str(i)], 0, {axis: IndexSet.of([i])}
+        )
+        for i in range(1024)
+    ]
+    visits = []
+
+    class ObservedContributors(tuple):
+        def __iter__(self):
+            for index in super().__iter__():
+                visits.append(index)
+                yield index
+
+    selected = workflow.rounded_request(
+        {0}, actions, {axis: 512}, {axis: ObservedContributors(range(1024))}
+    )
+    assert selected == set(range(512))
+    assert len(visits) <= 2048
 
 
 def test_fixed_ratio_does_not_lose_a_channel_to_float_roundoff(execution_device):

@@ -11,6 +11,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ...errors import UnsupportedOperation
+from ...settings import config
 from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
 from ..operation import OperationContext, OperatorSpec, OutputContract
 from ..relations import (
@@ -228,7 +229,7 @@ def channel_shuffle(ctx: OperationContext) -> OperatorSpec:
     if type(groups) is not int:
         raise UnsupportedOperation("ChannelShuffle groups must be constant")
     width = x.shape[1] // groups
-    if x.shape[1] > 4096:
+    if x.shape[1] > config.max_shuffle_channels:
         raise UnsupportedOperation("ChannelShuffle compressed map limit exceeded")
     relations = [equal(x, d, y, d, ctx.node.name) for d in range(len(x.shape)) if d != 1]
     # Group-local removal patterns must match: equal counts alone would change

@@ -11,8 +11,14 @@ import torch
 from torch import nn
 
 from ..bindings import AttributeEdit, reference_edits, reference_signature, storage_key
+from ..configuration import (
+    STRUCTURE_ATTRIBUTE,
+    forward_hook_paths,
+    freeze,
+    has_registration_hooks,
+    thaw,
+)
 from ..configuration import attributes as configuration_attributes
-from ..configuration import forward_hook_paths, freeze, has_registration_hooks, thaw
 from .recipes import compact_stride, validate_recipe
 from .types import (
     AnalysisSummary,
@@ -25,8 +31,6 @@ from .types import (
     TensorRecipe,
     TensorState,
 )
-
-STRUCTURE_ATTRIBUTE = "_kirigami_structure"
 
 
 class _PlanContract(Protocol):

@@ -7,8 +7,7 @@ import math
 import torch
 from torch.autograd.function import FunctionCtx, once_differentiable
 
-from ..dep_graph.regions import gather_region
-from ..dep_graph.selection import IndexSet, TensorRef
+from ..dep_graph.selection import IndexSet, TensorRef, gather_region
 from ..pruning.groups import ParameterGroup
 
 

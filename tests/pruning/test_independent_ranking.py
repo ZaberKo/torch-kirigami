@@ -74,7 +74,9 @@ def test_public_plan_restore_apply_matches_generic_joint_scoring(
         pruner = Pruner(current, graph=graph, granularity=Granularity(default=2))
         space = pruner.discover_candidates(targets=("0", "3"))
         if type(metric) is GroupMagnitude:
-            ranking = IndependentRanking.build(context_for(graph, space.candidates), metric)
+            ranking = IndependentRanking.build(
+                context_for(graph, space.candidates), metric, space.channel_axes
+            )
             assert ranking is not None
             assert len(ranking.candidates) == len(space.candidates)
         calls = []
@@ -215,7 +217,7 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
     # A candidate subset must still normalize against all surviving positions.
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in (0, 2, 4))
     context = context_for(graph, candidates)
-    ranking = IndependentRanking.build(context, GroupMagnitude(p))
+    ranking = IndependentRanking.build(context, GroupMagnitude(p), context.channel_axes)
     assert ranking is not None
     rows = model[0].weight.detach().cpu().tolist()
     bn = model[1].weight.detach().cpu().tolist()
@@ -226,7 +228,8 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
     ]
     assert ranking.norms[0] == pytest.approx(expected, rel=1e-12, abs=0)
     selected = context.impact((axis.select([0]),))
-    scores_by_key, removals = ranking.score(selected, (axis,))
+    result = ranking.score(selected)
+    scores_by_key, removals = result.scores, result.removals
     actual = sorted(
         candidates[1:], key=lambda candidate: (scores_by_key[candidate.key], candidate.key)
     )
@@ -252,7 +255,7 @@ def test_batched_norms_preserve_low_precision_and_complex_values(
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(4))
     context = context_for(graph, candidates)
-    ranking = IndependentRanking.build(context, GroupMagnitude())
+    ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     assert ranking is not None
     expected = [math.hypot(*(abs(v) for v in row)) for row in values.cpu().tolist()]
     assert ranking.norms[0] == pytest.approx(expected, rel=1e-6, abs=0)
@@ -317,12 +320,12 @@ def test_unproved_candidates_use_generic_scoring(case: str) -> None:
     elif case == "barrier":
         constraints = (AxisBarrier(axis, "Opaque axis"),)
     context = context_for(graph, candidates, constraints)
-    ranking = IndependentRanking.build(context, GroupMagnitude())
+    ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     if case == "overlap":
         assert ranking is not None
-        scores, _ = ranking.score(context.impact(()), context.channel_axes)
+        scores = ranking.score(context.impact(())).scores
         assert set(scores) == {"first"}
-        assert ranking.score(context.impact(candidates[1].remove), context.channel_axes) is None
+        assert ranking.score(context.impact(candidates[1].remove)) is None
     else:
         assert ranking is None
     if case == "custom":
@@ -343,7 +346,7 @@ def test_extensions_and_inference_tensors_do_not_reuse_statistics(kind: str) -> 
             metric.parameter_filter = lambda ref, tensor: True
         elif kind == "instance_override":
             metric.score = lambda *args, **kwargs: [7.0]
-        assert IndependentRanking.build(context, metric) is None
+        assert IndependentRanking.build(context, metric, context.channel_axes) is None
 
 
 def test_last_position_and_weight_updates_disable_reuse() -> None:
@@ -352,13 +355,13 @@ def test_last_position_and_weight_updates_disable_reuse() -> None:
     axis = graph.parameter("weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(4))
     context = context_for(graph, candidates)
-    ranking = IndependentRanking.build(context, GroupMagnitude())
+    ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     assert ranking is not None
-    assert ranking.score(context.impact((axis.select([0, 1, 2]),)), (axis,)) is None
+    assert ranking.score(context.impact((axis.select([0, 1, 2]),))) is None
     empty = context.impact(())
     with torch.no_grad():
         model.weight.add_(1)
-    assert ranking.score(empty, (axis,)) is None
+    assert ranking.score(empty) is None
 
 
 @pytest.mark.parametrize("change", ["invalidate", "attribute", "mode"])
@@ -368,7 +371,7 @@ def test_cached_score_rejects_stale_graph(change, execution_device):
     axis = graph.parameter("weight").axis(0)
     candidates = (Candidate("first", (axis.select([0]),), axis),)
     context = context_for(graph, candidates)
-    ranking = IndependentRanking.build(context, GroupMagnitude())
+    ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     accepted = context.impact(())
     assert ranking is not None
     if change == "invalidate":
@@ -378,7 +381,7 @@ def test_cached_score_rejects_stale_graph(change, execution_device):
     else:
         model.train()
     with pytest.raises(StaleGraphError, match="changed"):
-        ranking.score(accepted, (axis,))
+        ranking.score(accepted)
 
 
 @pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
@@ -494,7 +497,7 @@ def test_repeated_calls_and_multiple_consumers_preserve_shared_statistics(
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates(targets=("stem",))
     context = context_for(graph, space.candidates)
-    ranking = IndependentRanking.build(context, GroupMagnitude())
+    ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     assert ranking is not None
     energy = (
         model.stem.weight.square().sum(1)

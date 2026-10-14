@@ -13,13 +13,9 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..dep_graph.contracts import Impact
-from ..dep_graph.regions import gather_region
-from ..dep_graph.selection import AxisRef, IndexSet, Selection, TensorRef
+from ..dep_graph.selection import AxisRef, IndexSet, Selection, TensorRef, gather_region
+from ..settings import config
 from .types import Candidate, MetricContext, PlanningError
-
-_TAYLOR_CACHE_ENTRIES = 128
-_TAYLOR_CACHE_POSITIONS = 262_144
-_TAYLOR_STATISTIC_ELEMENTS = 1_048_576
 
 
 class Magnitude:
@@ -58,8 +54,8 @@ class WeightTaylor:
 
     The caller owns loss reduction, gradient accumulation, and AMP unscaling.
     This is not a per-example Fisher estimator and never invokes backward.
-    Elementwise absolute Taylor reuses complete axis slices with at most 128
-    scalar vectors and 262,144 total positions. Signed joint Taylor preserves
+    Elementwise absolute Taylor reuses complete axis slices within the configured
+    scalar-vector and position limits. Signed joint Taylor preserves
     original-region reductions, including cancellation and overflow behavior.
     Irregular conditional regions and inference tensors are not cached.
 
@@ -90,6 +86,7 @@ class WeightTaylor:
             ],
         ] = OrderedDict()
         self._statistic_positions = 0
+        self._cache_settings: tuple[int, ...] | None = None
 
     def score(
         self,
@@ -99,17 +96,35 @@ class WeightTaylor:
         accepted_impact: Impact,
     ) -> list[float]:
         """Return aligned scores; missing or nonfinite statistics are errors."""
+        self._sync_cache_settings()
         return _scores(self, context, candidates, accepted_impact=accepted_impact)
+
+    def _sync_cache_settings(self) -> None:
+        """Release old statistics before scoring under changed resource settings."""
+        settings = (
+            config.taylor_cache_size,
+            config.taylor_cache_positions,
+            config.taylor_chunk_elements,
+        )
+        if settings != self._cache_settings:
+            self._axis_statistics.clear()
+            self._statistic_positions = 0
+            self._cache_settings = settings
 
     def _axis_sums(self, weight: torch.Tensor, dim: int) -> tuple[float, ...] | None:
         """Reduce absolute axis statistics when their reuse is supported."""
+        self._sync_cache_settings()
         gradient = weight.grad
         assert gradient is not None
-        if self.mode != "elementwise_abs":
+        if self.mode != "elementwise_abs" or not config.taylor_cache_size:
             return None
         width = weight.shape[dim]
         elements_per_position = weight.numel() // width
-        if width > _TAYLOR_CACHE_POSITIONS or elements_per_position > _TAYLOR_STATISTIC_ELEMENTS:
+        if (
+            width > config.taylor_cache_positions
+            or not config.taylor_chunk_elements
+            or elements_per_position > config.taylor_chunk_elements
+        ):
             return None
         try:
             key = (id(weight), weight._version, id(gradient), gradient._version, dim, self.mode)
@@ -124,7 +139,7 @@ class WeightTaylor:
             self._statistic_positions -= len(values)
             del self._axis_statistics[key]
         weights, gradients = weight.detach().movedim(dim, 0), gradient.detach().movedim(dim, 0)
-        chunk_size = max(1, _TAYLOR_STATISTIC_ELEMENTS // max(elements_per_position, 1))
+        chunk_size = max(1, config.taylor_chunk_elements // max(elements_per_position, 1))
         sums = []
         for start in range(0, width, chunk_size):
             products = weights[start : start + chunk_size].to(torch.float64) * gradients[
@@ -146,8 +161,8 @@ class WeightTaylor:
         self._axis_statistics[key] = (weakref.ref(weight), weakref.ref(gradient), values)
         self._statistic_positions += len(values)
         while (
-            len(self._axis_statistics) > _TAYLOR_CACHE_ENTRIES
-            or self._statistic_positions > _TAYLOR_CACHE_POSITIONS
+            len(self._axis_statistics) > config.taylor_cache_size
+            or self._statistic_positions > config.taylor_cache_positions
         ):
             _old_key, (_weight, _gradient, old_values) = self._axis_statistics.popitem(last=False)
             self._statistic_positions -= len(old_values)
@@ -197,7 +212,7 @@ class GroupMagnitude:
     accepted deletions and recompute the surviving-domain normalization. No
     model execution or activation/gradient recalibration occurs.
 
-    At most 32 normalization entries retain one Python float per original axis
+    Normalization entries retain one Python float per original axis
     position, about 32 bytes per position including tuple references on CPython.
     Singleton candidates reuse these exact scores. Blocks still require joint
     propagation; singleton scores are not assumed additive.
@@ -223,6 +238,7 @@ class GroupMagnitude:
             tuple[object, ...], tuple[float, float, tuple[float, ...]]
         ] = OrderedDict()
         self._context: weakref.ReferenceType[MetricContext] | None = None
+        self._cache_size = config.normalization_cache_size
 
     def score(
         self,
@@ -232,6 +248,9 @@ class GroupMagnitude:
         accepted_impact: Impact,
     ) -> list[float]:
         """Return normalized conditional energies, independent of batching."""
+        if self._cache_size != config.normalization_cache_size:
+            self._normalizers.clear()
+            self._cache_size = config.normalization_cache_size
         context.graph.validate_impact(accepted_impact)
         context.require_complete(accepted_impact)
         domains = tuple(_candidate_domain(candidate) for candidate in candidates)
@@ -270,7 +289,11 @@ class GroupMagnitude:
         normalizers = {}
         for axis in dict.fromkeys(axis for axis, _indices in domains):
             key = (context.graph.id, self.p, axis, accepted_regions, versions, frozenset(included))
-            cacheable = versions is not None and self._context is not None
+            cacheable = (
+                versions is not None
+                and self._context is not None
+                and config.normalization_cache_size > 0
+            )
             if cacheable and key in self._normalizers:
                 normalizers[axis] = self._normalizers[key]
                 self._normalizers.move_to_end(key)
@@ -296,7 +319,7 @@ class GroupMagnitude:
             normalizers[axis] = entry
             if cacheable:
                 self._normalizers[key] = entry
-                if len(self._normalizers) > 32:
+                if len(self._normalizers) > config.normalization_cache_size:
                     self._normalizers.popitem(last=False)
         norms = [0.0] * len(candidates)
         joint_indices = []

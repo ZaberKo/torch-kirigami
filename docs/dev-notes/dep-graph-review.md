@@ -20,8 +20,8 @@ classes with the same decision; each named class was inspected.
 | Classes | Decision and reasoning |
 | --- | --- |
 | `DependencyGraph` | Keep the public query and freshness boundary established by the preceding refactor. It delegates construction and solving. Correct attribute-update input typing to an iterable of `(path, value)` pairs, matching its caller and implementation. |
-| `GraphBuilder` | Keep one build owner. Its mutable tables serve one construction lifecycle; splitting them into services would require shared mutable state across services. |
-| `GraphData` | Keep the completed record separate from construction scratch data and solver caches. |
+| `_Analyzer` | Keep one construction worker; it populates one `DependencyGraphState` and owns only additional temporary capture/alias tables. |
+| `DependencyGraphState` | Keep one set of structural tables throughout build and queries; no mirrored builder fields or final field-by-field copy. |
 | `DependencySolver` | Keep indexes, closure computation, and constraint evaluation together. Fix the nested-extension cache eligibility defect described below. |
 | `IndexSet` | Keep normalized interval arithmetic together. Interval limits and exact set operations are required, not incidental control flow. |
 | `Region`, `Selection` | Keep Cartesian operations and union semantics with their records. Existing independent coordinate tests cover overlap, axes, and scalar domains. |
@@ -70,7 +70,7 @@ they are not reported as numerical pruning failures.
 
 The independent review found that the same nested-extension assumption also
 affected identity proofs in planning. Native-record validation now lives in
-`dep_graph/_records.py`; propagation, identity indexing, and scoring eligibility
+`dep_graph/eligibility.py`; propagation, identity indexing, and scoring eligibility
 share it. Candidate discovery also uses the shared identity index instead of
 maintaining a second proof implementation.
 
@@ -80,3 +80,45 @@ optimization without changing its formula. Isomorphic templates retain their
 complete-closure witness and final execution checks. Activation assertions now
 accompany optimized-versus-generic plan comparisons, so using the generic path on
 both sides can no longer hide a disabled optimization.
+
+## Module consolidation and global configuration (2026-10-14)
+
+- `graph.py` becomes `dependency_graph.py`; `propagation.py` becomes `solver.py`.
+- `regions.py` merges into `selection.py`; coordinate and region operations share
+  one owner. Index relations, capture, and operator registration remain separate.
+- `_records.py` becomes `eligibility.py`; native-semantics checks remain below
+  dependency solving and planning.
+- The interim `GraphBuilder` / `GraphSnapshot` split is replaced by `_Analyzer`
+  and one `DependencyGraphState`. The analyzer writes directly into that record, clears
+  scratch tables on success or failure, and rejects reuse. The public graph
+  rejects incomplete records and returns read-only containers or inspection copies.
+
+The earlier instance-local options and scoped limit configuration were rejected
+as unnecessary API complexity. `settings.py` now exports one global `config` with
+13 validated fields: five structural limits, one scoring batch size, and seven
+cache/statistics bounds. `update()` validates the entire update before committing;
+validated assignment, `as_dict()`, and `reset()` use the same field definitions.
+There are no compatibility exports, ContextVars, or format versions.
+
+Structural-limit changes invalidate use of graphs built under different values.
+Cache tuning does not invalidate structural analysis: existing owners discard
+affected retained work on their next use. Identity proofs likewise reconsider
+`max_parts`. Plans and checkpoints never override active configuration. Changes
+must occur between operations; concurrent configuration mutation is unsupported.
+
+Semantic tables, codec schemas, scoring-method identity guards, and fixed empty
+values remain local definitions. Search trial limits remain strategy parameters.
+Neither category belongs in resource configuration.
+
+Regression coverage includes atomic failed updates, shared cross-thread settings,
+cache disabling on existing owners, changed Taylor chunks, stale analysis checks,
+bounded decoding without model mutation, and public build/plan/restore/apply with
+independent compact references and backward on CPU and CUDA. Construction tests
+cover single-record identity, failed and repeated builds, scratch cleanup, and
+read-only public containers.
+
+Validation: the full PyTorch 2.14 suite with `--require-cuda` passed 4,718 tests,
+with one intentional skip of the CPU parameterization of a CUDA-only transfer
+test and one existing convolution-padding warning. Python 3.10 / PyTorch 2.6 passed 137 relevant CPU tests. Ruff, formatting,
+package builds, and wheel-import CPU/CUDA build/restore/apply/backward checks
+passed.

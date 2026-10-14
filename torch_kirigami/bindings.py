@@ -10,10 +10,10 @@ from typing import cast
 import torch
 from torch import nn
 
-from .configuration import freeze, object_attributes
+from .configuration import STRUCTURE_ATTRIBUTE, freeze, object_attributes
 from .errors import CaptureError
 
-_MODULE_FIELDS = frozenset(vars(nn.Module())) | {"_kirigami_structure"}
+_MODULE_FIELDS = frozenset(vars(nn.Module())) | {STRUCTURE_ATTRIBUTE}
 
 
 def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:

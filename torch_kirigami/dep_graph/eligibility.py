@@ -1,4 +1,9 @@
-"""Internal eligibility checks for reusing native structural computations."""
+"""Shared optimization eligibility checks for native structural computations.
+
+Ordinary analysis still accepts extension types. Passing this check permits
+consumers to apply their own narrower reuse proofs; it does not prove that any
+arbitrary computation on the record is cacheable.
+"""
 
 from dataclasses import fields
 
@@ -53,7 +58,7 @@ _NATIVE_RECORD_TYPES = (
 )
 
 
-def is_native_record(value: object) -> bool:
+def has_native_semantics(value: object) -> bool:
     """Require native behavior at every depth before bypassing repeated analysis.
 
     Frozen containers and value equality do not prove native behavior: an integer
@@ -64,7 +69,7 @@ def is_native_record(value: object) -> bool:
     if type(value) in (str, int, bool, type(None)):
         return True
     if type(value) is tuple:
-        return all(is_native_record(item) for item in value)
+        return all(has_native_semantics(item) for item in value)
     if type(value) in _NATIVE_RECORD_TYPES:
-        return all(is_native_record(getattr(value, field.name)) for field in fields(value))
+        return all(has_native_semantics(getattr(value, field.name)) for field in fields(value))
     return False

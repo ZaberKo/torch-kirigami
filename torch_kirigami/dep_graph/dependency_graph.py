@@ -11,16 +11,17 @@ import torch
 from torch import fx, nn
 
 from ..errors import StaleGraphError
-from .builder import GraphBuilder
+from ..settings import config
 from .capture import fingerprint
 from .capture import validate_attribute_changes as _validate_attribute_changes
+from .construction import _Analyzer
 from .contracts import Constraint, Diagnostic, Impact, ShapeExpr
-from .data import GraphData, resolve_attribute, validate_reference
+from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
 from .operation import CallRef, OperationContext, OperatorRule, OperatorSpec, TensorFacts
-from .propagation import DependencySolver
 from .registry import OperatorRegistry
 from .relations import Relation
 from .selection import Selection, TensorRef
+from .solver import DependencySolver
 
 
 class DependencyGraph:
@@ -31,7 +32,9 @@ class DependencyGraph:
     not modify weights. Rebuild after changes to structure or capture assumptions.
     """
 
-    def __init__(self, data: GraphData) -> None:
+    def __init__(self, data: DependencyGraphState) -> None:
+        if not data.complete or data.fx_graph is None:
+            raise ValueError("DependencyGraph requires completed analysis data")
         self._data = data
         self._solver = DependencySolver(data)
         self._valid = True
@@ -83,28 +86,29 @@ class DependencyGraph:
         """
         if not isinstance(model, nn.Module):
             raise TypeError("model must be an nn.Module")
-        data = GraphBuilder(model, operators).build(tuple(args), dict(kwargs or {}))
+        data = _Analyzer(model, operators).build(tuple(args), dict(kwargs or {}))
         return cls(data)
 
     @property
     def fx_graph(self) -> fx.Graph:
         """Return an inspection copy of the captured FX graph."""
+        assert self._data.fx_graph is not None
         return copy.deepcopy(self._data.fx_graph)
 
     @property
     def relations(self) -> tuple[Relation, ...]:
         """Return the structural relations recorded by operation rules."""
-        return self._data.relations
+        return tuple(self._data.relations)
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
         """Return the constraints checked after propagation reaches a fixed point."""
-        return self._data.constraints
+        return tuple(self._data.constraints)
 
     @property
     def diagnostics(self) -> tuple[Diagnostic, ...]:
         """Return build-time diagnostics, including unsupported captured operations."""
-        return self._data.diagnostics
+        return tuple(self._data.diagnostics)
 
     @property
     def shape_expressions(self) -> Mapping[str, ShapeExpr]:
@@ -141,7 +145,7 @@ class DependencyGraph:
             Aliases do not identify which Python attribute spelling each call used.
         """
         return (
-            self._data.calls
+            tuple(self._data.calls)
             if module_path is None
             else tuple(call for call in self._data.calls if module_path in call.module_paths)
         )
@@ -306,6 +310,10 @@ class DependencyGraph:
 
     def _check_fresh(self) -> None:
         """Reject detectable structural changes without comparing weight values."""
+        if config.analysis_key() != self._data.settings_key:
+            raise StaleGraphError(
+                "Analysis configuration changed; rebuild the graph before using it"
+            )
         if not self._valid or fingerprint(self._data.model) != self._data.fingerprint:
             raise StaleGraphError("Model structure/mode/configuration changed; rebuild the graph")
         for ref in self._data.constant_refs:

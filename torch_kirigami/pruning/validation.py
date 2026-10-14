@@ -10,7 +10,7 @@ from torch import nn
 
 from ..configuration import freeze, thaw
 from ..dep_graph.contracts import Impact
-from ..dep_graph.graph import DependencyGraph
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import OperationContext, TensorFacts, argument
 from ..dep_graph.operators.coordinates import narrow_index, retained_indices
 from ..dep_graph.operators.shapes import evaluate, reevaluate

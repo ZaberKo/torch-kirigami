@@ -2,6 +2,7 @@
 
 import ast
 import importlib
+import inspect
 import json
 from pathlib import Path
 
@@ -42,7 +43,8 @@ def test_every_export_and_internal_class_has_contract_test_links():
     for name in names:
         module, field = name.rsplit(".", 1)
         obj = getattr(importlib.import_module(module), field)
-        covered_definitions.add(f"{obj.__module__}.{obj.__qualname__}")
+        definition = obj if inspect.isclass(obj) or inspect.isroutine(obj) else type(obj)
+        covered_definitions.add(f"{definition.__module__}.{definition.__qualname__}")
     assert not definitions - covered_definitions, (
         f"Missing class contracts: {definitions - covered_definitions}"
     )

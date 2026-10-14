@@ -18,10 +18,10 @@ from ..bindings import (
     reference_signature,
     storage_key,
 )
-from ..configuration import thaw
+from ..configuration import STRUCTURE_ATTRIBUTE, thaw
+from ..settings import config
 from .serialization import decode, encode
 from .state import (
-    STRUCTURE_ATTRIBUTE,
     attribute,
     commit,
     managed_record,
@@ -117,7 +117,7 @@ def _validate_extra_state(
         value: object, active: tuple[int, ...] = (), *, allow_registered: bool = False
     ) -> None:
         """Validate one node in the extra-state acyclic data tree."""
-        if len(active) > 50:
+        if len(active) > config.max_container_depth:
             raise ExecutionError("Checkpoint extra state is too deeply nested")
         if value is None or type(value) in (
             bool,

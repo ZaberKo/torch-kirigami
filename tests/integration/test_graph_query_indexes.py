@@ -9,7 +9,6 @@ import pytest
 import torch
 from torch import nn
 
-import torch_kirigami.dep_graph.selection as selection_module
 from torch_kirigami import (
     DependencyGraph,
     IndexSet,
@@ -19,6 +18,7 @@ from torch_kirigami import (
     Selection,
     ShapeExpr,
     TensorRef,
+    config,
 )
 from torch_kirigami.dep_graph.operation import OperationContext, OperatorSpec
 from torch_kirigami.errors import AnalysisLimitError
@@ -224,8 +224,9 @@ def test_seed_subclasses_keep_incremental_methods() -> None:
 @pytest.mark.parametrize("foreign_first", [False, True])
 @pytest.mark.parametrize("metadata", [False, True])
 def test_seed_coalescing_preserves_invalid_reference_and_limit_failure_order(
-    monkeypatch: pytest.MonkeyPatch, foreign_first: bool, metadata: bool
+    foreign_first: bool, metadata: bool
 ) -> None:
+    config.update(max_parts=2)
     """Report the original first failure when malformed references and limits coexist."""
     graph = DependencyGraph.build(Branched().eval(), args=(torch.randn(3, 4),))
     ref = graph.parameter("left.weight")
@@ -234,20 +235,17 @@ def test_seed_coalescing_preserves_invalid_reference_and_limit_failure_order(
     seeds = [ref.axis(0).select([index]) for index in (0, 2, 4, 1, 3)]
     seeds.insert(0 if foreign_first else len(seeds), bad)
     # The final union would fit one interval, but an earlier prefix exceeds two.
-    monkeypatch.setattr(selection_module, "MAX_PARTS", 2)
     expected_error = ValueError if foreign_first else AnalysisLimitError
     with pytest.raises(expected_error):
         graph.propagate(remove=seeds)
 
 
-def test_seed_coalescing_does_not_hide_intermediate_interval_limits(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_seed_coalescing_does_not_hide_intermediate_interval_limits() -> None:
+    config.update(max_parts=2)
     """A compact final union cannot erase an earlier representation-limit failure."""
     graph = DependencyGraph.build(Branched().eval(), args=(torch.randn(3, 4),))
     ref = graph.parameter("left.weight")
     seeds = [ref.axis(0).select([index]) for index in (0, 2, 4, 1, 3)]
-    monkeypatch.setattr(selection_module, "MAX_PARTS", 2)
     with pytest.raises(AnalysisLimitError):
         graph.propagate(remove=seeds)
 

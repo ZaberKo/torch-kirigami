@@ -9,6 +9,7 @@ from typing import Literal
 
 from ..dep_graph.contracts import Balanced, Constraint, Divisible, Impact
 from ..dep_graph.selection import AxisRef, IndexSet
+from ..settings import config
 from .planner import PlanningContext
 from .ranking import IndependentRanking
 from .types import (
@@ -18,7 +19,6 @@ from .types import (
     StrategyResult,
 )
 
-_SCORE_BATCH_SIZE = 32
 _EMPTY_INDICES = IndexSet()
 
 
@@ -318,7 +318,7 @@ def _rank_candidates(
     axes: tuple[AxisRef, ...],
     exclusions: dict[str, str],
     independent: IndependentRanking | None = None,
-) -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
+) -> tuple[list[Candidate], dict[str, Mapping[AxisRef, IndexSet]]]:
     """Check complete joint influence and score within the bounded impact cache.
 
     The returned summaries exclude already selected axis positions and remain
@@ -327,26 +327,27 @@ def _rank_candidates(
     native statistics join the same global score order, without separate pruning.
     """
     eligible, scores, removals = [], {}, {}
-    proved = independent.score(accepted_impact, axes) if independent is not None else None
-    proved_scores, proved_removals = proved if proved is not None else ({}, {})
-    proved_keys = {candidate.key for candidate, _, _ in independent.candidates} if proved else set()
+    proved = independent.score(accepted_impact) if independent is not None else None
+    proved_scores = proved.scores if proved is not None else {}
+    proved_covered = proved.covered if proved is not None else frozenset()
     accepted_removals = _axis_removals(accepted_impact, axes)
     remaining = [
         candidate
         for candidate in candidates
         if candidate.key in proved_scores
         or (
-            candidate.key not in proved_keys
+            candidate.key not in proved_covered
             and any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
         )
     ]
-    for start in range(0, len(remaining), _SCORE_BATCH_SIZE):
+    batch_size = config.score_batch_size
+    for start in range(0, len(remaining), batch_size):
         batch = []
-        for candidate in remaining[start : start + _SCORE_BATCH_SIZE]:
+        for candidate in remaining[start : start + batch_size]:
             if candidate.key in proved_scores:
                 eligible.append(candidate)
                 scores[candidate.key] = proved_scores[candidate.key]
-                removals[candidate.key] = proved_removals[candidate.key]
+                removals[candidate.key] = proved.removals[candidate.key]
                 exclusions.pop(candidate.key, None)
                 continue
             try:
@@ -437,9 +438,9 @@ def _select(
     counted_axes = context.budget_axes
     axes = tuple(dict.fromkeys((*counted_axes, *(c.axis for c in repair_constraints))))
     accepted_removals = _axis_removals(accepted_impact, axes)
-    independent = IndependentRanking.build(context, metric)
+    independent = IndependentRanking.build(context, metric, axes)
 
-    def rank() -> tuple[list[Candidate], dict[str, dict[AxisRef, IndexSet]]]:
+    def rank() -> tuple[list[Candidate], dict[str, Mapping[AxisRef, IndexSet]]]:
         """Use proved independent statistics; retain ordinary joint scoring otherwise."""
         return _rank_candidates(
             context, metric, context.candidates, accepted_impact, axes, exclusions, independent

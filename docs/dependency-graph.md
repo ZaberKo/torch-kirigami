@@ -4,6 +4,12 @@ The dependency graph answers one question: if you remove these tensor positions,
 
 The graph records operator semantics. A query computes the closure of a joint removal request. The graph does not rank candidates, choose a budget, or change model tensors. See [model support](model-support.md) for capture limits and [operator support](operator-support.md) for built-in rules.
 
+Structural expansion limits use the process-global
+[`config`](pruning.md#global-resource-configuration), including integer literal
+capture and ChannelShuffle mapping. Set these before building a graph. Propagation
+and planning require the same structural settings as construction; changing them
+requires rebuilding. Cache-size changes alone do not invalidate graphs.
+
 ## Main relationships
 
 A `Selection` names positions on one `TensorRef`. `DependencyGraph` follows relations and checks constraints to produce an `Impact`.
