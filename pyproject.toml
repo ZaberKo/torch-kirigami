@@ -52,7 +52,8 @@ addopts = ["-ra", "--strict-config", "--strict-markers", "--import-mode=importli
 [tool.ruff]
 target-version = "py310"
 line-length = 100
-extend-exclude = ["tmp", "dist"]
+# Bundled agent skills are independent tooling, outside the package's style contract.
+extend-exclude = ["tmp", "dist", ".agents/skills"]
 force-exclude = true
 
 [tool.ruff.lint]
