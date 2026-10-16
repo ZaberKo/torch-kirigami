@@ -13,7 +13,7 @@ from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import Operation, OperatorSpec, TensorFacts, argument
 from ..dep_graph.operators.coordinates import narrow_index, retained_indices
-from ..dep_graph.operators.effects import written_inputs
+from ..dep_graph.operators.effects import mutable_parameter_inputs, written_inputs
 from ..dep_graph.operators.shapes import evaluate, reevaluate
 from ..dep_graph.selection import TensorRef
 from ..operator_recipes import AttributeRecipe, TensorRecipe
@@ -162,7 +162,26 @@ def check_forward(
     *,
     meta_outputs: dict[str, tuple[object, object]] | None = None,
 ) -> None:
-    """Verify declared call contracts using compact metadata and original coordinates."""
+    """Check original calls against compact metadata and retained coordinates.
+
+    Args:
+        graph: Dependency graph for the unmodified model.
+        operations: Captured calls in execution order.
+        active: Calls to validate, with specs, requirements, and meta permissions.
+        impact: Joint removal selections and their dependency closure.
+        recipes: Planned tensor replacements indexed by tensor reference ID.
+        attributes: Planned module attribute assignments indexed by path.
+        strides: Proven compact strides indexed by tensor reference ID.
+        meta_outputs: Optional cache of reusable metadata outputs, updated in place.
+
+    Raises:
+        PlanningError: A call cannot preserve its declared compact shape,
+            coordinates, layout, or mutation contract.
+
+    Notes:
+        Model tensors are not modified. Only calls whose rules permit metadata
+        evaluation execute, using meta tensors and copied module configuration.
+    """
     active_by_name = {
         op.name: (spec, requirements, evaluate_on_meta)
         for op, spec, requirements, evaluate_on_meta in active
@@ -252,8 +271,20 @@ def check_forward(
         effects = op.effects
         inplace = effects.writes_inputs is None or bool(effects.writes_inputs)
         if inplace:
+            updates = mutable_parameter_inputs(op.node, effects)
+            parameter_paths = {
+                path for ref in op.inputs if ref.kind == "parameter" for path in ref.paths
+            }
+            buffer_paths = {path for ref in op.inputs if ref.kind == "buffer" for path in ref.paths}
             for source in written_inputs(op.node, effects):
                 producer = operations_by_name.get(source.name)
+                # Capture isolates registered buffers. Parameter updates need an
+                # explicit permission. Neither permits writes through views.
+                if source.op == "get_attr" and (
+                    (source in updates and str(source.target) in parameter_paths)
+                    or (effects.writes_inputs is not None and str(source.target) in buffer_paths)
+                ):
+                    continue
                 if (
                     producer is None
                     or not producer.effects.outputs_are_fresh

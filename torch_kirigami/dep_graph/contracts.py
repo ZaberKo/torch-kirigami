@@ -78,7 +78,11 @@ def chosen(selections: Mapping[str, Selection], tensor: TensorRef) -> Selection:
 
 @dataclass(frozen=True)
 class NonEmpty:
-    """Require at least one position to remain on the given axis."""
+    """Require at least one position to remain on the given axis.
+
+    Attributes:
+        axis: Tensor axis that must retain at least one position.
+    """
 
     axis: AxisRef
 
@@ -103,7 +107,11 @@ class NonEmpty:
 
 @dataclass(frozen=True)
 class Fixed:
-    """Consumer constraint: preserve this axis's structural positions."""
+    """Require a tensor use to preserve this axis's structural positions.
+
+    Attributes:
+        axis: Tensor axis whose positions must remain unchanged.
+    """
 
     axis: AxisRef
 
@@ -206,6 +214,10 @@ class BlockBalance:
         members: Axis containing contiguous blocks of group members.
         block_size: Original number of members in each group.
         node: FX node responsible for this constraint.
+
+    Raises:
+        ValueError: The block size is invalid or the member axis does not match
+            the declared number of groups and members per group.
     """
 
     groups: AxisRef
@@ -259,7 +271,15 @@ class BlockBalance:
 
 @dataclass(frozen=True)
 class Divisible:
-    """Require the retained axis length to be divisible by a positive factor."""
+    """Require the retained axis length to be divisible by a positive factor.
+
+    Attributes:
+        axis: Tensor axis whose retained length is checked.
+        factor: Positive divisor required by the consumer.
+
+    Raises:
+        ValueError: factor is not a positive, non-boolean integer.
+    """
 
     axis: AxisRef
     factor: int
@@ -296,7 +316,14 @@ class Divisible:
 
 @dataclass(frozen=True)
 class Barrier:
-    """Block completeness only when a selection reaches one of these tensors."""
+    """Report an unsupported operation only when a selection reaches its tensors.
+
+    Attributes:
+        refs: Tensor references whose selections activate this barrier.
+        message: Explanation returned in the diagnostic.
+        node: Optional FX node responsible for the barrier.
+        code: Diagnostic category, defaulting to `unsupported`.
+    """
 
     refs: tuple[TensorRef, ...]
     message: str
@@ -321,7 +348,13 @@ class Barrier:
 
 @dataclass(frozen=True)
 class AxisBarrier:
-    """Report unsupported changes to full structural positions on one axis."""
+    """Report unsupported changes to complete positions on one axis.
+
+    Attributes:
+        axis: Tensor axis whose complete cross-sections are protected.
+        message: Explanation returned in the diagnostic.
+        node: Optional FX node responsible for the barrier.
+    """
 
     axis: AxisRef
     message: str
@@ -491,12 +524,15 @@ def _requirement_value(value: object, depth: int = 0) -> object:
 
 @dataclass(frozen=True)
 class ArgumentRef:
-    """Identify one call parameter whose changes an execution requirement verifies.
+    """Identify a call parameter used by a structural contract.
 
-    Args:
+    Attributes:
         name: Canonical keyword name, resolved with the native alias table.
-        position: Positional slot in FX call arguments, including the Tensor receiver.
-        variadic: Whether all remaining positional slots belong to this parameter.
+        position: Position in FX arguments, including any Tensor receiver.
+        variadic: Whether all remaining positional arguments belong to this parameter.
+
+    Operator requirements and tensor effects use this record to locate call
+    arguments without retaining a mutable operation context.
     """
 
     name: str
@@ -516,10 +552,17 @@ class ArgumentRef:
 class AttributeBinding:
     """Bind a qualified module attribute to a structural size expression.
 
-    The expression uses the existing shape-provenance representation. During
-    planning it is evaluated against retained dimensions, without model edits.
-    Bindings travel with execution requirements so propagation has one source
-    of truth for which edits a joint request activates.
+    The expression uses the shape-provenance representation. Planning evaluates
+    it against retained dimensions without editing the model.
+
+    Attributes:
+        target: Qualified path of the module attribute to update.
+        expression: Shape expression that gives the planned value.
+        detail: Human-readable description of the required update.
+
+    Raises:
+        ValueError: target is not a qualified attribute path.
+        TypeError: expression is not a ShapeExpr.
     """
 
     target: str

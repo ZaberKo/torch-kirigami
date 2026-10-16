@@ -113,7 +113,7 @@ class ScaleL1(GroupLasso):
 
     Args:
         graph: Fresh graph tracking parameter identity and shape.
-        parameters: Paths or TensorRefs of one-dimensional BN/gate parameters.
+        parameters: Paths or TensorRefs of one-dimensional scale parameters.
 
     No normalization/gate selection policy is inferred from the model.
     """

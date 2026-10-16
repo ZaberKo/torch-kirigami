@@ -166,10 +166,16 @@ class BlockMap:
 
 @dataclass(frozen=True)
 class AxisRelation:
-    """Map full scoped axis positions bidirectionally through block mappings.
+    """Map scoped axis positions in both directions through block mappings.
 
     Mapping ranges must fit the physical axes. Ports then intersect the mapped
     positions with their scopes, allowing a full-axis map to serve a partition.
+
+    Attributes:
+        left: Source-side logical axis and optional scope.
+        right: Target-side logical axis and optional scope.
+        maps: Block mappings applied in both directions.
+        reason: Explanation attached to propagated selections.
     """
 
     left: AxisPort
@@ -252,6 +258,14 @@ class BroadcastRelation:
     Notes:
         Forward propagation repeats selected regions. Reverse propagation selects
         an original position only after every broadcast copy has been selected.
+
+    Attributes:
+        small: Lower-rank or singleton-dimension tensor.
+        big: Broadcast result tensor.
+        reason: Explanation attached to propagated selections.
+
+    Raises:
+        ValueError: The tensor shapes cannot broadcast from small to big.
     """
 
     small: TensorRef
@@ -304,7 +318,16 @@ class BroadcastRelation:
 
 @dataclass(frozen=True)
 class ReshapeRelation:
-    """Map logical row-major positions between shapes proven compatible by a rule."""
+    """Map row-major positions between shapes with equal element counts.
+
+    Attributes:
+        left: Tensor at one end of the reshape.
+        right: Tensor at the other end of the reshape.
+        reason: Explanation attached to propagated selections.
+
+    Raises:
+        ValueError: The endpoint shapes have different element counts.
+    """
 
     left: TensorRef
     right: TensorRef
@@ -320,7 +343,12 @@ class ReshapeRelation:
         return (self.left, self.right)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Map regions while retaining common leading dimensions symbolically."""
+        """Map regions while retaining common leading dimensions symbolically.
+
+        Raises:
+            ValueError: source does not belong to either endpoint.
+            AnalysisLimitError: The mapped region representation exceeds its limit.
+        """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         target = self.right if source.tensor == self.left else self.left
@@ -371,7 +399,11 @@ class PermuteRelation:
         return (self.left, self.right)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Permute region axes, using the inverse order for reverse propagation."""
+        """Permute region axes, using the inverse order for reverse propagation.
+
+        Raises:
+            ValueError: source does not belong to either endpoint.
+        """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         if source.tensor == self.left:

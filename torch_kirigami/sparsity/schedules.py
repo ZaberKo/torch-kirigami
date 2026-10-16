@@ -22,7 +22,11 @@ def _finite(*values: int | float) -> None:
 
 @dataclass(frozen=True)
 class Constant:
-    """Return a fixed finite value for every nonnegative step."""
+    """Return a fixed finite value for every nonnegative step.
+
+    Attributes:
+        value: Finite value returned at every step.
+    """
 
     value: float
 
@@ -41,6 +45,13 @@ class Polynomial:
 
     Steps before begin return start; steps at/after finish return end. Progress
     is supplied by the caller, so schedules need no mutable checkpoint state.
+
+    Attributes:
+        start: Value at and before the begin step.
+        end: Value at and after the finish step.
+        finish: Step at and after which the schedule returns `end`.
+        begin: Step at and before which the schedule returns `start`.
+        power: Positive exponent applied to normalized progress.
     """
 
     start: float
@@ -72,13 +83,27 @@ class Polynomial:
 
 
 def Linear(start: float, end: float, finish: int, *, begin: int = 0) -> Polynomial:
-    """Construct a linear schedule with explicit endpoint steps."""
+    """Construct a linear schedule with explicit endpoint steps.
+
+    Args:
+        start: Value at and before `begin`.
+        end: Value at and after `finish`.
+        finish: First step that returns `end`.
+        begin: Step at and before which the schedule returns `start`.
+
+    Returns:
+        A polynomial schedule with power one.
+    """
     return Polynomial(start, end, finish, begin)
 
 
 @dataclass(frozen=True)
 class Piecewise:
-    """Return the value at the latest milestone; first milestone must be zero."""
+    """Return the value at the latest milestone; first milestone must be zero.
+
+    Attributes:
+        points: Strictly increasing step/value pairs beginning at step zero.
+    """
 
     points: tuple[tuple[int, float], ...]
 
@@ -119,7 +144,18 @@ def _sets(selection: Mapping[str, Iterable[int]]) -> dict[str, frozenset[int]]:
 def selection_similarity(
     left: Mapping[str, Iterable[int]], right: Mapping[str, Iterable[int]]
 ) -> float:
-    """Average per-domain Jaccard of retained identities, with empty/empty = 1."""
+    """Average per-domain Jaccard of retained identities, with empty/empty = 1.
+
+    Args:
+        left: Retained identities keyed by domain.
+        right: Next retained identities with the same domain keys.
+
+    Returns:
+        Mean Jaccard similarity across domains, from zero to one.
+
+    Raises:
+        ValueError: The mappings have different domain keys.
+    """
     left, right = _sets(left), _sets(right)
     if left.keys() != right.keys():
         raise ValueError("Selection domains changed; reset the statistics")
@@ -151,7 +187,14 @@ class SelectionWindow:
         self._values: list[float] = []
 
     def update(self, selection: Mapping[str, Iterable[int]]) -> float | None:
-        """Observe retained identities; return None until the window is full."""
+        """Observe retained identities; return None until the window is full.
+
+        Args:
+            selection: Retained identities keyed by domain.
+
+        Returns:
+            Mean adjacent-selection similarity once `size` comparisons exist.
+        """
         current = _sets(selection)
         values = list(self._values)
         if self._previous is not None:

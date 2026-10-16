@@ -40,7 +40,13 @@ def has_tensor_hooks(tensor: torch.Tensor) -> bool:
 
 @dataclass(frozen=True)
 class AttributeEdit:
-    """An internal object-state assignment or deletion, prepared before commit."""
+    """An internal object-state assignment or deletion, prepared before commit.
+
+    Attributes:
+        path: Qualified path to the object attribute.
+        value: Replacement value when `delete` is false.
+        delete: Whether to remove the attribute instead of assigning a value.
+    """
 
     path: str
     value: object = None

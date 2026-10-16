@@ -80,3 +80,21 @@ def written_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
         )
         fx.map_arg(locations, lambda item: result.add(item) or item)
     return result
+
+
+def mutable_parameter_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
+    """Resolve arguments permitted to update direct registered parameters.
+
+    Callers must check that each source is a direct parameter binding. The
+    declaration does not permit mutation through an unproven alias or view.
+    """
+    if not effects.mutable_parameters:
+        return set()
+    return written_inputs(
+        node,
+        TensorEffects(
+            writes_inputs=tuple(
+                ref for ref in effects.mutable_parameters if isinstance(ref, ArgumentRef)
+            )
+        ),
+    )

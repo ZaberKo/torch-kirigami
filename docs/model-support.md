@@ -20,7 +20,7 @@ Examples provide metadata. They do not specialize tensor-dependent Python contro
 | Stage | Result |
 | --- | --- |
 | Capture or metadata execution | Capture raises `CaptureError` and returns no graph. |
-| Operator analysis | Missing semantics create barriers over affected dependencies. Independent subgraphs can remain queryable. Unexpected extension errors are not converted to barriers. |
+| Operator analysis | Missing semantics create barriers over affected dependencies and remain visible in `graph.diagnostics`. Independent subgraphs remain queryable. Unexpected extension errors are not converted to barriers. |
 | Manual planning | The full request must be executable. Invalid requests raise `PlanningError`. Planning does not drop requested selections. |
 | Automatic planning | The default strategy keeps verified combinations and reports exclusions and search limits. An unmet target raises before mutation. Search limits do not prove mathematical infeasibility. |
 | Application | Application checks the model and plan again. It does not choose a new candidate set. |
@@ -41,7 +41,24 @@ Metadata leaves can be tensors, `None`, `bool`, `int`, `float`, `str`, `torch.dt
 
 Capture rejects empty tensor examples and results.
 
-Capture rejects forward hooks, unsupported registration callbacks, detected unsafe parameter or alias writes, unsupported storage, and metadata values that it cannot represent. It also rejects inputs or buffers that share storage with parameters. `Embedding(max_norm=...)` can mutate parameters, so capture rejects it.
+Capture rejects forward hooks, unsupported registration callbacks, undeclared parameter writes, unsupported storage, and metadata values that it cannot represent.
+It also rejects inputs or buffers that share storage with parameters.
+
+`nn.Embedding` and `F.embedding` declare their native `max_norm` updates.
+Capture warns before execution and permits these updates on directly bound parameters.
+Embedding renormalizes only vocabulary rows used by the example.
+These changes remain in the original model, including when a later operation causes capture to fail.
+Capture preserves existing gradients, which may be stale.
+Magnitude metrics read the updated weights.
+Recompute gradients before Taylor scoring if the update invalidates prior calibration.
+Planning itself remains read-only.
+For `F.embedding` with a registered buffer as its weight, capture updates only the isolated buffer copy.
+Planning supports this form and does not change the original buffer.
+The parameter-update warning does not apply to isolated buffer writes or writes to fresh temporary tensors.
+
+Warnings use Python's `warnings` module, not `print`.
+Callers can record, filter, or promote them to errors.
+Promoting the parameter-update warning to an error stops metadata execution before these updates occur.
 
 Some Python tests can run on FX proxies without leaving a graph node. Tensor identity checks, `isinstance(x, torch.Tensor)`, and runtime-state tests such as `x.grad is None` can silently select a branch. Capture does not guarantee an error for every such case. Treat models with these decisions as outside the current contract.
 

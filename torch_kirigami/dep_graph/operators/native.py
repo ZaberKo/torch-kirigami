@@ -428,7 +428,22 @@ def permute(operation: Operation) -> OperatorSpec:
     x, y = one(operation.argument("input", 0)), one(operation.result)
     target = operation.node.target
     rank = len(x.shape)
-    if target in (
+    if target in ("movedim", "moveaxis", torch.movedim, torch.moveaxis):
+        if not rank:
+            # PyTorch permits moving the virtual scalar dimension 0 (or -1).
+            return OperatorSpec((PermuteRelation(x, y, (), operation.node.name),))
+        source = operation.argument("source", 1)
+        destination = operation.argument("destination", 2)
+        source = (source,) if isinstance(source, int) else source
+        destination = (destination,) if isinstance(destination, int) else destination
+        if not isinstance(source, (tuple, list)) or not isinstance(destination, (tuple, list)):
+            raise UnsupportedOperation("Moved dimensions must be static")
+        source = tuple(d % rank for d in source)
+        destination = tuple(d % rank for d in destination)
+        dims = [d for d in range(rank) if d not in source]
+        for dest, src in sorted(zip(destination, source, strict=True)):
+            dims.insert(dest, src)
+    elif target in (
         "transpose",
         torch.transpose,
         "swapaxes",
@@ -478,6 +493,29 @@ def reshape(operation: Operation) -> OperatorSpec:
         )
         return OperatorSpec((relation,), requirements=(requirement_,))
     target = operation.node.target
+    if target in ("unflatten", torch.unflatten):
+        dim = operation.argument("dim", 1)
+        if not isinstance(dim, int):
+            raise UnsupportedOperation("Named unflatten dimensions are unsupported")
+        expression = shape_expression(operation, operation.raw_argument("sizes", 2))
+        if not has_known_provenance(expression):
+            raise UnsupportedOperation(
+                "Cannot prove unflatten size argument provenance. Use tensor.size(dim), "
+                "supported integer arithmetic, or -1, and rebuild the dependency graph."
+            )
+        # Reuse original-call evaluation: sizes may follow proven shape expressions,
+        # while dim stays guarded. Unflatten only splits one axis, so unknown input
+        # strides do not require the merge proof used by view.
+        requirement_ = Requirement(
+            "dimension_transform",
+            operation.node.name,
+            (x, y),
+            "Check original unflatten sizes against retained output dimensions. "
+            "Fixed factors need original-forward editing or an explicit attribute binding",
+            (("input", x), ("output", y)),
+            arguments=(ArgumentRef("sizes", 2),),
+        )
+        return OperatorSpec((relation,), requirements=(requirement_,))
     if target in ("reshape", "view", torch.reshape):
         raw = operation.raw_argument("shape", 1, variadic=True)
         expression = shape_expression(operation, raw)
@@ -700,8 +738,12 @@ def softmax(operation: Operation) -> OperatorSpec:
     result = pointwise(operation)
     x = one(operation.argument("input", 0))
     dim = operation.module.dim if operation.module is not None else operation.argument("dim", 1)
+    if dim is None:
+        # PyTorch's legacy default depends only on rank. Compaction preserves
+        # rank, so the same axis remains valid. Native execution emits its warning.
+        dim = 0 if len(x.shape) in (0, 1, 3) else 1
     if not isinstance(dim, int):
-        raise UnsupportedOperation("Softmax requires an explicit static reduction dimension")
+        raise UnsupportedOperation("Softmax requires a static reduction dimension")
     requirement_ = Requirement(
         "reduction_domain",
         operation.node.name,

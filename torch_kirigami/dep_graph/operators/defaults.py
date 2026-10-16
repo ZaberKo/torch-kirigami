@@ -157,15 +157,33 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
     functions([operator.matmul, torch.matmul, torch.mm, torch.bmm], MatmulRule, fresh=True)
     methods(["matmul", "mm", "bmm"], MatmulRule, fresh=True)
     functions(
-        [torch.permute, torch.transpose, torch.swapaxes, torch.swapdims, torch.t],
+        [
+            torch.permute,
+            torch.transpose,
+            torch.swapaxes,
+            torch.swapdims,
+            torch.t,
+            torch.movedim,
+            torch.moveaxis,
+        ],
         PermuteRule,
         fresh=False,
     )
-    methods(["permute", "transpose", "swapaxes", "swapdims", "t"], PermuteRule, fresh=False)
-    functions(
-        [torch.reshape, torch.flatten, torch.squeeze, torch.unsqueeze], ReshapeRule, fresh=False
+    methods(
+        ["permute", "transpose", "swapaxes", "swapdims", "t", "movedim", "moveaxis"],
+        PermuteRule,
+        fresh=False,
     )
-    methods(["reshape", "view", "flatten", "squeeze", "unsqueeze"], ReshapeRule, fresh=False)
+    functions(
+        [torch.reshape, torch.flatten, torch.squeeze, torch.unsqueeze, torch.unflatten],
+        ReshapeRule,
+        fresh=False,
+    )
+    methods(
+        ["reshape", "view", "flatten", "squeeze", "unsqueeze", "unflatten"],
+        ReshapeRule,
+        fresh=False,
+    )
     functions([torch.cat, torch.concat, torch.concatenate], ConcatenateRule, fresh=True)
     functions([torch.split, torch.unbind], SplitRule, fresh=False)
     methods(["split", "unbind"], SplitRule, fresh=False)
@@ -411,7 +429,8 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
 
     functions([torch.addmm, torch.baddbmm], AddmmRule, fresh=True)
     methods(["addmm", "baddbmm"], AddmmRule, fresh=True)
-    functions([torch.einsum], EinsumRule, fresh=True)
+    # EinsumRule distinguishes product allocation from possible single-input views.
+    functions([torch.einsum], EinsumRule, fresh=False)
     functions([F.scaled_dot_product_attention], AttentionRule, fresh=True)
     modules([nn.MultiheadAttention], MultiheadAttentionRule, fresh=True)
 

@@ -7,7 +7,7 @@ from dataclasses import replace
 import torch
 from torch import nn
 
-from ...errors import CaptureError, UnsupportedOperation
+from ...errors import UnsupportedOperation
 from ..contracts import AxisBarrier, Requirement
 from ..operation import (
     CandidateAxis,
@@ -131,17 +131,6 @@ def prelu(operation: Operation) -> OperatorSpec:
         if operation.module is not None:
             requirements.append(requirement(operation, "num_parameters", x, channel))
     return OperatorSpec(tuple(relations), tuple(constraints), tuple(requirements))
-
-
-def embedding_preflight(node: torch.fx.Node, module: nn.Module | None) -> None:
-    """Reject Embedding renormalization before it can modify original parameters."""
-    max_norm = (
-        module.max_norm
-        if module is not None
-        else node.kwargs.get("max_norm", node.args[3] if len(node.args) > 3 else None)
-    )
-    if max_norm is not None:
-        raise CaptureError(f"{node.name}: Embedding max_norm writes parameters during forward")
 
 
 def embedding(operation: Operation) -> OperatorSpec:

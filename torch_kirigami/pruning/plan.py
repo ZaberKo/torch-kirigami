@@ -28,6 +28,16 @@ class PruningPlan:
 
     A recipe may be replayed on a compatible original model. Weights may change
     after scoring; applying a saved decision never recalculates its importance.
+
+    Attributes:
+        analysis: Frozen dependency analysis for the requested removal.
+        recipes: Tensor replacement recipes for physical compaction.
+        attributes: Module attribute edits required by the compact structure.
+        selected: Candidate keys selected by an automatic strategy, if any.
+        selection_report: Measured budget outcome or manual-selection details.
+        notes: Explanatory notes attached to the plan.
+        before: Structural preconditions for applying the plan.
+        after: Expected structure after applying the plan.
     """
 
     analysis: AnalysisSummary
@@ -62,7 +72,11 @@ class PruningPlan:
             raise ValueError("Duplicate selected candidate keys")
 
     def to_dict(self) -> dict[str, object]:
-        """Export basic data suitable for weights-only torch loading."""
+        """Export basic data suitable for weights-only torch loading.
+
+        Returns:
+            A dictionary containing the plan's closed record schema.
+        """
         return {
             "format": "torch-kirigami.plan",
             "plan": encode(self, record_types=PLAN_TYPES),
@@ -70,7 +84,17 @@ class PruningPlan:
 
     @classmethod
     def from_dict(cls, data: object) -> PruningPlan:
-        """Load and validate a portable plan without importing model classes."""
+        """Load and validate a portable plan without importing model classes.
+
+        Args:
+            data: Dictionary returned by `to_dict()`.
+
+        Returns:
+            A validated portable plan.
+
+        Raises:
+            ValueError: The envelope, schema, or plan records are invalid.
+        """
         if not isinstance(data, dict) or set(data) != {"format", "plan"}:
             raise ValueError("Invalid plan envelope")
         if data["format"] != "torch-kirigami.plan":
@@ -85,7 +109,11 @@ class PruningPlan:
         return result
 
     def explain(self) -> str:
-        """Describe the joint decision, budget, and physical modifications."""
+        """Describe the joint decision, budget, and physical modifications.
+
+        Returns:
+            Human-readable plan details.
+        """
         lines = [f"Pruning plan: {self.analysis.status}; {len(self.recipes)} tensor replacements"]
         if isinstance(self.selection_report, ParameterReport):
             report = self.selection_report
@@ -113,7 +141,15 @@ class PruningPlan:
 
 @dataclass(frozen=True)
 class PruningResult:
-    """Execution details returned separately from the original model."""
+    """Execution details returned separately from the original model.
+
+    Attributes:
+        plan: Portable plan that produced this result.
+        structure: Model structure after application.
+        parameter_map: Mapping from replaced parameters to their compact versions.
+        coordinate_maps: Original-to-compact region mappings for replaced tensors.
+        report: Execution notes, including optimizer and graph rebuild requirements.
+    """
 
     plan: PruningPlan
     structure: ModelStructure

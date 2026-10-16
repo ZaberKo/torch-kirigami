@@ -285,7 +285,13 @@ It does not create a fresh query or prove that a plan can execute.
 
 Build uses FX symbolic tracing followed by metadata execution. Example tensors provide concrete metadata for this capture. They do not specialize tensor-dependent Python branches.
 
-Capture binds copied example inputs and copied registered buffers while it traces and runs metadata. It restores buffer bindings, module training flags, and protected CPU and initialized-CUDA RNG state on success and failure. It does not copy parameter storage. Forward code must not mutate parameters or perform external side effects. Concurrent use of the same model during capture is outside the contract.
+Capture binds copied example inputs and copied registered buffers while it traces and runs metadata.
+It restores buffer bindings, module training flags, and protected CPU and initialized-CUDA RNG state on success and failure.
+It does not copy parameter storage.
+Rules can explicitly permit parameter value updates through `TensorEffects.mutable_parameters`.
+Capture warns before those updates execute, and does not roll them back on failure.
+Other parameter writes and external side effects remain outside the contract.
+Do not use the same model concurrently during capture.
 
 Capture rejects forward hooks, unsupported global registration callbacks, recognized unsafe writes, unsupported tensor storage, zero-element tensor examples or results, and unsupported metadata values. Forward argument binding follows the module's signature and applies defaults.
 
@@ -427,6 +433,17 @@ Unknown layout is conservative. The validator cannot infer a compact stride from
 `TensorEffects` identifies written arguments through `ArgumentRef`.
 `writes_inputs=()` declares read-only inputs.
 `writes_inputs=None` means unknown writes.
+`mutable_parameters` permits value-only changes to directly bound registered `nn.Parameter` objects.
+Module calls use relative parameter paths, such as `("weight",)`.
+Function calls use `ArgumentRef` entries that also appear in `writes_inputs`.
+Capture and planning use the same argument resolver, including containers and variadic arguments.
+These declarations must preserve tensor identity, shape, layout, dtype, device, and `requires_grad`.
+They do not permit writes through unproven parameter aliases or views.
+The built-in Embedding rule uses this field for native `max_norm` renormalization.
+Build warns that scores will read updated weights and prior gradients may be stale.
+Declared writes to directly bound buffers need no parameter-update permission.
+Capture isolates these buffers. Planning checks their compact calls without changing the original buffers.
+Writes through views still need an alias proof.
 `outputs_are_fresh=True` guarantees that each tensor result has storage independent of inputs, module state, and other outputs.
 It does not guarantee contiguous layout.
 

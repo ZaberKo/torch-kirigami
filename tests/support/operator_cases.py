@@ -13,6 +13,21 @@ from torch.nn import functional as F
 
 @dataclass
 class NativeCase:
+    """Independent input and expected-removal data for one native operator case.
+
+    Attributes:
+        args: Positional inputs passed to the native operation.
+        seed: Tensor and axis used to start dependency propagation.
+        axis: Seed axis that the case removes.
+        output_axes: Expected affected axis per output, or `None` if unaffected.
+        removed: Original seed coordinates removed by the case.
+        output_removed: Expected removed coordinates per operation output.
+        kwargs: Keyword inputs passed to the native operation.
+        module: Module that owns parameters or buffers for the operation.
+        companions: Additional tensor, axis, and coordinate expectations.
+        expression: Whether the case exercises shape-expression handling.
+    """
+
     args: tuple
     seed: torch.Tensor
     axis: int
@@ -357,12 +372,15 @@ def callable_case(kind, target):
         return NativeCase(
             args, x, 2 if batched else 1, (None,), companions=((right, 1 if batched else 0, (1,)),)
         )
-    if public_name in {"permute", "transpose", "swapaxes", "swapdims", "t"}:
+    if public_name in {"permute", "transpose", "swapaxes", "swapdims", "t", "movedim", "moveaxis"}:
         if public_name == "t":
             x = sample((2, 6))
             return NativeCase((x,), x, 1, (0,))
         args = (x, (0, 2, 1)) if public_name == "permute" else (x, 1, 2)
         return NativeCase(args, x, 1, (2,))
+    if public_name == "unflatten":
+        x = sample((2, 6))
+        return NativeCase((x, 1, (2, 3)), x, 1, (2,), (1, 4))
     if public_name in {"reshape", "view", "flatten", "squeeze", "unsqueeze"}:
         if public_name in {"reshape", "view"}:
             x = sample((2, 6))

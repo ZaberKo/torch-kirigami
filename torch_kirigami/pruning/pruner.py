@@ -156,11 +156,30 @@ class Pruner:
         budget: ChannelCount | ChannelRatio | ParameterBudget,
         strategy: Strategy[PlanningContext],
     ) -> tuple[nn.Module, PruningResult]:
-        """Plan and apply one automatic round with an explicit candidate space."""
+        """Plan and apply one automatic round with an explicit candidate space.
+
+        Args:
+            space: Candidate universe for this round.
+            budget: Final parameter or channel limits.
+            strategy: Selection strategy for the supplied candidates.
+
+        Returns:
+            The original model and its pruning result.
+        """
         return self.apply(self.plan(space, budget=budget, strategy=strategy))
 
     def plan_remove(self, remove: Iterable[Selection]) -> PruningPlan:
-        """Plan exact manual selections, without supplementing or dropping seeds."""
+        """Plan exact manual selections, without supplementing or dropping seeds.
+
+        Args:
+            remove: Original-coordinate selections to apply as one request.
+
+        Returns:
+            A portable plan for the requested selections.
+
+        Raises:
+            PlanningError: Influence is incomplete or has no verified recipe.
+        """
         graph = self._validate_graph()
         before = snapshot(self.model, guarded=graph.constant_guards())
         versions = _snapshot(graph)
@@ -188,6 +207,10 @@ class Pruner:
 
         Returns:
             A portable static plan. No discovery, metric, or strategy is implicit.
+
+        Raises:
+            PlanningError: The strategy result misses its target or cannot be executed.
+            TypeError: The candidate space or strategy result has the wrong type.
         """
         graph = self._validate_graph()
         if not isinstance(space, CandidateSpace):
@@ -300,6 +323,15 @@ class Pruner:
 
         All allocations precede binding changes. A portable decision is reusable
         on compatible original structures, independently of the originating Pruner.
+
+        Args:
+            plan: Validated portable plan for a compatible original model.
+
+        Returns:
+            The original model and execution details.
+
+        Raises:
+            ExecutionError: The plan is invalid, the model changed, or commit failed.
         """
         if not isinstance(plan, PruningPlan):
             raise ExecutionError("Expected a PruningPlan")

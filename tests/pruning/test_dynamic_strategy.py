@@ -228,7 +228,11 @@ def test_strategy_result_rejects_ambiguous_records(
 
 @dataclass(frozen=True)
 class NeedsPartner:
-    """Permit the first coordinate only after the second is also selected."""
+    """Permit the first coordinate only after the second is also selected.
+
+    Attributes:
+        axis: Tensor axis checked for the paired-coordinate condition.
+    """
 
     axis: AxisRef
 

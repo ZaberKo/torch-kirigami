@@ -7,6 +7,7 @@ and test totals describe the recorded development stage; use the
 
 | Note | Scope |
 | --- | --- |
+| [Operator registration audit](operator-audit.md) | PyTorch 2.14 coverage gaps, dimension transforms, and retained support boundaries. |
 | [剪枝规划性能优化](planning-performance.md) | Planning bottlenecks, optimization boundaries and historical measurements. |
 | [代码可读性与维护性审阅](maintainability-review.md) | Refactoring decisions, rejected optimizations and review-stage verification. |
 

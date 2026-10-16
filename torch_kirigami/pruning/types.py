@@ -71,7 +71,13 @@ class ExecutionError(KirigamiError):
 
 @dataclass(frozen=True)
 class Candidate:
-    """A named batch of original-coordinate seeds, not a global block constraint."""
+    """A named batch of original-coordinate seeds, not a global block constraint.
+
+    Attributes:
+        key: Unique label within a candidate space.
+        remove: Nonempty selections to analyze as one candidate request.
+        axis: Optional logical channel axis represented by this candidate.
+    """
 
     key: str
     remove: tuple[Selection, ...]
@@ -91,9 +97,13 @@ class Candidate:
 class ParameterBudget:
     """Upper bound on the final whole-model parameter count.
 
-    All unique Parameter objects count, including frozen and protected tensors;
-    buffers do not. A strategy must reach this absolute target before a plan can
-    be returned. Structural granularity can make the result smaller than the cap.
+    All elements of each unique Parameter count, including frozen and protected
+    tensors; buffers do not. A strategy must reach this absolute target before a
+    plan can be returned. Structural granularity can make the final count fall below the cap.
+
+    Attributes:
+        max_params: Maximum number of parameter elements after pruning. Shared
+            Parameter objects count once; buffers do not count.
     """
 
     max_params: int
@@ -124,12 +134,14 @@ class ParameterBudget:
 class ChannelRatio:
     """Reduction fraction converted to upper bounds on final channel widths.
 
-    Args:
-        ratio: Fraction in [0, 1). Its decimal representation defines integer
-            remaining-width targets, which round down. Use ChannelCount for absolute caps.
-        scope: Local final-width caps or a global sum without hidden local caps.
+    The candidate space supplies the logical channel axes. Its decimal ratio
+    defines integer remaining-width targets, which round down. Use ChannelCount
+    for absolute caps.
 
-    The candidate space supplies the logical channel axes.
+    Attributes:
+        ratio: Fraction of original widths to remove, per axis for local scope or
+            from the summed widths for global scope.
+        scope: `local` for per-axis caps or `global` for one sum cap.
     """
 
     ratio: float
@@ -145,13 +157,13 @@ class ChannelRatio:
 class ChannelCount:
     """Upper bounds on final logical channel widths.
 
-    Args:
-        max_channels: Local tuple aligned with channel_axes, or one global sum cap.
-        channel_axes: Explicit unique logical axes, matching the candidate space in order.
-        scope: Local per-axis targets or a global target without hidden local caps.
-
     Targets may exceed current widths, meaning no further reduction is required.
     A zero target is allowed as input but may be structurally unattainable.
+
+    Attributes:
+        max_channels: Final per-axis caps, or one global sum cap.
+        channel_axes: Logical axes covered by the caps.
+        scope: Whether caps apply locally or to the global sum.
     """
 
     max_channels: int | tuple[int, ...]
@@ -220,10 +232,10 @@ class StrategyResult:
     The planner independently verifies keys, joint dependencies, execution and
     budgets. Resource measurements and query counts are not strategy assertions.
 
-    Args:
-        keys: Distinct registered keys, in accepted order.
-        stop_reason: Target reached, no further accepted progress, or trial limit.
-        exclusions: Candidate key and reason pairs explaining rejected choices.
+    Attributes:
+        keys: Selected candidate keys in acceptance order.
+        stop_reason: Why the strategy stopped selecting candidates.
+        exclusions: Rejected candidate keys and their reasons.
     """
 
     keys: tuple[str, ...]
@@ -295,7 +307,12 @@ class MetricContext(Protocol):
 
 @dataclass(frozen=True)
 class CoordinateSegment:
-    """Map an old Cartesian region into a compact Cartesian region in order."""
+    """Map an old Cartesian region into a compact Cartesian region in order.
+
+    Attributes:
+        source: Region in the original tensor coordinates.
+        destination: Corresponding region in the compact tensor coordinates.
+    """
 
     source: Region
     destination: Region
@@ -311,7 +328,16 @@ class CoordinateSegment:
 
 @dataclass(frozen=True)
 class ParameterReport:
-    """Exact parameter counts and search diagnostics, without live model state."""
+    """Exact parameter counts and search diagnostics, without live model state.
+
+    Attributes:
+        before_params: Unique parameter elements before pruning.
+        after_params: Unique parameter elements after pruning.
+        max_params: Requested final parameter cap.
+        trials: Joint selection attempts made by the strategy.
+        limit_reached: Whether the strategy stopped at its attempt limit.
+        exclusions: Candidate keys and reasons for rejected choices.
+    """
 
     before_params: int
     after_params: int
@@ -345,7 +371,18 @@ class ParameterReport:
 
 @dataclass(frozen=True)
 class SelectionReport:
-    """Original widths, final-width limits and measured joint removals for this round."""
+    """Original widths, final-width limits and measured joint removals for this round.
+
+    Attributes:
+        channel_axes: Logical axes counted by the report.
+        widths: Original widths aligned with `channel_axes`.
+        removed: Measured removals aligned with `channel_axes`.
+        targets: Final-width caps, empty for manual reports.
+        scope: `manual`, `local`, or `global` target scope.
+        trials: Joint selection attempts made by the strategy.
+        limit_reached: Whether the strategy stopped at its attempt limit.
+        exclusions: Candidate keys and reasons for rejected choices.
+    """
 
     channel_axes: tuple[AxisRef, ...] = ()
     widths: tuple[int, ...] = ()
@@ -413,7 +450,16 @@ class SelectionReport:
 
 @dataclass(frozen=True)
 class AnalysisSummary:
-    """Frozen original-coordinate analysis facts, independent of a live graph."""
+    """Frozen original-coordinate analysis facts, independent of a live graph.
+
+    Attributes:
+        status: `resolved`, `unresolved`, or `conflict` analysis status.
+        requested: Original-coordinate requests submitted for analysis.
+        selections: Propagated removal closure, including partial results when
+            the analysis is unresolved or conflicts with constraints.
+        reasons: Diagnostic messages associated with the analysis.
+        tensors: Portable tensor-reference catalog for selections.
+    """
 
     status: str
     requested: tuple[Selection, ...]
@@ -453,7 +499,14 @@ class AnalysisSummary:
 
 @dataclass(frozen=True)
 class ModuleState:
-    """Module type, aliases, ordinary configuration, and registered slot schema."""
+    """Module type, aliases, ordinary configuration, and registered slot schema.
+
+    Attributes:
+        paths: All registered paths that refer to the module.
+        type_name: Fully qualified Python type name.
+        attributes: Frozen ordinary attribute names and values.
+        slots: Registered parameter/buffer names, kinds, and persistence flags.
+    """
 
     paths: tuple[str, ...]
     type_name: str
@@ -485,7 +538,21 @@ class ModuleState:
 
 @dataclass(frozen=True)
 class TensorState:
-    """Tensor binding facts without storage or process-local object identities."""
+    """Tensor binding facts without storage or process-local object identities.
+
+    Attributes:
+        paths: Registered names that refer to the tensor.
+        kind: `parameter` or `buffer`.
+        shape: Tensor dimensions.
+        stride: Tensor strides.
+        dtype: Serialized dtype name.
+        device: Serialized device name.
+        requires_grad: Whether the tensor requires gradients.
+        persistent: Registration persistence flags aligned with `paths`.
+        storage_aliases: Registered tensor paths sharing this storage.
+        type_name: Tensor subclass type name.
+        values: Optional integer values used to guard structural tensors.
+    """
 
     paths: tuple[str, ...]
     kind: str
@@ -526,7 +593,13 @@ class TensorState:
 
 @dataclass(frozen=True)
 class ModelStructure:
-    """Immutable structural state usable without an FX graph or model reference."""
+    """Immutable structural state usable without an FX graph or model reference.
+
+    Attributes:
+        modules: Module type, configuration, alias, and slot records.
+        tensors: Registered tensor metadata and structural guards.
+        references: Frozen ordinary references and alias relationships.
+    """
 
     modules: tuple[ModuleState, ...]
     tensors: tuple[TensorState, ...]

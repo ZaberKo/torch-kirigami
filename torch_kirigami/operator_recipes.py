@@ -21,6 +21,13 @@ class TensorRecipe:
 
     Segments are disjoint regions in the original tensor. Concatenation defines
     the old-to-new coordinate mapping without allocating an elementwise map.
+
+    Attributes:
+        tensor: Original tensor reference and its captured metadata.
+        segments: Retained source regions in concatenation order.
+        concat_dim: Dimension along which the regions are concatenated.
+        memory_format: Layout used for the compact tensor.
+        shape: Compact tensor shape after applying the segments.
     """
 
     tensor: TensorRef
@@ -61,7 +68,13 @@ class TensorRecipe:
 
 @dataclass(frozen=True)
 class AttributeRecipe:
-    """Assign a verified attribute; lists use detached FrozenList configuration."""
+    """Assign a verified attribute; lists use detached FrozenList configuration.
+
+    Attributes:
+        path: Qualified path to the module attribute.
+        old: Captured value required before the edit.
+        new: Value to assign after validation.
+    """
 
     path: str
     old: Any
@@ -90,6 +103,12 @@ class OperatorRecipe:
 
     Custom rules are responsible for proving original-forward compatibility.
     Output strides can be supplied when proved, allowing downstream view checks.
+
+    Attributes:
+        tensors: Tensor recipes for this call.
+        attributes: Module attribute recipes for this call.
+        notes: Explanatory notes emitted with the compiled plan.
+        output_strides: Optional proved output strides keyed by tensor reference.
     """
 
     tensors: tuple[TensorRecipe, ...] = ()

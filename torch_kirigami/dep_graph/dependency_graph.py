@@ -78,8 +78,9 @@ class DependencyGraph:
 
         Notes:
             Examples provide metadata; they do not specialize dynamic Python branches.
-            Inputs and registered buffers are isolated, but forward must not mutate
-            parameters or external state.
+            Inputs and registered buffers are isolated. Explicitly declared
+            parameter value updates execute with a warning and are not rolled
+            back. Other parameter writes and external side effects are unsupported.
             Tensor identity/type tests and runtime-state Python decisions (e.g.
             x.grad is None) are outside the capture contract. FX can silently omit
             them; successful construction does not prove their absence or correctness.

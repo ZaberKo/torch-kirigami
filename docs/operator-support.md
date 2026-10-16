@@ -4,6 +4,27 @@ Support applies to one captured call, its arguments, the requested axes, and the
 
 Rules match exact module classes, function objects, and Tensor method names. A custom subclass does not inherit a base module's rule. An opaque registration keeps a callable boundary where FX supports it. The rule author then owns that boundary's semantics.
 
+## Module, function, and Tensor method forms
+
+All three forms use the same `OperatorRule` contract.
+The registry matches the target that FX records, not equivalent mathematical expressions.
+
+| Call form | Registration | Match |
+| --- | --- | --- |
+| `SomeModule(...)` | `registry.register(SomeModule, rule)` | Exact module class. |
+| `F.some_function(...)`, `torch.some_function(...)`, or a custom function | `registry.register(function, rule)` | Function object. |
+| `tensor.some_method(...)` | `registry.register_method("some_method", rule)` | Tensor method name. |
+
+`F` denotes `torch.nn.functional`.
+Built-in registrations cover functions such as `F.linear`, `F.conv2d`, and `F.scaled_dot_product_attention`.
+Support for one spelling does not imply support for every function alias or Tensor method.
+
+FX can expand a custom Python function into supported operations without a custom rule.
+Use `opaque=True` to request a separate function call through FX's public wrapping mechanism.
+The function must still satisfy FX capture requirements.
+For function and Tensor method calls, `Operation.module` is `None`.
+Rules obtain weights and other operands through `Operation.argument()` rather than module bindings.
+
 ## Support stages
 
 A call can pass capture and still lack a structural rule. A rule can propagate coordinates while a constraint rejects the requested change. A valid dependency result can still lack a safe model edit.
@@ -32,16 +53,16 @@ This table lists the main structural behavior and the primary boundary for each 
 | Linear | Module and functional input/output features, weight rows/columns, and bias. Functional rank-one weights have a supported rule. | Exact registered spelling. Original call arguments must remain valid. |
 | Convolution | Conv and ConvTranspose 1D–3D, including ordinary, grouped, and depthwise channels. Partitioned weights compact by group and retain group order. | Spatial and kernel axes stay fixed. Group constraints apply. |
 | Normalization | BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, PReLU, and `normalize`. Affine parameters and statistics follow feature axes. | GroupNorm keeps its group count and balances retained channels. Normalization uses the compact domain. |
-| Embedding | Feature width and downstream consumers. | Vocabulary rows stay fixed. Forward mutates weights when the caller sets `max_norm`. Capture rejects that option. |
+| Embedding | Module and functional feature width and downstream consumers. | Vocabulary rows stay fixed. With `max_norm`, capture warns and permits native updates to directly bound parameter values. |
 | Pooling and interpolation | Batch/channel correspondence. Supported max-pooling values and indices remain paired. | Spatial coordinates stay fixed. |
 | Padding | Coordinate correspondence on axes that padding does not change. | Padded or cropped axes stay fixed, even if output size matches input size. |
 | Elementwise operations | Registered arithmetic, comparisons, activations, broadcasting, `where`, and `masked_fill`. | Exact registered spellings. Mutation and alias checks still apply. |
 | Casts and storage calls | Coordinate correspondence for dtype/device conversion, clone, detach, and contiguous. | A call can alias input storage. View and copy behavior must satisfy alias checks. |
 | Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, and `baddbmm` map free, contracted, and broadcast batch axes. | Original ranks and call semantics must remain valid. |
-| Einsum | Explicit equations with free and contracted labels, including supported ellipsis broadcasting. | Requires an explicit string output. Rules reject repeated labels inside an operand and do not support diagonal semantics. |
+| Einsum | String equations with explicit or implicit outputs, repeated input labels, reductions, and supported ellipsis broadcasting. Repeated axes retain matching original positions. | Rules require string equations, not the sublist format. Outputs can share input storage. In-place consumers and subsequent views require alias and stride checks. |
 | Concatenation and partitioning | `cat`, `stack`, `split`, `chunk`, and `unbind` map offsets and captured ports. | Stack/unbind port counts stay fixed. Other call arguments must preserve retained coordinates. |
 | Indexing | Static basic slices, `narrow`, and `index_select` coordinate maps. | Basic slices need positive steps. `index_select` needs a registered constant integer vector. The vector is not rewritten. |
-| Shape transforms | Permute, transpose, reshape/view, flatten, squeeze/unsqueeze, and supported shape provenance. | Incompatible sizes, changed rank, or unproved view strides reject affected requests. |
+| Shape transforms | Permute, transpose, movedim/moveaxis, reshape/view, flatten/unflatten, squeeze/unsqueeze, and supported shape provenance. | Incompatible sizes, changed rank, or unproved view strides reject affected requests. |
 | Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, and `broadcast_to` map repeated blocks or broadcast fibers. | Repeat factors must be positive static integers. `repeat_interleave` needs scalar repeats and an explicit axis. `expand_as` depends on the template shape. |
 | Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle/Unshuffle, and batched 2D Unfold/Fold. | Shuffle patterns must be compatible. Pixel and Unfold/Fold spatial or kernel positions stay fixed. |
 | Reductions and softmax | Sum, mean, product, extrema, logsumexp, softmax, and log_softmax distinguish reduced from retained axes. | The operation recomputes on the compact domain. Position-index outputs are not generally covered. |
@@ -140,7 +161,54 @@ assert model[0].out_features == model[2].in_features == 6
 assert model(x).shape == (2, 2)
 ```
 
-This rule proves semantics only for `Half`. Equal input/output shapes do not prove coordinate independence, alias behavior, or reduction semantics for another operation.
+The rule relies on `Half` multiplying each coordinate independently and allocating new output storage.
+Equal input/output shapes do not prove coordinate independence, alias behavior, or reduction semantics for another operation.
+
+The same rule also describes this function because its coordinate and storage behavior matches `Half`:
+
+```python
+def half(input: torch.Tensor) -> torch.Tensor:
+    return input * 0.5
+
+
+class FunctionModel(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fc = nn.Linear(4, 8)
+        self.out = nn.Linear(8, 2)
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        return self.out(half(self.fc(input)))
+
+
+registry = OperatorRegistry.default().register(half, HalfRule(), opaque=True)
+model = FunctionModel().eval()
+x = torch.randn(2, 4)
+graph = DependencyGraph.build(model, args=(x,), operators=registry)
+assert any(operation.node.target is half for operation in graph.operations())
+pruner = Pruner(model, graph=graph)
+plan = pruner.plan_remove([graph.parameter("fc.weight").axis(0).select([1, 5])])
+pruner.apply(plan)
+assert model.fc.out_features == model.out.in_features == 6
+```
+
+### Unflatten dimensions
+
+`nn.Unflatten`, `torch.unflatten`, and `Tensor.unflatten` share the existing reshape coordinate relation.
+Function and method forms accept proven dimension expressions and one inferred `-1` factor.
+
+These expressions must first pass the installed PyTorch version's FX tracer.
+PyTorch 2.6 rejects proxy factors inside `torch.unflatten(..., sizes=...)` during tracing.
+The equivalent Tensor method supports those factors in the tested cases.
+
+Planning evaluates the original call with compact metadata and checks its output shape.
+Splitting one axis does not require proof that the input is contiguous.
+
+Fixed factors remain fixed in function and method calls.
+For example, `x.unflatten(-1, (self.num_heads, 64))` does not authorize an automatic update to `self.num_heads`.
+Use an explicit owner rule with `AttributeBinding` when pruning must change that attribute.
+The `nn.Unflatten` rule already declares a binding for its own `unflattened_size` attribute.
+Named dimensions remain unsupported.
 
 ### Rule contract
 

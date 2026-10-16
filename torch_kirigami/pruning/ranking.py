@@ -97,6 +97,12 @@ class IndependentScores:
 
     A key absent from both `scores` and `covered` needs ordinary joint scoring.
     Summary presence alone does not establish that its component is still valid.
+
+    Attributes:
+        scores: Cached scores keyed by candidate key.
+        removals: Axis positions removed by each summarized candidate.
+        covered: Candidate keys whose positions are already removed by the
+            accepted impact and need no independent score.
     """
 
     scores: Mapping[str, float]
@@ -106,7 +112,19 @@ class IndependentScores:
 
 @dataclass(frozen=True)
 class IndependentRanking:
-    """Plan-local scalar statistics and immutable proofs, never mutable solver state."""
+    """Plan-local scalar statistics and immutable proofs, never mutable solver state.
+
+    Attributes:
+        context: Planning context for the current plan.
+        metric: GroupMagnitude instance whose scoring semantics were proved.
+        p: Norm exponent used for cached statistics.
+        domains: Proved identity-axis components used for normalization.
+        candidates: Candidate keys with their axis and position.
+        removals: Axis positions removed by each candidate.
+        norms: Cached per-axis position magnitudes.
+        bindings: Tensor objects used to validate statistics freshness.
+        versions: Tensor mutation counters captured with the statistics.
+    """
 
     context: PlanningContext
     metric: GroupMagnitude

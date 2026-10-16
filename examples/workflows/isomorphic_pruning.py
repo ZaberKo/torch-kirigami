@@ -431,7 +431,16 @@ def _signature(affected: tuple[Operation, ...], impact: Impact) -> tuple[object,
 
 @dataclass
 class RemovalAction:
-    """One complete deletion closure, with equivalent entry keys counted once."""
+    """One complete deletion closure, with equivalent entry keys counted once.
+
+    Attributes:
+        candidate: Representative candidate for this equivalent closure.
+        aliases: Candidate keys that share this closure.
+        family: Index of the structural family used for score comparisons.
+        axes: Complete affected coordinates by axis.
+        score: Static score assigned within the family.
+        rank: Rank assigned within the family.
+    """
 
     candidate: Candidate
     aliases: list[str]
@@ -443,7 +452,13 @@ class RemovalAction:
 
 @dataclass(frozen=True)
 class _IdentityFamily:
-    """One proved component's family and scalar scores; no retained impacts."""
+    """One proved component's family and scalar scores.
+
+    Attributes:
+        axes: Coupled logical axes in the proved structural component.
+        family: Index of this component's score-comparison family.
+        scores: Static score per scalar position in the component.
+    """
 
     axes: tuple[AxisRef, ...]
     family: int
@@ -509,9 +524,10 @@ def rounded_request(
 class Isomorphic:
     """Apply the supplied ratio independently to each structural family.
 
-    Args:
+    Attributes:
         metric: Static importance compared only inside the same family.
         ratio: Fraction of each family's actions to remove; no resource search.
+        families: Structural families populated by the latest selection call.
 
     Complete equivalent closures share one action and one score. The smallest
     candidate key is their deterministic representative. Incomplete influences

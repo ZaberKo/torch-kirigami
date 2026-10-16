@@ -17,7 +17,12 @@ STRUCTURE_ATTRIBUTE = "_kirigami_structure"
 
 @dataclass(frozen=True)
 class FrozenScalar:
-    """An exact scalar type/value guard; floating NaNs have stable equality."""
+    """An exact scalar type/value guard; floating NaNs have stable equality.
+
+    Attributes:
+        kind: Exact scalar type name.
+        value: Captured scalar value.
+    """
 
     kind: str
     value: object
@@ -25,14 +30,22 @@ class FrozenScalar:
 
 @dataclass(frozen=True)
 class FrozenList:
-    """Preserve the list container type without retaining mutable configuration."""
+    """Preserve the list container type without retaining mutable configuration.
+
+    Attributes:
+        items: Frozen values in list order.
+    """
 
     items: tuple[object, ...]
 
 
 @dataclass(frozen=True)
 class FrozenDict:
-    """Preserve insertion order and exact key/value types in static configuration."""
+    """Preserve insertion order and exact key/value types in static configuration.
+
+    Attributes:
+        items: Frozen key/value pairs in insertion order.
+    """
 
     items: tuple[tuple[object, object], ...]
 

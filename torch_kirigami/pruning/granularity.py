@@ -15,15 +15,15 @@ from .types import PlanningError
 class Granularity:
     """Require retained logical widths to be multiples of configured factors.
 
-    Args:
-        default: Positive integer factor used without an override. One adds no
-            alignment constraint and never disables an operator's own constraints.
-        by_type: Overrides for exact Module types; subclasses do not match.
-        by_path: Overrides for exact original module paths, ahead of type rules.
-            The empty path denotes the root. Prefixes and wildcards are unsupported.
-
     Mappings are copied and frozen. Requirements also apply to unchanged axes and
     manual requests; alignment never permits exceeding the channel budget.
+
+    Attributes:
+        default: Positive factor used when no override applies. One adds no
+            alignment constraint and does not disable operator constraints.
+        by_type: Positive factors keyed by exact module types; subclasses do not match.
+        by_path: Positive factors keyed by exact original paths; empty means root.
+            Prefixes and wildcards are unsupported.
     """
 
     default: int = 1

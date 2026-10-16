@@ -265,12 +265,10 @@ def _validate_options(metric: Metric, max_trials: int) -> None:
 class Greedy:
     """Select in one static score order, verifying complete structural changes.
 
-    Args:
-        metric: Batch-independent scoring object. Scores are computed once,
-            against the initial empty deletion request.
+    Attributes:
+        metric: Batch-independent scorer. Scores use the initial empty request.
         max_trials: Maximum joint attempts, including cache hits. Scoring queries
-            are separate. Proven budget violations and covered seeds require no
-            attempt; rejected candidates may be retried after a commitment.
+            are separate. Proven budget violations and covered seeds use no attempt.
     """
 
     metric: Metric
@@ -293,9 +291,9 @@ class DynamicGreedy:
     receives the accepted impact in original coordinates; the model is neither
     physically compacted nor recalibrated. Rescoring may dominate runtime.
 
-    Args:
-        metric: Batch-independent scoring object that defines importance relative
-            to already selected removals. Its statistics remain caller-owned.
+    Attributes:
+        metric: Batch-independent scorer relative to accepted removals. Statistics
+            remain caller-owned.
         max_trials: Maximum joint verification attempts, excluding score queries.
     """
 

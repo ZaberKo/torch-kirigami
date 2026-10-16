@@ -23,7 +23,7 @@ class IndexSet:
     it does not allocate masks.
 
     Attributes:
-        intervals: Sorted pairs of inclusive starts and exclusive stops.
+        intervals: Sorted pairs with inclusive starts and exclusive stops.
     """
 
     intervals: tuple[tuple[int, int], ...] = ()
@@ -73,7 +73,11 @@ class IndexSet:
 
     @classmethod
     def span(cls, start: int, stop: int) -> IndexSet:
-        """Construct the half-open interval [start, stop)."""
+        """Construct the half-open interval [start, stop).
+
+        Raises:
+            ValueError: A bound is not a nonnegative integer or stop < start.
+        """
         return cls(((start, stop),))
 
     def __bool__(self) -> bool:
@@ -143,7 +147,12 @@ class IndexSet:
         return IndexSet(tuple(result))
 
     def shift(self, offset: int) -> IndexSet:
-        """Translate interval bounds, rejecting any resulting negative indices."""
+        """Translate interval bounds by an integer offset.
+
+        Raises:
+            ValueError: The offset makes a bound negative or produces a non-integer bound.
+            TypeError: The offset cannot be added to interval bounds.
+        """
         return IndexSet(tuple((a + offset, b + offset) for a, b in self.intervals))
 
     def __repr__(self) -> str:
@@ -157,6 +166,9 @@ class Region:
     Attributes:
         axes: One IndexSet per physical tensor axis. An empty tuple denotes
             the single coordinate of a scalar tensor.
+
+    Raises:
+        TypeError: An axis is not an IndexSet.
     """
 
     axes: tuple[IndexSet, ...]
@@ -173,7 +185,11 @@ class Region:
         return any(not a for a in self.axes)
 
     def intersect(self, other: Region) -> Region:
-        """Return the Cartesian intersection, rejecting different ranks."""
+        """Return the Cartesian intersection.
+
+        Raises:
+            ValueError: The regions have different ranks.
+        """
         if len(self.axes) != len(other.axes):
             raise ValueError("Region rank mismatch")
         return Region(tuple(a.intersect(b) for a, b in zip(self.axes, other.axes, strict=False)))
@@ -337,7 +353,15 @@ _Value = TypeVar("_Value")
 
 @dataclass(frozen=True)
 class TensorRefMap(Mapping[TensorRef, tuple[_Value, ...]]):
-    """Immutable mapping accepting compatible live or portable tensor labels."""
+    """Map tensor references to tuples while accepting compatible portable labels.
+
+    Attributes:
+        entries: Ordered reference/value pairs. Portable reference labels must be
+            unique. Values are converted to tuples during construction.
+
+    Raises:
+        ValueError: Two entries have the same portable reference label.
+    """
 
     entries: tuple[tuple[TensorRef, tuple[_Value, ...]], ...]
 
@@ -348,7 +372,12 @@ class TensorRefMap(Mapping[TensorRef, tuple[_Value, ...]]):
         object.__setattr__(self, "entries", entries)
 
     def __getitem__(self, query: TensorRef) -> tuple[_Value, ...]:
-        """Resolve a live or portable tensor label through this mapping."""
+        """Resolve a live or portable tensor label through this mapping.
+
+        Raises:
+            KeyError: No entry has a compatible tensor label.
+            ValueError: A matching label has different metadata.
+        """
         ref = resolve_reference(query, self)
         return next(value for key, value in self.entries if key == ref)
 
@@ -498,12 +527,22 @@ class Selection:
         return sum(prod(len(a) for a in r.axes) for r in self.regions)
 
     def union(self, other: Selection) -> Selection:
-        """Combine selections of the same tensor without double-counting positions."""
+        """Combine regions for the same tensor without double-counting positions.
+
+        Raises:
+            ValueError: The selections refer to different tensor references.
+            AnalysisLimitError: Their normalized union exceeds the region limit.
+        """
         self._same(other)
         return Selection(self.tensor, self.regions + other.regions)
 
     def subtract(self, other: Selection) -> Selection:
-        """Return selected positions absent from another selection of the same tensor."""
+        """Return positions selected here but absent from another selection.
+
+        Raises:
+            ValueError: The selections refer to different tensor references.
+            AnalysisLimitError: The difference exceeds the region limit.
+        """
         self._same(other)
         pending = self.regions
         for region in other.regions:

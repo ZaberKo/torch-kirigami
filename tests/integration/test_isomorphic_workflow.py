@@ -388,6 +388,12 @@ def test_fixed_quota_failure_preserves_graph_and_allows_valid_alternative(execut
 
 @dataclass(frozen=True)
 class AvoidSingleRemoval:
+    """Reject a selection that removes exactly one coordinate.
+
+    Attributes:
+        axis: Tensor axis inspected by the custom constraint.
+    """
+
     axis: AxisRef
 
     @property

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import replace
 
 import torch
@@ -41,11 +42,18 @@ def addmm(operation: Operation) -> OperatorSpec:
 
 
 def einsum(operation: Operation) -> OperatorSpec:
-    """Map explicit einsum labels, including right-aligned broadcast ellipses."""
+    """Map einsum labels, including diagonals and broadcast ellipses."""
     equation = operation.argument("equation", 0)
-    if not isinstance(equation, str) or "->" not in equation:
-        raise UnsupportedOperation("einsum requires an explicit string output equation")
-    inputs, output = equation.replace(" ", "").split("->")
+    if not isinstance(equation, str):
+        raise UnsupportedOperation("einsum requires a string equation")
+    inputs, arrow, output = equation.replace(" ", "").partition("->")
+    if not arrow:
+        # Native implicit output places ellipses first, followed by labels that
+        # appear exactly once in the entire equation, in alphabetical order.
+        counts = Counter(inputs.replace(",", "").replace("...", ""))
+        output = ("..." if "..." in inputs else "") + "".join(
+            sorted(label for label, count in counts.items() if count == 1)
+        )
     operands = operation.args[1:]
     if len(operands) == 1 and isinstance(operands[0], (tuple, list)):
         operands = operands[0]
@@ -63,13 +71,16 @@ def einsum(operation: Operation) -> OperatorSpec:
         count = rank - len(label.replace("...", ""))
         before, marker, after = label.partition("...")
         result = [*before, *(extra[ellipsis - count :] if marker else ()), *after]
-        if len(result) != rank or len(set(result)) != len(result):
-            raise UnsupportedOperation("einsum diagonal/repeated operand labels are unsupported")
+        if len(result) != rank:
+            raise UnsupportedOperation("einsum labels do not match the operand rank")
         return result
 
     occurrences = {}
     y = one(operation.result)
     for tensor, label in zip((*operands, y), (*labels, output), strict=True):
+        # Repeated labels in one operand name different physical axes of the
+        # same logical coordinate. Existing equal-axis relations couple their
+        # retained positions, including when that coordinate is reduced away.
         for dim, key in enumerate(expand(label, len(tensor.shape))):
             occurrences.setdefault(key, []).append(tensor.axis(dim))
     relations = []

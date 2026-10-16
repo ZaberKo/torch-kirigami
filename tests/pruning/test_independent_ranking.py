@@ -282,7 +282,11 @@ def test_dynamic_propagations_follow_joint_trials_instead_of_candidate_count(mon
 
 @dataclass(frozen=True)
 class IncompletePosition:
-    """A custom constraint must never lose its scoring-completeness diagnostic."""
+    """A custom constraint that reports an unproved selected position.
+
+    Attributes:
+        axis: Tensor axis on which this constraint reports an unproved position.
+    """
 
     axis: AxisRef
 

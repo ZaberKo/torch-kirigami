@@ -28,6 +28,12 @@ class ChannelGate(nn.Module):
     Weight and mask start at one. set_mask() installs a fixed binary mask, not
     physical pruning. Retained weights need not equal one after compaction.
     Register gate operators explicitly before building a dependency graph.
+
+    Attributes:
+        size: Number of activation positions scaled by the gate.
+        axis: Activation dimension scaled by the gate.
+        weight: Trainable or fixed scale for each position.
+        mask: Nontrainable binary multiplier for each position.
     """
 
     def __init__(self, size: int, axis: int, trainable: bool = True) -> None:
@@ -95,7 +101,14 @@ class ChannelGateRule(OperatorRule):
 
 
 def register_gate_operators(operators: OperatorRegistry) -> OperatorRegistry:
-    """Register ChannelGate as an explicit leaf without adding a logical candidate axis."""
+    """Register ChannelGate as an explicit leaf without adding a logical candidate axis.
+
+    Args:
+        operators: Registry to extend.
+
+    Returns:
+        The registry with the ChannelGate rule registered.
+    """
     return operators.register(ChannelGate, ChannelGateRule())
 
 
@@ -103,9 +116,9 @@ def register_gate_operators(operators: OperatorRegistry) -> OperatorRegistry:
 class GateBinding:
     """Bind a named gate to candidates through actual dependency propagation.
 
-    Args:
-        graph: Graph built with register_gate_operators.
-        path: Module path of a ChannelGate, or an empty string for the root.
+    Attributes:
+        graph: Snapshot built with `register_gate_operators`.
+        path: Registered path of a `ChannelGate`; empty denotes the root.
     """
 
     graph: DependencyGraph
@@ -120,7 +133,18 @@ class GateBinding:
     def candidates(
         self, pruner: Pruner, candidates: tuple[Candidate, ...]
     ) -> tuple[Candidate, ...]:
-        """Return candidates whose closure removes at least one gate parameter."""
+        """Return candidates whose closure removes at least one gate parameter.
+
+        Args:
+            pruner: Pruner using the graph bound to this gate.
+            candidates: Candidate requests to inspect.
+
+        Returns:
+            Requests whose complete dependency closure includes gate weights.
+
+        Raises:
+            ValueError: The pruner uses another graph or influence is incomplete.
+        """
         if pruner.graph is not self.graph:
             raise ValueError("Gate and candidate space belong to different graphs")
         ref = self.graph.parameter(f"{self.path}.weight".lstrip("."))
@@ -161,7 +185,20 @@ class GateMagnitude:
         *,
         accepted_impact: Impact,
     ) -> list[float]:
-        """Evaluate additions to a complete, possibly constrained selection."""
+        """Evaluate additions to a complete, possibly constrained selection.
+
+        Args:
+            context: Planner access to the graph and dependency impacts.
+            candidates: Requests to score independently in the returned order.
+            accepted_impact: Complete dependency closure of prior removals.
+
+        Returns:
+            One effective-scale score per candidate, in input order.
+
+        Raises:
+            ValueError: A binding uses a different graph or a candidate has no bound gate.
+            PlanningError: The accepted influence or candidate influence is incomplete.
+        """
         context.require_complete(accepted_impact)
         if not candidates:
             return []

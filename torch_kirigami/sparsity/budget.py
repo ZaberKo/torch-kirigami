@@ -85,7 +85,19 @@ class CumulativeChannelBudget:
     def budget(
         self, graph: DependencyGraph, space: CandidateSpace, ratio: int | float
     ) -> ChannelCount:
-        """Return this round's cap for a cumulative ratio of original widths."""
+        """Return this round's cap for a cumulative ratio of original widths.
+
+        Args:
+            graph: Fresh dependency graph for the current model structure.
+            space: Candidate space rebuilt for that graph.
+            ratio: Cumulative fraction of original widths to remove.
+
+        Returns:
+            Absolute final-width limits for the current round.
+
+        Raises:
+            ValueError: The graph, candidate domains, or observed widths changed.
+        """
         targets = channel_targets(ChannelRatio(ratio, scope=self.scope), self._initial)
         axes = self._validate_space(graph, space, self._structure, self._current)
         # Targets refer to original widths, not the already compact model.
@@ -94,7 +106,16 @@ class CumulativeChannelBudget:
         return ChannelCount(targets[0] if self.scope == "global" else targets, axes, self.scope)
 
     def update(self, result: PruningResult, graph: DependencyGraph, space: CandidateSpace) -> None:
-        """Accept an applied result and rebuilt space; reject inconsistent transitions."""
+        """Accept an applied result and rebuilt space; reject inconsistent transitions.
+
+        Args:
+            result: Result returned by applying the preceding plan.
+            graph: Fresh graph for the compacted model.
+            space: Candidate space rebuilt from that graph.
+
+        Raises:
+            ValueError: The result or rebuilt structure does not match this budget.
+        """
         validate_plan(result.plan)
         if result.plan.before != self._structure or result.structure != result.plan.after:
             raise ValueError("Pruning result does not follow the recorded structure")
@@ -118,7 +139,16 @@ class CumulativeChannelBudget:
     def load_state_dict(
         self, state: dict[str, object], graph: DependencyGraph, space: CandidateSpace
     ) -> None:
-        """Restore against a fresh space, validating before changing any state."""
+        """Restore against a fresh space, validating before changing any state.
+
+        Args:
+            state: Mapping returned by `state_dict()`.
+            graph: Fresh graph for the restored model.
+            space: Candidate space rebuilt from that graph.
+
+        Raises:
+            ValueError: The saved structure, domains, or widths do not match.
+        """
         if (
             set(state) != {"scope", "domains", "initial", "current", "structure"}
             or state["scope"] != self.scope

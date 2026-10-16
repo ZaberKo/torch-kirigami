@@ -4,7 +4,7 @@ import pytest
 from torch import fx, nn
 
 from tests.support.operators import make_rule
-from torch_kirigami import OperatorRegistry, OperatorRule, OperatorSpec, TensorEffects
+from torch_kirigami import ArgumentRef, OperatorRegistry, OperatorRule, OperatorSpec, TensorEffects
 
 
 def custom_identity(value):
@@ -89,3 +89,16 @@ def test_registry_views_cannot_bypass_registration():
     ):
         with pytest.raises(TypeError):
             table[key] = rule
+
+
+def test_parameter_update_declarations_require_explicit_input_writes():
+    weight = ArgumentRef("weight", 1)
+    for writes in (None, (), (ArgumentRef("input", 0),)):
+        with pytest.raises(ValueError, match="also declare an input write"):
+            TensorEffects(writes_inputs=writes, mutable_parameters=(weight,))
+    for updates in ("weight", (12,)):
+        with pytest.raises(TypeError, match="Parameter updates"):
+            TensorEffects(mutable_parameters=updates)
+    with pytest.raises(ValueError, match="not be empty"):
+        TensorEffects(mutable_parameters=("",))
+    assert TensorEffects(mutable_parameters=("weight", "weight")).mutable_parameters == ("weight",)

@@ -45,7 +45,17 @@ class Magnitude:
         *,
         accepted_impact: Impact,
     ) -> list[float]:
-        """Score newly removed regions after the complete accepted selection."""
+        """Score newly removed regions after the complete accepted selection.
+
+        Args:
+            context: Planner access to candidates, graph bindings, and impacts.
+            candidates: Requests to score independently in the returned order.
+            accepted_impact: Complete dependency closure of prior removals.
+
+        Returns:
+            One score per candidate, in input order. The planning context checks
+            that scores are finite when it calls this metric.
+        """
         return _scores(self, context, candidates, accepted_impact=accepted_impact)
 
 
@@ -95,7 +105,20 @@ class WeightTaylor:
         *,
         accepted_impact: Impact,
     ) -> list[float]:
-        """Return aligned scores; missing or nonfinite statistics are errors."""
+        """Score newly removed regions using current parameter gradients.
+
+        Args:
+            context: Planner access to candidates, graph bindings, and impacts.
+            candidates: Requests to score independently in the returned order.
+            accepted_impact: Complete dependency closure of prior removals.
+
+        Returns:
+            One Taylor score per candidate, in input order. The planning context
+            checks that scores are finite when it calls this metric.
+
+        Raises:
+            PlanningError: A parameter has no current dense real gradient.
+        """
         self._sync_cache_settings()
         return _scores(self, context, candidates, accepted_impact=accepted_impact)
 
@@ -247,7 +270,17 @@ class GroupMagnitude:
         *,
         accepted_impact: Impact,
     ) -> list[float]:
-        """Return normalized conditional energies, independent of batching."""
+        """Return normalized conditional energies, independent of batching.
+
+        Args:
+            context: Planner access to candidates, graph bindings, and impacts.
+            candidates: Requests to score independently in the returned order.
+            accepted_impact: Complete dependency closure of prior removals.
+
+        Returns:
+            One normalized score per candidate, in input order. The planning
+            context checks that scores are finite when it calls this metric.
+        """
         if self._cache_size != config.normalization_cache_size:
             self._normalizers.clear()
             self._cache_size = config.normalization_cache_size

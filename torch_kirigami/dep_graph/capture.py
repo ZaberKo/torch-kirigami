@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import warnings
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -32,7 +33,7 @@ from ..configuration import (
 from ..errors import CaptureError
 from .operation import TensorEffects, TensorFacts
 from .operation import argument as call_argument
-from .operators.effects import named_inplace, written_inputs
+from .operators.effects import mutable_parameter_inputs, named_inplace, written_inputs
 from .registry import OperatorRegistry
 
 
@@ -530,7 +531,7 @@ def validate_attribute_changes(
         return
 
     def same(left: object, right: object) -> bool:
-        """Compare values while treating tensors by structural metadata."""
+        """Compare signatures, including tensor constant metadata and values."""
         if isinstance(left, torch.Tensor) or isinstance(right, torch.Tensor):
             return (
                 isinstance(left, torch.Tensor)
@@ -575,15 +576,30 @@ def validate_attribute_changes(
         ) from error
 
 
-def _reject_parameter_writes(
+def _check_tensor_effects(
     gm: fx.GraphModule, registry: OperatorRegistry, isolated_buffers: set[int]
-) -> tuple[set[int], dict[fx.Node, TensorEffects]]:
-    """Reject parameter or unisolated constant writes before metadata execution."""
+) -> tuple[set[int], dict[fx.Node, TensorEffects], set[int]]:
+    """Check writes before execution and collect permitted parameter changes.
+
+    Args:
+        gm: Captured graph with parameter and buffer bindings.
+        registry: Rules that declare call effects.
+        isolated_buffers: Object IDs of copied buffers that execution may modify.
+
+    Returns:
+        Buffer object IDs with possible writes, per-node effect declarations,
+        and parameter object IDs with explicitly permitted value updates.
+
+    Raises:
+        CaptureError: A recognized write violates isolation or effect declarations.
+        TypeError: A rule returns an invalid effect declaration.
+    """
     declarations = {}
     tainted = set()
     aliases, written = {}, set()
     buffers = {id(b) for b in gm.buffers()}
     params = {id(p) for p in gm.parameters()}
+    parameter_nodes, updated_parameters = {}, set()
     for node in gm.graph.nodes:
         module = gm.get_submodule(str(node.target)) if node.op == "call_module" else None
         rule = registry.lookup(node, module)
@@ -604,6 +620,7 @@ def _reject_parameter_writes(
                 value = getattr(value, component)
             if id(value) in params:
                 tainted.add(node)
+                parameter_nodes[node] = id(value)
             if id(value) in buffers:
                 aliases[node] = {id(value)}
         inputs = set(node.all_input_nodes)
@@ -618,7 +635,14 @@ def _reject_parameter_writes(
         written.update(write_sources)
         if write_sources - isolated_buffers:
             raise CaptureError(f"Unisolated Tensor constant write at {node.name}")
-        if write_nodes & tainted:
+        allowed = mutable_parameter_inputs(node, effects) & parameter_nodes.keys()
+        updated_parameters.update(parameter_nodes[source] for source in allowed)
+        for path in effects.mutable_parameters:
+            if isinstance(path, str):
+                if module is None:
+                    raise CaptureError("Parameter update paths require a module call")
+                updated_parameters.add(id(module.get_parameter(path)))
+        if (write_nodes & tainted) - allowed:
             raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
         # Opaque modules may return their own parameters/buffers, not only inputs.
         if module is not None and not effects.outputs_are_fresh:
@@ -640,7 +664,7 @@ def _reject_parameter_writes(
         if inputs & tainted and not effects.outputs_are_fresh:
             # Conservative over-approximation: no unsafe alias write is assumed harmless.
             tainted.add(node)
-    return written, declarations
+    return written, declarations, updated_parameters
 
 
 class _MetadataPropagator(ShapeProp):
@@ -688,22 +712,26 @@ class _MetadataPropagator(ShapeProp):
 
 @dataclass
 class CaptureResult:
-    """Internal capture result and original-buffer provenance.
+    """Captured FX graph, execution metadata, bindings, and mutation facts.
 
     Attributes:
         module: FX GraphModule produced by the fixed capture path.
         facts: Result metadata indexed by FX nodes.
-        buffer_aliases: Temporary buffer object IDs mapped to original tensors.
+        buffer_aliases: Isolated buffer object IDs mapped to original buffers.
+            Parameters are not copied and have no entries in this mapping.
         signature: Captured computation and binding facts before metadata execution.
-        mutable_buffers: Buffer IDs with captured writes or observed mutation counters;
-            their final values cannot serve as read-time structural constants.
+        mutable_storages: Parameter and buffer storage keys that cannot supply
+            structural constants. Includes declared writes, even if the sample
+            leaves values unchanged, and observed buffer mutations. Also includes
+            original storage keys for isolated buffers.
+        effects: Per-node write and allocation declarations used during capture.
     """
 
     module: fx.GraphModule
     facts: dict[fx.Node, Any]
     buffer_aliases: dict[int, torch.Tensor]
     signature: tuple
-    mutable_buffers: frozenset[int]
+    mutable_storages: frozenset[tuple[str, int]]
     effects: dict[fx.Node, TensorEffects]
 
 
@@ -722,10 +750,16 @@ def capture(
         registry: Local operation and leaf registrations.
 
     Returns:
-        The FX graph, result facts, and source-buffer provenance.
+        The FX graph, result metadata, original buffer bindings, captured
+        signature, mutable storage keys, and per-node effect declarations.
 
     Raises:
         CaptureError: Argument binding, tracing, write checks, or execution fail.
+
+    Notes:
+        Example inputs and buffers are isolated. Declared parameter value
+        updates modify the original parameters and produce a warning before
+        execution. These updates are not restored if capture fails.
     """
     hooks = forward_hook_paths(model)
     if hooks:
@@ -740,12 +774,36 @@ def capture(
         try:
             gm = trace_module(model, registry, buffer_sources=aliases)
             captured_signature = capture_signature(gm, model)
-            written, effects = _reject_parameter_writes(gm, registry, set(aliases))
+            written, effects, updated_parameters = _check_tensor_effects(gm, registry, set(aliases))
+            written.update(updated_parameters)
             versions = [(b, _tensor_version(b)) for b in gm.buffers()]
             bound = signature.bind(*safe_args, **safe_kwargs)
             metadata = _MetadataPropagator(gm, bound.arguments)
+            if updated_parameters:
+                paths = [
+                    path
+                    for path, tensor in model.named_parameters()
+                    if id(tensor) in updated_parameters
+                ]
+                warnings.warn(
+                    f"Metadata execution permits parameter value updates: {paths}. "
+                    "Metrics will read the updated weights. Existing gradients may be stale. "
+                    "These updates are not rolled back if capture fails.",
+                    UserWarning,
+                    stacklevel=4,
+                )
             metadata.propagate()
             written.update(id(b) for b, version in versions if _tensor_version(b) != version)
+            # A declared update also invalidates constants read through another
+            # registered view. Include original buffer storage before isolation
+            # restores module bindings, since GraphModule can share those modules.
+            mutable_storages = {
+                storage_key(source)
+                for tensor in (*gm.parameters(), *gm.buffers())
+                if id(tensor) in written
+                for source in (tensor, aliases.get(id(tensor), tensor))
+                if source.numel()
+            }
         except CaptureError:
             raise
         except Exception as error:
@@ -754,5 +812,5 @@ def capture(
                 "Tensor-dependent Python control flow is not specialized from examples."
             ) from error
     return CaptureResult(
-        gm, metadata.facts, aliases, captured_signature, frozenset(written), effects
+        gm, metadata.facts, aliases, captured_signature, frozenset(mutable_storages), effects
     )

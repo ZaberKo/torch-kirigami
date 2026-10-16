@@ -50,6 +50,13 @@ class _BudgetTarget:
 
     This record owns measurement and reporting, never dependency queries or
     recipe compilation. The caller validates Impact ownership and any recipes.
+
+    Attributes:
+        resource: Whether limits apply to parameters or channels.
+        axes: Logical channel axes, empty for a parameter budget.
+        widths: Original parameter count or original channel widths.
+        limits: Upper bounds on final resource sizes.
+        scope: Local per-axis limits or one global sum limit.
     """
 
     resource: Literal["parameters", "channels"]

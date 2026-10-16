@@ -2,6 +2,7 @@
 
 import copy
 import io
+import warnings
 from dataclasses import replace
 
 import pytest
@@ -34,6 +35,151 @@ from torch_kirigami.pruning import (
     load_checkpoint,
     save_checkpoint,
 )
+
+
+def update_parameter_sequence(*weights):
+    """Update each parameter, then return an independently allocated sum."""
+    with torch.no_grad():
+        for weight in weights:
+            weight.add_(1)
+    return torch.stack(weights).sum(0)
+
+
+def update_parameter_container(weights):
+    """Accept the same updates through a tuple or dictionary argument."""
+    values = tuple(weights.values()) if isinstance(weights, dict) else weights
+    return update_parameter_sequence(*values)
+
+
+@pytest.mark.parametrize("form", ["tuple", "dict", "keyword", "variadic"])
+@pytest.mark.parametrize("view", [False, True])
+def test_parameter_update_arguments_share_capture_and_planning_resolution(
+    form, view, execution_device
+):
+    """Declared containers work throughout pruning; parameter views stay protected."""
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = nn.Parameter(torch.arange(6.0))
+            self.second = nn.Parameter(torch.arange(6.0) * 2)
+
+        def forward(self):
+            second = self.second.detach() if view else self.second
+            if form == "variadic":
+                return update_parameter_sequence(self.first, second)
+            weights = (
+                {"first": self.first, "second": second} if form == "dict" else (self.first, second)
+            )
+            if form == "keyword":
+                return update_parameter_container(weights=weights)
+            return update_parameter_container(weights)
+
+    class Rule(OperatorRule):
+        def tensor_effects(self, node, module):
+            ref = ArgumentRef("weights", 0, variadic=form == "variadic")
+            return TensorEffects(
+                writes_inputs=(ref,), outputs_are_fresh=True, mutable_parameters=(ref,)
+            )
+
+        def build_spec(self, operation):
+            output = operation.outputs[0]
+            return OperatorSpec(
+                relations=tuple(ReshapeRelation(value, output) for value in operation.inputs)
+            )
+
+    target = update_parameter_sequence if form == "variadic" else update_parameter_container
+    registry = OperatorRegistry.default().register(target, Rule(evaluate_on_meta=True))
+    model = Model()
+    original = [p.detach().clone() for p in model.parameters()]
+    if view:
+        with pytest.raises(CaptureError, match="Parameter/alias write"):
+            DependencyGraph.build(model, args=(), operators=registry)
+        for parameter, before in zip(model.parameters(), original, strict=True):
+            torch.testing.assert_close(parameter, before)
+        return
+    with pytest.warns(UserWarning, match="parameter value updates") as emitted:
+        graph = DependencyGraph.build(model, args=(), operators=registry)
+    assert len(emitted) == 1
+    assert "Embedding" not in str(emitted[0].message)
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    with warnings.catch_warnings(record=True) as emitted:
+        plan = pruner.plan_remove([graph.parameter("first").axis(0).select([1, 4])])
+    assert not emitted
+    for parameter, before in zip(model.parameters(), original, strict=True):
+        torch.testing.assert_close(parameter, before + 1)
+    pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    keep = [0, 2, 3, 5]
+    for parameter, before in zip(model.parameters(), original, strict=True):
+        torch.testing.assert_close(parameter, before[keep] + 1)
+    expected = original[0][keep] + original[1][keep] + 4
+    output = model()
+    torch.testing.assert_close(output, expected)
+    output.sum().backward()
+    assert all(p.grad is not None for p in model.parameters())
+
+
+@pytest.mark.parametrize("view", [False, True])
+@pytest.mark.parametrize("declared", [False, True])
+def test_registered_buffer_writes_require_declared_direct_bindings(
+    view, declared, execution_device
+):
+    """Direct declared writes work without relaxing unknown or aliased writes."""
+
+    class Update(nn.Module):
+        def forward(self, value):
+            return value.add_(2)
+
+    class Rule(OperatorRule):
+        def build_spec(self, operation):
+            return OperatorSpec(
+                relations=(ReshapeRelation(operation.inputs[0], operation.outputs[0]),)
+            )
+
+        def tensor_effects(self, node, module):
+            return TensorEffects(writes_inputs=(ArgumentRef("value", 0),) if declared else None)
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.register_buffer("state", torch.arange(8.0).reshape(2, 4))
+            self.alias = nn.Identity()
+            self.update = Update()
+            self.free = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
+
+        def forward(self, x):
+            value = self.alias(self.state) if view else self.state
+            return self.update(value), self.free(x)
+
+    model = Model()
+    original = model.state.clone()
+    identity = model.state
+    x = torch.randn(2, 3)
+    registry = OperatorRegistry.default().register(Update, Rule(evaluate_on_meta=True))
+    with warnings.catch_warnings(record=True) as emitted:
+        graph = DependencyGraph.build(model, args=(x,), operators=registry)
+    assert not emitted
+    assert model.state is identity
+    torch.testing.assert_close(model.state, original)
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    request = [graph.buffer("state").axis(1).select([1])]
+    if view or not declared:
+        with pytest.raises(PlanningError, match="in-place alias"):
+            pruner.plan_remove(request)
+        assert model.state is identity
+        torch.testing.assert_close(model.state, original)
+        # The unsafe affected request does not prevent independent pruning.
+        plan = pruner.plan_remove([graph.parameter("free.0.weight").axis(0).select([1])])
+        pruner.apply(plan)
+        torch.testing.assert_close(model.state, original)
+        assert model.free[0].out_features == 3
+        return
+    plan = pruner.plan_remove(request)
+    torch.testing.assert_close(model.state, original)
+    pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    torch.testing.assert_close(model.state, original[:, [0, 2, 3]])
+    result, _ = model(x)
+    torch.testing.assert_close(result, original[:, [0, 2, 3]] + 2)
 
 
 @pytest.mark.parametrize("nested", [False, True])

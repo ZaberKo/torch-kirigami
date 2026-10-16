@@ -643,7 +643,10 @@
           "tests": [
             "tests/architecture/test_registry.py::test_registry_copies_own_tables_and_matches_exact_types",
             "tests/architecture/test_registry.py::test_rule_subclass_contract_and_readonly_defaults",
-            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected"
+            "tests/capture/test_mutation.py::test_all_known_parameter_alias_mutations_rejected",
+            "tests/architecture/test_registry.py::test_parameter_update_declarations_require_explicit_input_writes",
+            "tests/capture/test_mutation.py::test_declared_integer_updates_do_not_become_structural_constants",
+            "tests/operators/test_embedding.py::test_max_norm_build_plan_apply_preserves_native_updates"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -2888,6 +2891,42 @@
     }
   ],
   "operators": [
+    {
+      "entry": "function:torch.unflatten",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static dimension and factors; public lifecycle coverage in test_dimension_forms.py.",
+      "contract": "Split one axis with exact reshape coordinates."
+    },
+    {
+      "entry": "method:unflatten",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static dimension and factors; public lifecycle coverage in test_dimension_forms.py.",
+      "contract": "Split one axis with exact reshape coordinates."
+    },
+    {
+      "entry": "function:torch.movedim",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static source and destination axes.",
+      "contract": "Preserve positions under an axis permutation."
+    },
+    {
+      "entry": "function:torch.moveaxis",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static source and destination axes.",
+      "contract": "Preserve positions under an axis permutation."
+    },
+    {
+      "entry": "method:movedim",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static source and destination axes.",
+      "contract": "Preserve positions under an axis permutation."
+    },
+    {
+      "entry": "method:moveaxis",
+      "test": "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Static source and destination axes.",
+      "contract": "Preserve positions under an axis permutation."
+    },
     {
       "entry": "module:torch.nn.modules.activation.Softmax",
       "contract": "输入原坐标轴 1，删除 [1]；输出轴 (1,)，删除 ((1,),)，关联参数/输入 0 项",

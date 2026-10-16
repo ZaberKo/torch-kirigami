@@ -53,7 +53,23 @@ def argument_locations(
     target: object = None,
     variadic: bool = False,
 ) -> tuple[tuple[str, str | int], ...]:
-    """Locate one canonical parameter without conflating equal FX expression nodes."""
+    """Locate an argument by name or positional slot without comparing its value.
+
+    Args:
+        args: Positional call arguments.
+        kwargs: Keyword call arguments.
+        name: Canonical argument name.
+        position: Zero-based positional slot, including a method's receiver.
+        target: Function or method name used to identify native keyword aliases.
+        variadic: Include all positional slots from `position` onward.
+
+    Returns:
+        Pairs of argument container name and key or index. Missing arguments
+        produce an empty tuple. An explicit keyword takes precedence.
+
+    Raises:
+        ValueError: More than one spelling of a native keyword was supplied.
+    """
     namespace = getattr(target, "__module__", "")
     native = isinstance(target, str) or namespace == "torch" or namespace.startswith("torch.")
     names = (name, *(_KEYWORD_ALIASES.get(name, ()) if native else ()))
@@ -80,11 +96,26 @@ def argument(
 ) -> object:
     """Resolve canonical names, native aliases, and variadic positional arguments.
 
-    FX/metadata execution has already checked the original call's signature.
-    Native Tensor methods and torch functions share these accepted spellings;
-    module and third-party function keywords retain their own semantics.
-    This same resolver serves normalized values, raw FX operands, and compact
-    execution checks. A present alias must never silently fall back to a default.
+    Native Tensor methods and torch functions share accepted keyword aliases.
+    Module and third-party function keywords retain their own semantics.
+    This resolver does not validate the complete call signature.
+
+    Args:
+        args: Positional call arguments.
+        kwargs: Keyword call arguments.
+        name: Canonical argument name.
+        position: Zero-based positional slot, including a method's receiver.
+        default: Result for a missing nonvariadic argument.
+        target: Function or method name used to identify native keyword aliases.
+        variadic: Collect remaining positional arguments instead of one value.
+
+    Returns:
+        The supplied value, with an explicit keyword taking precedence. Variadic
+        positional arguments form a tuple. Variadic keyword containers remain
+        containers, and noncontainer keyword values other than FX nodes are wrapped.
+
+    Raises:
+        ValueError: More than one spelling of a native keyword was supplied.
     """
     locations = argument_locations(args, kwargs, name, position, target=target, variadic=variadic)
     if locations and locations[0][0] == "kwargs":
@@ -188,7 +219,18 @@ class Operation:
     def raw_argument(
         self, name: str, position: int, default: object = None, *, variadic: bool = False
     ) -> object:
-        """Resolve the original FX operand using the same public-name aliases."""
+        """Resolve an original FX operand instead of a normalized tensor reference.
+
+        Args:
+            name: Canonical argument name.
+            position: Zero-based positional slot, including a method's receiver.
+            default: Result for a missing nonvariadic argument.
+            variadic: Collect all remaining positional arguments.
+
+        Returns:
+            The original operand or container, using the same aliases and
+            keyword precedence as `argument`.
+        """
         return argument(
             self.node.args,
             self.node.kwargs,
@@ -209,14 +251,18 @@ class Operation:
 class CandidateAxis:
     """Declare a logical channel axis and its default contiguous removal blocks.
 
-    The stable key names a structural domain, independently of FX call identity.
-    Seeds use the logical axis; registered relations map them to parameter regions.
-    A binding declares that repeated keys represent the same logical coordinate
-    system across calls, even when the seed is a call-specific activation axis.
-    An optional alignment_axis declares the corresponding logical width for
-    Granularity. It must have the same original width as axis. Use it when the
-    seed tensor can require partitioned packing: its physical layout cannot by
-    itself establish the retained logical width. Relations must couple both axes.
+    Registered relations map selections on the logical axis to parameter regions.
+
+    Attributes:
+        key: Stable structural domain name, independent of FX call identity.
+        axis: Logical axis on which candidate selections start.
+        block_size: Number of consecutive coordinates per default candidate.
+        binding: Registered tensor that identifies shared coordinates across calls.
+            Repeated keys with this binding describe the same logical domain.
+        alignment_axis: Optional axis used to check retained-width granularity.
+            It must have the same original width as `axis`, with relations that
+            couple both axes. Use it when partitioned packing hides the logical
+            width of the seed tensor.
     """
 
     key: str
@@ -251,8 +297,13 @@ class CandidateAxis:
 class PartitionedLayout:
     """Compact disjoint original partitions, then concatenate in declared order.
 
-    Shared by dependency constraints and physical lowering. Partitions describe
-    storage coordinates; retained regions preserve each original axis order.
+    Dependency constraints and physical compaction share this description.
+    Retained regions preserve the original order on each axis.
+
+    Attributes:
+        tensor: Tensor whose storage coordinates define the partitions.
+        partitions: Nonempty, disjoint regions in concatenation order.
+        concat_dim: Axis along which compact partitions concatenate.
     """
 
     tensor: TensorRef
@@ -274,7 +325,18 @@ class PartitionedLayout:
         object.__setattr__(self, "concat_dim", dim)
 
     def retained_regions(self, selection: Selection) -> tuple[Region, ...]:
-        """Return retained Cartesian regions without allocating tensor data."""
+        """Return each nonempty partition after complete axis sections are removed.
+
+        Args:
+            selection: Removed original coordinates on this layout's tensor.
+
+        Returns:
+            Retained Cartesian regions in partition order. Partial axis sections
+            do not remove an axis index. No tensor data is allocated.
+
+        Raises:
+            ValueError: The selection refers to another tensor.
+        """
         if selection.tensor != self.tensor:
             raise ValueError("Selection belongs to a different layout tensor")
         result = []
@@ -382,16 +444,32 @@ class OperatorSpec:
 class TensorEffects:
     """Declare writes and allocation guarantees, before metadata execution.
 
-    `writes_inputs=None` means unknown; an empty tuple declares no input writes.
-    Argument references use the same positional/keyword resolver as shape guards.
-    `outputs_are_fresh` guarantees independent new storage for every Tensor
-    result, including independence from model state and other returned tensors.
-    False provides no allocation guarantee; it does not assert aliasing.
     Declarations must hold throughout the rule's supported compact shapes.
+
+    Attributes:
+        writes_inputs: Arguments that the call can modify, identified by
+            `ArgumentRef`. None means unknown writes. An empty tuple declares
+            read-only inputs. Container and variadic arguments include all
+            Tensor leaves, using the same argument resolver as shape guards.
+        outputs_are_fresh: Whether each Tensor result has independent new storage.
+            This guarantee includes independence from inputs, model state, and
+            other results. False gives no guarantee and does not assert aliasing.
+        mutable_parameters: Paths or argument references that permit value updates
+            to registered `nn.Parameter` objects during this call. Module-owned
+            parameters use relative paths. Parameter arguments use `ArgumentRef`
+            entries also listed in `writes_inputs`.
+            Only values may change. Identity, shape, layout, dtype, device, and
+            `requires_grad` must stay unchanged. This field does not cover buffers.
+
+    Notes:
+        Capture warns before permitted parameter updates. These changes remain
+        in the original model, including when capture fails. Capture isolates
+        buffers separately. `writes_inputs` describes writes to buffer arguments.
     """
 
     writes_inputs: tuple[ArgumentRef, ...] | None = None
     outputs_are_fresh: bool = False
+    mutable_parameters: tuple[str | ArgumentRef, ...] = ()
 
     def __post_init__(self) -> None:
         if self.writes_inputs is not None:
@@ -401,6 +479,19 @@ class TensorEffects:
             object.__setattr__(self, "writes_inputs", tuple(dict.fromkeys(writes)))
         if type(self.outputs_are_fresh) is not bool:
             raise TypeError("Output allocation guarantee must be boolean")
+        if isinstance(self.mutable_parameters, str):
+            raise TypeError("Parameter updates require a sequence of paths or ArgumentRef entries")
+        updates = tuple(self.mutable_parameters)
+        for ref in updates:
+            if isinstance(ref, str):
+                if not ref:
+                    raise ValueError("Parameter update paths must not be empty")
+            elif isinstance(ref, ArgumentRef):
+                if self.writes_inputs is None or ref not in self.writes_inputs:
+                    raise ValueError("Parameter update arguments must also declare an input write")
+            else:
+                raise TypeError("Parameter updates require module paths or ArgumentRef entries")
+        object.__setattr__(self, "mutable_parameters", tuple(dict.fromkeys(updates)))
 
 
 class OperatorRule(ABC):
@@ -424,24 +515,62 @@ class OperatorRule(ABC):
 
     @abstractmethod
     def build_spec(self, operation: Operation) -> OperatorSpec:
-        """Describe coordinates, constraints and bound attributes for one call."""
+        """Describe coordinates, constraints and bound attributes for one call.
+
+        Args:
+            operation: Captured call with normalized values and tensor metadata.
+
+        Returns:
+            Structural facts independent of scoring and model mutation.
+
+        Raises:
+            UnsupportedOperation: The rule cannot analyze this call. Analysis
+                retains a diagnostic and blocks affected dependency requests.
+        """
         raise NotImplementedError
 
     def validate_capture(self, node: fx.Node, module: nn.Module | None) -> None:
-        """Reject unsupported configurations before sample metadata execution."""
+        """Check a call before sample metadata execution.
+
+        Args:
+            node: Captured FX call.
+            module: Called module, or None for a function or Tensor method.
+
+        Raises:
+            CaptureError: The call cannot execute under the capture contract.
+                This stops graph construction, rather than creating a local barrier.
+        """
         return None
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Declare a read-only input contract with no output allocation guarantee."""
+        """Declare writes and output allocation guarantees for one call.
+
+        Args:
+            node: Captured FX call, before sample metadata execution.
+            module: Called module, or None for a function or Tensor method.
+
+        Returns:
+            Effect declarations valid for supported original and compact shapes.
+            The default declares read-only inputs and no allocation guarantee.
+        """
         return TensorEffects(writes_inputs=())
 
     def build_recipe(
         self, operation: Operation, spec: OperatorSpec, impact: Impact
     ) -> OperatorRecipe | None:
-        """Supply special edits; omitted edits still use shared compilation.
+        """Supply special edits while retaining the shared compiler checks.
 
-        Return None to provide no special edits. Raise UnsupportedOperation to
-        reject this request instead of falling back. Every edit is checked
-        against the joint Impact and structural declarations before execution.
+        Args:
+            operation: Captured call and original bindings.
+            spec: Structural facts produced by `build_spec`.
+            impact: Joint removal selections and their dependency closure.
+
+        Returns:
+            Additional declarative edits, or None to use only shared compilation.
+            Returning None does not declare the request executable.
+
+        Raises:
+            UnsupportedOperation: The rule rejects this request. The compiler
+                must not use a generic replacement to bypass this rejection.
         """
         return None

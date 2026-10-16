@@ -36,6 +36,32 @@ class DependencyGraphState:
     and exposes tuples, read-only views, or inspection copies. This private record
     retains original model identities, but no capture activations, scratch tables,
     or solver caches. It is not a model checkpoint or a second copy of the graph.
+
+    Attributes:
+        model: Original module analyzed by the graph.
+        registry: Local operator registry snapshot used during capture.
+        fingerprint: Structural fingerprint used to detect stale model state.
+        context: Immutable execution assumptions recorded at build time.
+        id: Unique identity for this analysis snapshot.
+        settings_key: Analysis settings recorded when construction starts.
+        fx_graph: Captured FX graph, set only after construction succeeds.
+        capture_signature: Structural signature used to validate configuration edits.
+        refs: Tensor references indexed by snapshot-qualified ID.
+        tensor_facts: Captured shape, stride, dtype, and device by tensor ID.
+        parameters: Original parameter paths mapped to tensor references.
+        buffers: Original buffer paths mapped to tensor references.
+        expressions: Shape expressions indexed by captured FX nodes.
+        literal_values: Small integer tensor values used as structural constants.
+        relations: Structural selection relations between tensor references.
+        constraints: Conditions checked after selection propagation.
+        requirements: Execution obligations declared by operator rules.
+        diagnostics: Build-time conflicts and unresolved analysis results.
+        operations: Captured operation contexts indexed by FX node name.
+        specs: Structural specifications indexed by FX node name.
+        constant_refs: Tensor references whose integer values guard the analysis.
+        interfaces: IDs of external input and output tensor references.
+        constants: Non-registered tensor references and their FX attribute paths.
+        complete: Whether construction populated the retained graph state successfully.
     """
 
     model: nn.Module

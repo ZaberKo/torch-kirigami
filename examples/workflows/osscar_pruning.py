@@ -313,7 +313,16 @@ def feature_rows(layer: nn.Module, inputs: torch.Tensor, row_ids: torch.Tensor) 
 
 @dataclass
 class ReconstructionMoments:
-    """Streaming design Gram and teacher cross-product for one consumer."""
+    """Streaming design moments for one consumer.
+
+    Updates accumulate the design Gram matrix and its cross-product with the
+    teacher targets. They retain no calibration rows.
+
+    Attributes:
+        gram: Sum of feature outer products, or `None` before an update.
+        cross: Sum of feature/target outer products, or `None` before an update.
+        count: Number of matched feature and target rows.
+    """
 
     gram: torch.Tensor | None = None
     cross: torch.Tensor | None = None
@@ -574,7 +583,14 @@ def restoration_gains(
 
 @dataclass(frozen=True)
 class ReconstructionSolution:
-    """Compact coefficients and the strictly improving fixed-cardinality history."""
+    """Compact coefficients and the fixed-cardinality search history.
+
+    Attributes:
+        retained: Original group indices kept by the solution.
+        coefficients: Refit coefficients for the retained groups.
+        objectives: Initial objective followed by values for accepted swaps.
+        swap_attempts: Number of remove/restore proposals evaluated.
+    """
 
     retained: tuple[int, ...]
     coefficients: torch.Tensor

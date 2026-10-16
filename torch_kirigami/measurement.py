@@ -245,6 +245,12 @@ class ModelComplexity:
     This field describes MAC coverage only, not FLOP coverage: an empty tuple
     does not imply that all floating-point operations were counted.
     Parameters include frozen weights, deduplicated by Parameter identity.
+
+    Attributes:
+        macs: Count of audited matrix and convolution multiply-accumulates.
+        params: Count of unique registered Parameter elements.
+        flops: Native counter total for registered formulas.
+        unsupported_ops: Captured operations with unverified MAC coverage.
     """
 
     macs: int

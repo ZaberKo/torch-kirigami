@@ -108,7 +108,16 @@ def vbp_operators() -> OperatorRegistry:
 
 @dataclass
 class ActivationMoments:
-    """Streaming channel moments, pooling all batch, token and spatial positions."""
+    """Streaming sample moments for the final activation axis.
+
+    All batch, token, and spatial positions contribute observations. Updates
+    retain only per-channel mean and squared-deviation totals.
+
+    Attributes:
+        count: Number of activation observations across all updates.
+        mean: Per-channel running mean, or `None` before the first update.
+        m2: Per-channel sum of squared deviations, or `None` before the first update.
+    """
 
     count: int = 0
     mean: torch.Tensor | None = None

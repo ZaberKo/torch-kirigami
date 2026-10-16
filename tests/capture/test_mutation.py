@@ -16,10 +16,11 @@ from torch_kirigami import (
     OperatorSpec,
     TensorEffects,
 )
-from torch_kirigami.dep_graph.capture import _reject_parameter_writes
+from torch_kirigami.dep_graph.capture import _check_tensor_effects
 from torch_kirigami.dep_graph.operators.effects import native_effects
 from torch_kirigami.pruning import (
     PlanningError,
+    Pruner,
 )
 
 
@@ -184,7 +185,7 @@ def test_shared_effect_detection_still_rejects_real_parameter_writes(target):
     gm = torch.fx.GraphModule(model, graph)
     assert native_effects(node, None, fresh_output=False).writes_inputs
     with pytest.raises(CaptureError, match="write"):
-        _reject_parameter_writes(gm, OperatorRegistry.default(), set())
+        _check_tensor_effects(gm, OperatorRegistry.default(), set())
     torch.testing.assert_close(model.weight, torch.ones(3))
 
 
@@ -225,3 +226,55 @@ def test_capture_queries_each_call_effect_once(fresh_output, execution_device):
         assert len(calls) == 1 and calls[0][1] is model.copy
     torch.testing.assert_close(model.weight, original)
     assert model.weight.grad is None
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_declared_integer_updates_do_not_become_structural_constants(alias, execution_device):
+    class Update(nn.Module):
+        def __init__(self, indices):
+            super().__init__()
+            self.indices = indices
+
+        def forward(self, x):
+            self.indices.copy_(3 - self.indices)
+            return x
+
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.indices = nn.Parameter(torch.tensor([0, 1]), requires_grad=False)
+            self.alias = (
+                nn.Parameter(self.indices.detach(), requires_grad=False) if alias else self.indices
+            )
+            self.update = Update(self.indices)
+            self.left = nn.Linear(3, 4)
+            self.free = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
+
+        def forward(self, x):
+            selected = self.left(x).index_select(1, self.alias)
+            self.update(x)
+            return selected, self.free(x)
+
+    rule = make_rule(
+        lambda operation: OperatorSpec(),
+        tensor_effects=lambda node, module: TensorEffects(
+            writes_inputs=(), mutable_parameters=("indices",)
+        ),
+    )
+    model = Model()
+    with pytest.warns(UserWarning) as emitted:
+        graph = DependencyGraph.build(
+            model,
+            args=(torch.randn(2, 3),),
+            operators=OperatorRegistry.default().register(Update, rule),
+        )
+    assert len(emitted) == 1
+    torch.testing.assert_close(model.indices, torch.tensor([3, 2]))
+    assert any("captured constant" in item.message for item in graph.diagnostics)
+    pruner = Pruner(model, graph=graph)
+    with pytest.raises(PlanningError, match="captured constant"):
+        pruner.plan_remove([graph.parameter("left.weight").axis(0).select([1])])
+    pruner.apply(pruner.plan_remove([graph.parameter("free.0.weight").axis(0).select([1])]))
+    assert model.free[0].out_features == 3
+    # Planning and application do not execute the parameter update again.
+    torch.testing.assert_close(model.indices, torch.tensor([3, 2]))

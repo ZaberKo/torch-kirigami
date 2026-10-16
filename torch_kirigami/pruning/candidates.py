@@ -82,6 +82,12 @@ class CandidateSpace:
     Construction performs no discovery or analysis and retains no model. The
     consuming Pruner validates graph ownership. Discovery metadata records excluded
     protected axes for cumulative accounting; explicit axes are never filtered.
+
+    Attributes:
+        candidates: Named original-coordinate requests available to a strategy.
+        channel_axes: Logical axes counted by channel budgets.
+        protected_channel_axes: Discovered axes excluded by interface protection.
+        exclusions: Discovered candidate domains excluded with their reasons.
     """
 
     candidates: tuple[Candidate, ...]

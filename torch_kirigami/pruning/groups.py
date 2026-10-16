@@ -14,9 +14,9 @@ from ..dep_graph.selection import Selection, TensorRef
 class ParameterGroup:
     """A deduplicated parameter-region union bound to one dependency snapshot.
 
-    Args:
-        graph: Source graph; rebuild groups after structural changes.
-        selections: Parameter selections, including partial or partitioned regions.
+    Attributes:
+        graph: Source dependency snapshot; rebuild groups after structural changes.
+        selections: Deduplicated union of partial or partitioned parameter regions.
         key: Descriptive label, not a claim of disjointness or zero invariance.
     """
 

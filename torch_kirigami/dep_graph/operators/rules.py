@@ -2,14 +2,14 @@
 
 from torch import fx, nn
 
-from ..operation import OperatorRule, TensorEffects
+from ..contracts import ArgumentRef
+from ..operation import OperatorRule, TensorEffects, argument
 from .attention import addmm, einsum, multihead_attention, sdpa
 from .effects import native_effects
 from .extended import (
     cast,
     channel_operator,
     embedding,
-    embedding_preflight,
     instance_norm,
     normalize,
     padding,
@@ -48,7 +48,12 @@ from .native import (
 
 
 class NativeRule(OperatorRule):
-    """Share metadata execution and native write declarations, without callbacks."""
+    """Share metadata execution and native write declarations.
+
+    Args:
+        fresh: Whether nonmutating calls guarantee independent output storage.
+            Calls with native in-place arguments do not receive this guarantee.
+    """
 
     def __init__(self, *, fresh: bool) -> None:
         super().__init__(evaluate_on_meta=True, cache_meta_output=True)
@@ -118,12 +123,41 @@ class EinsumRule(NativeRule):
 
     build_spec = staticmethod(einsum)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Distinguish products from single-operand views and reductions.
+
+        Products allocate a result. Single-operand calls receive no allocation
+        guarantee because this family includes identity and diagonal views.
+        Unrecognized equation formats also receive no allocation guarantee.
+        """
+        operands = node.args[1:] if node.args and isinstance(node.args[0], str) else ()
+        if len(operands) == 1 and isinstance(operands[0], (tuple, list)):
+            operands = operands[0]
+        return TensorEffects(writes_inputs=(), outputs_are_fresh=len(operands) > 1)
+
 
 class EmbeddingRule(NativeRule):
     """Provide embedding structural semantics."""
 
     build_spec = staticmethod(embedding)
-    validate_capture = staticmethod(embedding_preflight)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Declare native max_norm renormalization without changing its behavior."""
+        max_norm = (
+            module.max_norm
+            if module is not None
+            else argument(node.args, node.kwargs, "max_norm", 3, target=node.target)
+        )
+        if max_norm is None:
+            return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
+        if module is not None:
+            return TensorEffects(
+                writes_inputs=(), outputs_are_fresh=True, mutable_parameters=("weight",)
+            )
+        weight = ArgumentRef("weight", 1)
+        return TensorEffects(
+            writes_inputs=(weight,), outputs_are_fresh=True, mutable_parameters=(weight,)
+        )
 
 
 class AttributeReadRule(NativeRule):

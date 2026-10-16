@@ -91,7 +91,15 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
 
 
 def zero_groups_(groups: tuple[ParameterGroup, ...]) -> None:
-    """Zero regions once; no persistent mask or optimizer-state edits are installed."""
+    """Zero regions once; no persistent mask or optimizer-state edits are installed.
+
+    Args:
+        groups: Nonempty groups on one graph and device.
+
+    Raises:
+        ValueError: Groups do not share a graph or device, use unsupported
+            tensors, or include distinct registered tensors that share storage.
+    """
     scale_groups_(groups, 0.0)
 
 
@@ -102,6 +110,14 @@ def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | fl
     Equivalent groups with identical targets count once; other overlaps are
     rejected. Zero vectors cannot acquire positive norms without a new direction.
     All validation precedes mutation. Momentum and algorithm progress are external.
+
+    Args:
+        groups: Nonempty groups on one graph and device.
+        targets: Finite nonnegative L2 norm for each group.
+
+    Raises:
+        ValueError: Targets are invalid, groups overlap incompatibly, or a zero
+            vector has a positive target.
     """
     groups, targets = tuple(groups), tuple(targets)
     if len(groups) != len(targets) or any(

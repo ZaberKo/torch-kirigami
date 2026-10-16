@@ -175,6 +175,12 @@ def test_unrelated_failures_do_not_receive_rewrite_advice(mode, absent):
 
 @dataclass(frozen=True)
 class NeedsPartner:
+    """Require coordinate zero to be selected with coordinate one.
+
+    Attributes:
+        axis: Tensor axis checked for the paired-coordinate condition.
+    """
+
     axis: AxisRef
 
     @property

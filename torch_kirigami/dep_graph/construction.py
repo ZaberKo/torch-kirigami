@@ -188,7 +188,7 @@ class _Analyzer:
                 value = resolve_attribute(module, str(node.target))
                 if id(value) in self._by_object:
                     self._values[node] = self._by_object[id(value)]
-                    if id(value) not in captured.mutable_buffers:
+                    if storage_key(value) not in captured.mutable_storages:
                         self._record_literal(self._values[node], value)
                     continue
             self._values[node] = self._make_values(node, captured.facts[node])
@@ -196,9 +196,12 @@ class _Analyzer:
                 self.data.interfaces.update(ref.id for ref in tensors(self._values[node]))
                 continue
             if node.op == "get_attr":
-                self._record_literal(
-                    self._values[node], resolve_attribute(module, str(node.target))
-                )
+                value = resolve_attribute(module, str(node.target))
+                if (
+                    not isinstance(value, torch.Tensor)
+                    or storage_key(value) not in captured.mutable_storages
+                ):
+                    self._record_literal(self._values[node], value)
                 continue
             called_module = (
                 module.get_submodule(str(node.target)) if node.op == "call_module" else None

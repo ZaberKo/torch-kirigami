@@ -25,7 +25,11 @@ def build(model, x, rules=None):
 
 @dataclass
 class StaticMetric:
-    """A test score function intentionally independent of accepted selections."""
+    """A test score function that ignores the accepted selection state.
+
+    Attributes:
+        function: Callback that returns one score for each candidate.
+    """
 
     function: Callable[[MetricContext, tuple[Candidate, ...]], Sequence[float] | torch.Tensor]
 
@@ -37,7 +41,11 @@ class StaticMetric:
 
 @dataclass
 class KeyStrategy:
-    """A test policy returning only keys, without extra selection diagnostics."""
+    """A test policy that returns selected keys without diagnostics.
+
+    Attributes:
+        function: Callback that returns candidate keys for a planning context.
+    """
 
     function: Callable[[PlanningContext], Iterable[str]]
 

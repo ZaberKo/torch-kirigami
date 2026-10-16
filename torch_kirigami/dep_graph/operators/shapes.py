@@ -161,6 +161,12 @@ class CallArgumentConstraint:
     Expressions, observed values, layouts, and an optional conditional hint are
     retained. No FX node, model, or mutable Operation escapes through graph
     and impact constraint inspection. The hint is displayed only on a violation.
+
+    Attributes:
+        node: FX node name used to identify a diagnostic.
+        arguments: Shape expressions paired with their values at capture time.
+        layouts: Partitioned layouts used to resolve compact shapes.
+        hint: Additional guidance shown when a semantic argument changes.
     """
 
     node: str
