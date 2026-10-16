@@ -1,9 +1,8 @@
-name: Publish to PyPI and GitHub
+name: Build and publish release
 
 on:
-  push:
-    tags:
-      - "v[0-9]*"
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -47,8 +46,6 @@ jobs:
   build:
     needs: tests
     runs-on: ubuntu-latest
-    outputs:
-      prerelease: ${{ steps.distributions.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,24 +56,15 @@ jobs:
       - name: Create build environment
         run: uv venv .venv --python 3.12
       - name: Match tag to package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          .venv/bin/python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["GITHUB_REF_NAME"] == f"v{version}"'
+          .venv/bin/python -c 'import os, pathlib, tomllib; version = tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"]; assert os.environ["RELEASE_TAG"] == f"v{version}", "Release tag must match the package version"'
       - name: Build and check distributions
-        id: distributions
         run: |
-          uv pip install --python .venv/bin/python twine packaging
+          uv pip install --python .venv/bin/python twine
           uv build
           .venv/bin/python -m twine check --strict dist/*.whl dist/*.tar.gz
-          .venv/bin/python - <<'PY'
-          import os
-          from pathlib import Path
-          import tomllib
-          from packaging.version import Version
-
-          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
-          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              print(f"prerelease={str(Version(version).is_prerelease).lower()}", file=output)
-          PY
       - uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions
@@ -96,7 +84,7 @@ jobs:
           path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
 
-  github-release:
+  release-assets:
     needs: [build, publish]
     runs-on: ubuntu-latest
     permissions:
@@ -106,28 +94,11 @@ jobs:
         with:
           name: python-package-distributions
           path: dist/
-      - name: Publish GitHub Release
+      - name: Attach distributions to the published release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ github.ref_name }}
-          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         shell: bash
         run: |
-          release_flags=()
-          if [[ "$PRERELEASE" == "true" ]]; then
-            release_flags+=(--prerelease --latest=false)
-          fi
-
-          if draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
-            if [[ "$draft" == "false" ]]; then
-              echo "GitHub Release $RELEASE_TAG is already published."
-              exit 0
-            fi
-          else
-            gh release create "$RELEASE_TAG" --verify-tag --draft --generate-notes \
-              --title "$RELEASE_TAG" "${release_flags[@]}"
-          fi
-
           gh release upload "$RELEASE_TAG" dist/*.whl dist/*.tar.gz --clobber
-          gh release edit "$RELEASE_TAG" --draft=false "${release_flags[@]}"

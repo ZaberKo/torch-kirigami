@@ -126,8 +126,9 @@ Distinguish synthetic tests, pretrained execution checks, and task accuracy meas
 
 ## Releases
 
-Pushing a tag beginning with `v` starts the release workflow.
-The tag must match the package version in `pyproject.toml`.
+Publishing a GitHub Release starts the release workflow.
+Creating or pushing a tag does not start this workflow.
+The release tag must match the package version in `pyproject.toml`.
 For example, version `0.1.3` requires tag `v0.1.3`.
 Use a new version for each uploaded distribution.
 PyPI does not permit replacing a distribution with the same filename.
@@ -164,7 +165,7 @@ The upload creates the project and activates the publisher.
 Later releases use that publisher.
 Follow the [PyPI setup instructions](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) for account configuration.
 
-### Tag and check the release
+### Create the tag and publish the release
 
 Run these commands after the release commit passes CI:
 
@@ -183,13 +184,26 @@ git tag -a "v${KIRIGAMI_RELEASE_VERSION}" -m "Release v${KIRIGAMI_RELEASE_VERSIO
 git push origin "v${KIRIGAMI_RELEASE_VERSION}"
 ```
 
-Pushing the tag starts the release workflow.
-It runs tests, checks the version, builds distributions, and uploads them to PyPI.
-It then creates a GitHub Release with the same distributions.
-Development and prerelease versions become GitHub prereleases.
+On the GitHub Releases page, create a release for this tag.
+Write the title and release notes, select the appropriate prerelease setting, then publish the release.
+Saving a draft does not start the workflow.
+
+Alternatively, write the release notes in a local file and publish with GitHub CLI:
+
+```bash
+gh release create "v${KIRIGAMI_RELEASE_VERSION}" --verify-tag \
+  --title "v${KIRIGAMI_RELEASE_VERSION}" --notes-file release-notes.md
+```
+
+Add `--prerelease` for a prerelease.
+The workflow uses the [`release: published` event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#release) for both stable releases and prereleases.
+It tests the tagged commit, checks the version, builds distributions, and uploads them to PyPI.
+It then attaches the same distributions to the published GitHub Release.
+It does not generate release notes, read tag messages, or change the release title or prerelease setting.
+Editing release notes after publication does not trigger another upload.
 
 Check the workflow result, the PyPI version, and the GitHub Release assets.
-If only the GitHub Release job fails, rerun that job.
-The job can resume a draft without repeating the PyPI upload.
+If only the `release-assets` job fails, rerun that job.
+This retries the asset upload without repeating the successful PyPI upload.
 
 The [workflow guide](../examples/workflows/README.md) covers data and pretrained experiments.
