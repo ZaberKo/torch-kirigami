@@ -102,7 +102,7 @@ There is no implicit deduplication, averaging, or group-size normalization. Mult
 For example, BatchNorm uses one learned scale per channel, stored in its `weight` parameter.
 `ScaleL1(graph, ("bn.weight",))` returns `model.bn.weight.abs().sum()` for a model with that BatchNorm module.
 Adding a weighted version of this scalar to the task loss encourages small scales during training.
-The [BN sparsity workflow](../examples/workflows/bn_sparsity.py) uses this loss, then scores candidate removals from the trained scales.
+The [BN-guided pruning workflow](../examples/workflows/bn_guided_pruning.py) uses this loss, then scores candidate removals from the trained scales.
 `ScaleL1` does not propagate dependencies, rank candidates, or physically prune the model.
 
 Regularizers read current parameter values on every call. They preserve autograd connectivity and do not retain graphs across calls. They do not call `backward()`, change parameters or gradients, or read optimizer state. Frozen parameters remain in the objective. Built-in L2 penalties support first-order autograd only. Nonfinite values or results raise an error.

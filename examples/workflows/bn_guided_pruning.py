@@ -1,4 +1,4 @@
-"""Train BatchNorm scales to select channels for ResNet pruning.
+"""Prune ResNet convolution channels using BatchNorm scale scores.
 
 This workflow adapts Network Slimming from Liu et al., ICCV 2017.
 Paper: *Learning Efficient Convolutional Networks through Network Slimming*.
@@ -17,7 +17,17 @@ The workflow uses pretrained torchvision ImageNet ResNets:
 5. Optionally fine-tune with task loss only.
 6. Save the compact checkpoint. Load it. Check that its outputs match.
 
-The dependent removals include BN scales and following `conv2` input columns.
+Candidates start on axis 0 of each supported block's `conv1.weight`.
+They remove convolution output channels, not isolated BN parameters.
+`bn1.weight` supplies the scoring signal, not the candidate axis.
+Dependency propagation also removes the corresponding BN parameters and
+statistics, and the following `conv2` input columns.
+
+`BNScaleMagnitude` sums absolute values over affected, explicitly selected BN
+scales. If a candidate affects two selected BN modules, both contribute.
+Shared parameter coordinates count once. Conv weights, BN biases, and buffers
+do not contribute to this score. The metric owns this aggregation formula.
+
 Sparse training uses a configurable duration and a constant penalty weight.
 Dependency analysis, ranking, and model mutation remain separate steps.
 
@@ -67,6 +77,11 @@ class BNScaleMagnitude:
     `torch_kirigami.pruning.parameter_regions` supplies the joint parameter
     effects. This metric selects scale regions from those effects and sums their
     absolute values. It does not restrict dependency analysis or physical pruning.
+
+    If one candidate affects scale values `0.02` and `-0.05` in two selected BN
+    modules, its score is `0.07`. Distinct parameters contribute separately.
+    Shared parameter coordinates count once. There is no averaging across BN
+    modules or normalization by the number of selected positions.
 
     Args:
         scales: Nonempty tuple of one-dimensional parameter references from the
@@ -129,7 +144,7 @@ class BNScaleMagnitude:
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse BN sparsity options for the supported ResNet models."""
+    """Parse BN-guided channel pruning options for supported ResNet models."""
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument(
         "--model",
@@ -185,7 +200,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--finetune_epochs", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--output", type=Path, default=Path("runs/bn_sparsity"))
+    parser.add_argument("--output", type=Path, default=Path("runs/bn_guided_pruning"))
     parser.add_argument(
         "--compile_latency",
         action="store_true",

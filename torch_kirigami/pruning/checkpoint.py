@@ -347,9 +347,11 @@ def load_checkpoint(
     ):
         raise ExecutionError("Checkpoint requires ordinary parameters and buffers")
 
-    def skeleton(s: ModelStructure) -> nn.Module:
-        """Build an isolated module shell matching the recorded structure."""
-        return tuple((m.paths, m.type_name, m.slots) for m in s.modules)
+    def skeleton(
+        structure: ModelStructure,
+    ) -> tuple[tuple[tuple[str, ...], str, tuple[tuple[str, str, bool], ...]], ...]:
+        """Return module types, aliases and registered slots for compatibility checks."""
+        return tuple((m.paths, m.type_name, m.slots) for m in structure.modules)
 
     if skeleton(original) != skeleton(structure):
         raise ExecutionError("Module skeleton, aliases, or registered slots differ")

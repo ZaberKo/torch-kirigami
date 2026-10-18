@@ -40,7 +40,7 @@ pytest.importorskip("datasets", reason="Install examples/workflows/requirements-
 
 import importlib
 
-import bn_sparsity
+import bn_guided_pruning
 import imagenet_data as imagenet
 import imagenet_models
 import model_metrics
@@ -56,7 +56,7 @@ from torchvision.models.vision_transformer import VisionTransformer
 WORKFLOWS = (
     "prune_finetune",
     "iterative_pruning",
-    "bn_sparsity",
+    "bn_guided_pruning",
     "group_sparsity",
     "soft_pruning",
     "gate_pruning",
@@ -69,7 +69,9 @@ WORKFLOWS = (
 
 
 @pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
-def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(strategy_type, execution_device):
+def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(
+    strategy_type, execution_device, monkeypatch
+):
     model = nn.Sequential(nn.Linear(3, 4), nn.BatchNorm1d(4), nn.Linear(4, 2)).double().eval()
     with torch.no_grad():
         model[1].weight.copy_(torch.tensor([4.0, -1.0, 3.0, 2.0]))
@@ -85,10 +87,23 @@ def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(strategy_type, 
     context = PlanningContext(
         graph, space.candidates, ChannelRatio(0.25), space.channel_axes, pruner.constraints
     )
-    metric = bn_sparsity.BNScaleMagnitude(
+    metric = bn_guided_pruning.BNScaleMagnitude(
         (graph.parameter("1.weight"), graph.parameter("scale_alias"))
     )
-    assert context.score(metric, space.candidates) == (4.0, 1.0, 3.0, 2.0)
+    transfers = []
+    original_cpu = torch.Tensor.cpu
+
+    def counted_cpu(tensor, *args, **kwargs):
+        transfers.append(tensor)
+        return original_cpu(tensor, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(torch.Tensor, "cpu", counted_cpu)
+        assert context.score(metric, space.candidates) == (4.0, 1.0, 3.0, 2.0)
+    # Read the aliased scale vector once for the batch, not once per candidate.
+    # The default-device context can dispatch the same cpu() call twice.
+    assert len({id(tensor) for tensor in transfers}) == 1
+    assert transfers[0].shape == (4,)
     block = Candidate("block", (axis.select([0, 1]), axis.select([1])), axis)
     accepted = context.impact((axis.select([0]),))
     assert context.score(metric, (block,), accepted_impact=accepted) == (1.0,)
@@ -96,7 +111,7 @@ def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(strategy_type, 
     assert context.score(metric, (block,), accepted_impact=covered) == (0.0,)
 
     # An unrelated parameter cannot substitute for missing BN evidence.
-    wrong_metric = bn_sparsity.BNScaleMagnitude((graph.parameter("2.bias"),))
+    wrong_metric = bn_guided_pruning.BNScaleMagnitude((graph.parameter("2.bias"),))
     with pytest.raises(PlanningError, match="No BN scale"):
         pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(wrong_metric))
     for name, value in model.state_dict().items():
@@ -118,6 +133,74 @@ def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(strategy_type, 
     reference = F.linear(hidden, original[2].weight[:, keep], original[2].bias)
     torch.testing.assert_close(compact(x), reference)
     assert compact.scale_alias is compact[1].weight
+    compact(x).sum().backward()
+
+
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_bn_scale_metric_sums_distinct_branches_without_recounting_aliases(
+    strategy_type, execution_device
+):
+    class BranchedBatchNorm(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.hidden = nn.Linear(3, 4)
+            self.left = nn.BatchNorm1d(4)
+            self.right = nn.BatchNorm1d(4)
+            self.output = nn.Linear(4, 2)
+            self.register_parameter("left_scale_alias", self.left.weight)
+
+        def forward(self, inputs):
+            hidden = self.hidden(inputs)
+            return self.output(self.left(hidden) + self.right(hidden))
+
+    model = BranchedBatchNorm().double().eval()
+    with torch.no_grad():
+        model.left.weight.copy_(torch.tensor([1.0, 3.0, 6.0, 4.0]))
+        model.right.weight.copy_(torch.tensor([-8.0, -0.5, 0.25, -2.0]))
+        model.left.bias.fill_(100)
+        model.right.bias.fill_(-90)
+        model.hidden.weight[1].fill_(50)
+    original = copy.deepcopy(model)
+    x = torch.randn(3, 3, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("hidden",))
+    axis = graph.parameter("hidden.weight").axis(0)
+    context = PlanningContext(
+        graph, space.candidates, ChannelRatio(0.25), space.channel_axes, pruner.constraints
+    )
+    metric = bn_guided_pruning.BNScaleMagnitude(
+        tuple(graph.parameter(path) for path in ("left.weight", "right.weight", "left_scale_alias"))
+    )
+    assert context.score(metric, space.candidates) == (9.0, 3.5, 6.25, 6.0)
+    block = Candidate("overlapping_block", (axis.select([1, 2]), axis.select([2])), axis)
+    assert context.score(metric, (block,)) == (9.75,)
+    assert context.score(metric, (block,), accepted_impact=context.impact((axis.select([1]),))) == (
+        6.25,
+    )
+
+    plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(metric))
+    assert tuple(plan.analysis.selection(axis.tensor).fully_selected_indices(0)) == (1,)
+    compact, _ = pruner.apply(plan)
+    keep = [0, 2, 3]
+    hidden = F.linear(x, original.hidden.weight[keep], original.hidden.bias[keep])
+    branches = [
+        F.batch_norm(
+            hidden,
+            branch.running_mean[keep],
+            branch.running_var[keep],
+            branch.weight[keep],
+            branch.bias[keep],
+            eps=branch.eps,
+        )
+        for branch in (original.left, original.right)
+    ]
+    reference = F.linear(
+        branches[0] + branches[1], original.output.weight[:, keep], original.output.bias
+    )
+    torch.testing.assert_close(compact(x), reference)
+    assert compact.left_scale_alias is compact.left.weight
+    assert compact.left.num_features == compact.right.num_features == 3
     compact(x).sum().backward()
 
 
@@ -474,7 +557,7 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
         ),
         pytest.param("prune_finetune", ["--metric", "geometric_median"], id="geometric-median"),
         ("iterative_pruning", ["--rounds", "2"]),
-        ("bn_sparsity", []),
+        ("bn_guided_pruning", []),
         ("group_sparsity", []),
         ("group_sparsity", ["--penalty", "squared"]),
         ("group_sparsity", ["--penalty", "squared", "--train_samples", "2"]),
@@ -613,7 +696,9 @@ def test_pretrained_workflow(
     monkeypatch.setitem(module.MODELS, model_name, (factory, weights))
     monkeypatch.setattr(module, "load_images", data)
     model_args = (
-        [] if recipe == "bn_sparsity" and model_name == "resnet18" else ["--model", model_name]
+        []
+        if recipe == "bn_guided_pruning" and model_name == "resnet18"
+        else ["--model", model_name]
     )
     monkeypatch.setattr(
         sys,
@@ -645,7 +730,7 @@ def test_pretrained_workflow(
             *extra,
         ],
     )
-    if recipe == "bn_sparsity" and model_name == "vit_b_16":
+    if recipe == "bn_guided_pruning" and model_name == "vit_b_16":
         with pytest.raises(SystemExit) as error:
             module.main()
         assert error.value.code == 2
@@ -746,7 +831,7 @@ def test_pretrained_workflow(
     [
         ("prune_finetune", []),
         ("iterative_pruning", ["--rounds", "1"]),
-        ("bn_sparsity", ["--sparse_epochs", "0"]),
+        ("bn_guided_pruning", ["--sparse_epochs", "0"]),
         ("group_sparsity", ["--sparse_epochs", "0"]),
         ("gate_pruning", ["--sparse_epochs", "0"]),
         ("stability_pruning", ["--max_selection_checks", "1"]),
@@ -932,8 +1017,8 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
         ("prune_finetune", "--sparse_loss_weight"),
         ("iterative_pruning", "--sparse_epochs"),
         ("iterative_pruning", "--metric"),
-        ("bn_sparsity", "--metric"),
-        ("bn_sparsity", "--rounds"),
+        ("bn_guided_pruning", "--metric"),
+        ("bn_guided_pruning", "--rounds"),
         ("group_sparsity", "--metric"),
         ("gate_pruning", "--penalty"),
         ("soft_pruning", "--sparse_loss_weight"),
@@ -967,7 +1052,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     if recipe == "isomorphic_pruning":
         assert options.calibration_batches == 100 and options.calibration_batch_size == 64
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
-    if recipe in ("bn_sparsity", "gate_pruning", "group_sparsity", "stability_pruning"):
+    if recipe in ("bn_guided_pruning", "gate_pruning", "group_sparsity", "stability_pruning"):
         assert options.sparse_loss_weight == 1e-4
     if recipe in ("group_sparsity", "stability_pruning"):
         assert options.sparsity_schedule == "cosine"
@@ -1020,7 +1105,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
 
 
 @pytest.mark.parametrize(
-    "recipe", ["bn_sparsity", "gate_pruning", "group_sparsity", "stability_pruning"]
+    "recipe", ["bn_guided_pruning", "gate_pruning", "group_sparsity", "stability_pruning"]
 )
 @pytest.mark.parametrize("weight", ["-1", "nan", "inf"])
 def test_workflow_rejects_invalid_sparse_loss_weight(monkeypatch, recipe, weight):

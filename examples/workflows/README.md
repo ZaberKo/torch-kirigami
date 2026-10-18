@@ -86,7 +86,7 @@ Training uses deterministic weight preprocessing without the papers' complete au
 | `vit_b_32` | `ViT_B_32_Weights.IMAGENET1K_V1` |
 | `convnext_tiny` | `ConvNeXt_Tiny_Weights.IMAGENET1K_V1` |
 
-BN sparsity supports the three ResNets.
+BN-guided pruning supports the three ResNets.
 VBP supports both ViTs and ConvNeXt-Tiny.
 Head pruning supports both ViTs.
 The remaining entries support the three ResNets and both ViTs.
@@ -240,7 +240,7 @@ python iterative_pruning.py \
   --finetune_epochs 1 --lr 0.001 --output runs/resnet18_iterative_pruning
 ```
 
-### BN-scale sparsity
+### BN-guided channel pruning
 
 #### Research basis
 
@@ -250,7 +250,10 @@ python iterative_pruning.py \
 
 This entry applies L1 to every supported ResNet block's `bn1.weight`.
 It ranks matching `conv1` channels by learned BN-scale magnitude, then plans and compacts them.
+The candidate axis is `conv1.weight` axis 0. BN scales supply scores, not candidate entry axes.
 `BNScaleMagnitude` implements this scoring rule and uses the library's `parameter_regions` query.
+It sums absolute values across affected, explicitly selected BN scales, including multiple BN modules when present.
+Shared parameter coordinates count once. The score has no per-BN averaging.
 Conv weights and BN offsets do not contribute to its scores. A request without associated BN scales raises an error.
 The default is one sparse-training epoch and no recovery epochs.
 `--sparse_epochs 0` skips sparse training.
@@ -264,12 +267,12 @@ The example omits multi-pass slimming and the paper's pre-activation adaptations
 #### Run
 
 ```bash
-python bn_sparsity.py \
+python bn_guided_pruning.py \
   --model resnet18 --device cuda --compile_latency \
   --pruning_ratio 0.05 --granularity 8 \
   --sparse_epochs 1 --sparse_loss_weight 0.0001 \
   --finetune_epochs 1 --lr 0.001 \
-  --output runs/resnet18_bn_sparsity
+  --output runs/resnet18_bn_guided_pruning
 ```
 
 ### Dependency-group sparsity

@@ -268,7 +268,7 @@ class Greedy:
     Attributes:
         metric: Batch-independent scorer. Scores use the initial empty request.
         max_trials: Maximum joint attempts, including cache hits. Scoring queries
-            are separate. Proven budget violations and covered seeds use no attempt.
+            are separate. Seeds already covered by accepted removals use no attempt.
     """
 
     metric: Metric

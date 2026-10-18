@@ -212,7 +212,7 @@ A new request without parameter effects raises `PlanningError`.
 Actual zero-valued parameters and requests whose parameter effects are already covered can score zero.
 
 Use a custom Metric for a different scoring basis or formula.
-For example, [BN sparsity](../examples/workflows/bn_sparsity.py) uses `BNScaleMagnitude` with explicit BN scale references.
+For example, [BN-guided pruning](../examples/workflows/bn_guided_pruning.py) uses `BNScaleMagnitude` with explicit BN scale references.
 It uses `parameter_regions` to find the affected scales, then sums their absolute values.
 Other parameter effects still participate in dependency analysis and physical pruning.
 The metric rejects a new request without associated scales instead of assigning zero importance.

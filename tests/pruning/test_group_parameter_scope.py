@@ -25,6 +25,85 @@ from torch_kirigami.pruning.ranking import IndependentRanking
 from torch_kirigami.pruning.types import MetricContext
 
 
+@pytest.mark.parametrize("p", [1, 2])
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_custom_parameter_scope_keeps_exact_accelerated_planning(
+    p, strategy_type, execution_device, monkeypatch
+):
+    """Batch all parameter effects, excluding buffers, through public planning."""
+
+    class Affine(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.gain = nn.Parameter(torch.arange(8, 0, -1).double(), requires_grad=False)
+            self.alias = self.gain
+            self.offset = nn.Parameter(torch.arange(8).double() / 10)
+            self.register_buffer("shift", torch.arange(8).double() * 1000)
+
+        def forward(self, x):
+            return x * self.gain + self.offset + self.shift
+
+    model = nn.Sequential(nn.Linear(3, 8), Affine(), nn.Linear(8, 2)).double().eval()
+    with torch.no_grad():
+        model[0].weight.fill_(0.1)
+        model[0].bias.fill_(0.2)
+        model[2].weight.fill_(0.3)
+    x = torch.randn(2, 3, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("0",))
+    context = PlanningContext(
+        graph, space.candidates, ChannelRatio(0.5), space.channel_axes, pruner.constraints
+    )
+    # Independent formula: frozen gain and custom offsets count once. The large
+    # registered buffer must not change ranks or the normalization denominator.
+    energy = (
+        model[0].weight.abs().pow(p).sum(1)
+        + model[0].bias.abs().pow(p)
+        + model[1].gain.abs().pow(p)
+        + model[1].offset.abs().pow(p)
+        + model[2].weight.abs().pow(p).sum(0)
+    )
+    ranking = IndependentRanking.build(context, GroupMagnitude(p), space.channel_axes)
+    assert ranking is not None
+    for removed in ((), (0, 3)):
+        accepted = context.impact((space.channel_axes[0].select(removed),) if removed else ())
+        accelerated = ranking.score(accepted)
+        assert accelerated is not None
+        retained = [i for i in range(8) if i not in removed]
+        expected = energy / energy[retained].mean()
+        for candidate in space.candidates:
+            position = next(iter(candidate.remove[0].fully_selected_indices(0)))
+            if position in removed:
+                assert candidate.key in accelerated.covered
+            else:
+                assert accelerated.scores[candidate.key] == pytest.approx(expected[position].item())
+
+    calls = []
+    propagate = graph.propagate
+
+    def counted(*args, **kwargs):
+        calls.append(1)
+        return propagate(*args, **kwargs)
+
+    monkeypatch.setattr(graph, "propagate", counted)
+    plan = pruner.plan(space, budget=ChannelRatio(0.5), strategy=strategy_type(GroupMagnitude(p)))
+    assert len(calls) <= plan.selection_report.trials + 3
+    removed = torch.argsort(energy)[:4].tolist()
+    assert set(
+        plan.analysis.selection(graph.parameter("0.weight")).fully_selected_indices(0)
+    ) == set(removed)
+    retained = [i for i in range(8) if i not in removed]
+    hidden = F.linear(x, model[0].weight[retained], model[0].bias[retained])
+    hidden = hidden * model[1].gain[retained] + model[1].offset[retained] + model[1].shift[retained]
+    expected_output = F.linear(hidden, model[2].weight[:, retained], model[2].bias)
+    compact, _ = pruner.apply(plan)
+    assert compact[1].alias is compact[1].gain
+    assert not compact[1].gain.requires_grad
+    torch.testing.assert_close(compact(x), expected_output)
+    compact(x).sum().backward()
+
+
 class MixedAttention(nn.Module):
     """Keep an unrelated native layer beside an opaque attention module."""
 

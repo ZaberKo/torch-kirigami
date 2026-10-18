@@ -1,5 +1,6 @@
 """Inference complexity and CPU/CUDA timing, independent of pruning policy."""
 
+import copy
 import gc
 import math
 import statistics
@@ -260,7 +261,7 @@ class ModelComplexity:
 
 
 def _to_device(value: object, device: torch.device, memo: dict[object, object]) -> object:
-    """Move one jointly isolated input tree, preserving repeated object identity."""
+    """Move isolated inputs without changing container types or unchanged references."""
     if id(value) in memo:
         return memo[id(value)]
     if isinstance(value, torch.Tensor):
@@ -272,19 +273,19 @@ def _to_device(value: object, device: torch.device, memo: dict[object, object]) 
                 )
             memo[key] = True
         result = value.to(device)
-    elif isinstance(value, list):
-        result = []
-        memo[id(value)] = result
-        result.extend(_to_device(v, device, memo) for v in value)
-    elif isinstance(value, dict):
-        result = {}
-        memo[id(value)] = result
-        result.update((k, _to_device(v, device, memo)) for k, v in value.items())
-    elif isinstance(value, tuple):
-        values = tuple(_to_device(v, device, memo) for v in value)
-        result = type(value)(*values) if hasattr(value, "_fields") else values
+    elif isinstance(value, (tuple, list, dict)):
+        items = tuple(value.values()) if isinstance(value, dict) else value
+        moved = tuple(_to_device(item, device, memo) for item in items)
+        # Keep unchanged containers: the isolated model can refer to them too.
+        # For changed containers, deepcopy reuses moved children from the memo
+        # and preserves types such as named tuples and defaultdict.
+        result = (
+            value
+            if all(old is new for old, new in zip(items, moved, strict=True))
+            else copy.deepcopy(value, memo)
+        )
     else:
-        return value
+        result = value
     memo[id(value)] = result
     return result
 

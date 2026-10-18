@@ -24,6 +24,8 @@ print(f"Batch latency: {latency_ms:.3f} ms")
 
 Both measurement functions accept one input or positional arguments as a tuple or list. Use `input_kwargs` for keyword arguments. They accept nested tensor containers. They preserve repeated input and container identities across positional and keyword arguments. Wrap a list in an outer positional-argument tuple when the model expects one list argument.
 
+Device transfer preserves supported container types, including `torch.Size`, named tuples, and dictionaries with default factories. Containers whose contents need no transfer retain their isolated identity, including references shared with ordinary model attributes.
+
 When the caller omits `device`, measurement uses the device of the first registered model tensor. A model with no tensors uses CPU. Move all parameters and buffers to the selected device before measurement. Measurement does not move the model. The API supports CPU and CUDA only.
 
 Measurement isolates inputs from model execution and preserves repeated input identity. It supports storage-sharing views that already use the selected device. It rejects cross-device transfer of separate views because transfer would break their storage relationship. Move the shared base and recreate its views on the target device first.
