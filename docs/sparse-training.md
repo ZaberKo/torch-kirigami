@@ -17,22 +17,74 @@ A sparse regularizer returns a scalar tensor. Ordinary autograd computes its gra
 
 ## Live parameter groups
 
-`Pruner.parameter_groups(candidates, *, parameter_filter=None)` converts complete dependency impacts into live `ParameterGroup` objects:
+Group extraction and comparison belong to `torch_kirigami.pruning`.
+Loss functions belong to `torch_kirigami.sparsity`:
+
+```python
+from torch_kirigami.pruning import ParameterGroup, Pruner, unique_groups
+from torch_kirigami.sparsity import GroupLasso, GroupSquaredL2
+```
+
+### Extract one group per candidate
+
+`Pruner.parameter_groups(candidates, *, parameter_filter=None)` describes the parameter regions that each candidate would remove.
+It does not choose candidates, create a plan, or change weights.
+Call this query before planning when training needs candidate-specific groups.
 
 1. The pruner propagates each candidate through the graph and its shared constraints.
 2. It rejects incomplete impacts because they cannot identify every affected parameter.
 3. It reads affected parameter selections and applies the optional filter.
-4. It merges overlapping selections within each group and removes fully equivalent groups.
+4. It merges overlapping selections within each group and preserves the candidate order.
 
-Partially overlapping groups remain separate. Their regularizer contributions add. A directly constructed `ParameterGroup` validates and merges its supplied selections, but it does not prove that the selections are complete dependency impacts. Groups do not contain buffers, activation selections, constraints, or attribute-update requirements.
+Each candidate produces one group with the same key, including candidates with equivalent parameter regions.
+An incomplete impact or an empty group raises `PlanningError` with the candidate key. Extraction never skips a candidate.
+An empty candidate iterable returns an empty tuple.
+Extraction requires complete influence. It accepts complete impacts even when constraints fail, and does not compile execution recipes.
+A group is therefore not proof that its candidate can be physically pruned.
+
+The optional `parameter_filter(ref, parameter)` receives a `TensorRef` and its live `nn.Parameter`.
+Returning `True` keeps that parameter's affected regions in the group.
+`None` keeps every affected parameter. Buffers are always excluded.
+This filter changes the sparse-loss groups. It does not restrict pruning or change metric scores.
+
+### Explicit deduplication
+
+`torch_kirigami.pruning.unique_groups(groups)` is a function, not a regularizer method.
+It returns the first original group from each set of equivalent groups, in input order.
+Groups are equivalent when they belong to the same graph and select the same parameter coordinates.
+Keys and region decomposition do not affect this comparison.
+Partially overlapping groups remain separate. The function does not combine coefficients.
+
+For example, producer row 2 and consumer column 2 can produce equivalent groups through dependency propagation.
+Extraction retains both entries and their candidate keys.
+Call `unique_groups` only when the training objective should count those parameter regions once.
+Assign coefficients after deduplication so they match the returned groups.
+Equal parameter groups do not prove that the candidates have identical buffer effects, constraints, or execution requirements.
+
+### Joint effects and live bindings
+
+Extraction analyzes candidates separately. It does not compute their joint deletion effects.
+For a joint group, use `Pruner.impact(candidates)`, validate `impact.complete`, then construct `ParameterGroup(graph, impact.parameters)`.
+Joint analysis can include effects absent from every individual candidate.
+Require nonempty parameter regions before constructing the group.
+One joint group produces one norm over its parameter union.
+Separate groups produce a sum of norms. These objectives generally differ.
+
+A directly constructed `ParameterGroup` validates and merges its supplied selections, but it does not prove that they are complete dependency impacts.
+Groups do not contain buffers, activation selections, constraints, or attribute-update requirements.
 
 A group can contain regions from several parameters. `bindings()` returns current `(Parameter, Selection)` pairs after graph validation. Numerical optimizer updates do not invalidate a group. Rebuild the graph and groups after a structural change, parameter replacement, or other snapshot-invalidating change.
 
-All groups in one operation must belong to the same graph and device. Selected parameters must be finite, dense, real floating-point tensors. The library does not gather distributed or sharded parameters.
+Sparse regularizers and parameter operations require all supplied groups to share one graph and one parameter device.
+They require dense, real floating-point parameters and finite selected values.
+`ParameterGroup` itself stores coordinates and does not enforce these numerical requirements.
+The library does not gather distributed or sharded parameters.
 
 ## Scalar regularizers
 
-Let `W_g` be the flattened region union for group `g`, and let `a_g` be its coefficient.
+Calling a regularizer returns a scalar loss tensor.
+Let `W_g` contain the current parameter values in group `g`, and let `a_g` be its coefficient.
+A group can contain regions from several modules. Repeated coordinates within that group count once.
 
 | API | Objective |
 | --- | --- |
@@ -40,11 +92,22 @@ Let `W_g` be the flattened region union for group `g`, and let `a_g` be its coef
 | `GroupLasso(groups, *, coefficients=None)` | `sum_g a_g * ||W_g||_2` |
 | `GroupSquaredL2(groups, *, coefficients=None)` | `0.5 * sum_g a_g * ||W_g||_2**2` |
 
-Coefficients default to one. Each coefficient must be a finite, nonnegative Python number. Equivalent groups must have equal coefficients. There is no implicit averaging or group-size normalization. Multiply the returned scalar by the overall strength in the training loop.
+Coefficients default to one. Each coefficient must be a finite, nonnegative Python number.
+Every supplied group contributes a separate term, including repeated and partially overlapping groups.
+An element shared by two groups contributes to both terms.
+Two equivalent groups with coefficients 1 and 2 therefore contribute the same loss as one group with coefficient 3.
+There is no implicit deduplication, averaging, or group-size normalization. Multiply the returned scalar by the overall strength in the training loop.
 
 `ScaleL1` accepts parameter paths or `TensorRef` values. It requires one-dimensional parameters and deduplicates aliases. It does not infer whether a parameter represents a BatchNorm or gate scale.
+For example, BatchNorm uses one learned scale per channel, stored in its `weight` parameter.
+`ScaleL1(graph, ("bn.weight",))` returns `model.bn.weight.abs().sum()` for a model with that BatchNorm module.
+Adding a weighted version of this scalar to the task loss encourages small scales during training.
+The [BN sparsity workflow](../examples/workflows/bn_sparsity.py) uses this loss, then scores candidate removals from the trained scales.
+`ScaleL1` does not propagate dependencies, rank candidates, or physically prune the model.
 
 Regularizers read current parameter values on every call. They preserve autograd connectivity and do not retain graphs across calls. They do not call `backward()`, change parameters or gradients, or read optimizer state. Frozen parameters remain in the objective. Built-in L2 penalties support first-order autograd only. Nonfinite values or results raise an error.
+The loss stays on the selected parameters' device.
+Its dtype is float64 if any selected parameter is float64, otherwise float32.
 
 Custom subclasses can override `penalty(values)`. They receive each group's flattened selected values and define their own differentiation behavior.
 
@@ -57,7 +120,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import Pruner
+from torch_kirigami.pruning import Pruner, unique_groups
 from torch_kirigami.sparsity import GroupLasso
 
 model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
@@ -65,7 +128,8 @@ x, target = torch.randn(2, 8), torch.randn(2, 4)
 graph = DependencyGraph.build(model, args=(x,))
 pruner = Pruner(model, graph=graph)
 space = pruner.discover_candidates()
-regularizer = GroupLasso(pruner.parameter_groups(space.candidates))
+groups = unique_groups(pruner.parameter_groups(space.candidates))
+regularizer = GroupLasso(groups)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 optimizer.zero_grad()
@@ -113,7 +177,8 @@ These operations update parameter values under `no_grad`. Call them outside a li
 | `zero_groups_(groups)` | Set the selected union to zero without a persistent mask |
 | `set_group_norms_(groups, targets)` | Rescale disjoint groups to explicit nonnegative L2 norms |
 
-Scaling and zeroing update overlaps once. Norm projection accepts equivalent groups only when their targets match. It rejects all other overlaps. A zero vector cannot receive a positive norm because it has no direction.
+Scaling and zeroing update overlaps once. This differs from regularizers, which sum one loss term per supplied group.
+Norm projection accepts equivalent groups only when their targets match. It rejects all other overlaps. A zero vector cannot receive a positive norm because it has no direction.
 
 The operations validate and prepare values before mutation. Runtime or value failures during commit restore original values. Gradients and optimizer state remain unchanged. Momentum can regrow zeroed parameters. Reapply the operation or use a mask when zeros must persist. The operation rejects distinct tensor objects that share storage when an update could affect them.
 

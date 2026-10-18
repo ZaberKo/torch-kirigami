@@ -27,5 +27,5 @@ The diagrams use Mermaid 11, including block diagrams for tensor coordinates.
 [Development](development.md) covers local checks, test selection, and releases.
 [Verification](verification.md) explains what each kind of evidence establishes.
 
-[Development notes](dev-notes/index.md) contain historical investigations.
+Local development notes under `docs/dev-notes/` are not part of the published documentation.
 They do not define current API contracts.

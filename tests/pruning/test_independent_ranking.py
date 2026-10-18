@@ -222,9 +222,11 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
     rows = model[0].weight.detach().cpu().tolist()
     bn = model[1].weight.detach().cpu().tolist()
     columns = model[2].weight.detach().T.cpu().tolist()
+    bias = model[0].bias.detach().cpu().tolist()
+    bn_bias = model[1].bias.detach().cpu().tolist()
     expected = [
-        math.fsum(abs(v) for v in (*a, b, *c)) if p == 1 else math.hypot(*a, b, *c)
-        for a, b, c in zip(rows, bn, columns, strict=True)
+        math.fsum(abs(v) for v in (*a, b, *c, d, e)) if p == 1 else math.hypot(*a, b, *c, d, e)
+        for a, b, c, d, e in zip(rows, bn, columns, bias, bn_bias, strict=True)
     ]
     assert ranking.norms[0] == pytest.approx(expected, rel=1e-12, abs=0)
     selected = context.impact((axis.select([0]),))
@@ -337,7 +339,7 @@ def test_unproved_candidates_use_generic_scoring(case: str) -> None:
             context.score(GroupMagnitude(), candidates)
 
 
-@pytest.mark.parametrize("kind", ["subclass", "filter", "instance_override", "inference"])
+@pytest.mark.parametrize("kind", ["subclass", "instance_override", "inference"])
 def test_extensions_and_inference_tensors_do_not_reuse_statistics(kind: str) -> None:
     with torch.inference_mode(kind == "inference"):
         model = nn.Linear(3, 4)
@@ -346,9 +348,7 @@ def test_extensions_and_inference_tensors_do_not_reuse_statistics(kind: str) -> 
         candidates = (Candidate("first", (axis.select([0]),), axis),)
         context = context_for(graph, candidates)
         metric = ReferenceMagnitude() if kind == "subclass" else GroupMagnitude()
-        if kind == "filter":
-            metric.parameter_filter = lambda ref, tensor: True
-        elif kind == "instance_override":
+        if kind == "instance_override":
             metric.score = lambda *args, **kwargs: [7.0]
         assert IndependentRanking.build(context, metric, context.channel_axes) is None
 
@@ -505,6 +505,7 @@ def test_repeated_calls_and_multiple_consumers_preserve_shared_statistics(
     assert ranking is not None
     energy = (
         model.stem.weight.square().sum(1)
+        + model.stem.bias.square()
         + model.left.weight.square().sum(0)
         + model.right.weight.square().sum(0)
     )

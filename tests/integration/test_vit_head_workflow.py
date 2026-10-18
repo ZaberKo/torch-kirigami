@@ -432,6 +432,7 @@ def test_logical_head_metric_and_automatic_plan(execution_device):
     with torch.no_grad():
         for start in (0, 12, 24):
             attention.qkv.weight[start : start + 4].zero_()
+            attention.qkv.bias[start : start + 4].zero_()
         attention.proj.weight[:, :4].zero_()
     graph = DependencyGraph.build(model, args=(torch.randn(1, 3, 8, 8),))
     pruner = Pruner(
@@ -457,14 +458,12 @@ def test_logical_head_metric_and_automatic_plan(execution_device):
     head_candidates = [(i, c) for i, c in enumerate(space.candidates) if ":head:" in c.key]
     assert scores[head_candidates[0][0]] == 0
     # Independently accumulate propagated parameter-region unions for the exact
-    # per-axis singleton normalization, excluding biases as the metric specifies.
+    # per-axis singleton normalization, including all affected parameters.
     bindings = dict(graph.tensor_bindings())
 
     def energy(impact):
         value = 0.0
         for selection in impact.parameters:
-            if not selection.tensor.paths[0].endswith("weight"):
-                continue
             weight = bindings[selection.tensor].detach().double()
             mask = torch.zeros_like(weight, dtype=torch.bool)
             for region in selection.regions:

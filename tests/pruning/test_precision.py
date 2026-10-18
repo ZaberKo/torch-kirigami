@@ -109,7 +109,7 @@ def test_complex_l1_promotes_before_absolute_value(execution_device):
 
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
-def test_magnitude_low_precision_accumulation_and_filter(dtype):
+def test_magnitude_low_precision_accumulation(dtype):
     model = nn.Linear(4, 6).to(dtype)
     with torch.no_grad():
         model.weight.fill_(200)
@@ -122,8 +122,7 @@ def test_magnitude_low_precision_accumulation_and_filter(dtype):
     def strategy(ctx):
         expected = (4 * 200**2 + 10**2) ** 0.5
         assert ctx.score(Magnitude(), ctx.candidates)[0] == pytest.approx(expected)
-        filtered = Magnitude(parameter_filter=lambda ref, param: ref.paths[0] == "weight")
-        assert ctx.score(filtered, ctx.candidates) == (400.0,)
+        assert ctx.score(Magnitude(1), ctx.candidates) == (810.0,)
         return ["one"]
 
     Pruner(pruner.model, graph=pruner.graph, preserve_io=False).plan(

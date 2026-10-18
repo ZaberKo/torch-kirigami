@@ -13,7 +13,7 @@ from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import CandidateAxis, Operation
 from ..dep_graph.selection import AxisRef, TensorRef
 from .axis_domains import IdentityAxisIndex
-from .groups import ParameterGroup, unique_groups
+from .groups import ParameterGroup
 from .types import Candidate, PlanningError
 
 
@@ -175,13 +175,18 @@ def parameter_groups(
     constraints: tuple[Constraint, ...],
     parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None,
 ) -> tuple[ParameterGroup, ...]:
-    """Extract complete groups without requiring individual feasibility."""
+    """Extract one group per candidate, preserving order and repeated groups.
+
+    Require complete influence before filtering parameters. Constraint failures
+    do not prevent extraction. This query does not compile execution recipes.
+    Reject empty filtered groups instead of changing candidate-to-group alignment.
+    """
     result = []
     for candidate in candidates:
         impact = graph.propagate(remove=candidate.remove, constraints=constraints)
         if not impact.complete:
             raise PlanningError(
-                "Incomplete parameter group: "
+                f"Incomplete parameter group for candidate {candidate.key!r}: "
                 + "; ".join(d.message for d in impact.diagnostics if not d.complete)
             )
         selections = []
@@ -196,5 +201,9 @@ def parameter_groups(
                 graph.validate()
                 if keep:
                     selections.append(selection)
+        if not selections:
+            raise PlanningError(
+                f"Candidate {candidate.key!r} has no parameter regions after extraction and filtering"
+            )
         result.append(ParameterGroup(graph, tuple(selections), candidate.key))
-    return unique_groups(result)
+    return tuple(result)

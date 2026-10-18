@@ -39,9 +39,10 @@ from .axis_domains import IdentityAxisIndex
 from .metrics import (
     GroupMagnitude,
     _candidate_domain,
+    _group_score,
     _magnitude_norm,
     _normalization,
-    _weight_bindings,
+    _parameter_bindings,
 )
 from .planner import PlanningContext
 from .types import Candidate, Metric, PlanningError
@@ -61,18 +62,23 @@ _CONSTRAINTS = (
 )
 
 
-def _norms(
+def _component_norms(
     members: tuple[AxisRef, ...],
-    weights: set[TensorRef],
-    bindings: dict[TensorRef, torch.Tensor],
+    bindings: Mapping[TensorRef, torch.Tensor],
     p: int,
 ) -> tuple[float, ...]:
-    """Batch independent slices using the same parameter order and norm formula."""
+    """Return one union L1 or L2 norm per position in an identity-axis component.
+
+    The caller proves that component members select independent, aligned slices.
+    Only members present in the parameter bindings contribute. Combine L2 norms
+    with `hypot`, so the result equals one norm across all affected parameters,
+    rather than a sum of per-parameter norms.
+    """
     width = members[0].tensor.shape[members[0].dim]
     totals: dict[torch.device, torch.Tensor] = {}
     with torch.no_grad():
         for axis in members:
-            if axis.tensor not in weights:
+            if axis.tensor not in bindings:
                 continue
             weight = bindings[axis.tensor]
             value = _magnitude_norm(weight.detach().movedim(axis.dim, 0), p, batched=True)
@@ -119,9 +125,9 @@ class IndependentRanking:
         metric: GroupMagnitude instance whose scoring semantics were proved.
         p: Norm exponent used for cached statistics.
         domains: Proved identity-axis components used for normalization.
-        candidates: Candidate keys with their axis and position.
+        candidates: Candidate objects with component indices and axis positions.
         removals: Axis positions removed by each candidate.
-        norms: Cached per-axis position magnitudes.
+        norms: Union L1 or L2 norms indexed by component, then axis position.
         bindings: Tensor objects used to validate statistics freshness.
         versions: Tensor mutation counters captured with the statistics.
     """
@@ -143,7 +149,6 @@ class IndependentRanking:
         """Freeze proved domains and their summaries for the requested counting axes."""
         if (
             type(metric) is not GroupMagnitude
-            or metric.parameter_filter is not None
             or "score" in vars(metric)
             or type(metric).score is not _GROUP_SCORE
         ):
@@ -203,10 +208,12 @@ class IndependentRanking:
             versions = tuple(t._version for t in bindings.values())
         except RuntimeError:
             return None  # Inference tensors have no mutation-aware cache key.
-        weights = _weight_bindings(context)
-        if not weights:
+        parameters = _parameter_bindings(context)
+        if any(not any(axis.tensor in parameters for axis in members) for members in domains):
+            # Ordinary scoring reports parameter-free requests. Do not turn a
+            # missing scoring basis into a cached vector of zero importance.
             return None
-        norms = tuple(_norms(members, weights, bindings, metric.p) for members in domains)
+        norms = tuple(_component_norms(members, parameters, metric.p) for members in domains)
         graph.validate()
         return cls(
             context,
@@ -236,7 +243,6 @@ class IndependentRanking:
         self.context.require_complete(accepted_impact)
         if (
             self.metric.p != self.p
-            or self.metric.parameter_filter is not None
             or "score" in vars(self.metric)
             or type(self.metric).score is not _GROUP_SCORE
             or tuple(t._version for t in self.bindings) != self.versions
@@ -267,7 +273,7 @@ class IndependentRanking:
             if position in removed[group]:
                 covered.add(candidate.key)
                 continue
-            scale, mean = normalization[group]
-            value = (self.norms[group][position] / scale) ** self.p / mean if scale else 0.0
+            scale, scaled_mean_energy = normalization[group]
+            value = _group_score(self.norms[group][position], scale, scaled_mean_energy, self.p)
             scores[candidate.key] = value
         return IndependentScores(MappingProxyType(scores), self.removals, frozenset(covered))

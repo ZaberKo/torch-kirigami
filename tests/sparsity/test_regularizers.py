@@ -15,6 +15,7 @@ from torch_kirigami.pruning import (
     ParameterGroup,
     PlanningError,
     Pruner,
+    unique_groups,
 )
 from torch_kirigami.sparsity import GroupLasso, GroupSquaredL2, ScaleL1
 
@@ -32,27 +33,29 @@ def setup(dtype=torch.float64, device="cpu"):
 
 
 @pytest.mark.parametrize("kind", [GroupLasso, GroupSquaredL2])
-def test_penalty_gradient_overlap_dedup_and_purity(kind, execution_device):
+@pytest.mark.parametrize("coefficients", [None, (1, 2, 3), (2, 2, 3)])
+def test_penalty_gradient_repeated_and_overlapping_terms(kind, coefficients, execution_device):
     model, graph = setup(device=execution_device)
     axis = graph.parameter("0.weight").axis(0)
     row = ParameterGroup(graph, (axis.select([0]), axis.select([0])))
     column = ParameterGroup(graph, (graph.parameter("0.weight").axis(1).select([0]),))
-    regularizer = kind((row, row, column), coefficients=(2, 2, 3))
+    regularizer = kind((row, row, column), coefficients=coefficients)
     before = {name: value.detach().clone() for name, value in model.state_dict().items()}
     penalty = regularizer()
     assert all(p.grad is None for p in model.parameters())
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, before[name])
-    expected = 2 * 5 + 3 * 10**0.5 if kind is GroupLasso else 25 + 15
+    a, b, c = coefficients or (1, 1, 1)
+    expected = (a + b) * 5 + c * 10**0.5 if kind is GroupLasso else (a + b) * 12.5 + c * 5
     torch.testing.assert_close(penalty, penalty.new_tensor(expected))
     penalty.backward()
     expected_grad = torch.zeros_like(model[0].weight)
     if kind is GroupLasso:
-        expected_grad[0] += expected_grad.new_tensor([6 / 5, 8 / 5])
-        expected_grad[:, 0] += expected_grad.new_tensor([9 / 10**0.5, 3 / 10**0.5, 0])
+        expected_grad[0] += expected_grad.new_tensor([(a + b) * 3 / 5, (a + b) * 4 / 5])
+        expected_grad[:, 0] += expected_grad.new_tensor([c * 3 / 10**0.5, c / 10**0.5, 0])
     else:
-        expected_grad[0] += expected_grad.new_tensor([6, 8])
-        expected_grad[:, 0] += expected_grad.new_tensor([9, 3, 0])
+        expected_grad[0] += expected_grad.new_tensor([(a + b) * 3, (a + b) * 4])
+        expected_grad[:, 0] += expected_grad.new_tensor([c * 3, c, 0])
     torch.testing.assert_close(model[0].weight.grad, expected_grad)
     model.zero_grad()
     regularizer().backward()  # A second call must create a new graph.
@@ -97,13 +100,13 @@ def test_group_discovery_filter_duplicates_and_incomplete_path():
     space = pruner.discover_candidates()
     assert len(space.channel_axes) == 1 and len(space.candidates) == 3
     groups = pruner.parameter_groups([space.candidates[0]] * 2)
-    assert len(groups) == 1
+    assert len(groups) == 2 and groups[0].equivalent(groups[1])
+    assert unique_groups(groups) == (groups[0],)
     assert {s.tensor.paths[0] for s in groups[0].selections} == {"0.weight", "0.bias", "2.weight"}
-    with pytest.raises(ValueError, match="nonempty"):
+    with pytest.raises(PlanningError, match=f"{space.candidates[0].key!r}.*no parameter regions"):
         pruner.parameter_groups(space.candidates, parameter_filter=lambda *_: False)
-    with pytest.raises(ValueError, match="conflicting"):
-        GroupLasso(groups * 2, coefficients=(1, 2))
-    for coefficients in [(-1,), (float("nan"),), (torch.tensor(1.0),), ()]:
+    assert GroupLasso(groups, coefficients=(1, 2))().item() == pytest.approx(15)
+    for coefficients in [(-1, 1), (float("nan"), 1), (torch.tensor(1.0), 1), ()]:
         with pytest.raises(ValueError):
             GroupLasso(groups, coefficients=coefficients)
     model[1] = nn.Sigmoid()
@@ -598,6 +601,7 @@ def test_mixed_group_reductions_share_bindings_and_count_each_region_once(
         vectors = (
             torch.cat((reference["a_regular"][0], reference["z_irregular"][0, [0, 2]])),
             reference["a_regular"][0],
+            torch.cat((reference["a_regular"][0], reference["z_irregular"][0, [0, 2]])),
             reference["scalar"].reshape(1),
         )
         if kind is GroupLasso:

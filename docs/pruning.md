@@ -12,7 +12,7 @@ Build a fresh `DependencyGraph` for each pruning round. Pass the original model 
 
 `plan(space, budget=..., strategy=...)` selects from an explicit `CandidateSpace`. `prune(...)` calls `plan(...)` and then `apply(...)`. Neither method discovers candidates unless the caller first calls `discover_candidates()`.
 
-`PruningPlan` stores portable analysis facts, selected keys, budget results, tensor recipes, attribute recipes, and before/after structure. It stores no model, live graph, scoring callback, or tensor values. `apply(plan)` checks the target model, prepares replacements, and then commits them. It returns the same module object. Replaced parameters are new `Parameter` objects.
+`PruningPlan` stores portable analysis facts, selected keys, budget results, tensor recipes, attribute recipes, and before/after structure. It stores no model, live graph, scoring callback, or tensor values. `apply(plan)` checks the target model, prepares replacements, and then commits them. It returns `(model, result)`, where `model` is the supplied module and `result` is a `PruningResult`. Replaced parameters are new `Parameter` objects.
 
 After a nonempty apply, rebuild the graph, candidate space, and graph-bound groups. Recreate the optimizer. The optimizer still refers to old parameter objects. The library does not migrate optimizer state.
 
@@ -97,7 +97,11 @@ Distinct declared domains can have overlapping effects. Propagation finds those 
 
 `Candidate(key, remove, axis=None)` names one batch of original-coordinate seeds. Its `axis` describes a logical domain. It does not make the candidate an indivisible structural block. Relations and constraints define required coupling.
 
-`Pruner.impact(candidates)` analyzes a joint candidate batch. `Pruner.parameter_groups(candidates)` extracts complete parameter regions for sparse training. Both methods require explicit candidates.
+`Pruner.impact(candidates)` analyzes a joint candidate batch.
+`Pruner.parameter_groups(candidates)` analyzes candidates separately and returns one parameter group per candidate, in input order.
+Both queries require explicit candidates and leave model values unchanged.
+Use `torch_kirigami.pruning.unique_groups` if equivalent groups should contribute only once to sparse training.
+See [parameter groups](sparse-training.md#live-parameter-groups) for keys, filtering, deduplication, and joint effects.
 
 You can also construct a candidate space directly. Use this when the operator rules do not declare the entry axis that your policy needs.
 
@@ -185,17 +189,54 @@ A metric implements `score(context, candidates, *, accepted_impact)`. It returns
 
 `accepted_impact` is the complete dependency closure of accepted removal requests. It includes effects such as consumer input columns removed by producer output channels. Built-in metrics combine accepted seeds with the candidate seeds, then subtract parameter regions already removed. Do not subtract two total scores. Joint requests can activate effects absent from isolated requests.
 
+Custom metrics can call `parameter_regions(context, candidate, accepted_impact=accepted_impact)` from `torch_kirigami.pruning`.
+This function performs the joint analysis and subtracts accepted regions.
+It returns nonempty `Selection` objects in original coordinates, one per affected Parameter.
+Shared parameters and overlapping regions count once. The function excludes buffers.
+Resolve values through `context.graph.tensor_bindings()`.
+Incomplete influence raises an error. Constraint violations do not prevent this coordinate query, which does not certify executable pruning.
+An empty result carries no score. The metric defines whether missing evidence is valid for its algorithm.
+
 | Metric | Score |
 | --- | --- |
 | `Magnitude(p=1)` | Sum of absolute values in affected parameter regions. |
 | `Magnitude(p=2)` | L2 norm of affected parameter values, including the square root. |
-| `GroupMagnitude(p=1 or 2)` | Affected recognized weight energy divided by mean single-position energy on the surviving declared axis. |
+| `GroupMagnitude(p=1 or 2)` | Affected parameter energy divided by mean single-position energy on the declared axis. |
 | `WeightTaylor("elementwise_abs")` | Sum of `abs(weight * gradient)` over affected parameter regions. |
 | `WeightTaylor("joint_abs")` | Absolute value of the signed `weight * gradient` sum over the joint influence. |
 
-`Magnitude` and `WeightTaylor` include bias and normalization parameters by default. Their `parameter_filter(ref, parameter)` can exclude parameters. `GroupMagnitude` includes recognized Linear, convolution, BatchNorm, and LayerNorm weights, including supported functional calls. It excludes bias and buffers. Its filter can further restrict those weights. The metric counts each affected region and shared parameter once.
+All three metrics include affected Parameters, including biases, normalization parameters, and custom operator parameters.
+They exclude buffers and count shared parameters and overlapping regions once.
+They have no parameter filter or module whitelist.
+A new request without parameter effects raises `PlanningError`.
+Actual zero-valued parameters and requests whose parameter effects are already covered can score zero.
 
-`GroupMagnitude` requires each candidate to select complete slices of its declared axis. Its reference population contains every surviving position on that axis, even if the candidate space offers only a subset. Its score is a heuristic. It does not estimate task loss or guarantee accuracy. A nonzero joint score with a zero single-position baseline requires a custom metric.
+Use a custom Metric for a different scoring basis or formula.
+For example, [BN sparsity](../examples/workflows/bn_sparsity.py) uses `BNScaleMagnitude` with explicit BN scale references.
+It uses `parameter_regions` to find the affected scales, then sums their absolute values.
+Other parameter effects still participate in dependency analysis and physical pruning.
+The metric rejects a new request without associated scales instead of assigning zero importance.
+`Pruner.parameter_groups(candidates, parameter_filter=...)` selects parameters for sparse regularization.
+It does not filter built-in metric scores or restrict physical pruning.
+
+`Magnitude` treats the affected parameter union as one vector.
+For L2, it sums squared magnitudes across all affected parameters, then takes one square root.
+It does not sum per-module L2 norms.
+
+`GroupMagnitude` requires complete slices of `candidate.axis`. It computes the following score:
+
+```text
+energy = sum(abs(parameter_element) ** p) over the affected parameter union
+score = candidate energy / mean energy of single-position requests on candidate.axis
+```
+
+With no accepted removals, the denominator includes all axis positions, including the current candidate positions. It does not depend on the candidate subset or scoring batch. A multi-position candidate uses its joint region union as the numerator. The score does not divide by the candidate's position count. For single-position energies `[2, 4, 6, 8]`, the denominator is `5`. Deleting positions `[0, 2]` gives `8 / 5` if their effects are disjoint and joint propagation adds no further parameter regions.
+
+Conditional scoring subtracts parameter regions already in `accepted_impact`. Its denominator uses all axis positions not already removed. It still includes the positions currently under evaluation. A request without parameter effects raises `PlanningError`. Actual zero-valued parameters and requests whose effects are already covered can score zero. A nonzero joint score with a zero single-position baseline requires a custom metric.
+
+This metric draws on [DepGraph (CVPR 2023), Section 3.3](https://arxiv.org/abs/2301.12900), and [Torch-Pruning's implementation](https://github.com/VainF/Torch-Pruning/blob/master/torch_pruning/pruner/importance.py). It uses mean normalization and parameter-region deduplication. It does not implement the paper's sparse training or Top-N normalization. The score is a heuristic, not a task-loss estimate. Parameter scales, activation statistics, and interactions can affect ranking quality.
+
+Use candidate discovery `targets` or an explicit `CandidateSpace` to restrict deletion entry points. Use `Fixed` constraints to protect axes from dependent changes. These controls do not guarantee that magnitude scores predict accuracy loss.
 
 `WeightTaylor` reads current real parameters and dense gradients. The caller owns loss reduction, accumulation, and AMP unscaling. The metric does not call `backward()` or estimate per-example Fisher information. `elementwise_abs` sums absolute products. `joint_abs` applies the absolute value after summing signed products, so cancellation is part of its definition.
 
@@ -207,7 +248,7 @@ Incomplete influence raises an error. The metric does not treat unsupported regi
 
 `DynamicGreedy(metric, max_trials=10_000)` uses the same checks. It rescores unselected candidates after each accepted complete commitment. It scores against the accepted joint impact. It does not physically compact or recalibrate the model during planning. Dynamic rescoring can cost more and does not guarantee better accuracy.
 
-For built-in `GroupMagnitude`, proved independent axis components use batched weight statistics on the parameters' devices.
+For built-in `GroupMagnitude`, proved independent axis components use batched parameter statistics on the parameters' devices.
 Dynamic selection recomputes normalization over the surviving positions after each commitment.
 Ordinary convolution scopes that cover an entire tensor qualify.
 Partial group partitions do not.
@@ -321,7 +362,10 @@ owners. They are definitions, not resource settings.
 
 A custom metric can use the `MetricContext` protocol. It provides the graph and the impact queries needed to score candidates. A metric does not need to import `PlanningContext`.
 
-Use `context.impact((*accepted_impact.requested, *candidate.remove))` to analyze the full conditional request. Then subtract the accepted parameter regions from the candidate's parameter influence. The built-in metrics follow this rule.
+Import `parameter_regions` from `torch_kirigami.pruning` to query additional parameter regions for one candidate.
+Pass `accepted_impact` from the metric call. The helper combines accepted and candidate requests before propagation, then subtracts accepted parameter regions.
+It returns coordinates, not scores or sparse-loss groups. The custom metric chooses how to reduce their values.
+Use `context.impact(...)` directly when an algorithm needs other parts of the complete dependency result.
 
 The score result must contain exactly one value per candidate. Values must be finite real numbers. A tensor result must be one-dimensional and real. The planner checks the result after every call.
 

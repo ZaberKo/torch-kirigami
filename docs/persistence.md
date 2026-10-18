@@ -111,6 +111,6 @@ A model checkpoint restores a model. It does not resume sparse training. Save tr
 
 Pure schedules such as `Linear` and `Polynomial` do not track a step. Save their configuration and the caller's position. A parameter operation does not manage momentum. Save the optimizer policy used by the algorithm.
 
-Do not use live `AxisRef`, `ParameterGroup`, or `GateBinding` objects instead of rebinding. Graph references belong to one graph snapshot. After restore or pruning, create fresh bindings and check saved component state against them. `CumulativeChannelBudget.load_state_dict(state, space)` checks the candidate domain and structure before changing state. `SelectionWindow.load_state_dict(state)` checks window compatibility and stored similarities. Reset the window when coordinates change.
+Do not use live `AxisRef`, `ParameterGroup`, or `GateBinding` objects instead of rebinding. Graph references belong to one graph snapshot. After restore or pruning, create fresh bindings and check saved component state against them. `CumulativeChannelBudget.load_state_dict(state, graph, space)` checks the candidate domain and structure before changing state. `SelectionWindow.load_state_dict(state)` checks window compatibility and stored similarities. Reset the window when coordinates change.
 
 Plan replay and checkpoint restoration have different value expectations. Plan replay uses the receiving model's current weights. Checkpoint loading restores saved values. Review both success and failure paths when changing these contracts.

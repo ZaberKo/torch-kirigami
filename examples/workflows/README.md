@@ -112,8 +112,8 @@ Planning raises an error if the search cannot reach the target.
 That planning call changes no model tensors.
 A search limit does not prove that no valid selection exists.
 
-Magnitude entries use normalized `GroupMagnitude(p=2)` scores over affected recognized weights.
-Biases do not contribute to this metric.
+Magnitude entries use normalized `GroupMagnitude(p=2)` scores over all affected Parameters, including biases and custom operator parameters.
+Buffers do not contribute to this metric.
 Shared regions count once.
 Static `Greedy` ranks once per plan.
 The basic entry also offers dynamic rescoring for magnitude and Taylor.
@@ -250,6 +250,8 @@ python iterative_pruning.py \
 
 This entry applies L1 to every supported ResNet block's `bn1.weight`.
 It ranks matching `conv1` channels by learned BN-scale magnitude, then plans and compacts them.
+`BNScaleMagnitude` implements this scoring rule and uses the library's `parameter_regions` query.
+Conv weights and BN offsets do not contribute to its scores. A request without associated BN scales raises an error.
 The default is one sparse-training epoch and no recovery epochs.
 `--sparse_epochs 0` skips sparse training.
 
@@ -281,6 +283,8 @@ python bn_sparsity.py \
 
 This entry targets ResNet block `conv1` outputs or ViT `mlp.0` outputs.
 Each regularization group contains the parameters linked to one candidate's removal.
+The workflow calls `torch_kirigami.pruning.unique_groups` before constructing the regularizer.
+Groups with the same parameter regions then contribute one penalty.
 The default `--penalty lasso` penalizes all candidate groups with a constant coefficient.
 
 For `--penalty squared`, selected groups receive a growing squared-L2 coefficient.
@@ -394,6 +398,8 @@ python gate_pruning.py \
 #### Implemented
 
 This entry alternates parameter-budget selection and squared-L2 training on selected dependency groups.
+It calls `torch_kirigami.pruning.unique_groups` before constructing the regularizer.
+Groups with the same parameter regions then contribute one penalty.
 It compares retained channel indices with mean per-axis Jaccard similarity.
 `--window 2` needs three selections for two adjacent comparisons.
 Search stops at `--threshold 0.99` or the configured check limit.

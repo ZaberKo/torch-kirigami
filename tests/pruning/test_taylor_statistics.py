@@ -8,7 +8,7 @@ import pytest
 import torch
 from torch import nn
 
-from torch_kirigami import DependencyGraph, IndexSet, Region, Selection, StaleGraphError, config
+from torch_kirigami import DependencyGraph, IndexSet, Region, Selection, config
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -336,12 +336,10 @@ def test_absolute_taylor_near_float64_overflow_retains_region_failure_semantics(
     )
 
 
-def test_filter_callbacks_are_validated_and_statistics_bound(execution_device):
+def test_statistics_remain_bounded_after_gradient_replacement(execution_device):
     model, _axis, candidates, context = linear_context(execution_device)
-    visits = []
-    metric = WeightTaylor(parameter_filter=lambda ref, _parameter: visits.append(ref) or True)
+    metric = WeightTaylor()
     context.score(metric, candidates[:2])
-    assert len(visits) == 4  # Weight and bias for each candidate, even with cached statistics.
     for _ in range(130):
         model.weight.grad = torch.ones_like(model.weight)
         metric._axis_sums(model.weight, 0)
@@ -411,20 +409,6 @@ def test_cached_statistics_do_not_hide_invalid_gradients(failure, execution_devi
     model.weight.grad = None if failure == "missing" else model.weight.grad.to_sparse()
     with pytest.raises(PlanningError, match="dense current gradients"):
         context.score(metric, candidates[:1])
-
-
-@pytest.mark.parametrize("accept", [True, False])
-def test_mutating_filter_is_validated_even_when_it_excludes_parameter(accept, execution_device):
-    model, _axis, candidates, context = linear_context(execution_device)
-
-    def mutate(_ref, _parameter):
-        model.train()
-        return accept
-
-    metric = WeightTaylor(parameter_filter=mutate)
-    with pytest.raises(StaleGraphError):
-        context.score(metric, candidates[:1])
-    assert not metric._axis_statistics
 
 
 @pytest.mark.parametrize("override", ["subclass", "instance", "class"])

@@ -5,8 +5,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph, IndexSet, Region, Selection
-from torch_kirigami.pruning import ParameterGroup, Pruner
-from torch_kirigami.pruning.groups import unique_groups
+from torch_kirigami.pruning import ParameterGroup, Pruner, unique_groups
 from torch_kirigami.sparsity import GroupLasso, scale_groups_, set_group_norms_
 from torch_kirigami.sparsity import values as sparse_values
 
@@ -24,9 +23,13 @@ def test_disjoint_groups_do_not_require_pairwise_equivalence(monkeypatch):
         return original(left, right)
 
     monkeypatch.setattr(ParameterGroup, "equivalent", count)
-    regularizer = GroupLasso(groups + groups)
+    regularizer = GroupLasso(unique_groups(groups + groups))
     assert len(regularizer.groups) == 128 and len(comparisons) <= 128
     torch.testing.assert_close(regularizer(), model.weight.norm(dim=1).sum())
+    comparisons.clear()
+    repeated = GroupLasso(groups + groups)
+    assert len(repeated.groups) == 256 and not comparisons
+    torch.testing.assert_close(repeated(), 2 * model.weight.norm(dim=1).sum())
 
 
 def test_equivalence_buckets_preserve_geometric_equality_and_resolve_collisions():
@@ -51,8 +54,10 @@ def test_equivalence_buckets_preserve_geometric_equality_and_resolve_collisions(
     ]
     groups = tuple(ParameterGroup(graph, (s,)) for s in (a, b, *diagonals))
     assert len(unique_groups(groups)) == 3
-    with pytest.raises(ValueError, match="conflicting coefficients"):
-        GroupLasso(groups, coefficients=(1, 2, 1, 1))
+    weights = model.weight
+    union = torch.cat((weights[0], weights[1:, 0]))
+    expected = 3 * union.norm() + weights.diag().norm() + weights.flip(1).diag().norm()
+    torch.testing.assert_close(GroupLasso(groups, coefficients=(1, 2, 1, 1))(), expected)
 
 
 def test_scaling_gathers_only_the_combined_union(monkeypatch, execution_device):
@@ -107,11 +112,11 @@ def test_group_bucketing_does_not_exceed_valid_region_coordinate_budgets():
     assert selection.count == 8192 and len(selection.regions) == 64
     assert unique_groups((group, group)) == (group,)
     loss = GroupLasso((group, group))()
-    torch.testing.assert_close(loss, loss.new_tensor(8192**0.5))
+    torch.testing.assert_close(loss, loss.new_tensor(2 * 8192**0.5))
     loss.backward()
     expected = torch.zeros_like(model.weight)
     for row in range(64):
-        expected[row, 256 * row : 256 * (row + 1) : 2] = 1 / 8192**0.5
+        expected[row, 256 * row : 256 * (row + 1) : 2] = 2 / 8192**0.5
     torch.testing.assert_close(model.weight.grad, expected)
 
 

@@ -141,10 +141,31 @@ class Pruner:
         *,
         parameter_filter: Callable[[TensorRef, nn.Parameter], bool] | None = None,
     ) -> tuple[ParameterGroup, ...]:
-        """Extract complete parameter groups for an explicit candidate iterable.
+        """Extract one parameter group per candidate, in input order.
 
-        The optional filter receives (TensorRef, Parameter). Repairable structural
-        constraints do not prevent group extraction; incomplete influence does.
+        Analyze candidates separately. Equal groups remain separate entries with
+        their candidate keys. To count equivalent groups once in sparse training,
+        pass the result to `torch_kirigami.pruning.unique_groups`.
+        This query does not select candidates, produce a plan, or change weights.
+        Use `Pruner.impact(candidates)` for joint dependency analysis instead.
+
+        Args:
+            candidates: Hypothetical removal requests to analyze individually.
+            parameter_filter: Optional callable `(TensorRef, nn.Parameter) -> bool`.
+                Keep a parameter's affected regions when it returns `True`.
+                `None` keeps all affected parameters. Buffers are always excluded.
+                This filter affects these groups, not metric scores or which
+                parameters can be physically pruned.
+
+        Returns:
+            One `ParameterGroup` per candidate, with the candidate's key, in input
+            order. An empty iterable returns an empty tuple. Complete analysis
+            is required, but constraint satisfaction and execution support are
+            not checked. A group alone is not proof that a request can be applied.
+
+        Raises:
+            PlanningError: A candidate has incomplete influence or no parameter
+                regions after extraction and filtering. No candidate is skipped.
         """
         graph = self._validate_graph()
         return parameter_groups(graph, candidates, self.constraints, parameter_filter)

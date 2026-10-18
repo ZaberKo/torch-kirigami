@@ -11,7 +11,7 @@ and fine-tunes the compact network. It also describes multi-pass slimming.
 The workflow uses pretrained torchvision ImageNet ResNets:
 
 1. Optionally train each supported block's `bn1.weight` with `ScaleL1`.
-2. Rank corresponding `conv1` outputs with `Magnitude` over those BN scales.
+2. Rank corresponding `conv1` outputs by their affected BN scales.
 3. Use `Pruner.plan` and `Greedy` to enforce the parameter budget and granularity.
 4. Use `Pruner.apply` to remove channels and their dependent parameters.
 5. Optionally fine-tune with task loss only.
@@ -42,16 +42,90 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph
+from torch_kirigami.dep_graph.contracts import Impact
+from torch_kirigami.dep_graph.selection import TensorRef
 from torch_kirigami.pruning import (
+    Candidate,
     Granularity,
     Greedy,
-    Magnitude,
+    MetricContext,
     ParameterBudget,
+    PlanningError,
     Pruner,
     load_checkpoint,
+    parameter_regions,
     save_checkpoint,
 )
 from torch_kirigami.sparsity import ScaleL1
+
+
+class BNScaleMagnitude:
+    """Score removals using this workflow's explicit BatchNorm scale parameters.
+
+    Conv weights and BN offsets do not contribute. Each newly removed scale
+    contributes once, including when several candidate seeds reach the same BN.
+    `torch_kirigami.pruning.parameter_regions` supplies the joint parameter
+    effects. This metric selects scale regions from those effects and sums their
+    absolute values. It does not restrict dependency analysis or physical pruning.
+
+    Args:
+        scales: Nonempty tuple of one-dimensional parameter references from the
+            scoring context's graph. The caller identifies the BN scales.
+
+    Attributes:
+        scales: Unique scale references whose affected values contribute to scores.
+    """
+
+    def __init__(self, scales: tuple[TensorRef, ...]) -> None:
+        if not scales or any(ref.kind != "parameter" or len(ref.shape) != 1 for ref in scales):
+            raise ValueError("BNScaleMagnitude requires one-dimensional scale parameters")
+        self.scales = frozenset(scales)
+
+    def score(
+        self,
+        context: MetricContext,
+        candidates: tuple[Candidate, ...],
+        *,
+        accepted_impact: Impact,
+    ) -> list[float]:
+        """Sum absolute newly removed scales for each candidate.
+
+        Args:
+            context: Dependency queries and original parameter bindings.
+            candidates: Independent requests in score order.
+            accepted_impact: Complete dependency closure of prior removals.
+
+        Returns:
+            One L1 score per candidate. Already covered scale effects score zero.
+
+        Raises:
+            PlanningError: A new request has no associated scale parameter.
+        """
+        context.require_complete(accepted_impact)
+        bindings = dict(context.graph.tensor_bindings())
+        # Transfer each small scale vector once per batch, not once per candidate.
+        values = {
+            ref: bindings[ref].detach().to(torch.float64).abs().cpu().tolist()
+            for ref in self.scales
+        }
+        scores = []
+        for candidate in candidates:
+            regions = parameter_regions(context, candidate, accepted_impact=accepted_impact)
+            scale_regions = tuple(s for s in regions if s.tensor in self.scales)
+            if not scale_regions and any(
+                seed.subtract(accepted_impact.selection(seed.tensor)) for seed in candidate.remove
+            ):
+                original = parameter_regions(context, candidate, accepted_impact=context.impact(()))
+                if not any(s.tensor in self.scales for s in original):
+                    raise PlanningError(f"No BN scale supports candidate {candidate.key!r}")
+            scores.append(
+                math.fsum(
+                    values[selection.tensor][position]
+                    for selection in scale_regions
+                    for position in selection.fully_selected_indices(0)
+                )
+            )
+        return scores
 
 
 def parse_args() -> argparse.Namespace:
@@ -276,8 +350,7 @@ def main() -> None:
     space = pruner.discover_candidates(targets=targets)
     # Learned BN scales are the importance signal: do not add Conv weights or
     # normalize away the scale differences produced by sparse training.
-    scales = frozenset(graph.parameter(path) for path in scale_paths)
-    metric = Magnitude(p=1, parameter_filter=lambda ref, parameter: ref in scales)
+    metric = BNScaleMagnitude(tuple(graph.parameter(path) for path in scale_paths))
     plan = pruner.plan(
         space,
         budget=budget,

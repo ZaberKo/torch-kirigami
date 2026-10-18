@@ -1,7 +1,9 @@
+import copy
 import io
 
 import pytest
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 from tests.support.workflow_fixtures import (
@@ -13,25 +15,102 @@ from tests.support.workflow_fixtures import (
     save_training,
     train_steps,
 )
-from torch_kirigami import StaleGraphError
+from torch_kirigami import DependencyGraph, StaleGraphError
 from torch_kirigami.pruning import (
+    Candidate,
     CandidateSpace,
     ChannelCount,
     ChannelRatio,
     Greedy,
     Magnitude,
     ParameterGroup,
+    PlanningError,
     Pruner,
+    PruningPlan,
     load_checkpoint,
     save_checkpoint,
+    unique_groups,
 )
 from torch_kirigami.sparsity import (
     GateBinding,
     GateMagnitude,
     GroupLasso,
+    GroupSquaredL2,
     set_group_norms_,
     zero_groups_,
 )
+
+
+def test_candidate_group_alignment_training_and_compaction(execution_device):
+    model = nn.Sequential(nn.Linear(2, 3, bias=False), nn.Linear(3, 1, bias=False)).double()
+    with torch.no_grad():
+        model[0].weight.copy_(model[0].weight.new_tensor([[3, 4], [1, 2], [5, 6]]))
+        model[1].weight.copy_(model[1].weight.new_tensor([[1, 2, 3]]))
+    reference = copy.deepcopy(model)
+    x = torch.randn(2, 2, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    producer = graph.parameter("0.weight").axis(0)
+    consumer = graph.parameter("1.weight").axis(1)
+    candidates = (
+        Candidate("consumer_zero", (consumer.select([0]),), consumer),
+        Candidate("producer_one", (producer.select([1]),), producer),
+        Candidate("producer_zero", (producer.select([0]),), producer),
+    )
+    with pytest.raises(PlanningError, match=r"consumer_zero.*no parameter regions"):
+        pruner.parameter_groups(candidates, parameter_filter=lambda *_: False)
+    graph.validate()
+    for actual, expected in zip(model.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    groups = pruner.parameter_groups(iter(candidates))
+    assert tuple(g.key for g in groups) == tuple(c.key for c in candidates)
+    assert groups[0].equivalent(groups[2])
+    assert unique_groups(groups) == (groups[0], groups[1])
+
+    regularizer = GroupSquaredL2(groups, coefficients=(1, 2, 3))
+    first = reference[0].weight[0].square().sum() + reference[1].weight[:, 0].square().sum()
+    second = reference[0].weight[1].square().sum() + reference[1].weight[:, 1].square().sum()
+    expected_loss = 0.5 * (4 * first + 2 * second)
+    loss = regularizer()
+    torch.testing.assert_close(loss, expected_loss)
+    loss.backward()
+    expected_loss.backward()
+    for actual, expected in zip(model.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(actual.grad, expected.grad)
+    torch.optim.SGD(model.parameters(), lr=0.01).step()
+    torch.optim.SGD(reference.parameters(), lr=0.01).step()
+    graph.validate()  # Numerical training does not invalidate group bindings.
+    keep = [1, 2]
+    expected = F.linear(F.linear(x, reference[0].weight[keep]), reference[1].weight[:, keep])
+    plan = pruner.plan_remove(candidates[0].remove)
+    compact, _ = pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+    torch.testing.assert_close(compact(x), expected)
+    with pytest.raises(StaleGraphError):
+        regularizer()
+    compact(x).sum().backward()
+
+
+def test_separate_groups_and_joint_impact_have_distinct_objectives(execution_device):
+    model = nn.Sequential(
+        nn.Conv2d(1, 2, 1, bias=False), nn.Flatten(), nn.Linear(4, 2, bias=False)
+    ).double()
+    with torch.no_grad():
+        model[0].weight.fill_(3)
+        model[2].weight.zero_()
+        model[2].weight[0, 0] = 4
+        model[2].weight[1, 1] = 12
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 1, 1, 2, dtype=torch.float64),))
+    pruner = Pruner(model, graph=graph)
+    axis = graph.parameter("2.weight").axis(1)
+    candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in (0, 1))
+    groups = pruner.parameter_groups(candidates)
+    assert all(s.tensor == axis.tensor for g in groups for s in g.selections)
+    impact = pruner.impact(candidates)
+    assert impact.complete
+    joint = ParameterGroup(graph, impact.parameters)
+    assert {s.tensor for s in joint.selections} == {axis.tensor, graph.parameter("0.weight")}
+    assert GroupLasso(groups)().item() == pytest.approx(16)
+    assert GroupLasso((joint,))().item() == pytest.approx(13)
 
 
 def test_residual_grouped_cnn_sparse_training_and_independent_compact_reference(execution_device):

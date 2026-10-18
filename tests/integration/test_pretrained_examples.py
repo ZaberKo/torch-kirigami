@@ -21,6 +21,9 @@ from torch_kirigami import DependencyGraph, OperatorRegistry
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
+    ChannelRatio,
+    DynamicGreedy,
+    Greedy,
     GroupMagnitude,
     ParameterBudget,
     PlanningContext,
@@ -37,6 +40,7 @@ pytest.importorskip("datasets", reason="Install examples/workflows/requirements-
 
 import importlib
 
+import bn_sparsity
 import imagenet_data as imagenet
 import imagenet_models
 import model_metrics
@@ -62,6 +66,59 @@ WORKFLOWS = (
     "osscar_pruning",
     "vit_head_pruning",
 )
+
+
+@pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
+def test_bn_scale_metric_uses_explicit_scales_and_public_pruning(strategy_type, execution_device):
+    model = nn.Sequential(nn.Linear(3, 4), nn.BatchNorm1d(4), nn.Linear(4, 2)).double().eval()
+    with torch.no_grad():
+        model[1].weight.copy_(torch.tensor([4.0, -1.0, 3.0, 2.0]))
+        model[0].weight[1].fill_(1000)
+        model[1].bias.fill_(1000)
+    model.register_parameter("scale_alias", model[1].weight)
+    x = torch.randn(2, 3, dtype=torch.float64)
+    original = copy.deepcopy(model)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("0",))
+    axis = graph.parameter("0.weight").axis(0)
+    context = PlanningContext(
+        graph, space.candidates, ChannelRatio(0.25), space.channel_axes, pruner.constraints
+    )
+    metric = bn_sparsity.BNScaleMagnitude(
+        (graph.parameter("1.weight"), graph.parameter("scale_alias"))
+    )
+    assert context.score(metric, space.candidates) == (4.0, 1.0, 3.0, 2.0)
+    block = Candidate("block", (axis.select([0, 1]), axis.select([1])), axis)
+    accepted = context.impact((axis.select([0]),))
+    assert context.score(metric, (block,), accepted_impact=accepted) == (1.0,)
+    covered = context.impact(block.remove)
+    assert context.score(metric, (block,), accepted_impact=covered) == (0.0,)
+
+    # An unrelated parameter cannot substitute for missing BN evidence.
+    wrong_metric = bn_sparsity.BNScaleMagnitude((graph.parameter("2.bias"),))
+    with pytest.raises(PlanningError, match="No BN scale"):
+        pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(wrong_metric))
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, original.state_dict()[name], rtol=0, atol=0)
+    graph.validate()
+
+    plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(metric))
+    compact, _ = pruner.apply(plan)
+    keep = [0, 2, 3]
+    hidden = F.linear(x, original[0].weight[keep], original[0].bias[keep])
+    hidden = F.batch_norm(
+        hidden,
+        original[1].running_mean[keep],
+        original[1].running_var[keep],
+        original[1].weight[keep],
+        original[1].bias[keep],
+        eps=original[1].eps,
+    )
+    reference = F.linear(hidden, original[2].weight[:, keep], original[2].bias)
+    torch.testing.assert_close(compact(x), reference)
+    assert compact.scale_alias is compact[1].weight
+    compact(x).sum().backward()
 
 
 @pytest.fixture(autouse=True)
@@ -473,8 +530,25 @@ def test_pretrained_workflow(
     if recipe in ("group_sparsity", "stability_pruning"):
         original_penalty, original_plan = module.GroupSquaredL2, module.make_plan
         original_step = torch.optim.SGD.step
+        original_groups = Pruner.parameter_groups
+
+        def repeated_groups(self, *args, **kwargs):
+            # Equivalent candidate entries must not double the workflow's loss.
+            groups = original_groups(self, *args, **kwargs)
+            return groups + groups
+
+        monkeypatch.setattr(Pruner, "parameter_groups", repeated_groups)
+        if recipe == "group_sparsity":
+            original_lasso = module.GroupLasso
+
+            def observed_lasso(groups):
+                assert len({id(g) for g in groups}) == len(groups)
+                return original_lasso(groups)
+
+            monkeypatch.setattr(module, "GroupLasso", observed_lasso)
 
         def observed_penalty(*args, **kwargs):
+            assert len({id(g) for g in args[0]}) == len(args[0])
             regularizer = original_penalty(*args, **kwargs)
 
             def evaluate_penalty():

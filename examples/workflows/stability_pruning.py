@@ -62,6 +62,7 @@ from torch_kirigami.pruning import (
     PruningPlan,
     load_checkpoint,
     save_checkpoint,
+    unique_groups,
 )
 from torch_kirigami.sparsity import GroupSquaredL2, SelectionWindow
 
@@ -401,7 +402,8 @@ def main() -> None:
         # check: that would apply a selection never assessed for stability.
         if stable or check + 1 == options.max_selection_checks:
             break
-        groups = pruner.parameter_groups(selected)
+        # Multiple candidate entry points must not repeat the same training penalty.
+        groups = unique_groups(pruner.parameter_groups(selected))
         regularizer = GroupSquaredL2(groups) if groups else None
         train_steps(
             model,

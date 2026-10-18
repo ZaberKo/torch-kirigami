@@ -33,15 +33,8 @@ from torch_kirigami.pruning import (
     PruningPlan,
     StrategyResult,
     WeightTaylor,
+    parameter_regions,
 )
-
-
-class FalseyFilter:
-    def __bool__(self):
-        return False
-
-    def __call__(self, ref, parameter):
-        return False
 
 
 class FalseyStrategy:
@@ -74,8 +67,10 @@ def test_metric_keyword_contract_and_accepted_impact_match_independent_reference
     accepted_impact = context.impact((axis.select([0]),))
     values = torch.cat((original[0].weight[1], original[0].bias[1:2], original[1].weight[:, 1]))
     if isinstance(metric, GroupMagnitude):
-        energies = original[0].weight[1:].square().sum(1) + original[1].weight[:, 1:].square().sum(
-            0
+        energies = (
+            original[0].weight[1:].square().sum(1)
+            + original[0].bias[1:].square()
+            + original[1].weight[:, 1:].square().sum(0)
         )
         expected = (energies[0] / energies.mean()).item()
     elif isinstance(metric, WeightTaylor):
@@ -209,21 +204,15 @@ def test_candidate_domains_use_axes_not_keys(conflict):
         assert plan.selection_report.targets == (9,) and plan.selection_report.removed == (0, 3)
 
 
-def test_falsey_strategy_and_parameter_filters_are_called():
+def test_falsey_strategy_is_called():
     model = nn.Linear(4, 6)
-    context, candidate = _context(model)
+    context, _candidate = _context(model)
     plan = Pruner(model, graph=context.graph, preserve_io=False).plan(
         Pruner(model, graph=context.graph, preserve_io=False).discover_candidates(),
         budget=ChannelRatio(0),
         strategy=FalseyStrategy(),
     )
     assert plan.selected == ()
-    # No gradient is needed because the supplied filter excludes all parameters.
-    for metric in (
-        Magnitude(parameter_filter=FalseyFilter()),
-        WeightTaylor(parameter_filter=FalseyFilter()),
-    ):
-        assert context.score(metric, (candidate,)) == (0.0,)
 
 
 def test_conditional_scoring_rejects_another_graphs_accepted_impact():
@@ -231,6 +220,10 @@ def test_conditional_scoring_rejects_another_graphs_accepted_impact():
     other, _ = _context()
     with pytest.raises(ValueError, match="another graph"):
         context.score(Magnitude(), (candidate,), accepted_impact=other.impact(()))
+    with pytest.raises(ValueError, match="another graph"):
+        parameter_regions(context, candidate, accepted_impact=other.impact(()))
+    with pytest.raises(ValueError, match="another graph"):
+        parameter_regions(other, candidate, accepted_impact=other.impact(()))
 
 
 @pytest.mark.parametrize(

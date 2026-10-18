@@ -71,6 +71,7 @@ from torch_kirigami.pruning import (
     PruningPlan,
     load_checkpoint,
     save_checkpoint,
+    unique_groups,
 )
 from torch_kirigami.sparsity import GroupLasso, GroupSquaredL2
 
@@ -270,10 +271,11 @@ def main() -> None:
     )
     space = pruner.discover_candidates(targets=targets)
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
+    # Penalize equivalent dependency groups once, even with multiple entry points.
     # Lasso penalizes every candidate group. The squared variant refreshes only
     # the currently selected groups at step intervals and increases their penalty.
     regularizer = (
-        GroupLasso(pruner.parameter_groups(space.candidates))
+        GroupLasso(unique_groups(pruner.parameter_groups(space.candidates)))
         if options.penalty == "lasso" and options.sparse_epochs
         else None
     )
@@ -296,7 +298,7 @@ def main() -> None:
                         groups = pruner.parameter_groups(
                             candidate for candidate in space.candidates if candidate.key in selected
                         )
-                        regularizer = GroupSquaredL2(groups) if groups else None
+                        regularizer = GroupSquaredL2(unique_groups(groups)) if groups else None
                     # One-based progress reaches the target on the last update,
                     # including a one-batch run. Epochs and reselection do not reset it.
                     fraction = (completed_steps + 1) / total_steps

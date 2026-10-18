@@ -1,6 +1,7 @@
 """Conditional scoring uses original coordinates and complete joint effects."""
 
 import math
+from itertools import product
 
 import pytest
 import torch
@@ -16,6 +17,7 @@ from torch_kirigami.pruning import (
     PlanningContext,
     PlanningError,
     Pruner,
+    parameter_regions,
 )
 from torch_kirigami.pruning.metrics import GroupMagnitude, Magnitude, WeightTaylor
 from torch_kirigami.pruning.types import StrategyResult
@@ -36,6 +38,7 @@ def context_for(graph, candidates):
 )
 def test_conditional_metric_counts_new_union_once(metric, execution_device):
     model = nn.Linear(4, 5, bias=False).double()
+    model.register_parameter("alias", model.weight)
     with torch.no_grad():
         model.weight.copy_(torch.arange(-10, 10, dtype=torch.float64).reshape(5, 4))
     model.weight.grad = torch.linspace(-2, 2, 20, dtype=torch.float64).reshape(5, 4)
@@ -51,6 +54,13 @@ def test_conditional_metric_counts_new_union_once(metric, execution_device):
     mask[:, 2] = True
     mask[0] = False
     mask[:, 3] = False
+    regions = parameter_regions(context, candidate, accepted_impact=selected)
+    assert len(regions) == 1 and regions[0].tensor == ref
+    coordinates = [point for region in regions[0].regions for point in product(*region.axes)]
+    assert len(coordinates) == len(set(coordinates))
+    assert set(coordinates) == {tuple(point) for point in mask.nonzero().tolist()}
+    covered = context.impact((*selected.requested, *candidate.remove))
+    assert parameter_regions(context, candidate, accepted_impact=covered) == ()
     if isinstance(metric, Magnitude):
         expected = torch.linalg.vector_norm(model.weight[mask], ord=metric.p)
     else:
@@ -77,6 +87,8 @@ def test_conditional_metric_includes_joint_only_upstream_effect(metric, executio
     assert selected.complete
     assert not selected.selection(graph.parameter("0.weight"))
     assert not context.impact(candidate.remove).selection(graph.parameter("0.weight"))
+    regions = parameter_regions(context, candidate, accepted_impact=selected)
+    assert {s.tensor for s in regions} == {graph.parameter("0.weight"), graph.parameter("2.weight")}
 
     values = torch.cat((model[0].weight[0].flatten(), model[2].weight[:, 1]))
     expected = (
@@ -105,7 +117,9 @@ def test_group_magnitude_formula_includes_dependencies_and_affine_weights(p, exe
     scores = GroupMagnitude(p).score(context, candidates, accepted_impact=context.impact(()))
     energy = (
         model[0].weight.abs().pow(p).sum(1)
+        + model[0].bias.abs().pow(p)
         + model[1].weight.abs().pow(p)
+        + model[1].bias.abs().pow(p)
         + model[2].weight.abs().pow(p).sum(0)
     )
     assert scores == pytest.approx((energy / energy.mean()).tolist())
@@ -168,7 +182,7 @@ class AliasedBias(nn.Module):
         return self.linear(x)
 
 
-def test_group_excludes_bias_with_misleading_alias(execution_device):
+def test_group_includes_aliased_bias_once(execution_device):
     model = AliasedBias().double()
     with torch.no_grad():
         model.linear.weight.copy_(torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]))
@@ -177,7 +191,7 @@ def test_group_excludes_bias_with_misleading_alias(execution_device):
     axis = graph.parameter("linear.weight").axis(0)
     candidate = Candidate("first", (axis.select([0]),), axis)
     context = context_for(graph, (candidate,))
-    energy = model.linear.weight.square().sum(1)
+    energy = model.linear.weight.square().sum(1) + model.linear.bias.square()
     assert GroupMagnitude().score(
         context, (candidate,), accepted_impact=context.impact(())
     ) == pytest.approx([(energy[0] / energy.mean()).item()])
@@ -199,7 +213,7 @@ def test_group_functional_roles_do_not_require_weight_attribute_names(execution_
     axis = graph.parameter("matrix").axis(0)
     candidate = Candidate("first", (axis.select([0]),), axis)
     context = context_for(graph, (candidate,))
-    energy = model.matrix.square().sum(1)
+    energy = model.matrix.square().sum(1) + model.offset.square()
     assert GroupMagnitude().score(
         context, (candidate,), accepted_impact=context.impact(())
     ) == pytest.approx([(energy[0] / energy.mean()).item()])
@@ -282,7 +296,9 @@ def test_group_custom_strategy_public_plan_apply_keeps_model_unchanged_during_sc
     graph = DependencyGraph.build(model, args=(x,))
     axis = graph.parameter("0.weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in (1, 2))
-    energy = model[0].weight.square().sum(1) + model[1].weight.square().sum(0)
+    energy = (
+        model[0].weight.square().sum(1) + model[0].bias.square() + model[1].weight.square().sum(0)
+    )
 
     class ConditionalStrategy:
         def select(self, context):
@@ -325,30 +341,18 @@ def test_group_inference_parameters_do_not_use_stale_normalization_cache():
 
 
 @pytest.mark.parametrize("kind", ["magnitude", "taylor"])
-def test_parameter_filter_applies_to_every_candidate_and_parameter(kind):
+def test_parameter_scores_include_producer_bias_and_consumer(kind):
     model = nn.Sequential(nn.Linear(2, 3), nn.Linear(3, 2)).double()
     for parameter in model.parameters():
         parameter.grad = torch.ones_like(parameter)
     graph = DependencyGraph.build(model, args=(torch.ones(2, 2, dtype=torch.float64),))
     axis = graph.parameter("0.weight").axis(0)
     candidates = tuple(Candidate(str(i), (axis.select([i]),), axis) for i in range(3))
-    seen = []
-
-    def only_downstream(ref, _parameter):
-        seen.append(ref)
-        return ref == graph.parameter("1.weight")
-
-    metric = (
-        Magnitude(1, parameter_filter=only_downstream)
-        if kind == "magnitude"
-        else WeightTaylor(parameter_filter=only_downstream)
-    )
+    metric = Magnitude(1) if kind == "magnitude" else WeightTaylor()
     context = context_for(graph, candidates)
     scores = metric.score(context, candidates, accepted_impact=context.impact(()))
-    assert scores == pytest.approx(model[1].weight.abs().sum(0).tolist())
-    assert seen.count(graph.parameter("1.weight")) == 3
-    assert seen.count(graph.parameter("0.weight")) == 3
-    assert seen.count(graph.parameter("0.bias")) == 3
+    expected = model[0].weight.abs().sum(1) + model[0].bias.abs() + model[1].weight.abs().sum(0)
+    assert scores == pytest.approx(expected.tolist())
 
 
 def test_group_cache_cannot_hide_incomplete_domain_in_another_context():
@@ -378,6 +382,14 @@ def test_group_cache_cannot_hide_incomplete_domain_in_another_context():
     )
     with pytest.raises(PlanningError, match="Unknown second position"):
         metric.score(constrained, (candidate,), accepted_impact=constrained.impact(()))
+    unknown = Candidate("unknown", (axis.select([1]),), axis)
+    with pytest.raises(PlanningError, match="Unknown second position"):
+        parameter_regions(constrained, unknown, accepted_impact=constrained.impact(()))
+    with pytest.raises(PlanningError, match="Unknown second position"):
+        parameter_regions(
+            constrained, candidate, accepted_impact=constrained.impact(unknown.remove)
+        )
+    assert parameter_regions(constrained, candidate, accepted_impact=constrained.impact(()))
 
 
 def test_group_singleton_cache_avoids_duplicate_propagation(monkeypatch):

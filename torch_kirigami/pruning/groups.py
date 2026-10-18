@@ -12,12 +12,24 @@ from ..dep_graph.selection import Selection, TensorRef
 
 @dataclass(frozen=True, eq=False)
 class ParameterGroup:
-    """A deduplicated parameter-region union bound to one dependency snapshot.
+    """A union of parameter coordinates bound to one dependency graph.
+
+    Construction merges overlapping selections for each parameter. It stores
+    coordinates, not parameter copies or numerical values. `bindings()` reads
+    the graph's live parameters, so ordinary weight updates need no new group.
+    Rebuild the graph and groups after parameter replacement or structural changes.
+
+    Direct construction does not propagate dependencies or prove that selections
+    describe a complete pruning effect. Use `Pruner.parameter_groups` to extract
+    a separate group for each candidate. This record contains no constraints
+    or execution recipes and does not authorize physical pruning.
 
     Attributes:
-        graph: Source dependency snapshot; rebuild groups after structural changes.
-        selections: Deduplicated union of partial or partitioned parameter regions.
-        key: Descriptive label, not a claim of disjointness or zero invariance.
+        graph: Source graph that owns the parameter references.
+        selections: Nonempty parameter selections in original coordinates, merged
+            by parameter and sorted by parameter paths. Buffers are not accepted.
+        key: Descriptive label. Extraction uses the candidate key. Direct
+            construction defaults to an empty string. `equivalent()` ignores it.
     """
 
     graph: DependencyGraph
@@ -41,7 +53,12 @@ class ParameterGroup:
         )
 
     def equivalent(self, other: object) -> bool:
-        """Compare coordinates and graph identity, independently of group labels."""
+        """Return whether both groups select the same regions in the same graph.
+
+        Ignore keys and region decomposition. This compares selected coordinates,
+        not current values or the full structural effects of candidate removals.
+        Python `==` remains object identity because this dataclass uses `eq=False`.
+        """
         return (
             isinstance(other, ParameterGroup)
             and self.graph is other.graph
@@ -49,7 +66,11 @@ class ParameterGroup:
         )
 
     def bindings(self) -> tuple[tuple[nn.Parameter, Selection], ...]:
-        """Return current (Parameter, Selection) pairs after freshness validation."""
+        """Return live `(nn.Parameter, Selection)` pairs in selection order.
+
+        Validate the source graph before resolving its bindings. Return the
+        original parameter objects without gathering or copying their values.
+        """
         bindings = dict(self.graph.tensor_bindings())
         return tuple((cast(nn.Parameter, bindings[s.tensor]), s) for s in self.selections)
 
@@ -97,6 +118,22 @@ def group_equivalence_classes(groups: Iterable[ParameterGroup]) -> tuple[tuple[i
 
 
 def unique_groups(groups: Iterable[ParameterGroup]) -> tuple[ParameterGroup, ...]:
-    """Canonicalize equivalent groups without merging partially overlapping groups."""
+    """Keep the first occurrence of each equivalent parameter group.
+
+    This public helper is exported from `torch_kirigami.pruning`. Use it before
+    constructing a sparse regularizer when equivalent groups should count once.
+    Assign regularizer coefficients after deduplication to preserve alignment.
+    This function does not combine coefficients or merge partially overlapping
+    groups. Equal parameter regions do not prove equal pruning effects.
+
+    Args:
+        groups: Groups to compare by graph identity and parameter regions.
+            Keys do not participate in equality.
+
+    Returns:
+        Original group objects in first-occurrence order. Partial overlaps remain
+        separate groups. The retained objects keep their original keys.
+        An empty iterable returns an empty tuple.
+    """
     groups = tuple(groups)
     return tuple(groups[indices[0]] for indices in group_equivalence_classes(groups))

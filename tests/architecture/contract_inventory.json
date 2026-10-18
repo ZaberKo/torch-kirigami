@@ -1023,9 +1023,13 @@
             "tests/pruning/test_conditional_metrics.py::test_group_magnitude_formula_includes_dependencies_and_affine_weights",
             "tests/pruning/test_conditional_metrics.py::test_group_normalization_independent_of_batch_subset_and_block_wrapping",
             "tests/pruning/test_conditional_metrics.py::test_group_dynamic_normalization_uses_surviving_rows_and_columns",
-            "tests/pruning/test_conditional_metrics.py::test_group_normalization_is_finite_at_extreme_scales"
+            "tests/pruning/test_conditional_metrics.py::test_group_normalization_is_finite_at_extreme_scales",
+            "tests/pruning/test_group_parameter_scope.py::test_opaque_gqa_score_and_public_pruning",
+            "tests/pruning/test_group_parameter_scope.py::test_parameter_free_scoring_fails_without_mutating_model",
+            "tests/pruning/test_group_parameter_scope.py::test_native_parameters_need_no_scoring_registration",
+            "tests/pruning/test_group_parameter_scope.py::test_zero_parameters_and_covered_requests_are_valid"
           ],
-          "conditions": "CPU and CUDA numerical references, recognized module and functional roles; no claim of task-loss accuracy.",
+          "conditions": "CPU and CUDA numerical references for all affected Parameters, including biases and custom modules. No claim of task-loss accuracy.",
           "gaps": []
         }
       ]
@@ -1060,13 +1064,30 @@
       ]
     },
     {
+      "object": "torch_kirigami.pruning.parameter_regions",
+      "contracts": [
+        {
+          "behavior": "Return deduplicated marginal parameter selections after complete joint analysis, without choosing a score or requiring executable constraints.",
+          "tests": [
+            "tests/pruning/test_conditional_metrics.py::test_conditional_metric_counts_new_union_once",
+            "tests/pruning/test_conditional_metrics.py::test_conditional_metric_includes_joint_only_upstream_effect",
+            "tests/pruning/test_conditional_metrics.py::test_group_cache_cannot_hide_incomplete_domain_in_another_context",
+            "tests/pruning/test_context.py::test_conditional_scoring_rejects_another_graphs_accepted_impact",
+            "tests/integration/test_pretrained_examples.py::test_bn_scale_metric_uses_explicit_scales_and_public_pruning"
+          ],
+          "conditions": "Aliases, intersecting axes, joint-only effects, covered requests, foreign graphs and incomplete influence. CPU/CUDA custom-metric plan/apply checks.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.Magnitude",
       "contracts": [
         {
           "behavior": "独立公式、区域去重、低精度/复数/极值溢出、梯度前提",
           "tests": [
             "tests/pruning/test_metrics.py::test_metric_union_formula_and_precision",
-            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation_and_filter",
+            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation",
             "tests/pruning/test_precision.py::test_l2_extreme_finite_values_preserve_scores_and_order",
             "tests/pruning/test_precision.py::test_taylor_promotes_before_multiplying",
             "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
@@ -1097,7 +1118,7 @@
           "behavior": "独立公式、区域去重、低精度/复数/极值溢出、梯度前提",
           "tests": [
             "tests/pruning/test_metrics.py::test_metric_union_formula_and_precision",
-            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation_and_filter",
+            "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation",
             "tests/pruning/test_precision.py::test_l2_extreme_finite_values_preserve_scores_and_order",
             "tests/pruning/test_precision.py::test_taylor_promotes_before_multiplying",
             "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
@@ -1114,7 +1135,7 @@
           "behavior": "Explicit score method: batch alignment, finite scores, falsey metric objects and independent final verification.",
           "tests": [
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
-            "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",
+            "tests/pruning/test_context.py::test_falsey_strategy_is_called",
             "tests/pruning/test_apply.py::test_final_accepted_compilation_is_revalidated"
           ],
           "conditions": "Protocol 用实现/扩展验证，不实例化协议",
@@ -1129,7 +1150,7 @@
           "behavior": "Explicit select method: registered keys, immutable diagnostics, falsey strategy objects and independent final verification.",
           "tests": [
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
-            "tests/pruning/test_context.py::test_falsey_strategy_and_parameter_filters_are_called",
+            "tests/pruning/test_context.py::test_falsey_strategy_is_called",
             "tests/pruning/test_apply.py::test_final_accepted_compilation_is_revalidated"
           ],
           "conditions": "Protocol 用实现/扩展验证，不实例化协议",
@@ -1787,12 +1808,31 @@
       ]
     },
     {
+      "object": "torch_kirigami.pruning.unique_groups",
+      "contracts": [
+        {
+          "behavior": "Explicit geometric deduplication preserves first-occurrence objects and keys without merging partial overlaps.",
+          "tests": [
+            "tests/integration/test_sparse_workflows.py::test_candidate_group_alignment_training_and_compaction",
+            "tests/integration/test_group_scaling.py::test_equivalence_buckets_preserve_geometric_equality_and_resolve_collisions",
+            "tests/integration/test_group_scaling.py::test_disjoint_groups_do_not_require_pairwise_equivalence",
+            "tests/integration/test_group_scaling.py::test_group_bucketing_does_not_exceed_valid_region_coordinate_budgets",
+            "tests/integration/test_pretrained_examples.py::test_pretrained_workflow"
+          ],
+          "conditions": "Numerical gradients, candidate correspondence, fragmented selections, collision checks and workflow preservation with duplicate inputs.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.ParameterGroup",
       "contracts": [
         {
           "behavior": "区域并集、共享坐标及重叠组的独立数值/梯度",
           "tests": [
-            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity"
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_repeated_and_overlapping_terms",
+            "tests/integration/test_sparse_workflows.py::test_candidate_group_alignment_training_and_compaction",
+            "tests/integration/test_sparse_workflows.py::test_separate_groups_and_joint_impact_have_distinct_objectives"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",
           "gaps": [
@@ -1835,7 +1875,7 @@
         {
           "behavior": "正则值、梯度、零次梯度与训练接入",
           "tests": [
-            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity",
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_repeated_and_overlapping_terms",
             "tests/sparsity/test_regularizers.py::test_public_regularizer_gradcheck_and_zero_subgradient",
             "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch"
           ],
@@ -1868,7 +1908,7 @@
         {
           "behavior": "正则值、梯度、零次梯度与训练接入",
           "tests": [
-            "tests/sparsity/test_regularizers.py::test_penalty_gradient_overlap_dedup_and_purity",
+            "tests/sparsity/test_regularizers.py::test_penalty_gradient_repeated_and_overlapping_terms",
             "tests/sparsity/test_regularizers.py::test_public_regularizer_gradcheck_and_zero_subgradient",
             "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch"
           ],
