@@ -200,3 +200,4 @@ pyrightconfig.json
 
 # Local chat reviews, research notes, and one-off implementation records
 /.local/chat-notes/
+/docs/dev-notes
