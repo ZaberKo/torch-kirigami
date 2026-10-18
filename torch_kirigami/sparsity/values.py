@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import torch
 from torch.autograd.function import FunctionCtx, once_differentiable
@@ -13,7 +15,9 @@ from ..pruning.groups import ParameterGroup
 
 def group_bindings(
     groups: tuple[ParameterGroup, ...],
-) -> tuple[dict[object, torch.Tensor], torch.dtype]:
+    *,
+    refs: tuple[TensorRef, ...] | None = None,
+) -> tuple[dict[TensorRef, torch.Tensor], torch.dtype]:
     """Validate live group ownership, device and dtype without gathering weights."""
     groups = tuple(groups)
     if not groups or any(not isinstance(g, ParameterGroup) for g in groups):
@@ -22,7 +26,12 @@ def group_bindings(
     if any(g.graph is not graph for g in groups):
         raise ValueError("Groups must share one dependency graph")
     bindings = dict(graph.tensor_bindings())
-    parameters = [bindings[s.tensor] for g in groups for s in g.selections]
+    refs = (
+        refs
+        if refs is not None
+        else tuple(dict.fromkeys(s.tensor for g in groups for s in g.selections))
+    )
+    parameters = [bindings[ref] for ref in refs]
     if len({p.device for p in parameters}) != 1:
         raise ValueError("Sparse operations require groups on one device")
     if any(not p.is_floating_point() or p.layout != torch.strided for p in parameters):
@@ -32,7 +41,7 @@ def group_bindings(
 
 
 def _gather_group(
-    group: ParameterGroup, bindings: dict[object, torch.Tensor], dtype: torch.dtype
+    group: ParameterGroup, bindings: Mapping[TensorRef, torch.Tensor], dtype: torch.dtype
 ) -> torch.Tensor:
     """Read one group from bindings already validated for this operation."""
     return torch.cat(
@@ -256,7 +265,26 @@ def _axis_sections(group: ParameterGroup) -> list[tuple[TensorRef, int, IndexSet
     return sections
 
 
-def reduction_plan(groups: tuple[ParameterGroup, ...]) -> tuple[tuple, tuple[int, ...]]:
+@dataclass(frozen=True, eq=False)
+class ReductionPlan:
+    """Cache coordinate indices without retaining values or autograd graphs.
+
+    Attributes:
+        batches: Entries containing a parameter reference, axis, optional selected
+            positions, and indices into the reduced axis vector. `None` selects
+            the whole axis. Contribution indices preserve repeated groups.
+        fallback: Indices of groups requiring general Cartesian gathering.
+        owners: Group index for each contribution, in batch-then-fallback order.
+        refs: Distinct parameter references requiring live validation each call.
+    """
+
+    batches: tuple[tuple[TensorRef, int, torch.Tensor | None, torch.Tensor], ...]
+    fallback: tuple[int, ...]
+    owners: torch.Tensor
+    refs: tuple[TensorRef, ...]
+
+
+def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
     """Batch whole-axis sections; retain the region path for irregular groups.
 
     The plan holds original-coordinate indices only. Each parameter/axis is
@@ -274,9 +302,29 @@ def reduction_plan(groups: tuple[ParameterGroup, ...]) -> tuple[tuple, tuple[int
         for ref, axis, indices in sections:
             entries = batches.setdefault((ref, axis), [])
             entries.extend((number, i) for i in indices)
-    return tuple((ref, axis, tuple(entries)) for (ref, axis), entries in batches.items()), tuple(
-        fallback
-    )
+    bindings, _ = group_bindings(groups)
+    prepared: list[tuple[TensorRef, int, torch.Tensor | None, torch.Tensor]] = []
+    owners: list[int] = []
+    refs = tuple(dict.fromkeys(s.tensor for group in groups for s in group.selections))
+    # Index tensors must remain usable by autograd outside inference mode.
+    with torch.inference_mode(False):
+        for (ref, axis), entries in batches.items():
+            device = bindings[ref].device
+            selected = sorted({index for _, index in entries})
+            positions = {old: new for new, old in enumerate(selected)}
+            selected_positions = (
+                torch.tensor(selected, dtype=torch.long, device=device)
+                if len(selected) != ref.shape[axis]
+                else None
+            )
+            contribution_indices = torch.tensor(
+                [positions[i] for _, i in entries], dtype=torch.long, device=device
+            )
+            prepared.append((ref, axis, selected_positions, contribution_indices))
+            owners.extend(number for number, _ in entries)
+        owners.extend(fallback)
+        owner = torch.tensor(owners, dtype=torch.long, device=bindings[refs[0]].device)
+    return ReductionPlan(tuple(prepared), tuple(fallback), owner, refs)
 
 
 def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor:
@@ -286,19 +334,17 @@ def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor
     return _StableNorm.apply(values, dimensions, 1.0)
 
 
-def group_penalty(groups: tuple[ParameterGroup, ...], kind: str, plan: tuple) -> torch.Tensor:
+def group_penalty(
+    groups: tuple[ParameterGroup, ...], kind: str, plan: ReductionPlan
+) -> torch.Tensor:
     """Evaluate the scalar batched L1/L2/squared-L2 objective."""
-    bindings, dtype = group_bindings(groups)
+    bindings, dtype = group_bindings(groups, refs=plan.refs)
     contributions: list[torch.Tensor] = []
-    owners: list[int] = []
     tiny_squares = []
-    batches, fallback = plan
-    for ref, axis, entries in batches:
+    for ref, axis, selected_positions, contribution_indices in plan.batches:
         tensor = bindings[ref].to(dtype)
-        selected = sorted({index for _, index in entries})
-        if len(selected) != tensor.shape[axis]:
-            tensor = tensor.index_select(axis, torch.tensor(selected, device=tensor.device))
-        positions = {old: new for new, old in enumerate(selected)}
+        if selected_positions is not None:
+            tensor = tensor.index_select(axis, selected_positions)
         dims = tuple(d for d in range(tensor.ndim) if d != axis)
         if kind == "l2":
             reduced = _row_norm(tensor, dims)
@@ -310,10 +356,8 @@ def group_penalty(groups: tuple[ParameterGroup, ...], kind: str, plan: tuple) ->
                 )
             values = tensor.abs() if kind == "l1" else half_squared(tensor)
             reduced = values.sum(dim=dims) if dims else values
-        index = torch.tensor([positions[i] for _, i in entries], device=tensor.device)
-        contributions.append(reduced.index_select(0, index))
-        owners.extend(number for number, _ in entries)
-    for number in fallback:
+        contributions.append(reduced.index_select(0, contribution_indices))
+    for number in plan.fallback:
         values = _gather_group(groups[number], bindings, dtype)
         if kind == "squared_l2":
             magnitude = values.detach().abs()
@@ -327,7 +371,6 @@ def group_penalty(groups: tuple[ParameterGroup, ...], kind: str, plan: tuple) ->
         else:
             value = squared_norm(values)
         contributions.append(value.reshape(1))
-        owners.append(number)
     values = torch.cat(contributions)
     if not torch.isfinite(values).all():
         raise ValueError("Sparse operations require finite selected values and penalties")
@@ -339,7 +382,7 @@ def group_penalty(groups: tuple[ParameterGroup, ...], kind: str, plan: tuple) ->
     if kind != "l2":
         return values.sum()
 
-    owner = torch.tensor(owners, device=values.device)
+    owner = plan.owners
     zero = values.new_zeros(len(groups))
     maxima = zero.scatter_reduce(0, owner, values.detach(), reduce="amax")
     divisor = torch.where(maxima > 0, maxima, torch.ones_like(maxima))

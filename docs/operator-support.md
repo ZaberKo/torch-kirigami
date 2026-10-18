@@ -252,6 +252,8 @@ Dependency propagation does not call `build_recipe()`.
 
 Set `evaluate_on_meta=True` to permit compact-call checks on metadata tensors.
 Third-party rules use declared output facts by default.
+Rules inherit `False` defaults for `evaluate_on_meta` and `cache_meta_output`, including rules with their own constructors.
+Call `super().__init__(...)` to configure different values in a custom constructor.
 Set `cache_meta_output=True` only when evaluation depends on argument metadata and captured module configuration alone.
 Cache reuse also requires fresh output storage and no input writes.
 

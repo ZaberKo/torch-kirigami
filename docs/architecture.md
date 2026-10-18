@@ -78,6 +78,8 @@ register operation semantics. Pruning and sparsity consume these contracts.
 
 `eligibility.py` checks native records, including nested fields, before an optimization reuses structural computations.
 Propagation and planning share this check.
+The same module checks model accessors, captured arguments, and registrations before graph queries share freshness validation.
+`DependencyGraph` owns the validation scope, including entry, exit, and exception handling.
 Extensions that fail this optimization check still use ordinary analysis.
 The helper does not import the solver or pruning code.
 
@@ -109,6 +111,9 @@ It returns a `PruningPlan` only when dependencies, execution checks, and the bud
 Neither strategy trains the model or collects calibration data.
 The caller supplies gradients or activation statistics before planning when a metric needs them.
 
+`CandidateFilter` shares native closure and constraint checks between filtering and parameter-group extraction.
+Filtering uses irreversible conflicts. Raw group extraction requires complete influence and preserves complete constraint conflicts.
+
 A parameter budget limits the final parameter count.
 A channel budget limits final logical widths.
 These budgets share the same final-size comparison.
@@ -131,6 +136,10 @@ The sparsity package supplies differentiable penalties, explicit gates, and para
 The caller owns the task loss, optimizer, training loop, and phase transitions.
 Research workflows also own bias correction and weight reconstruction.
 Save their corrected or reconstructed values in the final model checkpoint.
+
+Sparse parameter operations separate preparation from commit and rollback.
+An internal `_PreparedWrite` records each assignment's coordinates and copied values before and after the change.
+Preparation completes before any assignment changes the model.
 
 Measurement reports parameter counts, theoretical FLOPs and MACs, and inference latency.
 Task accuracy requires separate evaluation with task data.

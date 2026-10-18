@@ -385,16 +385,11 @@ def main() -> None:
         plan = make_plan(pruner, space, budget)
         selected_keys = set(plan.selected)
         selected = tuple(c for c in space.candidates if c.key in selected_keys)
-        removed_by_axis = {axis: set() for axis in space.channel_axes}
-        for candidate in selected:
-            if candidate.axis in removed_by_axis:
-                removed_by_axis[candidate.axis].update(
-                    candidate.remove[0].fully_selected_indices(0)
-                )
         retained = {}
         for axis in space.channel_axes:
             retained[axis.tensor.paths[0]] = sorted(
-                set(range(axis.tensor.shape[0])) - removed_by_axis[axis]
+                set(range(axis.tensor.shape[axis.dim]))
+                - set(plan.analysis.selection(axis.tensor).fully_selected_indices(axis.dim))
             )
         similarity = window.update(retained)
         stable = similarity is not None and similarity >= options.threshold

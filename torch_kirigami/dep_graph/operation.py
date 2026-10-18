@@ -509,6 +509,10 @@ class OperatorRule(ABC):
             remain mandatory even when this flag is true.
     """
 
+    # Defaults also apply when an extension initializes only its own configuration.
+    evaluate_on_meta: bool = False
+    cache_meta_output: bool = False
+
     def __init__(self, *, evaluate_on_meta: bool = False, cache_meta_output: bool = False) -> None:
         self.evaluate_on_meta = evaluate_on_meta
         self.cache_meta_output = cache_meta_output

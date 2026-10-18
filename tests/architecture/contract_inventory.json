@@ -1,6 +1,34 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.sparsity.operations._PreparedWrite",
+      "contracts": [
+        {
+          "behavior": "Prepare copied values and coordinate indices before committing tensor assignments, and restore values on commit failure.",
+          "tests": [
+            "tests/sparsity/test_reviewed_optimizations.py::test_sparse_region_writes_restore_all_values_on_failure",
+            "tests/sparsity/test_reviewed_optimizations.py::test_sparse_writes_keep_unproved_nonoverlapping_layouts_usable"
+          ],
+          "conditions": "CPU and CUDA writes, preparation and partial commit failures, and full-copy fallback for unproved layouts.",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.sparsity.values.ReductionPlan",
+      "contracts": [
+        {
+          "behavior": "Retain coordinate index tensors without caching parameter values or autograd graphs.",
+          "tests": [
+            "tests/sparsity/test_reviewed_optimizations.py::test_cached_regularizer_indices_keep_live_gradients_and_freshness",
+            "tests/sparsity/test_regularizers.py::test_mixed_group_reductions_share_bindings_and_count_each_region_once"
+          ],
+          "conditions": "Repeated reads, inference-mode construction, CPU and CUDA gradients, nonfinite weights and stale graph rejection.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.pruning.candidate_checks.CandidateFilter",
       "contracts": [
         {
@@ -9,7 +37,8 @@
             "tests/pruning/test_irreversible_candidates.py::test_partial_protection_filters_before_metrics_and_preserves_sparse_query",
             "tests/pruning/test_irreversible_candidates.py::test_changed_scalar_arguments_are_not_irreversible_and_joint_plan_can_execute",
             "tests/pruning/test_fixed_discovery.py::test_fixed_subclasses_do_not_inherit_the_native_exclusion_proof",
-            "tests/pruning/test_group_parameter_scope.py::test_custom_parameter_scope_keeps_exact_accelerated_planning"
+            "tests/pruning/test_group_parameter_scope.py::test_custom_parameter_scope_keeps_exact_accelerated_planning",
+            "tests/pruning/test_native_query_validation.py::test_shared_projection_checks_preserve_group_and_planning_contracts"
           ],
           "conditions": "Partial and whole protection, native and extension constraints, accepted removals, static and dynamic scoring, and independent compact-model references.",
           "gaps": []

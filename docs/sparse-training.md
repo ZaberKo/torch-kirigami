@@ -42,6 +42,10 @@ An empty candidate iterable returns an empty tuple.
 Extraction requires complete influence. It accepts complete impacts even when constraints fail, and does not compile execution recipes.
 A group is therefore not proof that its candidate can be physically pruned.
 
+Exact native identity components can supply parameter selections without repeated full propagation.
+Other requests use ordinary propagation.
+Both paths require complete influence and preserve constraint failures, candidate order, and duplicate groups.
+
 For pruning-oriented sparse training, normally use candidates from `pruner.discover_candidates(targets=...)`. Discovery excludes proven irreversible conflicts, including partial or complete Fixed protection. For a custom space, use `space = pruner.filter_candidates(space)` before group extraction. This filter preserves explicit budget axes and records rejected candidate keys.
 
 Explicitly supplied candidates can still describe protected or otherwise infeasible removals. Extraction preserves them because it describes parameter regions, not candidate feasibility. Penalizing such groups does not make those removals legal. This raw query remains available when the training objective deliberately includes fixed structure. `Fixed` protects structural dimensions, not parameter values or gradients. A legal input-column removal can affect a parameter even when `Fixed` protects its output axis.
@@ -113,6 +117,11 @@ The [BN-guided pruning workflow](../examples/workflows/bn_guided_pruning.py) use
 
 Regularizers read current parameter values on every call. They preserve autograd connectivity and do not retain graphs across calls. They do not call `backward()`, change parameters or gradients, or read optimizer state. Frozen parameters remain in the objective. Built-in L2 penalties support first-order autograd only. Nonfinite values or results raise an error.
 The loss stays on the selected parameters' device.
+
+Regularizers cache coordinate index tensors, not weights, gradients, or autograd graphs.
+Each call validates graph freshness, parameter requirements, and numerical results. It reads current parameter values.
+Ordinary training updates do not rebuild these coordinate indices.
+Changes to mode, bindings, device, or dtype still require a fresh graph and groups.
 Its dtype is float64 if any selected parameter is float64, otherwise float32.
 
 Custom subclasses can override `penalty(values)`. They receive each group's flattened selected values and define their own differentiation behavior.
@@ -187,6 +196,11 @@ Scaling and zeroing update overlaps once. This differs from regularizers, which 
 Norm projection accepts equivalent groups only when their targets match. It rejects all other overlaps. A zero vector cannot receive a positive norm because it has no direction.
 
 The operations validate and prepare values before mutation. Runtime or value failures during commit restore original values. Gradients and optimizer state remain unchanged. Momentum can regrow zeroed parameters. Reapply the operation or use a mask when zeros must persist. The operation rejects distinct tensor objects that share storage when an update could affect them.
+
+Transactions normally copy selected regions for preparation and rollback.
+Layouts without proved separate storage positions retain full-tensor preparation.
+Norm projection uses sorted bounds to avoid pairwise comparisons for disjoint rows or columns.
+Possible overlaps still require exact region intersections.
 
 ## Cumulative channel budgets
 

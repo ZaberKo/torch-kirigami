@@ -1,0 +1,161 @@
+{
+  "baseline_commit": "907d35b",
+  "date": "2026-10-19",
+  "environment": {
+    "python": "3.12.12",
+    "torch": "2.14.0+cu130",
+    "cpu_threads": 1,
+    "seed": 7
+  },
+  "model": "resnet18, random weights, input [1, 3, 32, 32]",
+  "planning": {
+    "targets": "eight residual conv1 modules",
+    "candidates": 1920,
+    "channel_ratio": 0.05,
+    "scope": "global",
+    "granularity": 8,
+    "metrics": {
+      "greedy": "Magnitude(p=2)",
+      "dynamic": "GroupMagnitude(p=2)"
+    }
+  },
+  "before": {
+    "greedy": {
+      "seconds": 12.089605543995276,
+      "fingerprints": 4129,
+      "trials": 12,
+      "selected_digest": "b9c44c73f2405b26fd4a25aa0413f6d86024df2b7b2bd341c448371436b347d2",
+      "remaining": [
+        64,
+        64,
+        96,
+        128,
+        224,
+        256,
+        480,
+        512
+      ]
+    },
+    "dynamic": {
+      "seconds": 9.510254079010338,
+      "fingerprints": 125,
+      "trials": 12,
+      "selected_digest": "7c6071ed434d2e95dd80699f965cfe0b1d2ee9d434b887fa8086b9b3cf55a9da",
+      "remaining": [
+        40,
+        48,
+        104,
+        112,
+        248,
+        248,
+        512,
+        512
+      ]
+    },
+    "parameter_groups": {
+      "seconds": 9.339576179976575,
+      "fingerprints": 3841,
+      "count": 1920,
+      "elements": 10989312
+    },
+    "lasso": {
+      "milliseconds": 37.81699709943496,
+      "fingerprints": 20,
+      "value": 4080.869873046875
+    },
+    "norms_100": {
+      "seconds": 0.02592920296592638,
+      "samples": 7
+    },
+    "norms_200": {
+      "seconds": 0.09332577703753486,
+      "samples": 7
+    },
+    "norms_400": {
+      "seconds": 0.3573209010064602,
+      "samples": 7
+    },
+    "zero_small_region": {
+      "seconds": 0.004275849962141365,
+      "cloned_elements": 8388608,
+      "samples": 7
+    },
+    "membership": {
+      "seconds": 0.12682677601696923
+    }
+  },
+  "after": {
+    "greedy": {
+      "seconds": 3.7223242500331253,
+      "fingerprints": 47,
+      "trials": 12,
+      "selected_digest": "b9c44c73f2405b26fd4a25aa0413f6d86024df2b7b2bd341c448371436b347d2",
+      "remaining": [
+        64,
+        64,
+        96,
+        128,
+        224,
+        256,
+        480,
+        512
+      ]
+    },
+    "dynamic": {
+      "seconds": 9.169728367996868,
+      "fingerprints": 47,
+      "trials": 12,
+      "selected_digest": "7c6071ed434d2e95dd80699f965cfe0b1d2ee9d434b887fa8086b9b3cf55a9da",
+      "remaining": [
+        40,
+        48,
+        104,
+        112,
+        248,
+        248,
+        512,
+        512
+      ]
+    },
+    "parameter_groups": {
+      "seconds": 0.5962198519846424,
+      "fingerprints": 4,
+      "count": 1920,
+      "elements": 10989312
+    },
+    "lasso": {
+      "milliseconds": 32.4163454992231,
+      "fingerprints": 20,
+      "value": 4080.869873046875
+    },
+    "norms_100": {
+      "seconds": 0.0044248360209167,
+      "samples": 7
+    },
+    "norms_200": {
+      "seconds": 0.00863160303561017,
+      "samples": 7
+    },
+    "norms_400": {
+      "seconds": 0.016920413996558636,
+      "samples": 7
+    },
+    "zero_small_region": {
+      "seconds": 0.0002158290008082986,
+      "cloned_elements": 4096,
+      "samples": 7
+    },
+    "membership": {
+      "seconds": 3.705965355038643e-06
+    }
+  },
+  "cuda_gate": {
+    "device": "RTX 5070 Ti",
+    "candidates": 128,
+    "repetitions": 5,
+    "before_ms": 31.142110796645284,
+    "after_ms": 17.289148806594312,
+    "identical_scores": true
+  },
+  "measurement": "Planning and groups: serial runs. Lasso: mean of 20 warm calls. Norms and zero: median of 7 warm calls."
+}

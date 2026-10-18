@@ -85,6 +85,10 @@ A masked dense model is a valid reference only when masking preserves the releva
 Removing normalization or attention dimensions can change that calculation.
 Use an independent compact reference for those cases.
 
+The [CPU performance probe](../experiments/planning_sparsity_benchmark.py) measures planning and sparse operations without downloaded data.
+The [recorded results](../experiments/planning_sparsity_results.json) include baseline timings and selected-key digests.
+Compare each strategy against its own baseline. The two rows use different metrics.
+
 ### CPU, CUDA, and CI
 
 The device fixture runs participating tests on CPU and CUDA.

@@ -363,7 +363,7 @@ class ActivationVariance:
             if selection != axis.select(indices):
                 raise ValueError("VBP candidates must select complete hidden-axis slices")
             indices = indices.subtract(
-                accepted_impact.selection(axis.tensor).fully_selected_indices(0)
+                accepted_impact.selection(axis.tensor).fully_selected_indices(axis.dim)
             )
             result.append(math.fsum(self.scores[axis][index] for index in indices))
         return result

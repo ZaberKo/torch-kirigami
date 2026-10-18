@@ -14,7 +14,7 @@ from .types import Candidate
 
 
 class CandidateFilter:
-    """Find irreversible conflicts without claiming general candidate feasibility.
+    """Prove candidate effects and irreversible conflicts without general feasibility.
 
     Native proper-subset identity components supply exact closure projections.
     Other requests use ordinary propagation. No model data or full impacts are
@@ -41,7 +41,7 @@ class CandidateFilter:
         all_constraints = (*graph.constraints, *constraints)
         self._native = all(has_native_semantics(c) for c in all_constraints)
         self._by_tensor: dict[str, list[Constraint]] = defaultdict(list)
-        self._empty: list[Diagnostic] = []
+        self._empty_diagnostics: list[Diagnostic] = []
         for constraint in all_constraints:
             for ref in constraint.refs:
                 graph.metadata(ref)
@@ -56,8 +56,28 @@ class CandidateFilter:
                 except AnalysisLimitError:
                     self._native = False
                     continue
-                if diagnostic is not None and diagnostic.irreversible:
-                    self._empty.append(diagnostic)
+                # A repairable empty-query violation may disappear after removal.
+                # Retain only persistent rejection or incomplete-proof information.
+                if diagnostic is not None and (diagnostic.irreversible or not diagnostic.complete):
+                    self._empty_diagnostics.append(diagnostic)
+
+    def parameter_selections(self, candidate: Candidate) -> tuple[Selection, ...] | None:
+        """Project complete native parameter effects, retaining conflicts for raw queries.
+
+        None requires ordinary propagation. This never certifies execution or
+        excludes a candidate for a complete constraint violation.
+        """
+        projected = self._checked_projection(candidate, None)
+        if projected is None:
+            return None
+        selections, diagnostics = projected
+        if any(not diagnostic.complete for diagnostic in diagnostics):
+            return None
+        return tuple(
+            selections[key]
+            for key in sorted(selections)
+            if selections[key] and selections[key].tensor.kind == "parameter"
+        )
 
     def fixed_rejection(self, axis: AxisRef) -> Diagnostic | None:
         """Prove whole-domain Fixed protection through native identity relations."""
@@ -70,28 +90,10 @@ class CandidateFilter:
         self, candidate: Candidate, accepted_impact: Impact | None = None
     ) -> tuple[Diagnostic, ...]:
         """Return only irreversible diagnostics for this joint removal request."""
-        for selection in candidate.remove:
-            self.graph.metadata(selection.tensor)
-        if accepted_impact is not None:
-            self.graph.validate_impact(accepted_impact)
-        if candidate.axis is not None:
-            self.graph.metadata(candidate.axis.tensor)
-        projected = self._project(candidate, accepted_impact) if self._native else None
+        projected = self._checked_projection(candidate, accepted_impact)
         if projected is not None:
-            selections, members = projected
-            checks = {id(c): c for axis in members for c in self._by_tensor.get(axis.tensor.id, ())}
-            diagnostics = list(self._empty)
-            if accepted_impact is not None:
-                diagnostics.extend(d for d in accepted_impact.diagnostics if d.irreversible)
-            try:
-                for constraint in checks.values():
-                    diagnostic = constraint.check(MappingProxyType(selections))
-                    if diagnostic is not None and diagnostic.irreversible:
-                        diagnostics.append(diagnostic)
-            except AnalysisLimitError:
-                pass  # Ordinary propagation records limits without inventing a proof.
-            else:
-                return tuple(dict.fromkeys(diagnostics))
+            _, diagnostics = projected
+            return tuple(dict.fromkeys(d for d in diagnostics if d.irreversible))
         requested = () if accepted_impact is None else accepted_impact.requested
         try:
             seeds = (*requested, *candidate.remove)
@@ -103,6 +105,37 @@ class CandidateFilter:
             return tuple(d for d in impact.diagnostics if d.irreversible)
         finally:
             self.graph.validate()
+
+    def _checked_projection(
+        self, candidate: Candidate, accepted: Impact | None
+    ) -> tuple[dict[str, Selection], tuple[Diagnostic, ...]] | None:
+        """Share ownership checks and native constraints between projection consumers.
+
+        Incomplete influence and complete constraint conflicts remain distinct.
+        The caller decides whether it needs complete regions or rejection reasons.
+        """
+        for selection in candidate.remove:
+            self.graph.metadata(selection.tensor)
+        if accepted is not None:
+            self.graph.validate_impact(accepted)
+        if candidate.axis is not None:
+            self.graph.metadata(candidate.axis.tensor)
+        projected = self._project(candidate, accepted) if self._native else None
+        if projected is None:
+            return None
+        selections, members = projected
+        checks = {id(c): c for axis in members for c in self._by_tensor.get(axis.tensor.id, ())}
+        diagnostics = list(self._empty_diagnostics)
+        if accepted is not None:
+            diagnostics.extend(accepted.diagnostics)
+        try:
+            for constraint in checks.values():
+                diagnostic = constraint.check(MappingProxyType(selections))
+                if diagnostic is not None:
+                    diagnostics.append(diagnostic)
+        except AnalysisLimitError:
+            return None  # Ordinary propagation records limits without inventing a proof.
+        return selections, tuple(diagnostics)
 
     def _project(
         self, candidate: Candidate, accepted: Impact | None

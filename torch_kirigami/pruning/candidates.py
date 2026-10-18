@@ -10,6 +10,7 @@ from torch import nn
 
 from ..dep_graph.contracts import Constraint, Fixed
 from ..dep_graph.dependency_graph import DependencyGraph
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operation import CandidateAxis, Operation
 from ..dep_graph.selection import AxisRef, TensorRef
 from .candidate_checks import CandidateFilter
@@ -199,29 +200,39 @@ def parameter_groups(
     do not prevent extraction. This query does not compile execution recipes.
     Reject empty filtered groups instead of changing candidate-to-group alignment.
     """
-    result = []
-    for candidate in candidates:
-        impact = graph.propagate(remove=candidate.remove, constraints=constraints)
-        if not impact.complete:
-            raise PlanningError(
-                f"Incomplete parameter group for candidate {candidate.key!r}: "
-                + "; ".join(d.message for d in impact.diagnostics if not d.complete)
-            )
-        selections = []
-        for selection in impact.parameters:
-            if parameter_filter is None:
-                selections.append(selection)
-            else:
-                keep = parameter_filter(
-                    selection.tensor, cast(nn.Parameter, graph.tensor(selection.tensor))
-                )
-                # A user callback can alter bindings even when it rejects a region.
-                graph.validate()
-                if keep:
+    candidates = tuple(candidates)
+    native = parameter_filter is None and all(
+        type(candidate) is Candidate and has_native_semantics((candidate.axis, candidate.remove))
+        for candidate in candidates
+    )
+    with graph._native_queries(constraints, enabled=native):
+        result = []
+        checks = CandidateFilter(graph, constraints)
+        for candidate in candidates:
+            parameters = checks.parameter_selections(candidate)
+            if parameters is None:
+                impact = graph.propagate(remove=candidate.remove, constraints=constraints)
+                if not impact.complete:
+                    raise PlanningError(
+                        f"Incomplete parameter group for candidate {candidate.key!r}: "
+                        + "; ".join(d.message for d in impact.diagnostics if not d.complete)
+                    )
+                parameters = impact.parameters
+            selections = []
+            for selection in parameters:
+                if parameter_filter is None:
                     selections.append(selection)
-        if not selections:
-            raise PlanningError(
-                f"Candidate {candidate.key!r} has no parameter regions after extraction and filtering"
-            )
-        result.append(ParameterGroup(graph, tuple(selections), candidate.key))
-    return tuple(result)
+                else:
+                    keep = parameter_filter(
+                        selection.tensor, cast(nn.Parameter, graph.tensor(selection.tensor))
+                    )
+                    # Even a callback that rejects this region can alter bindings.
+                    graph.validate()
+                    if keep:
+                        selections.append(selection)
+            if not selections:
+                raise PlanningError(
+                    f"Candidate {candidate.key!r} has no parameter regions after extraction and filtering"
+                )
+            result.append(ParameterGroup(graph, tuple(selections), candidate.key))
+        return tuple(result)

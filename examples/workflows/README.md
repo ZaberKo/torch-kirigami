@@ -373,6 +373,8 @@ It trains ordinary weights and gates together with L1 on gate scales.
 `GateMagnitude` sums `abs(gate_weight * gate_mask)` over affected gate positions.
 Static planning chooses removals under the parameter cap.
 Retained gates remain explicit modules with their learned values.
+With `--sparse_epochs 0`, the workflow warns that unit-valued gates provide no learned ranking.
+This setting remains available for smoke tests.
 
 #### Differences and omissions
 
@@ -490,7 +492,7 @@ Equivalent closures count once.
 The entry inspects graph-declared domains under interface protections and execution checks.
 Proved identity components reuse per-position Taylor statistics, including ordinary
 CNN channel chains with full-tensor scopes. Partial partitions and nested extension
-behavior retain per-candidate analysis. This reuse does not alter family quotas or
+behavior retain per-candidate analysis. This reuse does not change family quotas or
 skip final joint verification.
 
 Calibration accumulates batch-mean cross-entropy gradients without updating weights or BatchNorm statistics.
@@ -502,8 +504,8 @@ This follows the displayed equations rather than the [official code](https://git
 
 Each family requests its lowest-ranked `floor(family_pruning_ratio * action_count)` actions.
 Alignment can add removals beyond that quota.
-Rounding scans each axis's ordered contributors once as selected positions grow;
-it preserves the original action order and revisits coupled axes.
+Rounding scans each axis's ordered contributors once as selected positions grow.
+It preserves the original action order and revisits coupled axes.
 The ratio is not a whole-model parameter reduction and is not derived through target search.
 The original parameter count supplies only a non-increase guard.
 An invalid joint allocation fails before mutation.
@@ -568,7 +570,7 @@ These settings do not guarantee a global optimum or exhaustive local search.
 The sampled calibration, common-width allocation, and ViT FFN scope adapt the paper's experiments.
 Width allocation uses integer arithmetic and binary lookup in aligned-width
 breakpoints. Each tested allocation still uses a joint structural plan to measure
-the actual parameter count; layer costs are not approximated as additive.
+the actual parameter count. Layer costs are not approximated as additive.
 
 Each consumer is a separate operation, so earlier changes remain if a later consumer fails.
 
@@ -576,7 +578,12 @@ Each consumer is a separate operation, so earlier changes remain if a later cons
 
 Common-width allocation does not optimize reconstruction error across layers.
 Sampled calibration, ViT FFN scope, and bounded search adapt the paper's experiments.
-Teacher targets remain part of reconstruction even when users disable fine-tuning. The workflow omits distillation recovery.
+The paper's displayed dense-layer objective uses identical inputs for the dense and pruned weights.
+This workflow pairs current-model inputs with original-model outputs after earlier pruning, and adds damping toward original weights.
+The frozen dense model supplies layer-output targets for channel selection and least-squares weight refitting.
+These steps belong to pruning and still run with `--finetune_epochs 0`.
+The workflow performs no distillation training. Optional fine-tuning uses labeled cross-entropy only.
+Reconstruction keeps the current consumer bias unchanged and subtracts that bias from dense-model targets before fitting weights.
 
 #### Run
 

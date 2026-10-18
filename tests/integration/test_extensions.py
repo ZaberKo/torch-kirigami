@@ -206,9 +206,9 @@ def test_default_lowering_does_not_rescan_model_after_every_operation(monkeypatc
         calls = []
         check_fresh = graph._check_fresh
 
-        def counted_check_fresh(_calls=calls, _check_fresh=check_fresh):
+        def counted_check_fresh(*args, _calls=calls, _check_fresh=check_fresh, **kwargs):
             _calls.append(None)
-            return _check_fresh()
+            return _check_fresh(*args, **kwargs)
 
         # Include implicit scans through tensor() and tensor_bindings(), not
         # only explicit calls to the public validate() method.

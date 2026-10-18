@@ -3,26 +3,75 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 import torch
 
 from ..bindings import storage_key
-from ..dep_graph.selection import Region
+from ..dep_graph.selection import Region, Selection, TensorRef, gather_region
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
 from .values import group_bindings, group_values, scaled_product
 
 
-def _write(tensor: torch.Tensor, region: Region, values: torch.Tensor) -> None:
-    """Write values into a tensor at one Cartesian region."""
-    if not region.axes:
+def _region_index(tensor: torch.Tensor, region: Region) -> tuple[slice | torch.Tensor, ...]:
+    """Allocate write indices before mutation, using slices for rectangles."""
+    if all(len(axis.intervals) == 1 for axis in region.axes):
+        return tuple(slice(*axis.intervals[0]) for axis in region.axes)
+    indices = [
+        torch.tensor(tuple(axis), dtype=torch.long, device=tensor.device) for axis in region.axes
+    ]
+    return torch.meshgrid(*indices, indexing="ij")
+
+
+def _write(
+    tensor: torch.Tensor, index: tuple[slice | torch.Tensor, ...], values: torch.Tensor
+) -> None:
+    """Write prepared values without constructing coordinate tensors."""
+    if not index:
         tensor.copy_(values)
+    elif all(isinstance(axis, slice) for axis in index):
+        tensor[index].copy_(values)
     else:
-        indices = [torch.tensor(tuple(a), device=tensor.device) for a in region.axes]
-        tensor[torch.meshgrid(*indices, indexing="ij")] = values
+        tensor[index] = values
 
 
-def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]) -> None:
-    """Validate and atomically commit prepared group vectors."""
+def _proves_nonoverlap(tensor: torch.Tensor) -> bool:
+    """Prove nonoverlap for dense, transposed and regularly strided layouts."""
+    # Each stride must step past the address span of all smaller-stride axes.
+    # Failure is not proof of overlap. The caller retains full-copy preparation.
+    extent = 1
+    for size, stride in sorted(
+        zip(tensor.shape, tensor.stride(), strict=True), key=lambda item: item[1]
+    ):
+        if size <= 1:
+            continue
+        if stride < extent:
+            return False
+        extent += (size - 1) * stride
+    return True
+
+
+@dataclass(frozen=True, eq=False)
+class _PreparedWrite:
+    """Hold one tensor assignment and the values required to undo it.
+
+    Attributes:
+        tensor: Original registered parameter to update in place.
+        index: Prepared slices or coordinate tensors. Empty means the whole tensor.
+        before: Copied values at these coordinates before any transaction writes.
+        after: Prepared replacement values, independent of live parameter storage.
+    """
+
+    tensor: torch.Tensor
+    index: tuple[slice | torch.Tensor, ...]
+    before: torch.Tensor
+    after: torch.Tensor
+
+
+def _prepare_writes(
+    groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]
+) -> list[_PreparedWrite]:
+    """Validate bindings and allocate every value and index without changing parameters."""
     graph = groups[0].graph
     bindings = dict(graph.tensor_bindings())
     storage = {}
@@ -38,14 +87,16 @@ def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tens
         for s in group.selections
     ):
         raise ValueError("Parameter operations do not support distinct tensors sharing storage")
-    originals, prepared = {}, {}
+    prepared: list[_PreparedWrite] = []
+    full_copies: dict[torch.Tensor, torch.Tensor] = {}
     for group, vector in zip(groups, vectors, strict=True):
         offset = 0
         for selection in group.selections:
             parameter = bindings[selection.tensor]
-            if parameter not in originals:
-                originals[parameter] = parameter.detach().clone()
-                prepared[parameter] = parameter.detach().clone()
+            if not _proves_nonoverlap(parameter) and parameter not in full_copies:
+                original, edited = parameter.detach().clone(), parameter.detach().clone()
+                full_copies[parameter] = edited
+                prepared.append(_PreparedWrite(parameter, (), original, edited))
             for region in selection.regions:
                 shape = tuple(len(axis) for axis in region.axes)
                 count = math.prod(shape)
@@ -53,15 +104,74 @@ def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tens
                 offset += count
                 if not torch.isfinite(values).all():
                     raise ValueError("Parameter operation would produce nonfinite values")
-                _write(prepared[parameter], region, values)
+                index = _region_index(parameter, region)
+                if parameter in full_copies:
+                    # Preserve the original full-copy behavior when sparse writes
+                    # cannot prove that other logical positions remain unchanged.
+                    _write(full_copies[parameter], index, values)
+                else:
+                    original = gather_region(parameter.detach(), region).clone()
+                    prepared.append(_PreparedWrite(parameter, index, original, values.clone()))
+    return prepared
+
+
+def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]) -> None:
+    """Prepare all writes, revalidate the graph, then commit with rollback on failure."""
+    prepared = _prepare_writes(groups, vectors)
+    graph = groups[0].graph
     graph.validate()
     try:
-        for parameter, value in prepared.items():
-            parameter.copy_(value)
+        for edit in prepared:
+            _write(edit.tensor, edit.index, edit.after)
     except (RuntimeError, ValueError):
-        for parameter, value in originals.items():
-            parameter.copy_(value)
+        for edit in prepared:
+            _write(edit.tensor, edit.index, edit.before)
         raise
+
+
+def _require_disjoint(groups: tuple[ParameterGroup, ...]) -> None:
+    """Sweep sparse axis bounds, using exact region checks for possible overlaps.
+
+    Disjoint rows or columns avoid quadratic pair comparisons. General regions
+    retain exact intersection checks without constructing a large union.
+    """
+    by_tensor: dict[TensorRef, list[Selection]] = {}
+    for group in groups:
+        for selection in group.selections:
+            by_tensor.setdefault(selection.tensor, []).append(selection)
+    for ref, selections in by_tensor.items():
+        if len(selections) < 2:
+            continue
+        if not ref.shape:
+            raise ValueError("Norm targets require disjoint groups")
+        bounds = [
+            tuple(
+                (
+                    min(r.axes[d].intervals[0][0] for r in s.regions),
+                    max(r.axes[d].intervals[-1][1] for r in s.regions),
+                )
+                for d in range(len(ref.shape))
+            )
+            for s in selections
+        ]
+        # Axis choice only reduces comparisons. Exact intersections decide overlap.
+        axis = min(
+            range(len(ref.shape)),
+            key=lambda d: sum(b[d][1] - b[d][0] for b in bounds) / ref.shape[d],
+        )
+        ordered = sorted(range(len(selections)), key=lambda i: bounds[i][axis])
+        active: list[int] = []
+        for index in ordered:
+            start = bounds[index][axis][0]
+            active = [i for i in active if bounds[i][axis][1] > start]
+            for previous in active:
+                if any(
+                    not a.intersect(b).empty
+                    for a in selections[index].regions
+                    for b in selections[previous].regions
+                ):
+                    raise ValueError("Norm targets require disjoint groups")
+            active.append(index)
 
 
 @torch.no_grad()
@@ -134,12 +244,7 @@ def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | fl
             raise ValueError("Equivalent groups have conflicting targets")
         unique_targets.append(values[0])
     values = group_values(unique)
-    for i, left in enumerate(unique):
-        for right in unique[i + 1 :]:
-            for a in left.selections:
-                for b in right.selections:
-                    if a.tensor == b.tensor and a.subtract(b).count != a.count:
-                        raise ValueError("Norm targets require disjoint groups")
+    _require_disjoint(unique)
     projected = []
     for vector, target in zip(values, unique_targets, strict=True):
         # Normalize in two stages, without forming target/norm. That ratio can

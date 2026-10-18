@@ -34,6 +34,7 @@ The ViT path extends the gating idea beyond the paper's CNN experiments.
 import argparse
 import json
 import math
+import warnings
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, cast
@@ -163,6 +164,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Train identity gates, prune channels and fine-tune the compact model."""
     options = parse_args()
+    if options.sparse_epochs == 0 and options.pruning_ratio > 0:
+        warnings.warn(
+            "Gate training is disabled. Initial gate scores are equal, so pruning uses "
+            "the deterministic key order without learned importance.",
+            UserWarning,
+            stacklevel=2,
+        )
     torch.manual_seed(options.seed)
     model = make_model(options.model)
     layers = (

@@ -186,7 +186,7 @@ def main() -> None:
     """Train group sparsity, prune the model and optionally fine-tune it."""
     options = parse_args()
     torch.manual_seed(options.seed)
-    model = make_model(options.model).to(options.device)
+    model = make_model(options.model).to(options.device).eval()
     layers = (
         tuple(
             f"layer{stage}.{block}"

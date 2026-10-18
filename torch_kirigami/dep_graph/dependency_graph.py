@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -16,6 +18,7 @@ from .capture import fingerprint
 from .capture import validate_attribute_changes as _validate_attribute_changes
 from .construction import _Analyzer
 from .contracts import AttributeBinding, Constraint, Diagnostic, Impact, ShapeExpr
+from .eligibility import has_native_query_semantics
 from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
 from .operation import Operation, OperatorRule, OperatorSpec, TensorFacts
 from .registry import OperatorRegistry
@@ -38,7 +41,37 @@ class DependencyGraph:
         self._data = data
         self._solver = DependencySolver(data)
         self._valid = True
+        self._queries_checked: ContextVar[bool] = ContextVar(
+            "kirigami_native_queries", default=False
+        )
         self._check_fresh()
+
+    @contextmanager
+    def _native_queries(
+        self, constraints: tuple[Constraint, ...], *, enabled: bool = True
+    ) -> Iterator[None]:
+        """Reuse validation only inside a callback-free, native query batch.
+
+        Entry and exit always inspect the full snapshot, including exceptions.
+        Reuse state belongs to the current execution context.
+        Callers must disable reuse around user code and tensor subclasses.
+        """
+        self._check_fresh(force=True)
+        native = (
+            enabled
+            and type(self) is DependencyGraph
+            and not any(callable(value) for value in vars(self).values())
+            and has_native_query_semantics(self._data, constraints)
+        )
+        native = native and all(
+            type(tensor) in (nn.Parameter, torch.Tensor) for _, tensor in self.tensor_bindings()
+        )
+        token = self._queries_checked.set(native)
+        try:
+            yield
+        finally:
+            self._queries_checked.reset(token)
+            self._check_fresh(force=True)
 
     @property
     def id(self) -> str:
@@ -172,11 +205,12 @@ class DependencyGraph:
         This checks edits without modifying weights or choosing removals. Opaque
         leaf internals remain the responsibility of their declared operator rules.
         """
-        self.validate()
-        _validate_attribute_changes(
-            self._data.model, self._data.registry, self._data.capture_signature, tuple(updates)
-        )
-        self.validate()
+        # Retracing executes the caller's Python forward, even for a graph whose
+        # captured operators are all native. Never reuse a check across that code.
+        with self._native_queries((), enabled=False):
+            _validate_attribute_changes(
+                self._data.model, self._data.registry, self._data.capture_signature, tuple(updates)
+            )
 
     def validate(self, model: nn.Module | None = None) -> None:
         """Check snapshot freshness and optional model ownership."""
@@ -293,13 +327,17 @@ class DependencyGraph:
             if module_path is None or module_path in ctx.module_paths
         )
 
-    def _check_fresh(self) -> None:
+    def _check_fresh(self, *, force: bool = False) -> None:
         """Reject detectable structural changes without comparing weight values."""
         if config.analysis_key() != self._data.settings_key:
             raise StaleGraphError(
                 "Analysis configuration changed; rebuild the graph before using it"
             )
-        if not self._valid or fingerprint(self._data.model) != self._data.fingerprint:
+        if not self._valid:
+            raise StaleGraphError("Model structure/mode/configuration changed; rebuild the graph")
+        if not force and self._queries_checked.get():
+            return
+        if fingerprint(self._data.model) != self._data.fingerprint:
             raise StaleGraphError("Model structure/mode/configuration changed; rebuild the graph")
         for ref in self._data.constant_refs:
             value = resolve_attribute(self._data.model, ref.paths[0])

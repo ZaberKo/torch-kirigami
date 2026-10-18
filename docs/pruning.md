@@ -97,6 +97,10 @@ An unresolved or conflicting individual impact does not by itself exclude a cand
 
 Linear and ordinary convolution rules declare output-feature or output-channel axes. For `Linear(4, 6) → ReLU → Linear(6, 3)`, default discovery offers the six hidden features. With interface protection, it excludes the final three output features. Selecting one hidden feature also removes the matching consumer input column.
 
+Convolutions with `groups=1` offer independent output-channel candidates, including layers with one input channel.
+The same rule applies to transposed convolutions.
+Default depthwise blocks apply when `groups == in_channels` and `groups > 1`.
+
 Distinct declared domains can have overlapping effects. Propagation finds those effects jointly. Use custom candidates or `plan_remove` to request another supported entry axis.
 
 `CandidateSpace` contains explicit candidates, counted channel axes, and optional discovery exclusions. It retains no graph or model. Candidate order matches score order. Channel-axis order matches local budget order. Packaging candidates into blocks does not change the budget denominator.
@@ -106,6 +110,13 @@ For custom candidates, `pruner.filter_candidates(space)` returns a new space wit
 `Pruner.plan()` applies the same filter before invoking any strategy. Both built-in greedy strategies also check additions against the accepted removal closure before scoring or spending a trial on a proven irreversible conflict. Static selection retains its original scores. Dynamic selection still recalculates scores after each accepted complete request. Filtering does not change GroupMagnitude's normalization population or formula.
 
 Outside the native identity-axis proof, filtering runs ordinary propagation per candidate. Pre-strategy filtering can therefore add a full pass of dependency queries. The strategy's subsequent checks share its bounded impact cache. Separate discovery and filter calls do not retain impacts between calls.
+
+With unmodified `Magnitude` or `GroupMagnitude`, built-in greedy selection can share freshness checks within a batch of native queries.
+The graph checks its full snapshot at batch entry and exit, including exceptional exits.
+Custom metrics, registrations, structural records, tensor subclasses, and binding accessors retain the ordinary checks.
+Only inert call arguments can enter such a batch.
+Attribute validation always suspends reuse because retracing executes the model's Python `forward`.
+Independent public queries continue to check freshness.
 
 `Candidate(key, remove, axis=None)` names one batch of original-coordinate seeds. Its `axis` describes a logical domain. It does not make the candidate an indivisible structural block. Relations and constraints define required coupling.
 

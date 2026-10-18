@@ -8,18 +8,53 @@ from dataclasses import dataclass
 from typing import Literal
 
 from ..dep_graph.contracts import Balanced, Constraint, Divisible, Impact
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.selection import AxisRef, IndexSet
 from ..settings import config
+from .metrics import GroupMagnitude, Magnitude
 from .planner import PlanningContext
 from .ranking import IndependentRanking
 from .types import (
     Candidate,
+    ChannelCount,
+    ChannelRatio,
     Metric,
+    ParameterBudget,
     PlanningError,
     StrategyResult,
 )
 
 _EMPTY_INDICES = IndexSet()
+_NATIVE_SCORES = {Magnitude: Magnitude.score, GroupMagnitude: GroupMagnitude.score}
+
+
+def _can_reuse_score_checks(metric: Metric, context: PlanningContext) -> bool:
+    """Require native scoring, budgets and candidates before batching validation."""
+    if type(context) is not PlanningContext or type(metric) not in _NATIVE_SCORES:
+        return False
+    if (
+        "score" in vars(metric)
+        or type(metric).score is not _NATIVE_SCORES[type(metric)]
+        or not has_native_semantics(metric.p)
+    ):
+        return False
+    if type(context.budget) not in (ChannelCount, ChannelRatio, ParameterBudget):
+        return False
+    if not has_native_semantics(
+        (
+            context.targets,
+            context.widths,
+            context.budget_axes,
+            getattr(context.budget, "scope", "global"),
+        )
+    ):
+        return False
+    if any(callable(value) for value in vars(context).values()):
+        return False
+    return all(
+        type(candidate) is Candidate and has_native_semantics((candidate.axis, candidate.remove))
+        for candidate in context.candidates
+    )
 
 
 def _axis_removals(impact: Impact, axes: tuple[AxisRef, ...]) -> dict[AxisRef, IndexSet]:
@@ -279,7 +314,10 @@ class Greedy:
 
     def select(self, context: PlanningContext) -> StrategyResult:
         """Return a verified choice without changing the model or context premises."""
-        return _select(context, self.metric, self.max_trials, dynamic=False)
+        with context.graph._native_queries(
+            context.constraints, enabled=_can_reuse_score_checks(self.metric, context)
+        ):
+            return _select(context, self.metric, self.max_trials, dynamic=False)
 
 
 @dataclass(frozen=True)
@@ -305,7 +343,10 @@ class DynamicGreedy:
 
     def select(self, context: PlanningContext) -> StrategyResult:
         """Return a verified choice, reranking after every complete commitment."""
-        return _select(context, self.metric, self.max_trials, dynamic=True)
+        with context.graph._native_queries(
+            context.constraints, enabled=_can_reuse_score_checks(self.metric, context)
+        ):
+            return _select(context, self.metric, self.max_trials, dynamic=True)
 
 
 def _rank_candidates(

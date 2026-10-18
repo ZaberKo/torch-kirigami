@@ -1,10 +1,16 @@
-"""Reconstruct layer outputs against a dense teacher and prune channel groups.
+"""Select channels by layer reconstruction and refit retained weights.
 
 This workflow adopts layer reconstruction and combinatorial search from
 OSSCAR, ICML 2024.
 Paper: *OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
 Combinatorial Optimization*.
 https://proceedings.mlr.press/v235/meng24a.html
+
+Here `teacher` is a frozen copy of the original dense model.
+Its layer outputs supply calibration targets for channel selection and
+least-squares weight refitting. These steps belong to pruning, including when
+`finetune_epochs=0`. The workflow performs no distillation training.
+Optional fine-tuning uses labeled cross-entropy only.
 
 `DependencyGraph` identifies supported unbranched Conv2d and Linear pairs.
 Discovery excludes branches, cross-channel mixing, grouped or depthwise
@@ -22,11 +28,18 @@ The workflow processes consumers in forward order:
 5. Submit the chosen channels through `plan_remove`. Apply the structural plan.
 6. Install the refitted values. Rebuild the graph for the next consumer.
 
+Implementation differences from the paper's formulation and experiments:
+
+- Earlier pruning changes current-model inputs, while targets remain original-model outputs.
+  The paper's displayed dense-layer objective uses the same inputs on both sides.
+- Damping anchors reconstructed weights toward their original values.
+- Sampled positions, common-fraction width allocation, and bounded swaps limit this workflow's search.
+- Transformer support covers eligible FFN pairs, not attention-head reconstruction or language-model experiments.
+
 The bounded local search does not guarantee a global combinatorial optimum.
 Earlier consumer changes remain if a later operation fails.
-Teacher targets remain necessary when you disable fine-tuning.
-Sampled calibration positions, common-fraction allocation, and ViT FFN scope
-adapt the paper's experiments. Optional recovery uses task loss only.
+Reconstruction keeps each consumer's bias unchanged and fits only its retained weights.
+Calibration therefore subtracts the current consumer bias from dense-model targets.
 
 Save the refitted compact checkpoint after optional fine-tuning.
 A structural plan alone does not contain reconstructed weights.

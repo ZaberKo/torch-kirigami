@@ -185,7 +185,9 @@ def convolution(operation: Operation) -> OperatorSpec:
     if channel not in (0, 1):
         raise UnsupportedOperation("Unexpected convolution rank")
     cin, cout = x.shape[channel], y.shape[channel]
-    depthwise = groups == cin
+    # A single ordinary input channel still has independently removable outputs.
+    # Treating it as one depthwise block would offer only whole-axis deletion.
+    depthwise = groups > 1 and groups == cin
     global_tensor, global_size = (x, cin) if transposed else (y, cout)
     local_tensor, local_size = (y, cout) if transposed else (x, cin)
     global_block, local_block = global_size // groups, local_size // groups

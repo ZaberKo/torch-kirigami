@@ -12,7 +12,7 @@ from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import Operation, OperatorRule, OperatorSpec, TensorEffects
 from ..dep_graph.registry import OperatorRegistry
 from ..dep_graph.relations import AxisRelation
-from ..dep_graph.selection import gather_region
+from ..dep_graph.selection import TensorRef, gather_region
 from ..pruning.pruner import Pruner
 from ..pruning.types import Candidate, MetricContext
 
@@ -202,7 +202,8 @@ class GateMagnitude:
         context.require_complete(accepted_impact)
         if not candidates:
             return []
-        prepared, seen = [], set()
+        prepared: list[tuple[TensorRef, torch.Tensor]] = []
+        seen: set[tuple[TensorRef, TensorRef]] = set()
         for binding in self.bindings:
             if binding.graph is not context.graph:
                 raise ValueError("Gate score uses a different dependency graph")
@@ -217,17 +218,22 @@ class GateMagnitude:
             # Statistics are shared only within this call. Training or mask changes
             # between score calls must immediately affect the next batch.
             prepared.append((ref, gate.weight.to(dtype) * gate.mask.to(dtype)))
-        scores = []
-        for candidate in candidates:
+        scores = [0.0] * len(candidates)
+        terms_by_device: dict[torch.device, list[torch.Tensor]] = {}
+        accumulation_order: list[tuple[int, torch.device, int]] = []
+        for candidate_index, candidate in enumerate(candidates):
             impact = context.impact(accepted_impact.requested + candidate.remove)
             context.require_complete(impact)
-            score, found = 0.0, False
+            found = False
             for ref, values in prepared:
                 selection = impact.selection(ref).subtract(accepted_impact.selection(ref))
                 if not selection:
                     continue
                 found = True
-                score += sum(gather_region(values, r).abs().sum().item() for r in selection.regions)
+                for region in selection.regions:
+                    device_terms = terms_by_device.setdefault(values.device, [])
+                    accumulation_order.append((candidate_index, values.device, len(device_terms)))
+                    device_terms.append(gather_region(values, region).abs().sum())
             if not found:
                 # A previously selected gated candidate has zero marginal cost.
                 # An unrelated candidate must still be rejected, even if prior
@@ -236,5 +242,10 @@ class GateMagnitude:
                 context.require_complete(candidate_impact)
                 if not any(candidate_impact.selection(ref) for ref, _mask in seen):
                     raise ValueError("Candidate has no bound gate; restrict candidates explicitly")
-            scores.append(score)
+        # One transfer per device, preserving the original Python addition order.
+        transferred = {
+            device: torch.stack(values).cpu().tolist() for device, values in terms_by_device.items()
+        }
+        for candidate_index, device, term_index in accumulation_order:
+            scores[candidate_index] += transferred[device][term_index]
         return scores

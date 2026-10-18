@@ -90,6 +90,20 @@ class IndexSet:
         for a, b in self.intervals:
             yield from range(a, b)
 
+    def __contains__(self, index: object) -> bool:
+        """Check an integer position without expanding interval elements."""
+        if type(self) is not IndexSet or type(index) is not int:
+            # Preserve iterable equality and extension behavior outside native ints.
+            return any(value == index for value in self)
+        for start, stop in self.intervals:
+            if type(start) is not int or type(stop) is not int:
+                return any(value == index for value in self)
+            if index < start:
+                return False
+            if index < stop:
+                return True
+        return False
+
     def union(self, other: IndexSet) -> IndexSet:
         """Return indices contained in either set."""
         if type(self) is type(other) is IndexSet:
@@ -815,6 +829,10 @@ def gather_region(tensor: torch.Tensor, region: Region) -> torch.Tensor:
     for dim in order:
         indices = region.axes[dim]
         if len(indices) != tensor.shape[dim]:
-            index = torch.tensor(tuple(indices), dtype=torch.long, device=tensor.device)
-            tensor = tensor.index_select(dim, index)
+            if len(indices.intervals) == 1:
+                start, stop = indices.intervals[0]
+                tensor = tensor.narrow(dim, start, stop - start)
+            else:
+                index = torch.tensor(tuple(indices), dtype=torch.long, device=tensor.device)
+                tensor = tensor.index_select(dim, index)
     return tensor
