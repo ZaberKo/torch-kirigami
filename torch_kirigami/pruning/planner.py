@@ -14,6 +14,7 @@ from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
 from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
 from .budget import remaining_parameters, resolve_budget
+from .candidate_checks import CandidateFilter
 from .rewrite import compile_recipes
 from .types import (
     Candidate,
@@ -60,6 +61,7 @@ class PlanningContext:
         for axis in self.channel_axes:
             graph.metadata(axis.tensor)
         self._constraints = tuple(constraints)
+        self._candidate_filter = CandidateFilter(graph, self._constraints, query=self.impact)
         self._widths = tuple(a.tensor.shape[a.dim] for a in self.channel_axes)
         self._parameter_count = sum(
             math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"

@@ -373,6 +373,7 @@ The result is an immutable `Impact`. It contains the original requests, closure 
 | `status == "unresolved"` | At least one condition needs proof or additional choices, and no condition conflicts. |
 | `status == "conflict"` | At least one required condition fails. |
 | `complete` | Every diagnostic reports a known influence range. This is independent of validity. |
+| `irreversible` | At least one diagnostic proves that adding removals cannot resolve its conflict under the same graph assumptions and constraints. |
 
 An unbalanced request can be complete but unresolved. A protected-axis violation can be complete but conflicting. An unknown operation can make influence incomplete. A resolved impact is not an executable plan and does not guarantee numerical equivalence.
 
@@ -381,6 +382,10 @@ For example, deleting one channel from one group can produce a complete impact w
 A request that reaches an unsupported operator can produce an incomplete impact. Planning must not score that impact as though its influence were complete. A conflict has a different meaning: the graph knows the affected coordinates, but a required condition fails.
 
 `Provenance` records the source selection, newly added target regions, and reason for each propagation. `Diagnostic` records a stable category, message, optional operation name, affected references, severity, and whether influence is complete.
+
+`Diagnostic.irreversible` defaults to `False`. A `conflict` describes the current request and does not imply this stronger proof. `Fixed`, `NonEmpty`, and required empty `Balanced` partitions declare irreversible violations. Unequal group counts, divisibility failures, and changed scalar arguments do not declare that proof. Additional removals can sometimes restore a scalar argument, such as a difference between two widths.
+
+Custom constraints can set `irreversible=True` only on a conflict that persists for every superset of the current removals. This declaration requires no registration. It must hold with the graph assumptions and constraints fixed. A false value does not prove that completion exists. The graph reports this information without selecting candidates or compiling model edits.
 
 ### Limits and errors
 

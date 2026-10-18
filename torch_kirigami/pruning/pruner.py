@@ -14,7 +14,13 @@ from ..dep_graph.contracts import Constraint, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import Selection, TensorRef, gather_region
 from ..operator_recipes import AttributeRecipe, TensorRecipe
-from .candidates import CandidateSpace, discover_candidates, interface_constraints, parameter_groups
+from .candidates import (
+    CandidateSpace,
+    discover_candidates,
+    filter_candidates,
+    interface_constraints,
+    parameter_groups,
+)
 from .granularity import Granularity, alignment_constraints
 from .groups import ParameterGroup
 from .plan import PruningPlan, PruningResult
@@ -95,16 +101,16 @@ class Pruner:
             raise TypeError("Expected a Granularity configuration")
         constraints = tuple(constraints)
         self.model, self.graph = model, graph
-        self._interface_constraints: tuple[Fixed, ...] = ()
+        interfaces: tuple[Fixed, ...] = ()
         alignment: tuple[Constraint, ...] = ()
         self._configuration_notes: tuple[str, ...] = ()
         if graph is not None:
             graph.validate(model)
-            self._interface_constraints = interface_constraints(graph, preserve_io)
+            interfaces = interface_constraints(graph, preserve_io)
             alignment, self._configuration_notes = alignment_constraints(graph, granularity)
         elif constraints or granularity != Granularity() or not preserve_io:
             raise ValueError("Planning configuration requires a DependencyGraph")
-        self._constraints = (*self._interface_constraints, *constraints, *alignment)
+        self._constraints = (*interfaces, *constraints, *alignment)
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
@@ -122,10 +128,36 @@ class Pruner:
         """Discover declared candidates explicitly, optionally by module path patterns.
 
         Targets filter candidate entry points, not the dependency closure. Only
-        domains proved wholly protected by external interfaces are excluded.
+        requests proved irreversibly conflicting are excluded. Entire excluded
+        domains are removed before freezing the discovered channel baseline.
+        Patterns use `fnmatchcase`: `*` can match across path separators (`.`).
         """
         graph = self._validate_graph()
-        return discover_candidates(graph, self._interface_constraints, targets)
+        return discover_candidates(graph, self.constraints, targets)
+
+    def filter_candidates(self, space: CandidateSpace) -> CandidateSpace:
+        """Remove proven irreversible requests from an explicit candidate space.
+
+        Keep candidate order and all declared budget axes. Record rejected keys
+        and reasons in `exclusions`. Other conflicts, incomplete influence and
+        unresolved conditions remain for the caller's algorithm to inspect.
+        This does not compile recipes or prove that retained candidates can execute.
+        Use this query before sparse training with custom candidates. Automatic
+        planning also applies it before invoking the strategy.
+
+        Args:
+            space: Explicit candidates and their frozen channel accounting axes.
+
+        Returns:
+            A new space containing retained candidates and rejection diagnostics.
+            The input space and model remain unchanged.
+
+        Raises:
+            TypeError: The argument is not a CandidateSpace.
+            ValueError: A supplied axis, selection or constraint belongs to another graph.
+        """
+        graph = self._validate_graph()
+        return filter_candidates(graph, self.constraints, space)
 
     def impact(self, candidates: Iterable[Candidate]) -> Impact:
         """Analyze a joint candidate batch under this pruner's fixed constraints."""
@@ -219,6 +251,10 @@ class Pruner:
     ) -> PruningPlan:
         """Plan an explicit candidate space without allocating compact weights.
 
+        The strategy receives candidates after irreversible-conflict filtering.
+        The space's declared budget axes and normalization domains do not shrink.
+        Final joint analysis and recipe compilation still validate its choices.
+
         Args:
             space: Explicit CandidateSpace, constructed manually or discovered.
             budget: ParameterBudget for a final whole-model cap, or ChannelRatio /
@@ -236,7 +272,7 @@ class Pruner:
         graph = self._validate_graph()
         if not isinstance(space, CandidateSpace):
             raise TypeError("Expected a CandidateSpace")
-        for axis in (*space.channel_axes, *space.protected_channel_axes):
+        for axis in (*space.channel_axes, *space.excluded_channel_axes):
             graph.metadata(axis.tensor)
         for candidate in space.candidates:
             for selection in candidate.remove:
@@ -245,6 +281,7 @@ class Pruner:
                 graph.metadata(candidate.axis.tensor)
         before = snapshot(self.model, guarded=graph.constant_guards())
         versions = _snapshot(graph)
+        space = self.filter_candidates(space)
         candidates, axes = space.candidates, space.channel_axes
         registered = {c.key: c for c in candidates}
         context = PlanningContext(graph, candidates, budget, axes, self.constraints)

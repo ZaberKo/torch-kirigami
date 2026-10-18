@@ -163,8 +163,9 @@ def test_discovery_does_not_protect_an_unused_input_channel(strategy_type, execu
     torch.testing.assert_close(model(x), expected)
     space = pruner.discover_candidates(targets=("0",))
     assert space.channel_axes == (axis,)
-    assert not space.protected_channel_axes
-    assert len(space.candidates) == 4
+    assert not space.excluded_channel_axes
+    assert len(space.candidates) == 1
+    assert len(space.exclusions) == 3
     plan = pruner.plan(space, budget=ChannelRatio(0.25), strategy=strategy_type(GroupMagnitude()))
     assert plan.selected == ("0.weight:0:000000000003",)
     pruner.apply(PruningPlan.from_dict(plan.to_dict()))

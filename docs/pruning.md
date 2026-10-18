@@ -84,16 +84,28 @@ Discovery performs these steps:
 1. Read candidate domains from captured operator rules.
 2. Optionally filter entry points by module path patterns in `targets`.
 3. Deduplicate matching logical domains.
-4. Exclude domains proved fully protected by external interfaces.
-5. Create one candidate per declared block.
+4. Create one candidate per declared block.
+5. Exclude candidates with a proven irreversible conflict under graph, interface, and caller-supplied constraints.
 
 A target filters entry points. It does not limit dependency propagation or constraints. An unmatched pattern raises `PlanningError`.
+
+Patterns use Python `fnmatchcase` on the complete module path. `*` matches across dots: `blocks.*.mlp*` can select both MLP input and output Linear modules. Use `blocks.*.mlp.0` to select only that entry.
+
+Discovery records excluded candidate keys and reasons in `exclusions`. If it excludes every declared candidate in a domain, it records a `domain:` reason, adds the axis to `excluded_channel_axes`, and omits that axis from `channel_axes`. Discovery then freezes the channel-ratio baseline. If it excludes only some candidates, the axis retains its complete original width. Whole-model parameter budgets still count all registered parameters.
+
+An unresolved or conflicting individual impact does not by itself exclude a candidate. A diagnostic must explicitly declare `irreversible=True`. Balance and divisibility can require joint choices. Incomplete analysis and unproved execution support are not evidence of an irreversible conflict. Native identity-axis proofs avoid repeated propagation when their assumptions hold. Other mappings and custom constraints use ordinary analysis.
 
 Linear and ordinary convolution rules declare output-feature or output-channel axes. For `Linear(4, 6) → ReLU → Linear(6, 3)`, default discovery offers the six hidden features. With interface protection, it excludes the final three output features. Selecting one hidden feature also removes the matching consumer input column.
 
 Distinct declared domains can have overlapping effects. Propagation finds those effects jointly. Use custom candidates or `plan_remove` to request another supported entry axis.
 
 `CandidateSpace` contains explicit candidates, counted channel axes, and optional discovery exclusions. It retains no graph or model. Candidate order matches score order. Channel-axis order matches local budget order. Packaging candidates into blocks does not change the budget denominator.
+
+For custom candidates, `pruner.filter_candidates(space)` returns a new space without irreversibly conflicting candidates. It preserves order, `channel_axes`, `excluded_channel_axes`, and the input object. Rejected keys and reasons enter `exclusions`. Explicit budget axes never disappear automatically, even when no candidates remain on an axis. A resulting channel target can therefore be unreachable.
+
+`Pruner.plan()` applies the same filter before invoking any strategy. Both built-in greedy strategies also check additions against the accepted removal closure before scoring or spending a trial on a proven irreversible conflict. Static selection retains its original scores. Dynamic selection still recalculates scores after each accepted complete request. Filtering does not change GroupMagnitude's normalization population or formula.
+
+Outside the native identity-axis proof, filtering runs ordinary propagation per candidate. Pre-strategy filtering can therefore add a full pass of dependency queries. The strategy's subsequent checks share its bounded impact cache. Separate discovery and filter calls do not retain impacts between calls.
 
 `Candidate(key, remove, axis=None)` names one batch of original-coordinate seeds. Its `axis` describes a logical domain. It does not make the candidate an indivisible structural block. Relations and constraints define required coupling.
 

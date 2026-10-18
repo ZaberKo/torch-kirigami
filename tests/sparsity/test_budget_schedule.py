@@ -244,7 +244,7 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))
     compact = Pruner(model, graph=graph).discover_candidates()
     assert model[0].out_features == 1 and not compact.channel_axes
-    assert graph.parameter("0.weight").axis(0) in compact.protected_channel_axes
+    assert graph.parameter("0.weight").axis(0) in compact.excluded_channel_axes
     before = accounting.state_dict()
     # Explicitly dropping a domain has no IO-protection proof.
     with pytest.raises(ValueError, match="domains changed"):

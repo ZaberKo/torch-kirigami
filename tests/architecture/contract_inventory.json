@@ -1,6 +1,22 @@
 {
   "objects": [
     {
+      "object": "torch_kirigami.pruning.candidate_checks.CandidateFilter",
+      "contracts": [
+        {
+          "behavior": "Exclude only irreversible removal requests using native closure proofs or ordinary analysis, without changing explicit budget axes or raw group queries.",
+          "tests": [
+            "tests/pruning/test_irreversible_candidates.py::test_partial_protection_filters_before_metrics_and_preserves_sparse_query",
+            "tests/pruning/test_irreversible_candidates.py::test_changed_scalar_arguments_are_not_irreversible_and_joint_plan_can_execute",
+            "tests/pruning/test_fixed_discovery.py::test_fixed_subclasses_do_not_inherit_the_native_exclusion_proof",
+            "tests/pruning/test_group_parameter_scope.py::test_custom_parameter_scope_keeps_exact_accelerated_planning"
+          ],
+          "conditions": "Partial and whole protection, native and extension constraints, accepted removals, static and dynamic scoring, and independent compact-model references.",
+          "gaps": []
+        }
+      ]
+    },
+    {
       "object": "torch_kirigami.dep_graph.construction._Analyzer",
       "contracts": [
         {

@@ -8,7 +8,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from tests.support.pruning import StaticMetric
-from torch_kirigami import Balanced, DependencyGraph, Divisible, Fixed, IndexSet, Region
+from torch_kirigami import Balanced, DependencyGraph, Diagnostic, Divisible, Fixed, IndexSet, Region
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -262,7 +262,7 @@ def test_custom_constraint_subclass_receives_full_closure_not_axis_projection(ex
     torch.testing.assert_close(model(x), expected)
 
 
-@pytest.mark.parametrize("limit", [1, 20])
+@pytest.mark.parametrize("limit", [0, 1, 20])
 def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_request(
     limit, execution_device
 ):
@@ -288,8 +288,8 @@ def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_reque
     )
     pruner = Pruner(model, graph=graph, constraints=[Divisible(axis, 2), Fixed(protected)])
     before = tuple(model.parameters())
-    if limit == 1:
-        with pytest.raises(PlanningError, match=r"target not reached.*fixed_axis"):
+    if limit == 0:
+        with pytest.raises(PlanningError, match="target not reached"):
             plan = pruner.plan(
                 CandidateSpace(candidates, (axis,)),
                 budget=ChannelRatio(0.5),
@@ -310,6 +310,8 @@ def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_reque
         )
         assert plan.selected == ("a_seed", "c_good_partner")
         assert plan.selection_report.removed == (2,)
+        assert plan.selection_report.trials == 1
+        assert any(key == "b_bad_partner" for key, _ in plan.selection_report.exclusions)
         pruner.apply(PruningPlan.from_dict(plan.to_dict()))
         expected = F.linear(
             F.linear(x, original.good[0].weight[[1, 3]], original.good[0].bias[[1, 3]]),
@@ -319,6 +321,57 @@ def test_invalid_count_batch_does_not_hide_legal_partner_or_commit_partial_reque
         torch.testing.assert_close(model(x), (expected, original.protected(x)))
     sum(y.sum() for y in model(x)).backward()
     assert all(p.grad is not None for p in model.parameters())
+
+
+@pytest.mark.parametrize("limit", [1, 20])
+def test_nonterminal_count_batch_still_falls_back_to_a_legal_partner(limit, execution_device):
+    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2)).eval()
+    original = copy.deepcopy(model)
+    x = torch.randn(2, 3)
+    graph = DependencyGraph.build(model, args=(x,))
+    axis = graph.parameter("0.weight").axis(0)
+
+    class AvoidPair:
+        refs = (axis.tensor,)
+
+        def check(self, selections):
+            selection = selections.get(axis.tensor.id)
+            indices = set(selection.fully_selected_indices(0)) if selection else set()
+            if {0, 1}.issubset(indices) and 2 not in indices:
+                return Diagnostic("avoid_pair", "This pair needs another choice", "conflict")
+            return None
+
+    candidates = tuple(
+        Candidate(key, (axis.select([index]),), axis)
+        for index, key in enumerate(("a_seed", "b_bad_partner", "c_good_partner"))
+    )
+    pruner = Pruner(model, graph=graph, constraints=(Divisible(axis, 2), AvoidPair()))
+    space = CandidateSpace(candidates, (axis,))
+    assert pruner.filter_candidates(space).candidates == candidates
+    if limit == 1:
+        with pytest.raises(PlanningError, match="target not reached"):
+            pruner.plan(
+                space,
+                budget=ChannelRatio(0.5),
+                strategy=Greedy(
+                    StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit
+                ),
+            )
+        torch.testing.assert_close(model(x), original(x))
+        graph.validate()
+    else:
+        plan = pruner.plan(
+            space,
+            budget=ChannelRatio(0.5),
+            strategy=Greedy(
+                StaticMetric(lambda context, batch: [0] * len(batch)), max_trials=limit
+            ),
+        )
+        assert plan.selected == ("a_seed", "c_good_partner")
+        pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+        hidden = F.linear(x, original[0].weight[[1, 3]], original[0].bias[[1, 3]])
+        expected = F.linear(hidden, original[1].weight[:, [1, 3]], original[1].bias)
+        torch.testing.assert_close(model(x), expected)
 
 
 @pytest.mark.parametrize("ratio", [0.1, 0.2])

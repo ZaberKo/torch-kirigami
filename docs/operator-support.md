@@ -265,6 +265,8 @@ A successful custom recipe cannot bypass that check.
 
 An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered integer constants. Register structural integer tensors as buffers so the graph can guard their values.
 
+A custom constraint can declare `Diagnostic(..., severity="conflict", irreversible=True)` when every superset of the current removals retains the violation. Candidate filtering trusts this declaration. Ordinary conflicts and missing proofs must keep the default `irreversible=False`. For example, a difference between two widths can change after one deletion and recover after another. See [query results](dependency-graph.md#query-results) for the distinction between current validity, completeness, and irreversibility.
+
 For a parameterized affine module, relate input features to weight columns and output features to weight rows and bias positions. Add an `AttributeBinding` with a `ShapeExpr` when the module stores width in an attribute. Use scopes and `PartitionedLayout` for packed or grouped storage. Use a stable candidate key for a logical channel domain. Add a registered binding when repeated calls share that logical coordinate system.
 
 Supply an alignment axis when a physical candidate axis uses partitioned packing and cannot determine retained logical width. The alignment axis must belong to the graph and match the seed's original width. Relations must couple both axes.

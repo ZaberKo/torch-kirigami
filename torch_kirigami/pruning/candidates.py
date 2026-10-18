@@ -12,7 +12,7 @@ from ..dep_graph.contracts import Constraint, Fixed
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import CandidateAxis, Operation
 from ..dep_graph.selection import AxisRef, TensorRef
-from .axis_domains import IdentityAxisIndex
+from .candidate_checks import CandidateFilter
 from .groups import ParameterGroup
 from .types import Candidate, PlanningError
 
@@ -65,34 +65,25 @@ def _candidates(domain: CandidateAxis) -> Iterator[Candidate]:
         )
 
 
-def _protected_equal_axes(graph: DependencyGraph, defaults: tuple[Fixed, ...]) -> set[AxisRef]:
-    """Prove full IO protection through the shared exact identity relationships.
-
-    Keep axes distinct: removing an entire tensor would accidentally couple its
-    otherwise independent row/column domains. Other maps use per-candidate proof.
-    """
-    index = IdentityAxisIndex(graph.relations)
-    return {axis for constraint in defaults for axis in index.equivalent_axes(constraint.axis)}
-
-
 @dataclass(frozen=True)
 class CandidateSpace:
     """Explicit candidates and logical axes used to count channels.
 
     Construction performs no discovery or analysis and retains no model. The
     consuming Pruner validates graph ownership. Discovery metadata records excluded
-    protected axes for cumulative accounting; explicit axes are never filtered.
+    axes for cumulative accounting; explicit budget axes are never filtered.
 
     Attributes:
         candidates: Named original-coordinate requests available to a strategy.
         channel_axes: Logical axes counted by channel budgets.
-        protected_channel_axes: Discovered axes excluded by interface protection.
-        exclusions: Discovered candidate domains excluded with their reasons.
+        excluded_channel_axes: Discovered domains whose candidates are all
+            irreversibly blocked. They are outside this space's channel baseline.
+        exclusions: Rejected candidate keys or `domain:` keys, with their reasons.
     """
 
     candidates: tuple[Candidate, ...]
     channel_axes: tuple[AxisRef, ...]
-    protected_channel_axes: tuple[AxisRef, ...] = ()
+    excluded_channel_axes: tuple[AxisRef, ...] = ()
     exclusions: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
@@ -102,7 +93,7 @@ class CandidateSpace:
         if len({c.key for c in candidates}) != len(candidates):
             raise ValueError("Duplicate candidate keys")
         object.__setattr__(self, "candidates", candidates)
-        for name in ("channel_axes", "protected_channel_axes"):
+        for name in ("channel_axes", "excluded_channel_axes"):
             axes = tuple(getattr(self, name))
             if any(not isinstance(a, AxisRef) for a in axes):
                 raise TypeError("Channel axes must be AxisRef instances")
@@ -114,10 +105,11 @@ class CandidateSpace:
 
 
 def discover_candidates(
-    graph: DependencyGraph, defaults: tuple[Fixed, ...], targets: Iterable[str] | None
+    graph: DependencyGraph, constraints: tuple[Constraint, ...], targets: Iterable[str] | None
 ) -> CandidateSpace:
     """Filter declared domains before freezing widths and creating seeds."""
     graph.validate()
+    checks = CandidateFilter(graph, constraints)
     operations = graph.operations()
     if targets is not None:
         if isinstance(targets, str):
@@ -145,27 +137,53 @@ def discover_candidates(
             )
         operations = tuple(selected)
     domains = discover(graph, operations)
-    protected = _protected_equal_axes(graph, defaults) if defaults else set()
-    if defaults:
-        for domain in domains:
-            if domain.axis not in protected and all(
-                any(
-                    d.code == "fixed_axis"
-                    for d in graph.propagate(remove=c.remove, constraints=defaults).diagnostics
-                )
-                for c in _candidates(domain)
-            ):
-                protected.add(domain.axis)
-    active = tuple(d for d in domains if d.axis not in protected)
+    candidates, axes, excluded_axes, exclusions = [], [], [], []
+    for domain in domains:
+        fixed = checks.fixed_rejection(domain.axis)
+        if fixed is not None:
+            excluded_axes.append(domain.axis)
+            exclusions.append((f"domain:{domain.key}", str(fixed)))
+            continue
+        kept, rejected = [], []
+        for candidate in _candidates(domain):
+            reasons = checks.rejections(candidate)
+            if reasons:
+                rejected.append((candidate.key, "; ".join(map(str, reasons))))
+            else:
+                kept.append(candidate)
+        if kept:
+            axes.append(domain.axis)
+            candidates.extend(kept)
+            exclusions.extend(rejected)
+        else:
+            excluded_axes.append(domain.axis)
+            reasons = "; ".join(dict.fromkeys(reason for _, reason in rejected))
+            exclusions.append((f"domain:{domain.key}", reasons or "No declared candidates"))
+    graph.validate()
+    return CandidateSpace(tuple(candidates), tuple(axes), tuple(excluded_axes), tuple(exclusions))
+
+
+def filter_candidates(
+    graph: DependencyGraph, constraints: tuple[Constraint, ...], space: CandidateSpace
+) -> CandidateSpace:
+    """Exclude irreversible candidates while preserving an explicit budget baseline."""
+    graph.validate()
+    if not isinstance(space, CandidateSpace):
+        raise TypeError("Expected a CandidateSpace")
+    for axis in (*space.channel_axes, *space.excluded_channel_axes):
+        graph.metadata(axis.tensor)
+    checks = CandidateFilter(graph, constraints)
+    kept, exclusions = [], dict(space.exclusions)
+    for candidate in space.candidates:
+        reasons = checks.rejections(candidate)
+        if reasons:
+            exclusions[candidate.key] = "; ".join(map(str, reasons))
+        else:
+            kept.append(candidate)
+            exclusions.pop(candidate.key, None)
+    graph.validate()
     return CandidateSpace(
-        tuple(c for d in active for c in _candidates(d)),
-        tuple(d.axis for d in active),
-        tuple(d.axis for d in domains if d.axis in protected),
-        tuple(
-            (f"domain:{d.key}", "All positions are protected by external interfaces")
-            for d in domains
-            if d.axis in protected
-        ),
+        tuple(kept), space.channel_axes, space.excluded_channel_axes, tuple(exclusions.items())
     )
 
 

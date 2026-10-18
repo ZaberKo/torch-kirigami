@@ -42,6 +42,12 @@ An empty candidate iterable returns an empty tuple.
 Extraction requires complete influence. It accepts complete impacts even when constraints fail, and does not compile execution recipes.
 A group is therefore not proof that its candidate can be physically pruned.
 
+For pruning-oriented sparse training, normally use candidates from `pruner.discover_candidates(targets=...)`. Discovery excludes proven irreversible conflicts, including partial or complete Fixed protection. For a custom space, use `space = pruner.filter_candidates(space)` before group extraction. This filter preserves explicit budget axes and records rejected candidate keys.
+
+Explicitly supplied candidates can still describe protected or otherwise infeasible removals. Extraction preserves them because it describes parameter regions, not candidate feasibility. Penalizing such groups does not make those removals legal. This raw query remains available when the training objective deliberately includes fixed structure. `Fixed` protects structural dimensions, not parameter values or gradients. A legal input-column removal can affect a parameter even when `Fixed` protects its output axis.
+
+Do not discard every individually unresolved or conflicting candidate: several candidates can jointly satisfy a condition. Only `Diagnostic.irreversible` declares that adding removals cannot resolve its conflict. Retained candidates are not guaranteed to have an executable combination. Sparse-group extraction does not compile recipes or solve arbitrary constraints.
+
 The optional `parameter_filter(ref, parameter)` receives a `TensorRef` and its live `nn.Parameter`.
 Returning `True` keeps that parameter's affected regions in the group.
 `None` keeps every affected parameter. Buffers are always excluded.
@@ -216,7 +222,7 @@ for ratio in (0.1, 0.2, 0.3):
 
 Start with a fresh model and graph-bound objects. Rebuild them after each application. Custom candidate definitions must recreate the same logical domains on the new graph.
 
-Cumulative accounting requires named parameter axes. It validates domain paths, dimensions, declarations, widths, and model structure at each transition. External structure changes and incompatible domains raise errors. A domain that becomes wholly IO-protected can keep its original denominator when the new space proves that protection.
+Cumulative accounting requires named parameter axes. It validates domain paths, dimensions, declarations, widths, and model structure at each transition. External structure changes and incompatible domains raise errors. A domain whose declared candidates become irreversibly blocked can keep its original denominator through the rebuilt space's `excluded_channel_axes`. The cumulative baseline does not shrink.
 
 ```mermaid
 flowchart LR

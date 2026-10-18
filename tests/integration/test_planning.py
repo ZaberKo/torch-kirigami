@@ -82,10 +82,12 @@ def test_shared_budget_constraint_completion_preserves_opaque_branch_and_io(exec
     assert plan.selected == repeated.selected
     assert plan.selection_report.widths == (6, 6, 2)
     assert plan.selection_report.removed == (4, 0, 0) and plan.selection_report.shortfall == 0
-    # IO conflicts are complete analyses and may be scored; the opaque branch
-    # has incomplete influence and must be excluded before metric invocation.
-    expected_batch = (*[f"good:{i}" for i in range(6)], "out:0", "out:1")
+    # Complete but irreversible IO conflicts need no metric. Incomplete influence
+    # still excludes the opaque branch without treating it as an irreversible proof.
+    expected_batch = tuple(f"good:{i}" for i in range(6))
     assert len(batches) == 2 and batches[0] == batches[1] == expected_batch
+    exclusions = dict(plan.selection_report.exclusions)
+    assert all("fixed_axis" in exclusions[f"out:{i}"] for i in range(2))
     assert plan.analysis.status == "resolved"
     removed = set(plan.analysis.selection(axes["good"].tensor).fully_selected_indices(0))
     assert len(removed & {0, 1, 2}) == len(removed & {3, 4, 5}) == 2

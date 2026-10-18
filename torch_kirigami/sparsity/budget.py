@@ -15,7 +15,7 @@ def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None =
     """Return stable parameter-domain descriptors for cumulative accounting."""
     graph.validate()
     axes = space.channel_axes if axes is None else axes
-    for axis in (*axes, *space.protected_channel_axes):
+    for axis in (*axes, *space.excluded_channel_axes):
         graph.metadata(axis.tensor)
     declarations = {}
     for op in graph.operations():
@@ -68,12 +68,12 @@ class CumulativeChannelBudget:
             axes = tuple(graph.parameter(paths[0]).axis(dim) for paths, dim, _ in domains)
         except (KeyError, IndexError, TypeError) as error:
             raise ValueError("Cumulative budget domains changed") from error
-        # A last remaining channel/block can become wholly IO-protected. Keep
+        # A last remaining channel/block can become irreversibly blocked. Keep
         # its original denominator, but never accept an arbitrary missing axis.
         if (
             len(set(axes)) != len(axes)
             or not set(space.channel_axes).issubset(axes)
-            or not set(axes).issubset((*space.channel_axes, *space.protected_channel_axes))
+            or not set(axes).issubset((*space.channel_axes, *space.excluded_channel_axes))
             or _domains(graph, space, axes) != domains
         ):
             raise ValueError("Cumulative budget domains changed")

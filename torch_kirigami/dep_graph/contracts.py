@@ -23,6 +23,9 @@ class Diagnostic:
         node: FX node name, when the issue belongs to a particular operation.
         tensors: IDs of tensor entities involved in the issue.
         complete: Whether the influence range is known despite this diagnostic.
+        irreversible: Proof that this violation persists under every superset of
+            the current removals, with graph assumptions and constraints fixed.
+            False makes no claim about whether completion is possible.
     """
 
     code: str
@@ -31,6 +34,7 @@ class Diagnostic:
     node: str | None = None
     tensors: tuple[str, ...] = ()
     complete: bool = True
+    irreversible: bool = False
 
     def __str__(self) -> str:
         """Render the category, available operation location, and actionable message."""
@@ -42,6 +46,10 @@ class Diagnostic:
             raise ValueError("Invalid diagnostic severity")
         if not isinstance(self.complete, bool):
             raise TypeError("Diagnostic completeness must be boolean")
+        if type(self.irreversible) is not bool:
+            raise TypeError("Diagnostic irreversibility must be boolean")
+        if self.irreversible and self.severity != "conflict":
+            raise ValueError("An irreversible diagnostic must describe a conflict")
         object.__setattr__(self, "tensors", tuple(self.tensors))
 
 
@@ -101,6 +109,7 @@ class NonEmpty:
                 "The operator requires a nonempty axis",
                 "conflict",
                 tensors=(self.axis.tensor.id,),
+                irreversible=True,
             )
         return None
 
@@ -129,6 +138,7 @@ class Fixed:
                 "A protected axis would change",
                 "conflict",
                 tensors=(self.axis.tensor.id,),
+                irreversible=True,
             )
         if selection and selection.compact_shape() is None:
             return Diagnostic(
@@ -195,6 +205,7 @@ class Balanced:
                 "A fixed group would become empty",
                 "conflict",
                 tensors=(self.axis.tensor.id,),
+                irreversible=True,
             )
         if len(set(remaining)) > 1:
             return Diagnostic(
@@ -719,6 +730,15 @@ class Impact:
     def complete(self) -> bool:
         """Whether the influence range is known, independently of constraint validity."""
         return all(d.complete for d in self.diagnostics)
+
+    @property
+    def irreversible(self) -> bool:
+        """Whether a declared conflict cannot be repaired by additional removals.
+
+        This is independent of influence completeness. False does not prove
+        feasibility. A conflict without this proof can still require joint choices.
+        """
+        return any(d.irreversible for d in self.diagnostics)
 
     def selection(self, tensor: TensorRef) -> Selection:
         """Return the accumulated selection for a tensor, or an empty selection."""

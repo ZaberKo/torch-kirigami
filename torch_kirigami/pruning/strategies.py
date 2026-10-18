@@ -268,7 +268,7 @@ class Greedy:
     Attributes:
         metric: Batch-independent scorer. Scores use the initial empty request.
         max_trials: Maximum joint attempts, including cache hits. Scoring queries
-            are separate. Seeds already covered by accepted removals use no attempt.
+            are separate. Covered seeds and proven irreversible additions use no attempt.
     """
 
     metric: Metric
@@ -342,6 +342,10 @@ def _rank_candidates(
     for start in range(0, len(remaining), batch_size):
         batch = []
         for candidate in remaining[start : start + batch_size]:
+            rejected = context._candidate_filter.rejections(candidate, accepted_impact)
+            if rejected:
+                exclusions[candidate.key] = "; ".join(map(str, rejected))
+                continue
             if candidate.key in proved_scores:
                 eligible.append(candidate)
                 scores[candidate.key] = proved_scores[candidate.key]
@@ -459,6 +463,10 @@ def _select(
         progress = False
         for seed in ranked:
             if all(not s.subtract(accepted_impact.selection(s.tensor)) for s in seed.remove):
+                continue
+            rejected = context._candidate_filter.rejections(seed, accepted_impact)
+            if rejected:
+                exclusions[seed.key] = "; ".join(map(str, rejected))
                 continue
             initial = [*accepted_candidates, seed]
             batch = _propose_batch(

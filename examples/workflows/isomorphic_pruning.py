@@ -353,7 +353,7 @@ def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> Candi
         indices = [partition.intervals[0][0] + position for partition in partitions]
         candidates.append(Candidate(candidate.key, (axis.select(indices),), axis))
     return CandidateSpace(
-        tuple(candidates), space.channel_axes, space.protected_channel_axes, space.exclusions
+        tuple(candidates), space.channel_axes, space.excluded_channel_axes, space.exclusions
     )
 
 
@@ -714,9 +714,9 @@ class Isomorphic:
                     (candidate.key, "; ".join(str(d) for d in impact.diagnostics if not d.complete))
                 )
                 continue
-            fixed = [d for d in impact.diagnostics if d.code in ("fixed_axis", "empty_axis")]
-            if fixed:
-                exclusions.append((candidate.key, "; ".join(map(str, fixed))))
+            irreversible = [d for d in impact.diagnostics if d.irreversible]
+            if irreversible:
+                exclusions.append((candidate.key, "; ".join(map(str, irreversible))))
                 continue
             closure = tuple(
                 sorted(
