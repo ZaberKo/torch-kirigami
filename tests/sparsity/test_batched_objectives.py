@@ -1,0 +1,115 @@
+import pytest
+import torch
+from torch import nn
+
+from torch_kirigami import DependencyGraph, IndexSet, Region, Selection
+from torch_kirigami.pruning import (
+    ParameterGroup,
+    Pruner,
+)
+from torch_kirigami.sparsity import GroupLasso, GroupSquaredL2
+
+
+@pytest.mark.parametrize("kind", [GroupLasso, GroupSquaredL2])
+@pytest.mark.parametrize("zeros", [False, True])
+def test_batched_regularizer_has_independent_loss_and_gradient_reference(
+    kind, zeros, execution_device
+):
+    model = nn.Sequential(nn.Linear(16, 32), nn.Linear(32, 2)).double()
+    if zeros:
+        with torch.no_grad():
+            for parameter in model.parameters():
+                parameter.zero_()
+    graph = DependencyGraph.build(model, args=(torch.ones(2, 16, dtype=torch.float64),))
+    groups = Pruner(graph.model, graph=graph).parameter_groups(
+        Pruner(graph.model, graph=graph).discover_candidates().candidates
+    )
+    penalty = kind(groups)
+    actual = penalty()
+    rows = torch.cat((model[0].weight, model[0].bias[:, None], model[1].weight.T), dim=1)
+    expected = rows.norm(dim=1).sum() if kind is GroupLasso else rows.square().sum() * 0.5
+    torch.testing.assert_close(actual, expected)
+    parameters = tuple(model.parameters())
+    left = torch.autograd.grad(actual, parameters, allow_unused=True)
+    right = torch.autograd.grad(expected, parameters, allow_unused=True)
+    for a, b in zip(left, right, strict=True):
+        if a is None or b is None:
+            assert a is b
+        else:
+            torch.testing.assert_close(a, b)
+    # The count is structural, not a noisy wall-clock threshold: each selected
+    # weight is reduced once; no full-parameter gather backward per candidate.
+    seen, pending = set(), [actual.grad_fn]
+    while pending:
+        node = pending.pop()
+        if node is None or node in seen:
+            continue
+        seen.add(node)
+        pending.extend(n for n, _ in node.next_functions)
+    assert sum("IndexSelectBackward" in type(n).__name__ for n in seen) <= 3
+
+
+def test_batched_and_irregular_overlap_groups_preserve_selected_domain(execution_device):
+    model = nn.Linear(4, 4, bias=False).double()
+    graph = DependencyGraph.build(model, args=(torch.ones(2, 4, dtype=torch.float64),))
+    ref = graph.parameter("weight")
+    rectangle = Selection(ref, (Region((IndexSet.of([1, 3]), IndexSet.of([0, 2]))),))
+    groups = (
+        ParameterGroup(graph, (ref.axis(0).select([1]),)),
+        ParameterGroup(graph, (rectangle,)),
+    )
+    with torch.no_grad():
+        model.weight[0].fill_(float("nan"))
+    actual = GroupLasso(groups, coefficients=(2, 3))()
+    expected = 2 * model.weight[1].norm() + 3 * model.weight[[1, 3]][:, [0, 2]].norm()
+    torch.testing.assert_close(actual, expected)
+    (a,) = torch.autograd.grad(actual, model.weight)
+    (b,) = torch.autograd.grad(expected, model.weight)
+    torch.testing.assert_close(a, b)
+    assert torch.isfinite(a).all()
+
+
+@pytest.mark.parametrize("scale", [1e-30, 1e30])
+def test_batched_lasso_extreme_values_match_float64_reference(scale, execution_device):
+    model = nn.Linear(3, 4, bias=False)
+    with torch.no_grad():
+        model.weight.copy_(torch.arange(1, 13).reshape(4, 3) * scale)
+    graph = DependencyGraph.build(model, args=(torch.zeros(2, 3),))
+    ref = graph.parameter("weight")
+    groups = tuple(ParameterGroup(graph, (ref.axis(0).select([i]),)) for i in range(4))
+    actual = GroupLasso(groups)()
+    expected = model.weight.double().norm(dim=1).sum()
+    torch.testing.assert_close(actual.double(), expected, rtol=1e-6, atol=0)
+    (a,) = torch.autograd.grad(actual, model.weight)
+    (b,) = torch.autograd.grad(expected, model.weight)
+    torch.testing.assert_close(a, b)
+
+
+def test_batched_and_irregular_groups_keep_common_accumulation_precision(execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.low = nn.Parameter(torch.ones(3, 3, dtype=torch.float32))
+            self.high = nn.Parameter(torch.full((3,), 1e30, dtype=torch.float64))
+
+        def forward(self, x):
+            return x @ self.low + self.high
+
+    model = Model()
+    graph = DependencyGraph.build(model, args=(torch.ones(3),))
+    low, high = graph.parameter("low"), graph.parameter("high")
+    rectangle = Selection(low, (Region((IndexSet.of([0, 2]), IndexSet.of([1, 2]))),))
+    groups = (
+        ParameterGroup(graph, (rectangle,)),
+        ParameterGroup(graph, (high.axis(0).select([1]),)),
+    )
+    with torch.no_grad():
+        model.low.fill_(1e30)
+    actual = GroupSquaredL2(groups)()
+    expected = (model.low[[0, 2]][:, [1, 2]].double().square().sum() + model.high[1].square()) * 0.5
+    assert actual.dtype == torch.float64
+    torch.testing.assert_close(actual, expected)
+    left = torch.autograd.grad(actual, tuple(model.parameters()))
+    right = torch.autograd.grad(expected, tuple(model.parameters()))
+    for a, b in zip(left, right, strict=True):
+        torch.testing.assert_close(a, b)

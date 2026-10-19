@@ -15,12 +15,14 @@ A registered operator-entry test covers a rule. It does not establish complete m
 
 ## Representative test areas
 
-The test tree separates core coordinate logic, capture, graph propagation, operators, pruning, persistence, sparse operations, and workflow integration. Use the relevant directory as the starting point:
+The [test organization guide](../tests/README.md) defines directory ownership. Use the feature directory as the starting point:
 
-- `tests/core/`, `tests/capture/`, `tests/graph/`, and `tests/operators/` cover lower-level contracts.
+- `tests/dep_graph/` covers coordinates, constraints, propagation, and freshness. Its `capture/` and `operators/` directories cover capture and operator contracts.
 - `tests/pruning/` and `tests/persistence/` cover selection, budgets, plans, application, and checkpoints.
 - `tests/sparsity/` and lifecycle tests cover sparse losses, gates, projections, and iterative budgets.
-- `tests/integration/` covers measurement, full workflows, and composed model behavior.
+- `tests/measurement/` covers complexity, latency, and measurement isolation.
+- `tests/workflows/` covers executable examples and their shared infrastructure.
+- `tests/integration/` covers composed networks and contracts that span independent features.
 
 Inspect the individual test before relying on a claim. Cross-layer changes need public lifecycle coverage. Use an independent numerical reference when checking formulas. For rejected changes, check preserved state and include a valid alternative when one exists.
 

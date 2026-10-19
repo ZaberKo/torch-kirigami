@@ -1,5 +1,7 @@
 """architecture / extensions contracts."""
 
+import copy
+
 import pytest
 import torch
 from torch import nn
@@ -14,6 +16,7 @@ from torch_kirigami import (
     Fixed,
     IndexSet,
     OperatorRegistry,
+    OperatorRule,
     OperatorSpec,
     PermuteRelation,
     Region,
@@ -23,6 +26,7 @@ from torch_kirigami import (
     TensorRef,
 )
 from torch_kirigami.dep_graph.operation import PartitionedLayout
+from torch_kirigami.pruning import Pruner
 
 
 def namespace_swap(input, dim=1, *, axis=0):
@@ -160,3 +164,33 @@ def test_overridden_linear_subclass_does_not_inherit_rule():
         graph.propagate(remove=[graph.parameter("0.weight").axis(0).select([1])]).status
         == "unresolved"
     )
+
+
+def test_rule_constructor_can_rely_on_inherited_validation_defaults(execution_device):
+    class Half(nn.Module):
+        def forward(self, x):
+            return x * 0.5
+
+    class HalfRule(OperatorRule):
+        def __init__(self):
+            self.label = "custom configuration"
+
+        def build_spec(self, operation):
+            return OperatorSpec(
+                relations=(ReshapeRelation(operation.inputs[0], operation.outputs[0]),)
+            )
+
+    registry = OperatorRegistry.default().register(Half, HalfRule())
+    model = nn.Sequential(nn.Linear(3, 4), Half(), nn.Linear(4, 2)).double().eval()
+    original = copy.deepcopy(model)
+    x = torch.randn(2, 3, dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,), operators=registry)
+    pruner = Pruner(model, graph=graph)
+    plan = pruner.plan_remove((graph.parameter("0.weight").axis(0).select([0]),))
+    pruner.apply(plan)
+    expected = F.linear(
+        F.linear(x, original[0].weight[1:], original[0].bias[1:]) * 0.5,
+        original[2].weight[:, 1:],
+        original[2].bias,
+    )
+    torch.testing.assert_close(model(x), expected)

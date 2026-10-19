@@ -263,3 +263,20 @@ def test_custom_conflict_is_not_a_proof_that_every_larger_request_conflicts():
     strategy = KeyStrategy(lambda context: (c.key for c in context.candidates[:2]))
     pruner.apply(pruner.plan(space, budget=ChannelRatio(0.5), strategy=strategy))
     assert model[0].out_features == model[1].in_features == 2
+
+
+@pytest.mark.parametrize("activation", [nn.Identity, nn.ReLU])
+def test_protected_pointwise_domains_do_not_enumerate_channels(activation, monkeypatch):
+    model = nn.Sequential(nn.Linear(4, 128), activation())
+    graph = DependencyGraph.build(model, args=(torch.ones(2, 4),))
+    original, calls = graph.propagate, []
+
+    def propagate(*args, **kwargs):
+        calls.append(None)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(graph, "propagate", propagate)
+    pruner = Pruner(graph.model, graph=graph)
+    space = pruner.discover_candidates()
+    assert not space.channel_axes and not space.candidates
+    assert not calls

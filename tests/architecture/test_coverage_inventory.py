@@ -83,6 +83,6 @@ def test_registered_entry_inventory_has_no_missing_or_obsolete_targets():
     for entry in entries:
         assert (
             entry["test"]
-            == "tests/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis"
+            == "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis"
         )
         assert entry["conditions"] and entry["contract"]

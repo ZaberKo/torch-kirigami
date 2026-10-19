@@ -47,9 +47,11 @@ Run Ruff and the relevant pytest suites directly:
 ```bash
 .venv/bin/ruff check .
 .venv/bin/ruff format --check .
-.venv/bin/pytest tests/core tests/graph tests/architecture
+.venv/bin/pytest tests/dep_graph tests/architecture
 .venv/bin/pytest tests/pruning tests/persistence tests/integration/test_lifecycle.py
 ```
+
+The [test organization guide](../tests/README.md) defines directory ownership and shared fixtures.
 
 Choose suites for the changed contract:
 
