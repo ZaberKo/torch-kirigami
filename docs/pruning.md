@@ -313,6 +313,30 @@ The context fixes the graph snapshot and policy inputs for one planning round. A
 
 The planner checks graph freshness around user callbacks. It also checks tracked tensor identities, version counters, and `requires_grad` flags after selection. A detected change raises an error. These checks do not undo arbitrary callback side effects.
 
+### Exact reuse of candidate analysis
+
+Native bidirectional identity relations can prove that two axis selections imply each other.
+For example, several residual producers can request deletion of the same trunk channel.
+Their candidate keys and budget axes remain separate.
+Each candidate still receives its own metric score.
+
+Filtering retains bounded rejection diagnostics for these equivalent requests.
+Planning reuses complete impacts through its bounded impact cache.
+Returned impacts retain the original requests and explain their relation to the cached seeds.
+Incomplete impacts require ordinary propagation from the original requests.
+Extension records and custom constraints do not use these proofs.
+
+`Pruner` also remembers its latest native filtered space.
+Planning with that same immutable object avoids repeating its filtering pass.
+`Pruner` checks graph freshness before reuse.
+A different space, graph, or constraint set requires filtering again.
+These caches contain structural analysis, not parameter values or custom metric scores.
+
+Built-in magnitude scoring analyzes equivalent seeds together to improve bounded cache reuse.
+Final ordering remains `(score, key)`.
+Dynamic selection still updates scores after each accepted addition.
+The optimization does not approximate those updates.
+
 ### Global resource configuration
 
 Use the single process-global `config` object.
@@ -343,6 +367,7 @@ configuration in application code. Settings are not included in saved plans.
 | `max_record_depth` | 100 | Static pruning-record and encoded-record nesting. |
 | `score_batch_size` | 32 | Generic metric batch size. |
 | `impact_cache_size` | 32 | Retained joint planning queries. |
+| `candidate_cache_size` | 4,096 | Native rejection proofs per filter. Zero also disables reuse of the latest filtered space. |
 | `recipe_cache_size` | 4 | Retained compiled recipe sets. |
 | `attribute_cache_size` | 32 | Retained attribute-validation results. |
 | `normalization_cache_size` | 32 | GroupMagnitude normalization entries. |

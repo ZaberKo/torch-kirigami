@@ -1,14 +1,15 @@
 """Shared proofs for excluding irreversible removal requests before scoring."""
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable
 from types import MappingProxyType
 
 from ..dep_graph.contracts import Constraint, Diagnostic, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
-from ..dep_graph.selection import AxisRef, IndexSet, Selection
+from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
 from ..errors import AnalysisLimitError
+from ..settings import config
 from .axis_domains import IdentityAxisIndex
 from .types import Candidate
 
@@ -40,6 +41,10 @@ class CandidateFilter:
         self._fixed: dict[AxisRef, Fixed] = {}
         all_constraints = (*graph.constraints, *constraints)
         self._native = all(has_native_semantics(c) for c in all_constraints)
+        self._rejections: OrderedDict[
+            tuple[tuple[TensorRef, tuple[Region, ...]], ...], tuple[Diagnostic, ...]
+        ] = OrderedDict()
+        self._cache_size = config.candidate_cache_size
         self._by_tensor: dict[str, list[Constraint]] = defaultdict(list)
         self._empty_diagnostics: list[Diagnostic] = []
         for constraint in all_constraints:
@@ -60,6 +65,12 @@ class CandidateFilter:
                 # Retain only persistent rejection or incomplete-proof information.
                 if diagnostic is not None and (diagnostic.irreversible or not diagnostic.complete):
                     self._empty_diagnostics.append(diagnostic)
+        self.reuse_equivalent = (
+            self._native
+            and all(has_native_semantics(r) for r in graph.relations)
+            and type(graph) is DependencyGraph
+            and not any(callable(value) for value in vars(graph).values())
+        )
 
     def parameter_selections(self, candidate: Candidate) -> tuple[Selection, ...] | None:
         """Project complete native parameter effects, retaining conflicts for raw queries.
@@ -94,6 +105,27 @@ class CandidateFilter:
         if projected is not None:
             _, diagnostics = projected
             return tuple(dict.fromkeys(d for d in diagnostics if d.irreversible))
+        if self._cache_size != config.candidate_cache_size:
+            self._rejections.clear()
+            self._cache_size = config.candidate_cache_size
+        cacheable = (
+            self.reuse_equivalent
+            and self._query is None
+            and accepted_impact is None
+            and self._cache_size > 0
+            and has_native_semantics(candidate.remove)
+            and type(self.graph) is DependencyGraph
+            and not any(callable(value) for value in vars(self.graph).values())
+        )
+        key = (
+            tuple((s.tensor, s.regions) for s in self.index.canonical_seeds(candidate.remove))
+            if cacheable
+            else ()
+        )
+        if cacheable and key in self._rejections:
+            self.graph.validate()
+            self._rejections.move_to_end(key)
+            return self._rejections[key]
         requested = () if accepted_impact is None else accepted_impact.requested
         try:
             seeds = (*requested, *candidate.remove)
@@ -102,7 +134,12 @@ class CandidateFilter:
                 if self._query is None
                 else self._query(seeds)
             )
-            return tuple(d for d in impact.diagnostics if d.irreversible)
+            result = tuple(d for d in impact.diagnostics if d.irreversible)
+            if cacheable and impact.complete:
+                self._rejections[key] = result
+                if len(self._rejections) > self._cache_size:
+                    self._rejections.popitem(last=False)
+            return result
         finally:
             self.graph.validate()
 

@@ -12,8 +12,10 @@ from torch import nn
 from ..bindings import has_tensor_hooks, storage_key
 from ..dep_graph.contracts import Constraint, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.selection import Selection, TensorRef, gather_region
 from ..operator_recipes import AttributeRecipe, TensorRecipe
+from ..settings import config
 from .candidates import (
     CandidateSpace,
     discover_candidates,
@@ -111,6 +113,30 @@ class Pruner:
         elif constraints or granularity != Granularity() or not preserve_io:
             raise ValueError("Planning configuration requires a DependencyGraph")
         self._constraints = (*interfaces, *constraints, *alignment)
+        self._filtered_space: (
+            tuple[DependencyGraph, tuple[Constraint, ...], CandidateSpace] | None
+        ) = None
+
+    def _remember_filtered(self, graph: DependencyGraph, space: CandidateSpace) -> CandidateSpace:
+        """Retain only the latest immutable native filtering result for this pruner."""
+        native = (
+            config.candidate_cache_size > 0
+            and type(self) is Pruner
+            and type(graph) is DependencyGraph
+            and type(space) is CandidateSpace
+            and not any(callable(value) for value in vars(graph).values())
+            and all(
+                has_native_semantics(value)
+                for value in (*graph.relations, *graph.constraints, *self.constraints)
+            )
+            and all(
+                type(c) is Candidate and has_native_semantics((c.axis, c.remove))
+                for c in space.candidates
+            )
+            and has_native_semantics((*space.channel_axes, *space.excluded_channel_axes))
+        )
+        self._filtered_space = (graph, self.constraints, space) if native else None
+        return space
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
@@ -133,7 +159,7 @@ class Pruner:
         Patterns use `fnmatchcase`: `*` can match across path separators (`.`).
         """
         graph = self._validate_graph()
-        return discover_candidates(graph, self.constraints, targets)
+        return self._remember_filtered(graph, discover_candidates(graph, self.constraints, targets))
 
     def filter_candidates(self, space: CandidateSpace) -> CandidateSpace:
         """Remove proven irreversible requests from an explicit candidate space.
@@ -149,15 +175,27 @@ class Pruner:
             space: Explicit candidates and their frozen channel accounting axes.
 
         Returns:
-            A new space containing retained candidates and rejection diagnostics.
-            The input space and model remain unchanged.
+            A space containing retained candidates and rejection diagnostics.
+            The latest native filtered space can be returned unchanged after
+            freshness validation. The input space and model remain unchanged.
 
         Raises:
             TypeError: The argument is not a CandidateSpace.
             ValueError: A supplied axis, selection or constraint belongs to another graph.
         """
         graph = self._validate_graph()
-        return filter_candidates(graph, self.constraints, space)
+        previous = self._filtered_space
+        if (
+            config.candidate_cache_size > 0
+            and previous is not None
+            and previous[0] is graph
+            and previous[2] is space
+            and has_native_semantics(self.constraints)
+            and previous[1] == self.constraints
+            and not any(callable(value) for value in vars(graph).values())
+        ):
+            return space
+        return self._remember_filtered(graph, filter_candidates(graph, self.constraints, space))
 
     def impact(self, candidates: Iterable[Candidate]) -> Impact:
         """Analyze a joint candidate batch under this pruner's fixed constraints."""

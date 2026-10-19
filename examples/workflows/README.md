@@ -71,7 +71,11 @@ Torchvision downloads missing model weights on first use.
 It then reuses the PyTorch Hub checkpoint cache.
 The run configuration records the weight enum and actual dataset cache paths.
 All supported weight configurations use 224 × 224 crops.
-Training uses deterministic weight preprocessing without the papers' complete augmentation recipes.
+Training uses deterministic weight preprocessing by default.
+`prune_finetune.py --train_augmentation` enables random resized crop and horizontal flip for fine-tuning only.
+Its calibration and validation loaders retain deterministic weight preprocessing.
+The training view shares the same Arrow rows and encoded image cache.
+Other entries retain deterministic preprocessing and omit the papers' complete augmentation recipes.
 
 ## Models and shared controls
 
@@ -176,7 +180,12 @@ Stems, residual interfaces, attention widths, and classifier dimensions stay unc
 It scores candidates, plans to the parameter cap, compacts the model, and optionally fine-tunes.
 
 Use `--finetune_epochs 1 --lr 0.001` to add one recovery epoch.
-Use `--metric taylor` to collect task-only gradients from one training batch in evaluation mode.
+Use `--metric taylor` to collect task-only gradients in evaluation mode.
+`--calibration_batches` defaults to 16. Zero uses the full training loader.
+Calibration accumulates summed cross-entropy gradients and divides by the total sample count.
+Unequal batch sizes therefore contribute by sample count.
+This computes the dataset-mean loss gradient, not an average of absolute batch Taylor scores or per-sample Fisher statistics.
+Calibration does not update weights or BatchNorm statistics and restores all train/eval flags.
 Calibration does not update weights or BatchNorm statistics.
 Taylor sums `abs(weight * gradient)` over affected parameter regions, including biases.
 

@@ -37,7 +37,8 @@ import argparse
 import json
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Sized
+from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 
@@ -234,6 +235,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--latency_warmup", type=int, default=5)
     parser.add_argument("--latency_repetitions", type=int, default=20)
+    parser.add_argument(
+        "--train_augmentation",
+        action="store_true",
+        help="Use random resized crop and horizontal flip for fine-tuning only",
+    )
+    parser.add_argument(
+        "--calibration_batches",
+        type=int,
+        default=16,
+        help="Taylor gradient calibration batches; 0 uses the full training loader",
+    )
     options = parser.parse_args()
     for name in ("train_batch_size", "val_batch_size", "granularity", "latency_repetitions"):
         if getattr(options, name) <= 0:
@@ -245,6 +257,7 @@ def parse_args() -> argparse.Namespace:
         "train_workers",
         "finetune_epochs",
         "latency_warmup",
+        "calibration_batches",
     ):
         if getattr(options, name) < 0:
             parser.error(f"--{name} must be nonnegative")
@@ -263,24 +276,51 @@ def collect_task_gradients(
     model: nn.Module,
     loader: Iterable[tuple[torch.Tensor, torch.Tensor]] | None,
     device: torch.device | str,
+    max_batches: int = 16,
 ) -> None:
-    """Collect task-only gradients without updating weights, BN statistics or modes."""
+    """Collect the sample-mean loss gradient without updating model state.
+
+    Accumulate summed cross-entropy gradients, then divide by the total sample
+    count. This is the gradient of one dataset-mean loss, not an average of
+    absolute batch Taylor scores. `max_batches=0` uses the whole loader.
+    Existing gradients are cleared. Train/eval flags are restored on failure.
+    """
     if loader is None:
-        raise ValueError("Taylor requires a separate ImageNet training batch")
+        raise ValueError("Taylor requires an ImageNet training loader")
+    if type(max_batches) is not int or max_batches < 0:
+        raise ValueError("max_batches must be a nonnegative integer")
     model.zero_grad(set_to_none=True)
     modes = [(module, module.training) for module in model.modules()]
     try:
         model.eval()
+        batches = islice(loader, max_batches) if max_batches else iter(loader)
+        total = len(loader) if isinstance(loader, Sized) else None
+        if max_batches:
+            total = min(total, max_batches) if total is not None else max_batches
+        count = 0
         with tqdm(
-            total=1, desc=f"Taylor calibration ({device})", unit="batch", dynamic_ncols=True
+            batches,
+            total=total,
+            desc=f"Taylor calibration ({device})",
+            unit="batch",
+            dynamic_ncols=True,
         ) as progress:
-            images, labels = next(iter(loader))
-            loss = F.cross_entropy(
-                model(images.to(device, non_blocking=True)), labels.to(device, non_blocking=True)
-            )
-            loss.backward()
-            progress.set_postfix(loss=f"{loss.detach().item():.4f}", refresh=False)
-            progress.update()
+            for images, labels in progress:
+                loss = F.cross_entropy(
+                    model(images.to(device, non_blocking=True)),
+                    labels.to(device, non_blocking=True),
+                    reduction="sum",
+                )
+                loss.backward()
+                count += labels.numel()
+                progress.set_postfix(
+                    loss=f"{loss.detach().item() / labels.numel():.4f}", refresh=False
+                )
+        if not count:
+            raise ValueError("Cannot calibrate Taylor gradients on an empty loader")
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                parameter.grad.div_(count)
     finally:
         for module, training in modes:
             module.training = training
@@ -422,7 +462,7 @@ def main() -> None:
         flush=True,
     )
     if options.metric == "taylor":
-        collect_task_gradients(model, train_loader, options.device)
+        collect_task_gradients(model, train_loader, options.device, options.calibration_batches)
     print("Planning pruning: dependency propagation and constraint search run on CPU", flush=True)
     started = time.perf_counter()
     plan = make_plan(pruner, space, budget, options.metric, selection=options.selection)
@@ -444,6 +484,17 @@ def main() -> None:
 
     # Parameters were replaced by apply; create the optimizer only afterwards.
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
+    if options.finetune_epochs and options.train_augmentation:
+        train_loader = DataLoader(
+            cast(Images, train).training_view(weights),
+            batch_size=options.train_batch_size,
+            shuffle=True,
+            generator=generator,
+            num_workers=options.train_workers,
+            persistent_workers=options.train_workers > 0,
+            multiprocessing_context="spawn" if options.train_workers else None,
+            pin_memory=options.device == "cuda",
+        )
     for epoch in range(options.finetune_epochs):
         print(
             f"Fine-tuning epoch {epoch + 1}: {len(cast(Images, train))} images on {options.device}; "

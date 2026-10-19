@@ -33,3 +33,57 @@ def test_block_families_share_coordinate_relations(operation, remove, keep_out, 
         )
     )
     torch.testing.assert_close(model(x), old(x)[:, keep_out])
+
+
+@pytest.mark.parametrize("channels,groups", [(4, 1), (4, 2), (8, 4), (12, 3)])
+@pytest.mark.parametrize("functional", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_shuffle_grouped_maps_preserve_compact_coordinates(
+    channels, groups, functional, reverse, execution_device
+):
+    class ShuffleChain(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = nn.Conv2d(3, channels, 1)
+            self.shuffle = nn.ChannelShuffle(groups)
+            self.last = nn.Conv2d(channels, 2, 1)
+
+        def forward(self, x):
+            hidden = self.first(x)
+            shuffled = (
+                torch.nn.functional.channel_shuffle(hidden, groups)
+                if functional
+                else self.shuffle(hidden)
+            )
+            return self.last(shuffled)
+
+    model = ShuffleChain().eval()
+    old = copy.deepcopy(model)
+    x = torch.randn(2, 3, 3, 4)
+    width = channels // groups
+    keep_in = [i for i in range(channels) if i % width != 0]
+    keep_out = list(range(groups, channels))
+    # An independently assembled compact chain keeps original row/column order.
+    hidden = torch.nn.functional.conv2d(x, old.first.weight[keep_in], old.first.bias[keep_in])
+    expected = torch.nn.functional.conv2d(
+        torch.nn.functional.channel_shuffle(hidden, groups),
+        old.last.weight[:, keep_out],
+        old.last.bias,
+    )
+    graph = DependencyGraph.build(model, args=(x,))
+    call = next(
+        op
+        for op in graph.operations()
+        if op.node.target in ("shuffle", torch.nn.functional.channel_shuffle)
+    )
+    assert len(graph.operator_spec(call).relations) == (4 if groups == 1 else 5)
+    axis = (
+        graph.parameter("last.weight").axis(1)
+        if reverse
+        else graph.parameter("first.weight").axis(0)
+    )
+    pruner = Pruner(model, graph=graph)
+    pruner.apply(pruner.plan_remove((axis.select([0]),)))
+    assert model.first.out_channels == channels - groups
+    assert model.last.in_channels == channels - groups
+    torch.testing.assert_close(model(x), expected)

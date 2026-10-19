@@ -243,25 +243,21 @@ def channel_shuffle(operation: Operation) -> OperatorSpec:
     relations = [equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != 1]
     # Group-local removal patterns must match: equal counts alone would change
     # the original channel correspondence after transposing the compact groups.
+    permutation, tied = [], []
     for local in range(width):
         for group in range(groups):
-            relations.append(
-                AxisRelation(
-                    AxisPort(x.axis(1)),
-                    AxisPort(y.axis(1)),
-                    (BlockMap(group * width + local, local * groups + group, 1),),
-                    operation.node.name,
-                )
-            )
+            permutation.append(BlockMap(group * width + local, local * groups + group, 1))
             if group:
-                relations.append(
-                    AxisRelation(
-                        AxisPort(x.axis(1)),
-                        AxisPort(x.axis(1)),
-                        (BlockMap(local, group * width + local, 1),),
-                        operation.node.name,
-                    )
-                )
+                tied.append(BlockMap(local, group * width + local, 1))
+    relations.append(
+        AxisRelation(
+            AxisPort(x.axis(1)), AxisPort(y.axis(1)), tuple(permutation), operation.node.name
+        )
+    )
+    if tied:
+        relations.append(
+            AxisRelation(AxisPort(x.axis(1)), AxisPort(x.axis(1)), tuple(tied), operation.node.name)
+        )
     return OperatorSpec(
         tuple(relations),
         (

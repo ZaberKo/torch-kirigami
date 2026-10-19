@@ -20,6 +20,8 @@ class Config:
         max_record_depth: Static and encoded pruning-record nesting bound.
         score_batch_size: Generic scoring batch size; custom strategies may batch explicitly.
         impact_cache_size: Maximum retained planning impact queries; zero disables retention.
+        candidate_cache_size: Maximum native rejection proofs per filter. Zero also
+            disables reuse of the latest filtered candidate space.
         recipe_cache_size: Maximum retained compiled recipe sets.
         attribute_cache_size: Maximum retained attribute-validation results.
         normalization_cache_size: Maximum GroupMagnitude normalization entries.
@@ -36,6 +38,7 @@ class Config:
     max_record_depth: int = field(default=100, metadata={"minimum": 1})
     score_batch_size: int = field(default=32, metadata={"minimum": 1})
     impact_cache_size: int = 32
+    candidate_cache_size: int = 4096
     recipe_cache_size: int = 4
     attribute_cache_size: int = 32
     normalization_cache_size: int = 32

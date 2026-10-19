@@ -88,6 +88,7 @@ def _prepare_writes(
     ):
         raise ValueError("Parameter operations do not support distinct tensors sharing storage")
     prepared: list[_PreparedWrite] = []
+    finite = []
     full_copies: dict[torch.Tensor, torch.Tensor] = {}
     for group, vector in zip(groups, vectors, strict=True):
         offset = 0
@@ -102,8 +103,8 @@ def _prepare_writes(
                 count = math.prod(shape)
                 values = vector[offset : offset + count].reshape(shape).to(parameter.dtype)
                 offset += count
-                if not torch.isfinite(values).all():
-                    raise ValueError("Parameter operation would produce nonfinite values")
+                # Validate the final dtype, including overflow introduced by casting.
+                finite.append(torch.isfinite(values).all())
                 index = _region_index(parameter, region)
                 if parameter in full_copies:
                     # Preserve the original full-copy behavior when sparse writes
@@ -112,6 +113,8 @@ def _prepare_writes(
                 else:
                     original = gather_region(parameter.detach(), region).clone()
                     prepared.append(_PreparedWrite(parameter, index, original, values.clone()))
+    if finite and not torch.stack(finite).all():
+        raise ValueError("Parameter operation would produce nonfinite values")
     return prepared
 
 
@@ -194,8 +197,15 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
     ):
         raise ValueError("factor must be finite and nonnegative")
     groups = tuple(groups)
-    group_bindings(groups)
-    union = ParameterGroup(groups[0].graph, tuple(s for g in groups for s in g.selections))
+    if not groups or any(not isinstance(group, ParameterGroup) for group in groups):
+        raise ValueError("Expected nonempty ParameterGroup sequence")
+    if len(groups) == 1:
+        # group_values validates this existing union before reading any values.
+        union = groups[0]
+    else:
+        # Validate all source graphs/devices before combining their coordinates.
+        group_bindings(groups)
+        union = ParameterGroup(groups[0].graph, tuple(s for g in groups for s in g.selections))
     values = group_values((union,))[0]
     _commit_values((union,), (values.to(torch.float64) * factor,))
 

@@ -379,6 +379,17 @@ def _rank_candidates(
             and any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
         )
     ]
+    if _can_reuse_score_checks(metric, context) and context._candidate_filter.reuse_equivalent:
+        # Keep equivalent native requests near each other within the bounded cache.
+        # Every candidate is still scored. Final ordering remains (score, key).
+        def analysis_order(candidate: Candidate) -> tuple:
+            seeds = context._candidate_filter.index.canonical_seeds(candidate.remove)
+            return tuple(
+                (s.tensor.id, tuple(tuple(axis.intervals for axis in r.axes) for r in s.regions))
+                for s in seeds
+            )
+
+        remaining.sort(key=analysis_order)
     batch_size = config.score_batch_size
     for start in range(0, len(remaining), batch_size):
         batch = []

@@ -81,7 +81,30 @@ class AxisPort:
         """Return positions whose entire scoped cross sections are selected."""
         if selection.tensor != self.tensor:
             raise ValueError("Selection belongs to another port tensor")
-        return selection.fully_selected_indices(self.axis.dim, self.region)
+        if self.scope is not None or len(selection.regions) != 1:
+            return selection.fully_selected_indices(self.axis.dim, self.region)
+        # Only exact native records can bypass the general scoped calculation.
+        native = (
+            type(self) is AxisPort
+            and type(self.axis) is AxisRef
+            and type(self.axis.dim) is int
+            and type(selection) is Selection
+            and type(selection.tensor) is TensorRef
+            and all(type(size) is int for size in self.tensor.shape)
+            and all(
+                type(region) is Region
+                and all(
+                    type(indices) is IndexSet
+                    and all(
+                        type(bound) is int for interval in indices.intervals for bound in interval
+                    )
+                    for indices in region.axes
+                )
+                for region in selection.regions
+            )
+        )
+        scope = self.scope if native else self.region
+        return selection.fully_selected_indices(self.axis.dim, scope)
 
     def select(self, indices: IndexSet) -> Selection:
         """Select scoped cross sections at the given original axis positions."""

@@ -547,6 +547,7 @@ def test_torchvision_resnet_compaction_matches_masked_reference_and_checkpoint(
     "recipe,extra",
     [
         ("prune_finetune", []),
+        pytest.param("prune_finetune", ["--train_augmentation"], id="augmented-finetune"),
         ("prune_finetune", ["--train_workers", "2", "--val_workers", "2"]),
         ("prune_finetune", ["--metric", "taylor"]),
         pytest.param("prune_finetune", ["--selection", "dynamic"], id="dynamic-magnitude"),
@@ -676,6 +677,14 @@ def test_pretrained_workflow(
         assert selected_weights is weights
         x = torch.randn(2, 3, 224, 224)
         training = TensorDataset(x, torch.tensor([0, 1])) if need_train else None
+        if "--train_augmentation" in extra:
+            rows = Dataset.from_dict(
+                {
+                    "image": [PILImage.new("RGB", (280, 260), (i * 50, 60, 120)) for i in range(2)],
+                    "label": [0, 1],
+                }
+            )
+            training = imagenet.Images(rows, weights.transforms(), (0, 1))
         if need_train and (
             recipe == "stability_pruning"
             or (recipe == "group_sparsity" and "squared" in extra and kwargs["train_samples"] != 2)
@@ -1442,3 +1451,47 @@ def test_basic_workflow_prunes_both_bottleneck_widths_and_preserves_interfaces(
         assert block.conv2.out_channels == block.conv3.in_channels == 3
     assert sum(p.numel() for p in restored.parameters()) <= saved["config"]["max_params"]
     restored(torch.randn(1, 3, 16, 16, device=execution_device)).square().sum().backward()
+
+
+@pytest.mark.parametrize("max_batches", [0, 1, 2, 16])
+def test_taylor_multibatch_matches_sample_mean_with_unequal_batches(max_batches, execution_device):
+    model = nn.Sequential(nn.BatchNorm1d(4), nn.Linear(4, 3)).double().train()
+    reference = copy.deepcopy(model).eval()
+    x = torch.randn(5, 4, dtype=torch.float64)
+    labels = torch.tensor([0, 1, 2, 0, 2])
+    loader = DataLoader(TensorDataset(x, labels), batch_size=3)
+    before = {name: tensor.clone() for name, tensor in model.state_dict().items()}
+    prune_finetune.collect_task_gradients(model, loader, execution_device, max_batches)
+    count = 3 if max_batches == 1 else 5
+    F.cross_entropy(reference(x[:count]), labels[:count]).backward()
+    assert model.training and model[0].training
+    for name, tensor in model.state_dict().items():
+        torch.testing.assert_close(tensor, before[name], rtol=0, atol=0)
+    for actual, expected in zip(model.parameters(), reference.parameters(), strict=True):
+        torch.testing.assert_close(actual.grad, expected.grad)
+
+
+def test_taylor_empty_calibration_restores_modes():
+    model = nn.Sequential(nn.Linear(4, 3)).train()
+    model[0].eval()
+    with pytest.raises(ValueError, match="empty loader"):
+        prune_finetune.collect_task_gradients(model, [], "cpu", 0)
+    assert model.training and not model[0].training
+    with pytest.raises(ValueError, match="nonnegative"):
+        prune_finetune.collect_task_gradients(model, [], "cpu", -1)
+
+
+def test_training_view_shares_arrow_rows_and_preserves_calibration_transform():
+    weights = ResNet18_Weights.IMAGENET1K_V1
+    picture = PILImage.new("RGB", (300, 260), (10, 60, 200))
+    rows = Dataset.from_dict({"image": [picture], "label": [0]})
+    calibration = imagenet.Images(rows, weights.transforms(), (0,))
+    before, label = calibration[0]
+    training = calibration.training_view(weights)
+    assert training.rows is calibration.rows
+    assert training.mapping is calibration.mapping
+    assert training.transform is not calibration.transform
+    actual, actual_label = training[0]
+    assert actual.shape == before.shape == (3, 224, 224)
+    assert actual_label == label == 0
+    torch.testing.assert_close(calibration[0][0], before, rtol=0, atol=0)

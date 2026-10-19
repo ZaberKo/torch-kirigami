@@ -11,7 +11,7 @@ from ..dep_graph.relations import (
     Relation,
     ReshapeRelation,
 )
-from ..dep_graph.selection import AxisRef, TensorRef
+from ..dep_graph.selection import AxisRef, Selection, TensorRef
 from ..settings import config
 
 
@@ -85,6 +85,30 @@ class IdentityAxisIndex:
         for axis in result:
             self._equivalent[axis] = result
         return result
+
+    def canonical_seeds(self, seeds: tuple[Selection, ...]) -> tuple[Selection, ...]:
+        """Replace native proper-axis slices with proved equivalent axis seeds.
+
+        This proves mutual implication for these exact coordinates. It does not
+        merge requests, choose channels, or extrapolate a closure to other indices.
+        General regions and extension records retain their original seeds.
+        """
+        result = []
+        for seed in seeds:
+            if not has_native_semantics(seed) or len(seed.regions) != 1:
+                result.append(seed)
+                continue
+            axes = seed.regions[0].axes
+            partial = [
+                dim for dim, indices in enumerate(axes) if len(indices) != seed.tensor.shape[dim]
+            ]
+            if len(partial) != 1:
+                result.append(seed)
+                continue
+            dim = partial[0]
+            canonical = self.equivalent_axes(seed.tensor.axis(dim))[0]
+            result.append(canonical.select(axes[dim]))
+        return tuple(result)
 
     def component(self, root: AxisRef) -> tuple[AxisRef, ...] | None:
         """Return proved equal-coordinate axes, or None when proof is unavailable.

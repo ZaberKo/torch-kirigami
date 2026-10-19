@@ -67,6 +67,9 @@ Partially overlapping groups remain separate. The function does not combine coef
 
 For example, producer row 2 and consumer column 2 can produce equivalent groups through dependency propagation.
 Extraction retains both entries and their candidate keys.
+Native extraction can reuse one analysis for proved equivalent seeds within the call.
+It still returns separate group objects in candidate order.
+Custom parameter filters retain their original per-candidate invocation order.
 Call `unique_groups` only when the training objective should count those parameter regions once.
 Assign coefficients after deduplication so they match the returned groups.
 Equal parameter groups do not prove that the candidates have identical buffer effects, constraints, or execution requirements.
@@ -198,6 +201,10 @@ Norm projection accepts equivalent groups only when their targets match. It reje
 The operations validate and prepare values before mutation. Runtime or value failures during commit restore original values. Gradients and optimizer state remain unchanged. Momentum can regrow zeroed parameters. Reapply the operation or use a mask when zeros must persist. The operation rejects distinct tensor objects that share storage when an update could affect them.
 
 Transactions normally copy selected regions for preparation and rollback.
+Preparation combines finite-value tests after conversion to each destination dtype, including tests for conversion overflow.
+Live reads, write preparation, and commit still validate the complete snapshot.
+Regularizer calls still validate their live snapshot.
+If a training loop already has one union `ParameterGroup`, pass `(group,)` to avoid reconstructing the union.
 Layouts without proved separate storage positions retain full-tensor preparation.
 Norm projection uses sorted bounds to avoid pairwise comparisons for disjoint rows or columns.
 Possible overlaps still require exact region intersections.

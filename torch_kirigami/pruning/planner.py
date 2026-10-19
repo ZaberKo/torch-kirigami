@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import math
 from collections import OrderedDict
+from dataclasses import replace
 
 import torch
 
-from ..dep_graph.contracts import Constraint, Impact
+from ..dep_graph.contracts import Constraint, Impact, Provenance
 from ..dep_graph.dependency_graph import DependencyGraph
+from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operation import Operation
 from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
 from ..operator_recipes import AttributeRecipe, TensorRecipe
@@ -162,8 +164,19 @@ class PlanningContext:
         for selection in remove:
             self.graph.metadata(selection.tensor)
         key = tuple((s.tensor, s.regions) for s in remove)
+        canonical = remove
+        if (
+            config.impact_cache_size > 0
+            and self._candidate_filter.reuse_equivalent
+            and has_native_semantics(remove)
+        ):
+            canonical = self._candidate_filter.index.canonical_seeds(remove)
+            key = tuple((s.tensor, s.regions) for s in canonical)
         if key not in self._cache:
-            impact = self.graph.propagate(remove=remove, constraints=self.constraints)
+            impact = self.graph.propagate(remove=canonical, constraints=self.constraints)
+            if canonical != remove and not impact.complete:
+                # A limited or incomplete closure is not an equivalence proof.
+                return self.graph.propagate(remove=remove, constraints=self.constraints)
             self._cache[key] = impact
             if len(self._cache) > config.impact_cache_size:
                 self._cache.popitem(last=False)
@@ -171,7 +184,17 @@ class PlanningContext:
             self.graph.validate()  # propagate performs the entry check on cache misses.
             self._cache.move_to_end(key)
             impact = self._cache[key]
-        return impact
+        if canonical != remove and not impact.complete:
+            return self.graph.propagate(remove=remove, constraints=self.constraints)
+        if impact.requested == remove:
+            return impact
+        bridges = tuple(
+            Provenance(original, target, "Equivalent axes through native identity relations")
+            for original, target in zip(remove, canonical, strict=True)
+            if original != target
+        )
+        # Preserve caller seeds and explain the path into the cached canonical proof.
+        return replace(impact, requested=remove, provenance=(*bridges, *impact.provenance))
 
     def require_complete(self, impact: Impact) -> None:
         """Reject incomplete influence ranges while allowing repairable constraints."""

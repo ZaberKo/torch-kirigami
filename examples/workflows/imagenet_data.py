@@ -13,6 +13,8 @@ It restores the model's previous train/eval flags.
 Each workflow entry owns its algorithm-specific sampling, training, and pruning.
 """
 
+from __future__ import annotations
+
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,13 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import Dataset
 from torchvision.models import WeightsEnum
+from torchvision.transforms import (
+    Compose,
+    Normalize,
+    RandomHorizontalFlip,
+    RandomResizedCrop,
+    ToTensor,
+)
 from tqdm.auto import tqdm
 
 
@@ -65,6 +74,24 @@ class Images(Dataset[tuple[torch.Tensor, int]]):
 
     def __len__(self) -> int:
         return len(self.rows)
+
+    def training_view(self, weights: WeightsEnum) -> Images:
+        """Share Arrow rows with random crop/flip training preprocessing.
+
+        The original dataset keeps its deterministic calibration transform.
+        Only image decoding and transforms differ. Cached bytes and labels do
+        not change. Create this view before starting its DataLoader workers.
+        """
+        preset = weights.transforms()
+        transform = Compose(
+            [
+                RandomResizedCrop(preset.crop_size, interpolation=preset.interpolation),
+                RandomHorizontalFlip(),
+                ToTensor(),
+                Normalize(preset.mean, preset.std),
+            ]
+        )
+        return Images(self.rows, transform, self.mapping)
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, int]:
         row = self.rows[int(index)]

@@ -114,6 +114,16 @@ The caller supplies gradients or activation statistics before planning when a me
 `CandidateFilter` shares native closure and constraint checks between filtering and parameter-group extraction.
 Filtering uses irreversible conflicts. Raw group extraction requires complete influence and preserves complete constraint conflicts.
 
+`IdentityAxisIndex` proves mutual implication between native axis selections.
+Filters retain bounded rejection diagnostics for these equivalent seeds.
+Planning shares complete impacts, with provenance links from the caller's original seeds.
+The proof does not merge candidate identities, metric scores, or budget axes.
+Native parameter-group extraction shares one analysis for equal seeds within the call.
+It returns a separate group for each candidate in the original order.
+Caller-provided parameter filters retain their original invocation order.
+`Pruner` retains only its latest immutable native filtered space to avoid duplicate filtering.
+Custom constraints and incomplete influence retain ordinary analysis.
+
 A parameter budget limits the final parameter count.
 A channel budget limits final logical widths.
 These budgets share the same final-size comparison.
@@ -140,6 +150,11 @@ Save their corrected or reconstructed values in the final model checkpoint.
 Sparse parameter operations separate preparation from commit and rollback.
 An internal `_PreparedWrite` records each assignment's coordinates and copied values before and after the change.
 Preparation completes before any assignment changes the model.
+Preparation combines finite-value checks after conversion to each destination dtype.
+Passing one existing union avoids reconstructing and validating another group.
+Live reads and write preparation still check the complete snapshot.
+Commit checks the snapshot again.
+Regularizer calls still inspect the live graph and current parameter values.
 
 Measurement reports parameter counts, theoretical FLOPs and MACs, and inference latency.
 Task accuracy requires separate evaluation with task data.

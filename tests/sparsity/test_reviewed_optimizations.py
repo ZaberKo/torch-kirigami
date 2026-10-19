@@ -190,3 +190,51 @@ def test_cached_indices_do_not_replace_snapshot_validation(change, execution_dev
         model.weight = nn.Parameter(model.weight.detach().clone())
     with pytest.raises(StaleGraphError):
         regularizer()
+
+
+def test_sparse_union_checks_final_dtype_before_any_commit(execution_device, monkeypatch):
+    model = nn.Linear(4, 4).half().eval()
+    with torch.no_grad():
+        model.weight.fill_(1)
+        model.bias.fill_(60_000)
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 4, dtype=torch.float16),))
+    group = ParameterGroup(
+        graph,
+        (
+            graph.parameter("weight").axis(0).select([0]),
+            graph.parameter("bias").axis(0).select([0]),
+        ),
+    )
+    before = {name: p.detach().clone() for name, p in model.named_parameters()}
+    writes = []
+    original = operations._write
+
+    def counted(*args):
+        writes.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(operations, "_write", counted)
+    with pytest.raises(ValueError, match="nonfinite"):
+        operations.scale_groups_((group,), 2)
+    assert writes == []
+    for name, parameter in model.named_parameters():
+        torch.testing.assert_close(parameter, before[name], rtol=0, atol=0)
+
+
+def test_sparse_union_batches_finite_checks(execution_device, monkeypatch):
+    model = nn.Linear(4, 16).eval()
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 4),))
+    axis = graph.parameter("weight").axis(0)
+    groups = tuple(ParameterGroup(graph, (axis.select([i]),)) for i in range(0, 16, 2))
+    original = torch.Tensor.__bool__
+    calls = []
+
+    def counted(tensor):
+        calls.append(1)
+        return original(tensor)
+
+    monkeypatch.setattr(torch.Tensor, "__bool__", counted)
+    zero_groups_(groups)
+    # Input and final-cast checks are batched. Device dispatch can add a constant overhead.
+    assert len(calls) <= 4
+    torch.testing.assert_close(model.weight[::2], torch.zeros_like(model.weight[::2]))

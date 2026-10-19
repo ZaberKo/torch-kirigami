@@ -111,6 +111,8 @@ In that case, graph construction fails before sample execution.
 
 A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`.
 The resulting structural barrier blocks only related pruning requests.
+Other rule exceptions, including `ValueError`, fail construction.
+Use `UnsupportedOperation` for an unsupported case, rather than hiding rule defects behind a barrier.
 
 ## Implementing an operator rule
 

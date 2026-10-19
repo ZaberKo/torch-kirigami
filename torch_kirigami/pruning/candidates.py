@@ -12,7 +12,7 @@ from ..dep_graph.contracts import Constraint, Fixed
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operation import CandidateAxis, Operation
-from ..dep_graph.selection import AxisRef, TensorRef
+from ..dep_graph.selection import AxisRef, Region, TensorRef
 from .candidate_checks import CandidateFilter
 from .groups import ParameterGroup
 from .types import Candidate, PlanningError
@@ -206,9 +206,26 @@ def parameter_groups(
         for candidate in candidates
     )
     with graph._native_queries(constraints, enabled=native):
-        result = []
         checks = CandidateFilter(graph, constraints)
-        for candidate in candidates:
+        batches = [[(number, candidate)] for number, candidate in enumerate(candidates)]
+        if native and checks.reuse_equivalent:
+            # Group only proved equal seeds. Keep no persistent cache or impacts.
+            equivalent: dict[
+                tuple[tuple[TensorRef, tuple[Region, ...]], ...], list[tuple[int, Candidate]]
+            ] = {}
+            for number, candidate in enumerate(candidates):
+                for selection in candidate.remove:
+                    graph.metadata(selection.tensor)
+                if candidate.axis is not None:
+                    graph.metadata(candidate.axis.tensor)
+                key = tuple(
+                    (s.tensor, s.regions) for s in checks.index.canonical_seeds(candidate.remove)
+                )
+                equivalent.setdefault(key, []).append((number, candidate))
+            batches = list(equivalent.values())
+        result: dict[int, ParameterGroup] = {}
+        for batch in batches:
+            candidate = batch[0][1]
             parameters = checks.parameter_selections(candidate)
             if parameters is None:
                 impact = graph.propagate(remove=candidate.remove, constraints=constraints)
@@ -234,5 +251,6 @@ def parameter_groups(
                 raise PlanningError(
                     f"Candidate {candidate.key!r} has no parameter regions after extraction and filtering"
                 )
-            result.append(ParameterGroup(graph, tuple(selections), candidate.key))
-        return tuple(result)
+            for number, member in batch:
+                result[number] = ParameterGroup(graph, tuple(selections), member.key)
+        return tuple(result[number] for number in range(len(candidates)))

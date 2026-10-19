@@ -69,6 +69,7 @@ def test_cached_analysis_rejects_changed_analysis_settings(execution_device):
     context = PlanningContext(graph, (), ChannelRatio(0.5), (axis,), ())
     request = (axis.select([1]),)
     impact = context.impact(request)
+    cached = tuple(context._cache.values())
     recipes = context.compile(impact)
     config.update(max_parts=4)
     for operation in (
@@ -80,7 +81,13 @@ def test_cached_analysis_rejects_changed_analysis_settings(execution_device):
         with pytest.raises(StaleGraphError, match="Analysis configuration changed"):
             operation()
     config.update(max_parts=8)
-    assert context.impact(request) is impact
+    restored = context.impact(request)
+    assert restored.requested == impact.requested
+    assert restored.selections == impact.selections
+    assert restored.provenance == impact.provenance
+    # The canonical proof stays cached. Rebased records retain the caller's seeds,
+    # but their Python object identity is not part of the analysis contract.
+    assert tuple(context._cache.values()) == cached
     assert context.compile(impact) == recipes
     index = IdentityAxisIndex(graph.relations)
     config.update(max_parts=4)

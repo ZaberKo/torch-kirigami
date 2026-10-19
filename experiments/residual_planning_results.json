@@ -1,0 +1,523 @@
+{
+  "baseline_commit": "525ba34",
+  "benchmark": "experiments/residual_planning_benchmark.py",
+  "model": "64-channel residual CNN: stem, eight two-convolution residual blocks, pool, classifier",
+  "input_shape": [
+    1,
+    3,
+    8,
+    8
+  ],
+  "budget": "ChannelRatio(0.05, scope=\"global\")",
+  "granularity": "Conv2d output widths divisible by 8; classifier width remains 10",
+  "measurement": "Single instrumented CPU run per checkout; sparse medians use seven subsequent calls. Timings are host-specific, not statistical guarantees.",
+  "verification": {
+    "all_candidate_counts_equal": true,
+    "both_strategy_choices_trials_widths_equal": true,
+    "applied_parameter_shapes_equal": true,
+    "applied_greedy_output_bytes_equal": true
+  },
+  "before": {
+    "torch": "2.14.0+cu130",
+    "threads": 1,
+    "seed": 7,
+    "discover": {
+      "seconds": 5.48772729805205,
+      "fingerprints": 1155,
+      "propagations": 576
+    },
+    "filter_discovered": {
+      "seconds": 5.450182433996815,
+      "fingerprints": 1155,
+      "propagations": 576
+    },
+    "candidates": 1088,
+    "greedy": {
+      "seconds": 11.922430047998205,
+      "fingerprints": 1189,
+      "propagations": 1673,
+      "trials": 7,
+      "selected_digest": "c8302b5cbe46f5ca950278148e58500362d4a63bd4de2bb5786f560e7972b11b",
+      "remaining": [
+        64,
+        56,
+        64,
+        64,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64
+      ]
+    },
+    "dynamic": {
+      "seconds": 64.32589170394931,
+      "fingerprints": 1189,
+      "propagations": 8033,
+      "trials": 7,
+      "selected_digest": "c8302b5cbe46f5ca950278148e58500362d4a63bd4de2bb5786f560e7972b11b",
+      "remaining": [
+        64,
+        56,
+        64,
+        64,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64
+      ]
+    },
+    "parameter_groups": {
+      "seconds": 4.277283379982691,
+      "fingerprints": 4,
+      "propagations": 576,
+      "count": 1088
+    },
+    "zero_groups": {
+      "seconds": 0.008402969979215413,
+      "fingerprints": 5,
+      "median_seconds": 0.00850103801349178
+    },
+    "zero_union": {
+      "seconds": 0.12614340597065166,
+      "fingerprints": 5,
+      "median_seconds": 0.0070579369785264134
+    },
+    "group_lasso": {
+      "seconds": 0.002177122049033642,
+      "fingerprints": 1,
+      "median_seconds": 0.001955120009370148
+    },
+    "applied_shapes": {
+      "stem.weight": [
+        64,
+        3,
+        1,
+        1
+      ],
+      "stem.bias": [
+        64
+      ],
+      "blocks.0.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.0.c1.bias": [
+        56
+      ],
+      "blocks.0.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.0.c2.bias": [
+        64
+      ],
+      "blocks.1.c1.weight": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "blocks.1.c1.bias": [
+        64
+      ],
+      "blocks.1.c2.weight": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "blocks.1.c2.bias": [
+        64
+      ],
+      "blocks.2.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.2.c1.bias": [
+        56
+      ],
+      "blocks.2.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.2.c2.bias": [
+        64
+      ],
+      "blocks.3.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.3.c1.bias": [
+        56
+      ],
+      "blocks.3.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.3.c2.bias": [
+        64
+      ],
+      "blocks.4.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.4.c1.bias": [
+        56
+      ],
+      "blocks.4.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.4.c2.bias": [
+        64
+      ],
+      "blocks.5.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.5.c1.bias": [
+        56
+      ],
+      "blocks.5.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.5.c2.bias": [
+        64
+      ],
+      "blocks.6.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.6.c1.bias": [
+        56
+      ],
+      "blocks.6.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.6.c2.bias": [
+        64
+      ],
+      "blocks.7.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.7.c1.bias": [
+        56
+      ],
+      "blocks.7.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.7.c2.bias": [
+        64
+      ],
+      "head.weight": [
+        10,
+        64
+      ],
+      "head.bias": [
+        10
+      ]
+    },
+    "output_digest": "3585628d393aa22f8ac9f0ae6bdab0a8db4717f7b503ebf0bd8d8847ea463264"
+  },
+  "after": {
+    "torch": "2.14.0+cu130",
+    "threads": 1,
+    "seed": 7,
+    "discover": {
+      "seconds": 1.4134474379825406,
+      "fingerprints": 643,
+      "propagations": 64
+    },
+    "filter_discovered": {
+      "seconds": 0.0013393600238487124,
+      "fingerprints": 1
+    },
+    "candidates": 1088,
+    "greedy": {
+      "seconds": 2.107066698023118,
+      "fingerprints": 35,
+      "propagations": 585,
+      "trials": 7,
+      "selected_digest": "c8302b5cbe46f5ca950278148e58500362d4a63bd4de2bb5786f560e7972b11b",
+      "remaining": [
+        64,
+        56,
+        64,
+        64,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64
+      ]
+    },
+    "dynamic": {
+      "seconds": 27.563684534979984,
+      "fingerprints": 35,
+      "propagations": 3873,
+      "trials": 7,
+      "selected_digest": "c8302b5cbe46f5ca950278148e58500362d4a63bd4de2bb5786f560e7972b11b",
+      "remaining": [
+        64,
+        56,
+        64,
+        64,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64,
+        56,
+        64
+      ]
+    },
+    "parameter_groups": {
+      "seconds": 0.6749309529550374,
+      "fingerprints": 4,
+      "propagations": 64,
+      "count": 1088
+    },
+    "zero_groups": {
+      "seconds": 0.008751465997193009,
+      "fingerprints": 5,
+      "median_seconds": 0.008535115979611874
+    },
+    "zero_union": {
+      "seconds": 0.0046406090259552,
+      "fingerprints": 3,
+      "median_seconds": 0.00472999201156199
+    },
+    "group_lasso": {
+      "seconds": 0.0021039979765191674,
+      "fingerprints": 1,
+      "median_seconds": 0.001938847010023892
+    },
+    "applied_shapes": {
+      "stem.weight": [
+        64,
+        3,
+        1,
+        1
+      ],
+      "stem.bias": [
+        64
+      ],
+      "blocks.0.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.0.c1.bias": [
+        56
+      ],
+      "blocks.0.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.0.c2.bias": [
+        64
+      ],
+      "blocks.1.c1.weight": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "blocks.1.c1.bias": [
+        64
+      ],
+      "blocks.1.c2.weight": [
+        64,
+        64,
+        3,
+        3
+      ],
+      "blocks.1.c2.bias": [
+        64
+      ],
+      "blocks.2.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.2.c1.bias": [
+        56
+      ],
+      "blocks.2.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.2.c2.bias": [
+        64
+      ],
+      "blocks.3.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.3.c1.bias": [
+        56
+      ],
+      "blocks.3.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.3.c2.bias": [
+        64
+      ],
+      "blocks.4.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.4.c1.bias": [
+        56
+      ],
+      "blocks.4.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.4.c2.bias": [
+        64
+      ],
+      "blocks.5.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.5.c1.bias": [
+        56
+      ],
+      "blocks.5.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.5.c2.bias": [
+        64
+      ],
+      "blocks.6.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.6.c1.bias": [
+        56
+      ],
+      "blocks.6.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.6.c2.bias": [
+        64
+      ],
+      "blocks.7.c1.weight": [
+        56,
+        64,
+        3,
+        3
+      ],
+      "blocks.7.c1.bias": [
+        56
+      ],
+      "blocks.7.c2.weight": [
+        64,
+        56,
+        3,
+        3
+      ],
+      "blocks.7.c2.bias": [
+        64
+      ],
+      "head.weight": [
+        10,
+        64
+      ],
+      "head.bias": [
+        10
+      ]
+    },
+    "output_digest": "3585628d393aa22f8ac9f0ae6bdab0a8db4717f7b503ebf0bd8d8847ea463264"
+  }
+}
