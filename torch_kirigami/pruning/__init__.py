@@ -4,6 +4,7 @@ from ..operator_recipes import AttributeRecipe, OperatorRecipe, TensorRecipe
 from .axis_domains import IdentityAxisIndex
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
+from .cpd import CPDLeastFirst, CPDMetric, fisher_scores
 from .granularity import Granularity
 from .groups import ParameterGroup, unique_groups
 from .metrics import GroupMagnitude, Magnitude, WeightTaylor, parameter_regions
@@ -32,6 +33,8 @@ from .types import (
 __all__ = [
     "AnalysisSummary",
     "AttributeRecipe",
+    "CPDLeastFirst",
+    "CPDMetric",
     "Candidate",
     "CandidateSpace",
     "ChannelCount",
@@ -61,6 +64,7 @@ __all__ = [
     "StrategyResult",
     "TensorRecipe",
     "WeightTaylor",
+    "fisher_scores",
     "load_checkpoint",
     "parameter_regions",
     "save_checkpoint",
