@@ -18,11 +18,15 @@ Registered-entry tests cannot detect an omitted entry because they enumerate the
 It checks numerical references, parameter roles, shape provenance, and rejected alias writes on CPU and CUDA.
 This list covers declared families. It does not claim coverage of every PyTorch API.
 
-The [operator audit](operator-audit.md) adds an inventory independent of registered targets.
+The [operator inventory script](../experiments/operator_surface_audit.py) enumerates entries independently of registered targets.
 It enumerates visible entries in `torch`, Tensor, functional, module, special, linear algebra, and Fourier namespaces.
 The namespace guard reports newly visible names.
 Public lifecycle tests separately check mathematical, functional, coordinate, and Fourier families on CPU and CUDA.
 The inventory records unregistered entries too. A direct rule still does not establish every overload.
+
+The [measurement inventory script](../experiments/measurement_surface_audit.py) also enumerates registered ATen overloads.
+Measurement tests separately check counting formulas, deliberate exclusions, partial counts, and state isolation.
+Successful execution alone does not establish complete MAC or FLOP coverage.
 
 ## Representative test areas
 
@@ -43,10 +47,8 @@ The tests check nonwindow coordinates, rejected window changes, alias safety, an
 It also checks that hardcoded widths still reject physical execution.
 
 The standalone [reshape benchmark](../experiments/reshape_mapping_benchmark.py) measures exact mapping without model execution or activation allocation.
-Its [recorded results](../experiments/reshape_mapping_results.json) compare commit `4701f49` with the implementation that preserves common outer dimensions.
-Batch 1 takes approximately 0.475 seconds before the change and 0.000013 seconds after it.
-Batch 128 previously reaches the interval limit. The revised mapping retains one region without increasing that limit.
-These local timings do not measure complete planning or model latency.
+Compare mappings against independent retained-coordinate references.
+A mapping benchmark does not establish complete planning speed or model latency.
 
 ## Workflow evidence
 

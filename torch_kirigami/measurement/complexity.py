@@ -25,6 +25,7 @@ from .formulas import (
     cudnn_convolution_flops,
     dot_flops,
     efficient_attention_flops,
+    is_native_pointwise,
     matrix_extra_flops,
     matrix_vector_flops,
     slow_conv2d_flops,
@@ -46,20 +47,21 @@ def count_parameters(model: nn.Module) -> int:
 class ModelComplexity:
     """Recorded FLOPs, dense MACs and unique registered parameter elements.
 
-    `flops` includes registered formulas and local nominal arithmetic formulas.
-    Both operation counts cover the entire supplied batch and executed path.
+    Operation counts describe the known subtotal for the supplied batch and
+    executed path under the documented counting conventions. One real
+    floating-point dense MAC contributes two FLOPs. Supported bias,
+    normalization and elementwise arithmetic contribute only to FLOPs.
 
-    One multiply-accumulate counts as one MAC (two FLOPs). Matrix products and
-    convolutions count toward MACs; bias, normalization and elementwise
-    arithmetic contribute only to FLOPs. `uncovered_ops` lists operations whose
-    counting coverage is incomplete or cannot be established, separately for
-    MACs and FLOPs. An empty tuple means the counter found no coverage issue.
+    For each convention, `uncovered_ops` lists observed operations for which
+    the counter cannot establish a complete count. Intentional implementation
+    limits can produce entries without implying a bug. Work excluded by the
+    convention does not appear solely because of that exclusion.
     Parameters include frozen weights, deduplicated by Parameter identity.
 
     Attributes:
         macs: Count of audited matrix and convolution multiply-accumulates.
         params: Count of unique registered Parameter elements.
-        flops: Nominal floating-point arithmetic under the registered formulas.
+        flops: Known nominal floating-point arithmetic under the registered formulas.
         uncovered_ops: Dictionary with `macs` and `flops` keys. Each value is a
             sorted tuple of unique operator names. Names can occur under both
             keys. The dictionary is mutable, although the record fields are
@@ -97,6 +99,13 @@ def find_coverage_gaps(
     Profiler parents connect each formula to its own call and backend children.
     """
     prefix = "kirigami.formula/"
+    # Native pointwise semantics prove the absence of dense matrix/convolution
+    # MACs without implying a FLOP count. Inspect each observed packet once.
+    mac_free = mac_free | {
+        name
+        for name in {event.name for event in events}
+        if name not in mac_free and name not in MAC_FORMULAS and is_native_pointwise(name)
+    }
     counted: dict[int, str] = {}
     recorded: set[str] = set()
     for event in events:
@@ -156,16 +165,20 @@ def calculate_model_complexity(
         input_kwargs: Keyword inputs, including nested tensor containers.
 
     Returns:
-        Counts for the entire supplied batch and explicit counting coverage issues.
-        FLOPs include supported bias, arithmetic, reduction and normalization work.
-        Check both entries in `uncovered_ops` for their respective coverage issues.
-        Dense MACs exclude this additional arithmetic. SDPA uses the math
-        backend here, and MHA fast paths are disabled during counting.
+        Known counts for the entire supplied batch under the documented
+        conventions. MACs count dense matrix products and convolutions. FLOPs
+        also include supported bias, elementwise, reduction and normalization
+        arithmetic. For each convention, `uncovered_ops` lists observed
+        operations for which the counter cannot establish a complete count.
+        Intentional implementation limits can produce entries without implying
+        a bug. Work excluded by the convention does not appear solely because
+        of that exclusion.
 
     Model modes, registered buffer bindings/values, inputs and torch RNG state
     are restored even on failure. This does not isolate arbitrary Python side
     effects or parameter writes. Counting runs outside inference_mode; latency
     uses a separate, uninstrumented forward and the original attention backend.
+    Counting uses math SDPA and temporarily disables MHA fast paths.
     """
     with (
         torch.inference_mode(False),
@@ -249,8 +262,9 @@ def calculate_model_complexity(
                     if output_tensors and not output_tensors[0].is_floating_point():
                         if output_tensors[0].is_complex():
                             uncovered_flops.add(name)
-                        else:
-                            value = 0  # Integer MACs are not floating-point arithmetic.
+                        # Integer MACs are not floating-point arithmetic. Complex
+                        # MACs have no real-scalar conversion in this formula.
+                        value = 0
                 with record_function(f"kirigami.formula/{name}"):
                     pass
                 return value

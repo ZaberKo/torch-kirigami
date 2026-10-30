@@ -1837,16 +1837,16 @@
   "aten_packet_count": 1731,
   "aten_schema_count": 3757,
   "flop_declaration_counts": {
-    "no_direct_formula": 1537,
-    "zero_by_convention": 91,
+    "no_direct_formula": 1511,
+    "zero_by_convention": 117,
     "composite_requires_execution_check": 18,
     "dense_core_formula": 25,
     "native_formula": 6,
     "nominal_arithmetic_formula": 54
   },
   "mac_declaration_counts": {
-    "no_direct_formula": 1517,
-    "zero_by_convention": 177,
+    "no_direct_formula": 1348,
+    "zero_by_convention": 346,
     "dense_core_formula": 25,
     "composite_requires_execution_check": 12
   },
@@ -2037,7 +2037,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::__interpolate",
@@ -2091,7 +2091,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::__lshift__",
@@ -4957,8 +4957,8 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::_pad_enum",
@@ -6477,7 +6477,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::acosh",
@@ -6498,7 +6498,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::adaptive_avg_pool1d",
@@ -6540,7 +6540,7 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -6549,7 +6549,7 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -6567,7 +6567,7 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -7096,7 +7096,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::asinh",
@@ -7117,7 +7117,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::atan",
@@ -7152,7 +7152,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::atan_",
@@ -7160,7 +7160,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::atanh",
@@ -7181,7 +7181,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::atleast_1d",
@@ -7476,7 +7476,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_left_shift",
@@ -7498,7 +7498,7 @@
         "Tensor_Scalar"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_not",
@@ -7507,7 +7507,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_not_",
@@ -7515,7 +7515,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_or",
@@ -7537,7 +7537,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_right_shift",
@@ -7559,7 +7559,7 @@
         "Tensor_Scalar"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::bitwise_xor",
@@ -7581,7 +7581,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::blackman_window",
@@ -7742,7 +7742,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::celu",
@@ -7759,7 +7759,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::center",
@@ -7792,8 +7792,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::cholesky_inverse",
@@ -7855,7 +7855,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::clamp_max",
@@ -7866,7 +7866,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::clamp_max_",
@@ -7875,7 +7875,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::clamp_min",
@@ -7929,7 +7929,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::clone",
@@ -7955,7 +7955,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::col_indices",
@@ -8041,7 +8041,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::conj_physical_",
@@ -8049,7 +8049,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::constant_pad_nd",
@@ -8057,8 +8057,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::contiguous",
@@ -8277,7 +8277,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::cosh",
@@ -8298,7 +8298,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::cosine_embedding_loss",
@@ -8597,7 +8597,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::deg2rad_",
@@ -8605,7 +8605,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::degrees",
@@ -8778,7 +8778,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::digamma_",
@@ -8786,7 +8786,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::dim",
@@ -8953,7 +8953,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::elu_backward",
@@ -9120,7 +9120,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::erf",
@@ -9140,7 +9140,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::erfc",
@@ -9160,7 +9160,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::erfinv",
@@ -9169,7 +9169,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::erfinv_",
@@ -9177,7 +9177,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::exp",
@@ -9199,7 +9199,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::exp2_",
@@ -9207,7 +9207,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::exp_",
@@ -9268,7 +9268,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::exponential",
@@ -9767,7 +9767,7 @@
         "Tensor_Tensor_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::float_power_",
@@ -9776,7 +9776,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::floor",
@@ -9796,7 +9796,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::floor_divide",
@@ -9837,7 +9837,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::fmin",
@@ -9846,7 +9846,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::fmod",
@@ -9871,7 +9871,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::format",
@@ -9888,7 +9888,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::frac_",
@@ -9896,7 +9896,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::fractional_max_pool2d",
@@ -10415,7 +10415,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::hardsigmoid_backward",
@@ -10467,7 +10467,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::hardtanh_backward",
@@ -10510,7 +10510,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::heaviside_",
@@ -10618,7 +10618,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::hypot_",
@@ -10626,7 +10626,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::i0",
@@ -10635,7 +10635,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::i0_",
@@ -10643,7 +10643,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::igamma",
@@ -10652,7 +10652,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::igamma_",
@@ -10660,7 +10660,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::igammac",
@@ -10669,7 +10669,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::igammac_",
@@ -10677,7 +10677,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::im2col",
@@ -10685,8 +10685,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::imag",
@@ -11197,7 +11197,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::isprintable",
@@ -11351,7 +11351,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::lcm_",
@@ -11377,7 +11377,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::le",
@@ -11420,7 +11420,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::leaky_relu_backward",
@@ -11457,7 +11457,7 @@
         "Tensor_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::lerp_",
@@ -11466,7 +11466,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::less",
@@ -11526,7 +11526,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::lift",
@@ -12065,7 +12065,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::log1p",
@@ -12085,7 +12085,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::log2",
@@ -12094,7 +12094,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::log2_",
@@ -12102,7 +12102,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::log_",
@@ -12172,7 +12172,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logaddexp2",
@@ -12181,7 +12181,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logcumsumexp",
@@ -12215,7 +12215,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logical_not",
@@ -12232,7 +12232,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logical_or",
@@ -12241,7 +12241,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logical_or_",
@@ -12249,7 +12249,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logical_xor",
@@ -12258,7 +12258,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logical_xor_",
@@ -12266,7 +12266,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logit",
@@ -12275,7 +12275,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logit_",
@@ -12283,7 +12283,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logit_backward",
@@ -12292,7 +12292,7 @@
         "grad_input"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::logspace",
@@ -12583,7 +12583,7 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12591,7 +12591,7 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12599,7 +12599,7 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12617,7 +12617,7 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12634,7 +12634,7 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12643,7 +12643,7 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
+      "flops": "zero_by_convention",
       "macs": "zero_by_convention"
     },
     {
@@ -12661,8 +12661,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::max_unpool3d",
@@ -12670,8 +12670,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::maximum",
@@ -12680,7 +12680,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::mean",
@@ -12733,7 +12733,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::miopen_batch_norm",
@@ -13197,7 +13197,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::mvlgamma_",
@@ -13205,7 +13205,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::nan_to_num",
@@ -13214,7 +13214,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::nan_to_num_",
@@ -13222,7 +13222,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::nanmean",
@@ -13305,8 +13305,8 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::native_dropout",
@@ -13508,7 +13508,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::nextafter_",
@@ -13516,7 +13516,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::nll_loss",
@@ -13807,8 +13807,8 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::pad_sequence",
@@ -13889,8 +13889,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::pixel_unshuffle",
@@ -13898,8 +13898,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::poisson",
@@ -13939,7 +13939,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::polygamma_",
@@ -13947,7 +13947,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::pop",
@@ -13988,7 +13988,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::pow",
@@ -14254,7 +14254,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::rad2deg_",
@@ -14262,7 +14262,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::radians",
@@ -14444,8 +14444,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::reflection_pad1d_backward",
@@ -14462,8 +14462,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::reflection_pad2d_backward",
@@ -14480,8 +14480,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::reflection_pad3d_backward",
@@ -14507,7 +14507,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::relu6_",
@@ -14550,7 +14550,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::remove",
@@ -14615,8 +14615,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::replication_pad1d_backward",
@@ -14633,8 +14633,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::replication_pad2d_backward",
@@ -14651,8 +14651,8 @@
         "default",
         "out"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::replication_pad3d_backward",
@@ -14894,7 +14894,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::row_indices",
@@ -14936,7 +14936,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::rrelu_",
@@ -15179,7 +15179,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::selu_",
@@ -15187,7 +15187,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::set",
@@ -15252,7 +15252,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sgn_",
@@ -15260,7 +15260,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::shallow_copy_data_",
@@ -15285,7 +15285,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sigmoid_backward",
@@ -15294,7 +15294,7 @@
         "grad_input"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sign",
@@ -15303,7 +15303,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sign_",
@@ -15311,7 +15311,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::signbit",
@@ -15320,7 +15320,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::silu",
@@ -15337,7 +15337,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::silu_backward",
@@ -15346,7 +15346,7 @@
         "grad_input"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sin",
@@ -15367,7 +15367,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sinc",
@@ -15376,7 +15376,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sinc_",
@@ -15384,7 +15384,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::sinh",
@@ -15405,7 +15405,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::size",
@@ -15766,7 +15766,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_bessel_j0",
@@ -15775,7 +15775,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_bessel_j1",
@@ -15784,7 +15784,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_bessel_y0",
@@ -15793,7 +15793,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_bessel_y1",
@@ -15802,7 +15802,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_chebyshev_polynomial_t",
@@ -15815,7 +15815,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_chebyshev_polynomial_u",
@@ -15828,7 +15828,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_chebyshev_polynomial_v",
@@ -15841,7 +15841,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_chebyshev_polynomial_w",
@@ -15854,7 +15854,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_digamma",
@@ -15872,7 +15872,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_erf",
@@ -15899,7 +15899,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_erfinv",
@@ -15975,7 +15975,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_hermite_polynomial_he",
@@ -15988,7 +15988,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_i0",
@@ -16006,7 +16006,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_i1",
@@ -16015,7 +16015,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_i1e",
@@ -16024,7 +16024,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_laguerre_polynomial_l",
@@ -16037,7 +16037,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_legendre_polynomial_p",
@@ -16050,7 +16050,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_log1p",
@@ -16068,7 +16068,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_log_softmax",
@@ -16103,7 +16103,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_modified_bessel_i1",
@@ -16112,7 +16112,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_modified_bessel_k0",
@@ -16121,7 +16121,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_modified_bessel_k1",
@@ -16130,7 +16130,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_multigammaln",
@@ -16157,7 +16157,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_polygamma",
@@ -16193,7 +16193,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_scaled_modified_bessel_k1",
@@ -16202,7 +16202,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_shifted_chebyshev_polynomial_t",
@@ -16215,7 +16215,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_shifted_chebyshev_polynomial_u",
@@ -16228,7 +16228,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_shifted_chebyshev_polynomial_v",
@@ -16241,7 +16241,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_shifted_chebyshev_polynomial_w",
@@ -16254,7 +16254,7 @@
         "x_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_sinc",
@@ -16280,7 +16280,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_xlog1py",
@@ -16293,7 +16293,7 @@
         "self_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::special_xlogy",
@@ -16319,7 +16319,7 @@
         "self_scalar_out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::split",
@@ -16769,7 +16769,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::tanh",
@@ -16790,7 +16790,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::tanh_backward",
@@ -16799,7 +16799,7 @@
         "grad_input"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::tensor",
@@ -17152,7 +17152,7 @@
         "out"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::trunc_",
@@ -17160,7 +17160,7 @@
         "default"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::type_as",
@@ -17208,8 +17208,8 @@
       "overloads": [
         "default"
       ],
-      "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "flops": "zero_by_convention",
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::unfold_backward",
@@ -17671,7 +17671,7 @@
         "Tensor"
       ],
       "flops": "no_direct_formula",
-      "macs": "no_direct_formula"
+      "macs": "zero_by_convention"
     },
     {
       "name": "aten::xlogy_",

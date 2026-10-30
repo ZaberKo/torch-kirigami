@@ -208,3 +208,45 @@ def test_complex_abs_does_not_claim_a_real_scalar_formula(execution_device):
     )
     assert result.flops == 0
     assert "aten::abs" in result.uncovered_ops["flops"]
+
+
+@pytest.mark.parametrize("form", ["dot", "mv", "mm", "linear"])
+def test_complex_products_preserve_logical_macs_without_real_flop_conversion(
+    form, execution_device
+):
+    class Model(nn.Module):
+        def forward(self, a, b):
+            if form == "linear":
+                return F.linear(a, b, torch.ones(3, device=a.device, dtype=a.dtype))
+            return getattr(torch, form)(a, b)
+
+    if form == "dot":
+        a, b, macs = torch.ones(4, dtype=torch.complex64), torch.ones(4, dtype=torch.complex64), 4
+    elif form == "mv":
+        a, b, macs = (
+            torch.ones(3, 4, dtype=torch.complex64),
+            torch.ones(4, dtype=torch.complex64),
+            12,
+        )
+    else:
+        a = torch.ones(2, 4, dtype=torch.complex64)
+        b = torch.ones((3, 4) if form == "linear" else (4, 3), dtype=torch.complex64)
+        macs = 24
+    result = calculate_model_complexity(Model(), (a, b), device=execution_device)
+    assert result.macs == macs
+    assert result.flops == 0
+    assert result.uncovered_ops["flops"]
+    assert result.uncovered_ops["macs"] == ()
+
+
+def test_uncovered_complex_product_keeps_other_known_real_flops(execution_device):
+    class Model(nn.Module):
+        def forward(self, x):
+            return x @ x, x.real.square().sum()
+
+    result = calculate_model_complexity(
+        Model(), torch.ones(2, 2, dtype=torch.complex64), device=execution_device
+    )
+    assert result.macs == 8
+    assert result.flops == 7  # Four real squares and three reduction additions.
+    assert "aten::mm" in result.uncovered_ops["flops"]

@@ -7,6 +7,7 @@ from torch.nn import functional as F
 from torch.utils.flop_counter import flop_registry
 
 from torch_kirigami.measurement import calculate_model_complexity
+from torch_kirigami.measurement.formulas import MAC_FORMULAS, is_native_pointwise
 
 
 @torch.library.custom_op("kirigami_measurement::square", mutates_args=())
@@ -209,3 +210,59 @@ def test_static_split_indices_do_not_require_a_host_tensor(execution_device):
         Model(), (torch.ones(2, 6), [2, 4]), device=execution_device
     )
     assert result.flops == result.macs == 0
+
+
+@pytest.mark.parametrize("name", ["special_bessel_j0", "hypot", "logaddexp"])
+def test_native_pointwise_tags_exclude_macs_without_inventing_flops(name, execution_device):
+    class Model(nn.Module):
+        def forward(self, x):
+            operation = getattr(torch.ops.aten, name).default
+            return operation(x) if name == "special_bessel_j0" else operation(x, x)
+
+    assert is_native_pointwise(f"aten::{name}")
+    result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    assert result.macs == result.flops == 0
+    assert result.uncovered_ops["macs"] == ()
+    assert f"aten::{name}" in result.uncovered_ops["flops"]
+
+
+def test_pointwise_metadata_does_not_classify_contractions_or_custom_ops():
+    assert all(not is_native_pointwise(name) for name in MAC_FORMULAS)
+    assert not is_native_pointwise("kirigami_measurement::square")
+    assert not is_native_pointwise("aten::not_a_registered_operation")
+    assert not is_native_pointwise("aten::__dict__")
+    # cos includes untagged scalar overloads. Do not extend a tensor overload's
+    # tag to a whole packet unless every overload declares the same property.
+    assert not is_native_pointwise("aten::cos")
+
+
+@pytest.mark.parametrize("dimensions", [1, 2, 3])
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_forward_max_pooling_is_comparison_and_selection(dimensions, adaptive, execution_device):
+    class Model(nn.Module):
+        def forward(self, x):
+            prefix = "adaptive_max_pool" if adaptive else "max_pool"
+            return getattr(F, f"{prefix}{dimensions}d")(x, 2, return_indices=True)
+
+    result = calculate_model_complexity(
+        Model(), torch.randn(2, 3, *([6] * dimensions)), device=execution_device
+    )
+    assert result.flops == result.macs == 0
+    assert result.uncovered_ops == {"macs": (), "flops": ()}
+
+
+@pytest.mark.parametrize(
+    "operation", ["pixel_shuffle", "pixel_unshuffle", "channel_shuffle", "unfold", "pad"]
+)
+def test_coordinate_and_padding_operations_have_no_arithmetic(operation, execution_device):
+    class Model(nn.Module):
+        def forward(self, x):
+            if operation == "pad":
+                return F.pad(x, (1, 1, 1, 1), mode="reflect")
+            if operation == "channel_shuffle":
+                return torch.channel_shuffle(x, 2)
+            return getattr(F, operation)(x, 2)
+
+    result = calculate_model_complexity(Model(), torch.randn(2, 4, 6, 6), device=execution_device)
+    assert result.flops == result.macs == 0
+    assert result.uncovered_ops == {"macs": (), "flops": ()}

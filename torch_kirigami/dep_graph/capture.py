@@ -55,6 +55,30 @@ def tensor_leaves(value: object) -> list[torch.Tensor]:
     return result
 
 
+def validate_isolated_tensors(originals: list[torch.Tensor], memo: dict[int, Any]) -> None:
+    """Reject copies that change lazy view flags or storage sharing."""
+    storage_copies: dict[object, object] = {}
+    storage_sources: dict[object, object] = {}
+    for original in originals:
+        copied = memo.get(id(original))
+        if not isinstance(copied, torch.Tensor):
+            raise CaptureError("Input or buffer isolation did not produce an independent tensor")
+        if original.is_conj() != copied.is_conj() or original.is_neg() != copied.is_neg():
+            raise CaptureError(
+                "Input or buffer isolation cannot preserve lazy conjugate/negative view flags. "
+                "Use resolve_conj()/resolve_neg() before capture or measurement only when "
+                "forward does not depend on these flags or the original alias relationships."
+            )
+        if original.numel():
+            source, target = storage_key(original), storage_key(copied)
+            if (
+                source == target
+                or storage_copies.setdefault(source, target) != target
+                or storage_sources.setdefault(target, source) != source
+            ):
+                raise CaptureError("Input or buffer isolation cannot preserve storage sharing")
+
+
 def fingerprint(model: nn.Module) -> tuple[object, ...]:
     """Record detectable structural properties without hashing parameter values.
 
@@ -172,11 +196,39 @@ def isolated_execution(
         # inside inference mode. Execution itself preserves the caller's mode.
         with torch.inference_mode(False):
             memo: dict[int, Any] = {}
+            conjugates: dict[int, tuple[torch.Tensor, torch.Tensor]] = {}
+            for tensor in (*isolated, *related):
+                if (
+                    id(tensor) not in conjugates
+                    and type(tensor) in (torch.Tensor, nn.Parameter)
+                    and tensor.is_conj()
+                    and not tensor.is_neg()
+                    and tensor.is_leaf
+                ):
+                    # Tensor.__deepcopy__ physically conjugates its copy, losing
+                    # the lazy flag and storage aliases. Copy the unflagged view
+                    # instead, then recreate the public conjugate view. Storage
+                    # copying still uses deepcopy's shared memo for all tensors.
+                    raw = copy.deepcopy(tensor.detach().conj(), memo)
+                    copied = raw.conj()
+                    if isinstance(tensor, nn.Parameter):
+                        copied = nn.Parameter(copied, requires_grad=tensor.requires_grad)
+                    else:
+                        copied.requires_grad_(tensor.requires_grad)
+                    memo[id(tensor)] = copied
+                    conjugates[id(tensor)] = tensor, copied
+            # Seed every conjugate identity before copying attributes or grads
+            # so references between these tensors reuse their flagged copies.
+            for tensor, copied in conjugates.values():
+                copied.__dict__ = copy.deepcopy(vars(tensor), memo)
+                if tensor.grad is not None:
+                    copied.grad = copy.deepcopy(tensor.grad, memo)
             copied_args, copied_kwargs, copies, related_copies = copy.deepcopy(
                 (args, kwargs, [b[2] for b in buffers], related), memo
             )
     except Exception as error:
         raise CaptureError("Cannot safely copy example inputs and registered buffers") from error
+    validate_isolated_tensors([*isolated, *related], memo)
     aliases = {
         id(clone): original for (_, _, original), clone in zip(buffers, copies, strict=False)
     }

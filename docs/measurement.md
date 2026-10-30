@@ -50,11 +50,11 @@ Measurement isolates inputs from model execution and preserves repeated input id
 | Field | Definition |
 | --- | --- |
 | `params` | Elements in unique registered Parameter objects, including frozen parameters |
-| `macs` | Dense matrix and convolution MACs for the supplied batch and executed path |
-| `flops` | Nominal arithmetic from native, local, and external registered formulas |
-| `uncovered_ops` | Dictionary of operator names with incomplete or uncertain counting coverage, under `macs` and `flops` |
+| `macs` | Known dense matrix and convolution MACs for the supplied batch and executed path |
+| `flops` | Known nominal arithmetic from native, local, and external registered formulas |
+| `uncovered_ops` | Observed operations without an established complete count under each convention, grouped by `macs` and `flops` |
 
-One dense MAC contributes two FLOPs in the convention used here.
+One real floating-point dense MAC contributes two FLOPs in the convention used here.
 Matrix products and convolutions contribute MACs, including the matrix products in attention.
 Bias additions, normalization, activations, pooling, and elementwise work do not contribute MACs.
 Zero weights, masks, causal attention masks, and kernel fusion do not reduce the dense theoretical MAC count.
@@ -70,9 +70,12 @@ A counted call does not establish coverage for another call with the same operat
 `uncovered_ops` always contains `macs` and `flops` keys in measurement results.
 Each value is a sorted tuple of unique operator names.
 A name can occur under both keys. Repeated calls do not duplicate names.
-A nonempty tuple means coverage is incomplete or unverified under that convention.
-An empty tuple means the counter found no coverage issue.
+For each convention, the tuple lists observed operations for which the counter cannot establish a complete count.
+An empty tuple means the counter found no such operations.
 These names describe measurement coverage, not pruning support or execution failure.
+Intentional implementation limits can produce entries without implying a bug.
+Work excluded by the convention does not appear solely because of that exclusion.
+The decision depends on the counting definition, not whether an omission was deliberate.
 The dictionary is mutable. Its tuple values are immutable.
 Known operations with no MAC work, such as normalization and pooling, do not cause MAC diagnostics.
 An unimplemented FLOP formula can still cause a FLOP diagnostic.
@@ -85,7 +88,15 @@ For example, a Linear followed by GELU can report:
 ```
 
 The matrix product contributes MACs. GELU contributes no matrix/convolution MACs, but its FLOP formula remains uncovered.
+Deliberately leaving that formula unimplemented still leaves a FLOP coverage gap.
+The reported FLOPs are the known subtotal. Missing work is not an estimate of zero cost.
 JSON serialization represents the tuples as arrays.
+
+| Operation | MAC treatment | FLOP treatment |
+| --- | --- | --- |
+| Bias addition | Outside the MAC definition. No MAC coverage entry. | Supported addition contributes FLOPs. |
+| Forward max pooling | Outside the MAC definition. No MAC coverage entry. | Comparisons and selection count as zero under the convention. No FLOP coverage entry. |
+| GELU | Outside the MAC definition. No MAC coverage entry. | Floating-point arithmetic is within scope, but the complete formula is unavailable. Report under `uncovered_ops["flops"]`. |
 
 ### Nominal arithmetic conventions
 
@@ -105,12 +116,15 @@ They do not model compiler folding or implementation-specific reduction algorith
 | BatchNorm with stored statistics | Two operations per channel for epsilon/rsqrt, then two per input element. Each affine weight or bias adds one per element. |
 | Fused matrix bias and scaling | Count the output addition when beta is nonzero. Count each nonunit, nonzero beta scale and each nonunit alpha scale separately. |
 | Convolution bias | One addition per output element |
-| Comparisons, ReLU, index selection, data movement | Zero floating-point arithmetic under this convention |
+| Comparisons, ReLU, forward max pooling, index selection, data movement | Zero floating-point arithmetic under this convention |
 
-Training-statistic updates, pooling, GELU, and other unimplemented arithmetic remain explicit FLOP coverage gaps.
+Training-statistic updates, average pooling, Fold accumulation, GELU, and other unimplemented arithmetic remain explicit FLOP coverage gaps.
 Fused attention formulas that count only QK and AV also retain a FLOP diagnostic.
 Integer arithmetic does not contribute FLOPs.
-Complex arithmetic has no general conversion to real scalar FLOPs and remains unverified.
+Complex arithmetic has no general conversion to real scalar FLOPs in these formulas.
+Complex matrix products retain logical dense MAC counts, but contribute zero to the known real FLOP subtotal and appear under `uncovered_ops["flops"]`.
+Native ATen packets whose overloads all carry the pointwise tag contribute no dense matrix/convolution MACs.
+The tag does not supply a FLOP formula.
 External registered formulas can define another convention. Check those registrations before comparing environments.
 Matrix formulas used for MAC conversion must retain the two-FLOPs-per-dense-MAC convention.
 
@@ -127,7 +141,7 @@ They do not change PyTorch's global formula registry.
 Scalar scaling and bias additions contribute FLOPs but remain outside the MAC convention.
 Equivalent in-place arithmetic and matrix forms reuse these formulas.
 Safe softmax uses the same nominal arithmetic as softmax.
-See the [operation audit](measurement-audit.md) for the enumerated surface, execution checks, and remaining boundaries.
+The [verification guide](verification.md) explains the scope of operation inventories and execution tests.
 
 Composite operations contribute through their exposed kernels.
 For example, PyTorch simplifies a length-one einsum inner product into elementwise multiplication.
@@ -167,6 +181,11 @@ The result measures model execution. It does not include data loading or end-to-
 Both functions restore module training flags, registered buffer names and values, isolated inputs, and PyTorch random-number state after success or failure. Latency also restores the garbage collector's enabled state. Forward execution must not change parameter values. Measurement does not isolate arbitrary Python side effects. Do not train or mutate the same model concurrently.
 
 The isolation covers registered buffers that the forward adds, removes, or replaces. It also covers buffer persistence flags and buffers whose value is `None`. Measurement restores those registrations after a failed forward as well as a successful one.
+
+Isolation preserves lazy conjugate flags and shared storage for supported tensor inputs and buffers.
+It rejects lazy negative views because the current copy path cannot preserve their flags and aliases.
+Use `resolve_neg()` before measurement only when forward does not depend on those flags or original alias relationships.
+Isolation checks copied storage relationships before executing the model.
 
 The input tree can share tensors with ordinary model attributes. Measurement isolates and temporarily rebinds those tensors with the inputs. Keep model-owned tensors and their shared inputs on the same device before measurement.
 

@@ -31,6 +31,11 @@ Use the project's Ruff configuration and Google-style docstrings.
 Document accepted inputs, ownership, return values, model changes, and failure conditions.
 Explain non-obvious reasoning in comments.
 
+Keep API contracts, support boundaries, and reusable development procedures in `docs/`.
+Put temporary investigations, audits, and local benchmark records in `docs/dev-notes/`.
+Git ignores that directory, and release builds exclude it.
+Formal guides must not depend on local notes.
+
 Keep imports explicit and acyclic.
 Define shared records below the modules that consume them.
 Do not conceal reverse dependencies with local imports or `TYPE_CHECKING`.
@@ -87,44 +92,11 @@ A masked dense model is a valid reference only when masking preserves the releva
 Removing normalization or attention dimensions can change that calculation.
 Use an independent compact reference for those cases.
 
-The [CPU performance probe](../experiments/planning_sparsity_benchmark.py) measures planning and sparse operations without downloaded data.
-The [recorded results](../experiments/planning_sparsity_results.json) include baseline timings and selected-key digests.
-Compare each strategy against its own baseline. The two rows use different metrics.
-
-The [residual benchmark](../experiments/residual_planning_benchmark.py) also includes repeated domains along a shared residual trunk.
-Its [recorded results](../experiments/residual_planning_results.json) compare commit `525ba34` with the optimized implementation.
-The model has 64 channels, eight residual blocks, and 1,088 candidates.
-Both checkouts use PyTorch 2.14, one CPU thread, seed 7, and the same local random weights.
-Both strategies use `Magnitude`, a global channel ratio of 0.05, and Conv2d granularity 8.
-
-| Phase | Before | After |
-| --- | ---: | ---: |
-| Candidate discovery | 5.488 s | 1.413 s |
-| Filter the discovered space again | 5.450 s | 0.00134 s |
-| Greedy planning | 11.922 s | 2.107 s |
-| DynamicGreedy planning | 64.326 s | 27.564 s |
-| Extract all 1,088 parameter groups | 4.277 s | 0.675 s |
-| Zero one prepared union, median | 7.058 ms | 4.730 ms |
-| Zero multiple groups, median | 8.501 ms | 8.535 ms |
-
-Discovery and group extraction each reduce full propagations from 576 to 64.
-Filtering the same discovered space performs one freshness check and no propagation.
-Greedy propagations fall from 1,673 to 585. DynamicGreedy propagations fall from 8,033 to 3,873.
-Both strategies retain the same selected keys, trial counts, and final widths.
-Applying the Greedy plan produces identical parameter shapes and output bytes in both checkouts.
-
-Instrumentation contributes to these host measurements. The results do not guarantee runtime.
-Sparse medians use seven subsequent calls. Other phases use one run per checkout.
-Multiple-group CPU writes have no measured speedup.
-Their combined finite-value tests avoid per-region device synchronization.
-Passing an existing union avoids reconstructing that group on every training step.
-Regularizers retain their required freshness validation and have no claimed speedup in this comparison.
-
-To repeat the benchmark, use the same script and interpreter with each checkout on `PYTHONPATH`:
-
-```bash
-PYTHONPATH=. .venv/bin/python experiments/residual_planning_benchmark.py --output result.json
-```
+The [planning and sparse-operation benchmark](../experiments/planning_sparsity_benchmark.py) runs without downloaded data.
+The [residual benchmark](../experiments/residual_planning_benchmark.py) exercises shared domains and repeated sparse writes.
+Compare the same model, inputs, strategy, metric, configuration, interpreter, and device across implementations.
+Check selected keys, trial counts, final widths, parameter layouts, and numerical outputs as well as timing.
+Instrumentation and warmup affect timings. Host-specific measurements do not guarantee application performance.
 
 Native proofs permit structural reuse only.
 Do not reuse parameter values or custom metric scores across training updates.

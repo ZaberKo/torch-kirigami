@@ -65,6 +65,22 @@ jobs:
           uv pip install --python .venv/bin/python twine
           uv build
           .venv/bin/python -m twine check --strict dist/*.whl dist/*.tar.gz
+          .venv/bin/python - <<'PY'
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          for path in Path("dist").glob("*"):
+              if path.name.endswith(".tar.gz"):
+                  with tarfile.open(path) as archive:
+                      names = archive.getnames()
+              elif path.suffix == ".whl":
+                  with zipfile.ZipFile(path) as archive:
+                      names = archive.namelist()
+              else:
+                  continue
+              assert not any("/docs/dev-notes/" in f"/{name}/" for name in names), path
+          PY
       - uses: actions/upload-artifact@v7
         with:
           name: python-package-distributions

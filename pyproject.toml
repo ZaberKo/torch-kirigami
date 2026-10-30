@@ -42,6 +42,7 @@ dev = [
 module-name = "torch_kirigami"
 module-root = ""
 source-include = ["tests/**", "examples/**", "docs/**"]
+source-exclude = ["/docs/dev-notes"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

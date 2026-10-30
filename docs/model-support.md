@@ -44,6 +44,11 @@ Capture rejects empty tensor examples and results.
 Capture rejects forward hooks, unsupported registration callbacks, undeclared parameter writes, unsupported storage, and metadata values that it cannot represent.
 It also rejects inputs or buffers that share storage with parameters.
 
+Input and buffer isolation preserves lazy conjugate flags and supported shared storage.
+The current copy path rejects lazy negative views because it cannot preserve their flags and aliases.
+Use `resolve_neg()` only when forward does not depend on those flags or original alias relationships.
+Copies that change the supported storage relationships fail before metadata execution.
+
 `nn.Embedding` and `F.embedding` declare their native `max_norm` updates.
 Capture warns before execution and permits these updates on directly bound parameters.
 Embedding renormalizes only vocabulary rows used by the example.

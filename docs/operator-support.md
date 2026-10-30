@@ -29,9 +29,9 @@ Pointwise aliases include `absolute`, `negative`, `multiply`, `subtract`, `divid
 These names retain the corresponding canonical operation's constraints and effect checks.
 Function `torch.numel` also preserves dimension provenance. Using its result as a semantic scalar still guards that value.
 
-The [operator audit](operator-audit.md) records the reviewed PyTorch namespace surface and remaining semantic gaps.
 Independent spelling tests complement the registered-entry tests.
 Neither enumeration nor registration proves support for every overload.
+See the [verification guide](verification.md) for test levels and inventory checks.
 
 Equal names alone do not establish equivalent semantics.
 For example, Tensor `unfold` returns window views along one axis, while functional `unfold` extracts and flattens two-dimensional image patches.
@@ -124,6 +124,10 @@ Place the mask where it represents contributions from every selected channel.
 Normalization, softmax, reductions, and attention can recompute statistics or probabilities over a smaller domain. A dense masked output is generally not an equivalent reference. Use a compact reference model or a formula evaluated on retained coordinates.
 
 Unknown operators and unsupported axes block requests that reach them. They do not invalidate every independent branch. Tensor-dependent Python control flow, dynamic index remapping, quantized or sparse storage compaction, RNN/PackedSequence, MoE routing, and optimizer-state migration have no general built-in support.
+
+General matrix decompositions, solves, determinants, losses, and distance operations need additional structural semantics.
+Coordinate transforms such as standalone diagonals, `roll`, `flip`, and general `tensor_split` also need rules for retained coordinates.
+FX can expand some Python wrappers into supported calls. Otherwise, affected requests require a custom rule.
 
 Capture safety is a separate prerequisite.
 An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.

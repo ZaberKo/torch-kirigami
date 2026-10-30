@@ -838,6 +838,15 @@
           ],
           "conditions": "Public integration on CPU and CUDA through execution_device",
           "gaps": []
+        },
+        {
+          "behavior": "Preserve conjugate copy metadata and supported storage sharing; reject unsafe negative view copies before metadata execution.",
+          "tests": [
+            "tests/measurement/test_lazy_views.py::test_lazy_negative_view_copy_rejection_preserves_state",
+            "tests/measurement/test_lazy_views.py::test_conjugate_input_buffer_aliases_survive_both_measurements",
+            "tests/measurement/test_lazy_views.py::test_materialized_views_support_measurement_capture_and_pruning"
+          ],
+          "conditions": "CPU/CUDA public capture, measurement and plan/apply; explicit materialized alternatives and failure-state preservation."
         }
       ]
     },
@@ -2329,6 +2338,16 @@
           "gaps": [
             "未穷举自定义算子、输入形状与编译后端组合"
           ]
+        },
+        {
+          "behavior": "Respect declared zero-arithmetic conventions and native pointwise MAC exclusions; omit unsupported real FLOP conversion for complex products.",
+          "tests": [
+            "tests/measurement/test_flops.py::test_complex_products_preserve_logical_macs_without_real_flop_conversion",
+            "tests/measurement/test_operation_surface.py::test_native_pointwise_tags_exclude_macs_without_inventing_flops",
+            "tests/measurement/test_operation_surface.py::test_forward_max_pooling_is_comparison_and_selection",
+            "tests/measurement/test_operation_surface.py::test_coordinate_and_padding_operations_have_no_arithmetic"
+          ],
+          "conditions": "CPU/CUDA; complex products, tagged native pointwise packets, forward max pooling and coordinate transforms."
         }
       ]
     },

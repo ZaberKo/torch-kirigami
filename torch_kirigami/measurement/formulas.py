@@ -8,6 +8,24 @@ import torch
 from torch.utils.flop_counter import flop_registry
 
 
+def is_native_pointwise(name: str) -> bool:
+    """Identify ATen packets whose overloads all declare pointwise semantics.
+
+    Pointwise work is outside the dense matrix/convolution MAC convention.
+    These tags do not determine FLOPs. Require every overload to carry the tag
+    because profiler names identify packets rather than individual overloads.
+    """
+    if not name.startswith("aten::"):
+        return False
+    packet = getattr(torch.ops.aten, name.removeprefix("aten::"), None)
+    if packet is None or not callable(getattr(packet, "overloads", None)):
+        return False
+    overloads = packet.overloads()
+    return bool(overloads) and all(
+        torch.Tag.pointwise in getattr(packet, overload).tags for overload in overloads
+    )
+
+
 def elementwise_flops(*args: Any, out_shape: tuple[int, ...], **kwargs: Any) -> int:
     """Count one arithmetic operation per output element, including broadcasting."""
     return math.prod(out_shape)
@@ -388,6 +406,35 @@ FLOP_FREE_OPS = frozenset(
         "amin",
         "max",
         "min",
+        # Forward max pooling selects values and indices. Comparisons are free
+        # under this convention; backward scatter/add kernels are not included.
+        "max_pool1d",
+        "max_pool2d",
+        "max_pool3d",
+        "max_pool1d_with_indices",
+        "max_pool2d_with_indices",
+        "max_pool3d_with_indices",
+        "adaptive_max_pool1d",
+        "adaptive_max_pool2d",
+        "adaptive_max_pool3d",
+        # Coordinate transforms and padding only copy, select, or fill values.
+        "pixel_shuffle",
+        "pixel_unshuffle",
+        "channel_shuffle",
+        "native_channel_shuffle",
+        "unfold",
+        "im2col",
+        "max_unpool2d",
+        "max_unpool3d",
+        "pad",
+        "constant_pad_nd",
+        "_pad_circular",
+        "reflection_pad1d",
+        "reflection_pad2d",
+        "reflection_pad3d",
+        "replication_pad1d",
+        "replication_pad2d",
+        "replication_pad3d",
     )
 )
 
@@ -624,5 +671,7 @@ MAC_FREE_OPS = frozenset(
         "_reshape_alias",
         "_autocast_to_reduced_precision",
         "_autocast_to_full_precision",
+        # Fold adds overlapping patches but performs no dense matrix product.
+        "col2im",
     )
 )

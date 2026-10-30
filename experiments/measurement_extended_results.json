@@ -1,0 +1,418 @@
+{
+  "torch": "2.14.0+cu130",
+  "scope": "ATen declaration inventory plus expanded execution samples. Successful execution does not prove complete numerical counting for all arguments.",
+  "runs": [
+    {
+      "run": "operators_cpu_complex64_function",
+      "records": 1414,
+      "counts": {
+        "measured": 1087,
+        "unsupported_dtype": 309,
+        "measurement_error": 3,
+        "baseline_error": 15
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ]
+      }
+    },
+    {
+      "run": "operators_cpu_float32_function",
+      "records": 4188,
+      "counts": {
+        "measured": 4108,
+        "unsupported_dtype": 25,
+        "measurement_error": 16,
+        "baseline_error": 35,
+        "sample_size_limit": 4
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.mm",
+          "sparse.sampled_addmm"
+        ]
+      }
+    },
+    {
+      "run": "operators_cpu_float32_inplace",
+      "records": 959,
+      "counts": {
+        "measured": 371,
+        "baseline_error": 39,
+        "variant_unavailable": 524,
+        "unsupported_dtype": 25
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "operators_cpu_float32_method",
+      "records": 1233,
+      "counts": {
+        "measured": 844,
+        "variant_unavailable": 364,
+        "unsupported_dtype": 25
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "operators_cpu_float64_function",
+      "records": 1939,
+      "counts": {
+        "measured": 1891,
+        "unsupported_dtype": 26,
+        "measurement_error": 6,
+        "baseline_error": 15,
+        "sample_size_limit": 1
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.mm",
+          "sparse.sampled_addmm"
+        ]
+      }
+    },
+    {
+      "run": "operators_cpu_int64_function",
+      "records": 1533,
+      "counts": {
+        "measured": 1283,
+        "unsupported_dtype": 235,
+        "baseline_error": 15
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "operators_cuda_bfloat16_function",
+      "records": 1741,
+      "counts": {
+        "measured": 1601,
+        "unsupported_dtype": 127,
+        "measurement_error": 6,
+        "baseline_error": 6,
+        "sample_size_limit": 1
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ],
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_complex64_function",
+      "records": 1418,
+      "counts": {
+        "measured": 1105,
+        "unsupported_dtype": 307,
+        "measurement_error": 6
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ],
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_float16_function",
+      "records": 1743,
+      "counts": {
+        "measured": 1605,
+        "unsupported_dtype": 125,
+        "measurement_error": 6,
+        "baseline_error": 6,
+        "sample_size_limit": 1
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ],
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_float32_function",
+      "records": 4191,
+      "counts": {
+        "measured": 4136,
+        "unsupported_dtype": 25,
+        "measurement_error": 12,
+        "baseline_error": 14,
+        "sample_size_limit": 4
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ],
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_float32_inplace",
+      "records": 959,
+      "counts": {
+        "measured": 371,
+        "baseline_error": 39,
+        "variant_unavailable": 524,
+        "unsupported_dtype": 25
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "operators_cuda_float32_method",
+      "records": 1231,
+      "counts": {
+        "measured": 838,
+        "variant_unavailable": 365,
+        "unsupported_dtype": 25,
+        "measurement_error": 3
+      },
+      "measurement_errors": {
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_float64_function",
+      "records": 1937,
+      "counts": {
+        "measured": 1897,
+        "unsupported_dtype": 27,
+        "measurement_error": 6,
+        "baseline_error": 6,
+        "sample_size_limit": 1
+      },
+      "measurement_errors": {
+        "CaptureError: Only dense, non-quantized strided tensors are supported": [
+          "sparse.sampled_addmm"
+        ],
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "operators_cuda_int64_function",
+      "records": 1482,
+      "counts": {
+        "measured": 1214,
+        "unsupported_dtype": 265,
+        "measurement_error": 3
+      },
+      "measurement_errors": {
+        "RuntimeError: tensor_split expected tensor_indices_or_sections to be on cpu, but it's on cuda:0": [
+          "tensor_split"
+        ]
+      }
+    },
+    {
+      "run": "modules_cpu_float32_function",
+      "records": 385,
+      "counts": {
+        "measured": 385
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "modules_cuda_float32_function",
+      "records": 385,
+      "counts": {
+        "measured": 385
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "extra_modules_cpu",
+      "records": 40,
+      "counts": {
+        "measured": 40
+      },
+      "measurement_errors": {}
+    },
+    {
+      "run": "extra_modules_cuda",
+      "records": 41,
+      "counts": {
+        "measured": 41
+      },
+      "measurement_errors": {}
+    }
+  ],
+  "public_nn_modules": {
+    "AdaptiveAvgPool1d": "ModuleInfo",
+    "AdaptiveAvgPool2d": "ModuleInfo",
+    "AdaptiveAvgPool3d": "ModuleInfo",
+    "AdaptiveLogSoftmaxWithLoss": "explicit_case",
+    "AdaptiveMaxPool1d": "ModuleInfo",
+    "AdaptiveMaxPool2d": "ModuleInfo",
+    "AdaptiveMaxPool3d": "ModuleInfo",
+    "AlphaDropout": "explicit_case",
+    "AvgPool1d": "ModuleInfo",
+    "AvgPool2d": "ModuleInfo",
+    "AvgPool3d": "ModuleInfo",
+    "BCELoss": "ModuleInfo",
+    "BCEWithLogitsLoss": "ModuleInfo",
+    "BatchNorm1d": "ModuleInfo",
+    "BatchNorm2d": "ModuleInfo",
+    "BatchNorm3d": "ModuleInfo",
+    "Bilinear": "ModuleInfo",
+    "CELU": "ModuleInfo",
+    "CTCLoss": "ModuleInfo",
+    "ChannelShuffle": "explicit_case",
+    "CircularPad1d": "ModuleInfo",
+    "CircularPad2d": "ModuleInfo",
+    "CircularPad3d": "ModuleInfo",
+    "ConstantPad1d": "ModuleInfo",
+    "ConstantPad2d": "ModuleInfo",
+    "ConstantPad3d": "ModuleInfo",
+    "Container": "abstract_or_registration_container",
+    "Conv1d": "ModuleInfo",
+    "Conv2d": "ModuleInfo",
+    "Conv3d": "ModuleInfo",
+    "ConvTranspose1d": "ModuleInfo",
+    "ConvTranspose2d": "ModuleInfo",
+    "ConvTranspose3d": "ModuleInfo",
+    "CosineEmbeddingLoss": "ModuleInfo",
+    "CosineSimilarity": "explicit_case",
+    "CrossEntropyLoss": "ModuleInfo",
+    "CrossMapLRN2d": "explicit_case",
+    "DataParallel": "explicit_case",
+    "Dropout": "explicit_case",
+    "Dropout1d": "explicit_case",
+    "Dropout2d": "explicit_case",
+    "Dropout3d": "explicit_case",
+    "ELU": "ModuleInfo",
+    "Embedding": "ModuleInfo",
+    "EmbeddingBag": "explicit_case",
+    "FeatureAlphaDropout": "explicit_case",
+    "Flatten": "explicit_case",
+    "Fold": "explicit_case",
+    "FractionalMaxPool2d": "ModuleInfo",
+    "FractionalMaxPool3d": "ModuleInfo",
+    "GELU": "ModuleInfo",
+    "GLU": "ModuleInfo",
+    "GRU": "ModuleInfo",
+    "GRUCell": "ModuleInfo",
+    "GaussianNLLLoss": "ModuleInfo",
+    "GroupNorm": "ModuleInfo",
+    "Hardshrink": "ModuleInfo",
+    "Hardsigmoid": "explicit_case",
+    "Hardswish": "ModuleInfo",
+    "Hardtanh": "ModuleInfo",
+    "HingeEmbeddingLoss": "ModuleInfo",
+    "HuberLoss": "ModuleInfo",
+    "Identity": "explicit_case",
+    "InstanceNorm1d": "ModuleInfo",
+    "InstanceNorm2d": "ModuleInfo",
+    "InstanceNorm3d": "ModuleInfo",
+    "KLDivLoss": "ModuleInfo",
+    "L1Loss": "ModuleInfo",
+    "LPPool1d": "ModuleInfo",
+    "LPPool2d": "ModuleInfo",
+    "LPPool3d": "ModuleInfo",
+    "LSTM": "ModuleInfo",
+    "LSTMCell": "ModuleInfo",
+    "LayerNorm": "ModuleInfo",
+    "LazyBatchNorm1d": "explicit_case",
+    "LazyBatchNorm2d": "explicit_case",
+    "LazyBatchNorm3d": "explicit_case",
+    "LazyConv1d": "ModuleInfo",
+    "LazyConv2d": "ModuleInfo",
+    "LazyConv3d": "ModuleInfo",
+    "LazyConvTranspose1d": "ModuleInfo",
+    "LazyConvTranspose2d": "ModuleInfo",
+    "LazyConvTranspose3d": "ModuleInfo",
+    "LazyInstanceNorm1d": "explicit_case",
+    "LazyInstanceNorm2d": "explicit_case",
+    "LazyInstanceNorm3d": "explicit_case",
+    "LazyLinear": "explicit_case",
+    "LeakyReLU": "ModuleInfo",
+    "Linear": "ModuleInfo",
+    "LinearCrossEntropyLoss": "ModuleInfo",
+    "LocalResponseNorm": "ModuleInfo",
+    "LogSigmoid": "ModuleInfo",
+    "LogSoftmax": "ModuleInfo",
+    "MSELoss": "ModuleInfo",
+    "MarginRankingLoss": "ModuleInfo",
+    "MaxPool1d": "ModuleInfo",
+    "MaxPool2d": "ModuleInfo",
+    "MaxPool3d": "ModuleInfo",
+    "MaxUnpool1d": "explicit_case",
+    "MaxUnpool2d": "explicit_case",
+    "MaxUnpool3d": "explicit_case",
+    "Mish": "ModuleInfo",
+    "Module": "abstract_or_registration_container",
+    "ModuleDict": "abstract_or_registration_container",
+    "ModuleList": "abstract_or_registration_container",
+    "MultiLabelMarginLoss": "ModuleInfo",
+    "MultiLabelSoftMarginLoss": "ModuleInfo",
+    "MultiMarginLoss": "ModuleInfo",
+    "MultiheadAttention": "ModuleInfo",
+    "NLLLoss": "ModuleInfo",
+    "NLLLoss2d": "explicit_case",
+    "PReLU": "ModuleInfo",
+    "PairwiseDistance": "explicit_case",
+    "ParameterDict": "abstract_or_registration_container",
+    "ParameterList": "abstract_or_registration_container",
+    "PixelShuffle": "explicit_case",
+    "PixelUnshuffle": "explicit_case",
+    "PoissonNLLLoss": "ModuleInfo",
+    "RMSNorm": "ModuleInfo",
+    "RNN": "ModuleInfo",
+    "RNNBase": "abstract_or_registration_container",
+    "RNNCell": "ModuleInfo",
+    "RNNCellBase": "abstract_or_registration_container",
+    "RReLU": "explicit_case",
+    "ReLU": "ModuleInfo",
+    "ReLU6": "ModuleInfo",
+    "ReflectionPad1d": "ModuleInfo",
+    "ReflectionPad2d": "ModuleInfo",
+    "ReflectionPad3d": "ModuleInfo",
+    "ReplicationPad1d": "ModuleInfo",
+    "ReplicationPad2d": "ModuleInfo",
+    "ReplicationPad3d": "ModuleInfo",
+    "SELU": "ModuleInfo",
+    "Sequential": "explicit_case",
+    "SiLU": "ModuleInfo",
+    "Sigmoid": "ModuleInfo",
+    "SmoothL1Loss": "ModuleInfo",
+    "SoftMarginLoss": "ModuleInfo",
+    "Softmax": "ModuleInfo",
+    "Softmax2d": "ModuleInfo",
+    "Softmin": "ModuleInfo",
+    "Softplus": "ModuleInfo",
+    "Softshrink": "ModuleInfo",
+    "Softsign": "ModuleInfo",
+    "SyncBatchNorm": "explicit_case",
+    "Tanh": "ModuleInfo",
+    "Tanhshrink": "ModuleInfo",
+    "Threshold": "ModuleInfo",
+    "Transformer": "ModuleInfo",
+    "TransformerDecoder": "explicit_case",
+    "TransformerDecoderLayer": "ModuleInfo",
+    "TransformerEncoder": "ModuleInfo",
+    "TransformerEncoderLayer": "ModuleInfo",
+    "TripletMarginLoss": "explicit_case",
+    "TripletMarginWithDistanceLoss": "explicit_case",
+    "Unflatten": "explicit_case",
+    "Unfold": "explicit_case",
+    "Upsample": "explicit_case",
+    "UpsamplingBilinear2d": "explicit_case",
+    "UpsamplingNearest2d": "explicit_case",
+    "ZeroPad1d": "ModuleInfo",
+    "ZeroPad2d": "ModuleInfo",
+    "ZeroPad3d": "ModuleInfo"
+  },
+  "total_records": 26819,
+  "total_measured": 23202
+}

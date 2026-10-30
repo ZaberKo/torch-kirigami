@@ -24,6 +24,7 @@ from torch_kirigami.measurement.formulas import (
     MAC_FORMULAS,
     MAC_FREE_OPS,
     arithmetic_formulas,
+    is_native_pointwise,
 )
 
 
@@ -86,7 +87,7 @@ def inventory() -> dict[str, object]:
             "dense_core_formula"
             if name in MAC_FORMULAS
             else "zero_by_convention"
-            if name in mac_free
+            if name in mac_free or is_native_pointwise(name)
             else "composite_requires_execution_check"
             if name in MAC_COMPOSITES
             else "no_direct_formula"

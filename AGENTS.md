@@ -10,3 +10,4 @@
 - Prefer straightforward control flow and one definition per invariant. Optimize measured bottlenecks without adding general frameworks or weakening correctness checks.
 - Edit workflow examples individually by hand; do not generate them with scripts. Keep task-specific CLI, training and pruning steps in each entry; reuse `imagenet_data.py`, `imagenet_models.py` and `model_metrics.py` for infrastructure. Do not introduce a shared workflow runner.
 - Keep changes focused, update affected examples/docs, and leave reference repositories under `tmp/` untouched.
+- Keep `docs/` for durable English API and developer documentation. Put temporary reviews, audits, and local benchmark records in `docs/dev-notes/`.
