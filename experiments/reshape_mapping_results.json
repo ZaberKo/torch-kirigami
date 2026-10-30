@@ -1,0 +1,39 @@
+{
+  "benchmark": "experiments/reshape_mapping_benchmark.py",
+  "baseline_commit": "4701f49",
+  "measurement": "Median of three local calls per case. Logical coordinate mapping only, without model execution or activation allocation. Host-specific timings.",
+  "max_parts": 4096,
+  "selected_features": [
+    0,
+    7
+  ],
+  "source_shape": "[batch * 7, 42, 128]",
+  "target_shape": "[batch, 7, 42, 128]",
+  "before": {
+    "1": {
+      "status": "resolved",
+      "regions": 1,
+      "selected_elements": 588,
+      "median_seconds": 0.4752729549072683
+    },
+    "128": {
+      "status": "analysis_limit",
+      "message": "Reshape selection needs too many offset intervals",
+      "median_seconds": 4.081055521965027e-06
+    }
+  },
+  "after": {
+    "1": {
+      "status": "resolved",
+      "regions": 1,
+      "selected_elements": 588,
+      "median_seconds": 1.3377051800489426e-05
+    },
+    "128": {
+      "status": "resolved",
+      "regions": 1,
+      "selected_elements": 75264,
+      "median_seconds": 1.0740011930465698e-05
+    }
+  }
+}

@@ -196,7 +196,7 @@ def test_incomplete_equal_seeds_keep_original_propagation(monkeypatch, execution
             self.second = nn.Linear(4, 2)
 
         def forward(self, x):
-            return self.second(torch.special.gammaln(self.first(x)))
+            return self.second(torch.roll(self.first(x), 1, -1))
 
     model = UnknownTail().eval()
     graph = DependencyGraph.build(model, args=(torch.randn(1, 3),))

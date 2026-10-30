@@ -303,7 +303,13 @@ def batch_norm(operation: Operation) -> OperatorSpec:
     """Connect channel positions to affine parameters and running statistics."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     relations = [ReshapeRelation(x, y, operation.node.name)]
-    positions = {"running_mean": 1, "running_var": 2, "weight": 3, "bias": 4}
+    # Native torch calls place affine tensors before the running statistics.
+    # F.batch_norm uses the reverse order. Equal shapes cannot identify roles.
+    positions = (
+        {"weight": 1, "bias": 2, "running_mean": 3, "running_var": 4}
+        if operation.node.target is torch.batch_norm
+        else {"running_mean": 1, "running_var": 2, "weight": 3, "bias": 4}
+    )
     for name, position in positions.items():
         value = bind(operation, name, position)
         if value is not None:
@@ -333,7 +339,8 @@ def layer_norm(operation: Operation) -> OperatorSpec:
     relations = [ReshapeRelation(x, y, operation.node.name)]
     positions = (
         (("weight", 2),)
-        if type(operation.module) is nn.RMSNorm or operation.node.target is F.rms_norm
+        if type(operation.module) is nn.RMSNorm
+        or operation.node.target in (F.rms_norm, torch.rms_norm)
         else (("weight", 2), ("bias", 3))
     )
     for name, position in positions:
@@ -400,11 +407,19 @@ def group_norm(operation: Operation) -> OperatorSpec:
 def matmul(operation: Operation) -> OperatorSpec:
     """Connect contracting, free, and broadcast batch axes of matrix products."""
     a = one(operation.argument("input", 0))
-    b = one(operation.argument("other", 1, operation.kwargs.get("mat2")))
+    target = operation.node.target
+    name = getattr(target, "__name__", target)
+    second = {"dot": "tensor", "mv": "vec", "outer": "vec2", "ger": "vec2"}.get(name, "other")
+    b = one(operation.argument(second, 1, operation.kwargs.get("mat2")))
     y = one(operation.result)
     ra, rb = len(a.shape), len(b.shape)
     if not ra or not rb:
         raise UnsupportedOperation("matmul requires tensor ranks >= 1")
+    if name in ("outer", "ger"):
+        return OperatorSpec(
+            (equal(a, 0, y, 0, operation.node.name), equal(b, 0, y, 1, operation.node.name)),
+            (layout(operation, a), layout(operation, b), layout(operation, y)),
+        )
     relations = [equal(a, -1, b, -2 if rb > 1 else 0, operation.node.name)]
     free = int(ra > 1) + int(rb > 1)
     if ra > 1:
@@ -717,11 +732,17 @@ def getattr_rule(operation: Operation) -> OperatorSpec:
     if scalar is not None:
         return scalar
     name = operation.args[1]
-    if name == "T":
+    if name in ("T", "H", "mT", "mH"):
         x, y = one(operation.argument("input", 0)), one(operation.result)
-        return OperatorSpec(
-            (PermuteRelation(x, y, tuple(reversed(range(len(x.shape)))), operation.node.name),)
-        )
+        dims = list(range(len(x.shape)))
+        if name in ("T", "H"):
+            dims.reverse()
+        elif len(dims) >= 2:
+            dims[-2], dims[-1] = dims[-1], dims[-2]
+        return OperatorSpec((PermuteRelation(x, y, tuple(dims), operation.node.name),))
+    if name in ("real", "imag"):
+        x, y = one(operation.argument("input", 0)), one(operation.result)
+        return OperatorSpec((ReshapeRelation(x, y, operation.node.name),))
     if name in ("shape", "ndim", "dtype", "device"):
         return OperatorSpec()
     raise UnsupportedOperation(f"Tensor attribute {name} has no structural rule")
@@ -739,7 +760,10 @@ def softmax(operation: Operation) -> OperatorSpec:
     """Preserve coordinates and record changes to the normalization domain."""
     result = pointwise(operation)
     x = one(operation.argument("input", 0))
-    dim = operation.module.dim if operation.module is not None else operation.argument("dim", 1)
+    if type(operation.module) is nn.Softmax2d:
+        dim = -3
+    else:
+        dim = operation.module.dim if operation.module is not None else operation.argument("dim", 1)
     if dim is None:
         # PyTorch's legacy default depends only on rank. Compaction preserves
         # rank, so the same axis remains valid. Native execution emits its warning.
@@ -750,7 +774,7 @@ def softmax(operation: Operation) -> OperatorSpec:
         "reduction_domain",
         operation.node.name,
         (x,),
-        "Recompute softmax/log_softmax over retained positions; zero masks are not equivalent",
+        "Recompute softmax/softmin/log_softmax over retained positions; zero masks are not equivalent",
         (("axes", (dim % len(x.shape),) if x.shape else ()),),
     )
     return OperatorSpec(result.relations, result.constraints, (requirement_,))

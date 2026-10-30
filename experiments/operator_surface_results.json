@@ -1,0 +1,8689 @@
+{
+  "torch": "2.14.0+cu130",
+  "scope": [
+    "torch",
+    "Tensor",
+    "F",
+    "nn",
+    "torch.special",
+    "torch.linalg",
+    "torch.fft"
+  ],
+  "tensor_properties": [
+    "Tensor.H",
+    "Tensor.T",
+    "Tensor.data",
+    "Tensor.device",
+    "Tensor.dtype",
+    "Tensor.grad",
+    "Tensor.grad_dtype",
+    "Tensor.grad_fn",
+    "Tensor.imag",
+    "Tensor.is_cpu",
+    "Tensor.is_cuda",
+    "Tensor.is_ipu",
+    "Tensor.is_leaf",
+    "Tensor.is_maia",
+    "Tensor.is_meta",
+    "Tensor.is_mkldnn",
+    "Tensor.is_mps",
+    "Tensor.is_mtia",
+    "Tensor.is_nested",
+    "Tensor.is_quantized",
+    "Tensor.is_sparse",
+    "Tensor.is_sparse_csr",
+    "Tensor.is_vulkan",
+    "Tensor.is_xla",
+    "Tensor.is_xpu",
+    "Tensor.itemsize",
+    "Tensor.layout",
+    "Tensor.mH",
+    "Tensor.mT",
+    "Tensor.name",
+    "Tensor.nbytes",
+    "Tensor.ndim",
+    "Tensor.output_nr",
+    "Tensor.real",
+    "Tensor.requires_grad",
+    "Tensor.retains_grad",
+    "Tensor.shape",
+    "Tensor.volatile"
+  ],
+  "interpretation": "Visible names include infrastructure and backend entry points. No-direct-rule entries may expand through FX or require additional semantics. This inventory is not a claim of complete operator or overload support.",
+  "counts": {
+    "direct_rule": 813,
+    "no_direct_rule": 904
+  },
+  "entries": [
+    {
+      "entry": "torch.abs",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.abs_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.absolute",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.acos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.acos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.acosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.acosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.adaptive_avg_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.adaptive_max_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.add",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.addbmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.addcdiv",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.addcmul",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.addmm",
+      "status": "direct_rule",
+      "rule": "AddmmRule"
+    },
+    {
+      "entry": "torch.addmv",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.addmv_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.addr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.adjoint",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.affine_grid_generator",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.alias_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.all",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.allclose",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.alpha_dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.alpha_dropout_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.amax",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.amin",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.aminmax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.angle",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.any",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.arange",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.arccos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arccos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arccosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arccosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arcsin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arcsin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arcsinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arcsinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arctan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arctan2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arctan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arctanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.arctanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.are_deterministic_algorithms_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.argmax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.argmin",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.argsort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.argwhere",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.as_strided",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.as_strided_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.as_strided_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.as_strided_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.as_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.asarray",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.asin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.asin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.asinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.asinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atan2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.atleast_1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.atleast_2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.atleast_3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.autocast_decrement_nesting",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.autocast_increment_nesting",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.avg_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.baddbmm",
+      "status": "direct_rule",
+      "rule": "AddmmRule"
+    },
+    {
+      "entry": "torch.bartlett_window",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm",
+      "status": "direct_rule",
+      "rule": "BatchNormRule"
+    },
+    {
+      "entry": "torch.batch_norm_backward_elemt",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_backward_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_elemt",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_gather_stats",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_gather_stats_with_counts",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_stats",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.batch_norm_update_stats",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.bernoulli",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.bilinear",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.binary_cross_entropy_with_logits",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.bincount",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.binomial",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.bitwise_and",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.bitwise_left_shift",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.bitwise_not",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.bitwise_or",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.bitwise_right_shift",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.bitwise_xor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.blackman_window",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.block_diag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.bmm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.broadcast_shapes",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.broadcast_tensors",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.broadcast_to",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "torch.bucketize",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.can_cast",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cartesian_prod",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cat",
+      "status": "direct_rule",
+      "rule": "ConcatenateRule"
+    },
+    {
+      "entry": "torch.ccol_indices_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cdist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ceil",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.ceil_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.celu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.celu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.chain_matmul",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.channel_shuffle",
+      "status": "direct_rule",
+      "rule": "ChannelShuffleRule"
+    },
+    {
+      "entry": "torch.cholesky",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cholesky_inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cholesky_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.choose_qparams_optimized",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.chunk",
+      "status": "direct_rule",
+      "rule": "ChunkRule"
+    },
+    {
+      "entry": "torch.clamp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clamp_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clamp_max",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clamp_max_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clamp_min",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clamp_min_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.classproperty",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.clear_autocast_cache",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.clip",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clip_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.clone",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.col_indices_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.column_stack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.combinations",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.compile",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.compiled_with_cxx11_abi",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.complex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.concat",
+      "status": "direct_rule",
+      "rule": "ConcatenateRule"
+    },
+    {
+      "entry": "torch.concatenate",
+      "status": "direct_rule",
+      "rule": "ConcatenateRule"
+    },
+    {
+      "entry": "torch.cond",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.conj",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.conj_physical",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.conj_physical_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.constant_pad_nd",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.conv1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.conv2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.conv3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.conv_tbc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.conv_transpose1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.conv_transpose2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.conv_transpose3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "torch.convolution",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.copysign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.corrcoef",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.cos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.cosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.cosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.cosine_embedding_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cosine_similarity",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.count_nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cov",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cross",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.crow_indices_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ctc_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_affine_grid_generator",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_batch_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_convolution",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_convolution_add_relu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_convolution_relu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_convolution_transpose",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_grid_sampler",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cudnn_is_acceptable",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cummax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cummin",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cumprod",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cumsum",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.cumulative_trapezoid",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.deg2rad",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.deg2rad_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.dequantize",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.det",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.detach",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.detach_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.detach_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diag_embed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diagflat",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diagonal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diagonal_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diagonal_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.diff",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.digamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.dist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.div",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.dot",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.dropout_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.dsmm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.dsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.dstack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.eig",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.einsum",
+      "status": "direct_rule",
+      "rule": "EinsumRule"
+    },
+    {
+      "entry": "torch.embedding",
+      "status": "direct_rule",
+      "rule": "EmbeddingRule"
+    },
+    {
+      "entry": "torch.embedding_bag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.embedding_renorm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.empty",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.empty_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.empty_permuted",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.empty_quantized",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.empty_strided",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.eq",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.equal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.erf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.erf_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.erfc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.erfc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.erfinv",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.exp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.exp2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.exp2_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.exp_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.expand_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.expm1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.expm1_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.eye",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fake_quantize_per_channel_affine",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fake_quantize_per_tensor_affine",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_linear_fp16_weight",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_linear_fp16_weight_fp32_activation",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_linear_int8_weight",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_linear_int8_weight_fp32_activation",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_linear_quantize_weight",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_pack_gemm_matrix_fp16",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fbgemm_pack_quantized_matrix",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.feature_alpha_dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.feature_alpha_dropout_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.feature_dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.feature_dropout_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fill",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fill_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fix",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.fix_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.flatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.flip",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fliplr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.flipud",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.float_power",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.floor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.floor_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.floor_divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.fmax",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.fmin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.fmod",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.fork",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.frac",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.frac_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.frexp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.frobenius_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.from_dlpack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.from_file",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.from_numpy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.frombuffer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.full",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.full_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fused_moving_avg_obs_fake_quant",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.gather",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.gcd",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.gcd_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ge",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.geqrf",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ger",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.get_autocast_cpu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_autocast_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_autocast_gpu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_autocast_ipu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_autocast_xla_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_default_device",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_default_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_deterministic_debug_mode",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_device",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_device_module",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_file_path",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_float32_matmul_precision",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_num_interop_threads",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_num_threads",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.get_rng_state",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.gradient",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.greater",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.greater_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.grid_sampler",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.grid_sampler_2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.grid_sampler_3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.group_norm",
+      "status": "direct_rule",
+      "rule": "GroupNormRule"
+    },
+    {
+      "entry": "torch.gru",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.gru_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.gt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.hamming_window",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hann_window",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hardshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.hash_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.heaviside",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.hinge_embedding_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.histc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.histogram",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.histogramdd",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hsmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hspmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hstack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.hypot",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.i0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.i0_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.igamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.igammac",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.imag",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.import_ir_module",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.import_ir_module_from_buffer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_add",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_fill",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_put",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_put_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.index_select",
+      "status": "direct_rule",
+      "rule": "IndexSelectRule"
+    },
+    {
+      "entry": "torch.indices_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.init_num_threads",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.initial_seed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.inner",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.instance_norm",
+      "status": "direct_rule",
+      "rule": "InstanceNormRule"
+    },
+    {
+      "entry": "torch.int_repr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_anomaly_check_nan_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_anomaly_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_autocast_cache_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_autocast_cpu_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_autocast_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_autocast_ipu_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_autocast_xla_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_complex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_conj",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_deterministic_algorithms_warn_only_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_distributed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_floating_point",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_grad_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_inference",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_inference_mode_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_neg",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_same_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_signed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_storage",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_vulkan_available",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.is_warn_always_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.isclose",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isfinite",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isin",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.isinf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isnan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isneginf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isposinf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.isreal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.istft",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.kaiser_window",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.kl_div",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.kron",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.kthvalue",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.layer_norm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "torch.lcm",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.lcm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ldexp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.ldexp_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.le",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.lerp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.less",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.less_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.lgamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.linspace",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.load",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lobpcg",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.log",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log10",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log10_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log1p",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log1p_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log2_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.log_softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "torch.logaddexp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logaddexp2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logcumsumexp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.logdet",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.logical_and",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logical_not",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logical_or",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logical_xor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.logit_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.logspace",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.logsumexp",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.lstm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lstm_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lstsq",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.lu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lu_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.lu_unpack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.manual_seed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.margin_ranking_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.masked_fill",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.masked_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.masked_select",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.matmul",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.matrix_exp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.matrix_power",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.matrix_rank",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.max",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.max_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.max_pool1d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.max_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.max_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "torch.maximum",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.mean",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.median",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.merge_type_from_type_comment",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.meshgrid",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.min",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.minimum",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.miopen_batch_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_convolution",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_convolution_add_relu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_convolution_relu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_convolution_transpose",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_ctc_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_depthwise_convolution",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.miopen_rnn",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_adaptive_avg_pool2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_convolution",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_linear_backward_weights",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_max_pool2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_max_pool3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mkldnn_rnn_layer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.mode",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.moveaxis",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.movedim",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.msort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.mul",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.multinomial",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.multiply",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.mv",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.mvlgamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nan_to_num",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nan_to_num_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nanmean",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.nanmedian",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.nanquantile",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.nansum",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.narrow",
+      "status": "direct_rule",
+      "rule": "NarrowRule"
+    },
+    {
+      "entry": "torch.narrow_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.native_batch_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.native_channel_shuffle",
+      "status": "direct_rule",
+      "rule": "ChannelShuffleRule"
+    },
+    {
+      "entry": "torch.native_dropout",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.native_group_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.native_layer_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.native_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ne",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.neg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.neg_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.negative",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.negative_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nextafter",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.nonzero_static",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.norm_except_dim",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.normal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.not_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.nuclear_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.numel",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "torch.ones",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ones_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.orgqr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ormqr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.outer",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.pairwise_distance",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.parse_ir",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.parse_schema",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.parse_type_comment",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.pca_lowrank",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.pdist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.permute",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.permute_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.pinverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.pixel_shuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "torch.pixel_unshuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "torch.poisson",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.poisson_nll_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.polar",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.polygamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.positive",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.pow",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.prelu",
+      "status": "direct_rule",
+      "rule": "PreluRule"
+    },
+    {
+      "entry": "torch.prepare_multiprocessing_environment",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.prod",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.profiler_allow_cudagraph_cupti_lazy_reinit_cuda12",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.promote_types",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.put",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.q_per_channel_axis",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.q_per_channel_scales",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.q_per_channel_zero_points",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.q_scale",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.q_zero_point",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.qr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantile",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantize_per_channel",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantize_per_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantize_per_tensor_dynamic",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_batch_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_gru",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_gru_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_lstm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_lstm_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_max_pool1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_max_pool2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_max_pool3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_rnn_relu_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.quantized_rnn_tanh_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rad2deg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rad2deg_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rand",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rand_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.randint",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.randint_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.randn",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.randn_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.randperm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.range",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.ravel",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.real",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.reciprocal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.reciprocal_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.relu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.relu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.remainder",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.renorm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.repeat_interleave",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "torch.reshape",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.resize_as_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.resize_as_sparse_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.resolve_conj",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.resolve_neg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.result_type",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rms_norm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "torch.rnn_relu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rnn_relu_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rnn_tanh",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rnn_tanh_cell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.roll",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rot90",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.round",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.round_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.row_indices_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.row_stack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.rrelu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rrelu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rsqrt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rsqrt_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.rsub",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.saddmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.save",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.scalar_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.scatter_add",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.scatter_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.searchsorted",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.seed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.segment_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.select",
+      "status": "direct_rule",
+      "rule": "SelectRule"
+    },
+    {
+      "entry": "torch.select_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.select_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.selu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.selu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.set_anomaly_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_cache_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_cpu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_cpu_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_gpu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_ipu_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_ipu_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_xla_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_autocast_xla_enabled",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_default_device",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_default_dtype",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_default_tensor_type",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_deterministic_debug_mode",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_float32_matmul_precision",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_flush_denormal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_num_interop_threads",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_num_threads",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_printoptions",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_rng_state",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.set_warn_always",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sgn",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sigmoid_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.signbit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sinc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sinc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.slice_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.slice_inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.slice_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.slogdet",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.smm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "torch.solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_bsc_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_bsr_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_compressed_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_coo_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_csc_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sparse_csr_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.split",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "torch.split_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.split_with_sizes",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "torch.split_with_sizes_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.spmm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.sqrt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sqrt_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.square",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.square_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.squeeze",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.squeeze_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sspaddmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.stack",
+      "status": "direct_rule",
+      "rule": "StackRule"
+    },
+    {
+      "entry": "torch.std",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.std_mean",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.stft",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sub",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.subtract",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.sum",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.svd",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.svd_lowrank",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.swapaxes",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.swapdims",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.sym_constrain_range",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_constrain_range_for_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_float",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_fresh_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_int",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_ite",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_max",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_min",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_not",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_sqrt",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.sym_sum",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.symeig",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.t",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.t_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.take",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.take_along_dim",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.tan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.tan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.tanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.tanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.tensor_split",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.tensordot",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.thread_safe_generator",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.threshold",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.threshold_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.tile",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "torch.to_dlpack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.topk",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.trace",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.transpose",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "torch.transpose_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.trapezoid",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.trapz",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.triangular_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.tril",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.tril_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.triplet_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.triu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.triu_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.true_divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.trunc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.trunc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.typename",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unbind",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "torch.unbind_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unflatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.unfold_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unify_type_list",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unique",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unique_consecutive",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unravel_index",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unsafe_chunk",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unsafe_split",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unsafe_split_with_sizes",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.unsqueeze",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "torch.unsqueeze_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.use_deterministic_algorithms",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.values_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.vander",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.var",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.var_mean",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.vdot",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.view_as_complex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.view_as_complex_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.view_as_real",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.view_as_real_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.view_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.vmap",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.vsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.vstack",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.wait",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.where",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.while_loop",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.xlogy",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.xlogy_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.zero_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.zeros",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.zeros_like",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.abs",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.abs_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.absolute",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.absolute_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.acos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.acos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.acosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.acosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.add",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.add_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.addbmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addbmm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addcdiv",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.addcdiv_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addcmul",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.addcmul_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addmm",
+      "status": "direct_rule",
+      "rule": "AddmmRule"
+    },
+    {
+      "entry": "Tensor.addmm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addmv",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addmv_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.addr_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.adjoint",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.all",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.allclose",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.amax",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.amin",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.aminmax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.angle",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.any",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.apply_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.arccos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arccos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arccosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arccosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arcsin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arcsin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arcsinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arcsinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arctan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arctan2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arctan2_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.arctan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arctanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.arctanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.argmax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.argmin",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.argsort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.argwhere",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.as_strided",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.as_strided_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.as_strided_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.as_subclass",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.asin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.asin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.asinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.asinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.atan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.atan2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.atan2_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.atan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.atanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.atanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.backward",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.baddbmm",
+      "status": "direct_rule",
+      "rule": "AddmmRule"
+    },
+    {
+      "entry": "Tensor.baddbmm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bernoulli",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bernoulli_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bfloat16",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.bincount",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_and",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_and_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_left_shift",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_left_shift_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_not",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_not_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_or",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_or_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_right_shift",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_right_shift_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bitwise_xor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.bitwise_xor_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.bmm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.bool",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.broadcast_to",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.byte",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.cauchy_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ccol_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cdouble",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.ceil",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.ceil_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.cfloat",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.chalf",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.char",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.cholesky",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cholesky_inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cholesky_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.chunk",
+      "status": "direct_rule",
+      "rule": "ChunkRule"
+    },
+    {
+      "entry": "Tensor.clamp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clamp_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clamp_max",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clamp_max_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clamp_min",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clamp_min_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clip",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clip_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.clone",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.coalesce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.col_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.conj",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.conj_physical",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.conj_physical_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.const_data_ptr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.contiguous",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.copy_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.copysign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.copysign_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.corrcoef",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cos",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.cos_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.cosh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.cosh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.count_nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cov",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cpu",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.cross",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.crow_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cuda",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.cummax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cummin",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cumprod",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cumprod_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cumsum",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.cumsum_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.data_ptr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.deg2rad",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.deg2rad_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.dense_dim",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.dequantize",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.det",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.detach",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.detach_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diag_embed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diagflat",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diagonal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diagonal_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.diff",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.digamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.digamma_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.dim",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "Tensor.dim_order",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.dist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.div",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.div_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.divide_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.dot",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.double",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.dsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.eig",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.element_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.eq",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.eq_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.equal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.erf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.erf_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.erfc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.erfc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.erfinv",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.erfinv_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.exp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.exp2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.exp2_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.exp_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.expand",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.expand_as",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.expm1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.expm1_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.exponential_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.fill_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.fill_diagonal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.fix",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.fix_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.flatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.flip",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.fliplr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.flipud",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.float",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.float_power",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.float_power_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.floor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.floor_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.floor_divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.floor_divide_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.fmax",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.fmin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.fmod",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.fmod_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.frac",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.frac_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.frexp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.gather",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.gcd",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.gcd_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ge",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.ge_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.geometric_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.geqrf",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ger",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.get_device",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.greater",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.greater_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.greater_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.greater_equal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.gt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.gt_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.half",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.hardshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.hash_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.heaviside",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.heaviside_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.histc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.histogram",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.hsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.hypot",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.hypot_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.i0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.i0_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.igamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.igamma_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.igammac",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.igammac_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_add",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_add_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_copy_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_fill",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_fill_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_put",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_put_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_reduce_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.index_select",
+      "status": "direct_rule",
+      "rule": "IndexSelectRule"
+    },
+    {
+      "entry": "Tensor.indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.inner",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.int",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.int_repr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ipu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_coalesced",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_complex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_conj",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_contiguous",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_distributed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_floating_point",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_inference",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_neg",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_pinned",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_same_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_set_to",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_shared",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.is_signed",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.isclose",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isfinite",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isinf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isnan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isneginf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isposinf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.isreal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.istft",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.item",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.kron",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.kthvalue",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lcm",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.lcm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ldexp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.ldexp_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.le",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.le_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lerp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.lerp_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.less",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.less_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.less_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.less_equal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lgamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.lgamma_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.log",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log10",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log10_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log1p",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log1p_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log2_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.log_normal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.log_softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "Tensor.logaddexp",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logaddexp2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logcumsumexp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logdet",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logical_and",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logical_and_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logical_not",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logical_not_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logical_or",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logical_or_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logical_xor",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logical_xor_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.logit_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.logsumexp",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.long",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.lstsq",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.lt_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.lu_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.map2_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.map_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.masked_fill",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.masked_fill_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.masked_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.masked_scatter_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.masked_select",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.matmul",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.matrix_exp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.matrix_power",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.max",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.maximum",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.mean",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.median",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.min",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.minimum",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.mm",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.mode",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.module_load",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.moveaxis",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.movedim",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.msort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.mtia",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.mul",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.mul_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.multinomial",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.multiply",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.multiply_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.mv",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.mvlgamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.mvlgamma_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.nan_to_num",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.nan_to_num_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.nanmean",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.nanmedian",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.nanquantile",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.nansum",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.narrow",
+      "status": "direct_rule",
+      "rule": "NarrowRule"
+    },
+    {
+      "entry": "Tensor.narrow_copy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ndimension",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "Tensor.ne",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.ne_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.neg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.neg_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.negative",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.negative_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.nelement",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "Tensor.new",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_empty",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_empty_strided",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_full",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_ones",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.new_zeros",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.nextafter",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.nextafter_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.nonzero",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.nonzero_static",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.normal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.not_equal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.not_equal_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.numel",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "Tensor.numpy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.orgqr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ormqr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.outer",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.permute",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.pin_memory",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.pinverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.polygamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.polygamma_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.positive",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.pow",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.pow_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.prelu",
+      "status": "direct_rule",
+      "rule": "PreluRule"
+    },
+    {
+      "entry": "Tensor.prod",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.put",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.put_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.q_per_channel_axis",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.q_per_channel_scales",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.q_per_channel_zero_points",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.q_scale",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.q_zero_point",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.qr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.qscheme",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.quantile",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.rad2deg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.rad2deg_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.random_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.ravel",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.reciprocal",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.reciprocal_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.record_stream",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.register_hook",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.register_post_accumulate_grad_hook",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.reinforce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.relu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.relu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.remainder",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.remainder_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.renorm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.renorm_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.repeat",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.repeat_interleave",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.requires_grad_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.reshape",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.reshape_as",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resize",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resize_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resize_as",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resize_as_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resize_as_sparse_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.resolve_conj",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.resolve_neg",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.retain_grad",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.roll",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.rot90",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.round",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.round_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.row_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.rsqrt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.rsqrt_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.scatter_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.scatter_add",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.scatter_add_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.scatter_reduce",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.scatter_reduce_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.select",
+      "status": "direct_rule",
+      "rule": "SelectRule"
+    },
+    {
+      "entry": "Tensor.select_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.set_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sgn",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sgn_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.share_memory_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.short",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.sigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sigmoid_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sign_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.signbit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sin",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sin_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sinc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sinc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sinh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sinh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.size",
+      "status": "direct_rule",
+      "rule": "ShapeOnlyRule"
+    },
+    {
+      "entry": "Tensor.slice_inverse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.slice_scatter",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.slogdet",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.smm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "Tensor.solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sort",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sparse_dim",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sparse_mask",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sparse_resize_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sparse_resize_and_clear_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.split",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "Tensor.split_with_sizes",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "Tensor.sqrt",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sqrt_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.square",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.square_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.squeeze",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.squeeze_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sspaddmm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.std",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.stft",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.storage",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.storage_offset",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.storage_type",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.stride",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.sub",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sub_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.subtract",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.subtract_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.sum",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "Tensor.sum_to_size",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.svd",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.swapaxes",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.swapaxes_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.swapdims",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.swapdims_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.symeig",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.t",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.t_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.take",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.take_along_dim",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.tan",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.tan_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.tanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.tanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.tensor_split",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.tile",
+      "status": "direct_rule",
+      "rule": "RepeatRule"
+    },
+    {
+      "entry": "Tensor.to",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.to_dense",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_mkldnn",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_padded_tensor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse_bsc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse_bsr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse_coo",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse_csc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.to_sparse_csr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.tolist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.topk",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.trace",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.transpose",
+      "status": "direct_rule",
+      "rule": "PermuteRule"
+    },
+    {
+      "entry": "Tensor.transpose_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.triangular_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.tril",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.tril_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.triu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.triu_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.true_divide",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.true_divide_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.trunc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.trunc_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.type",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.type_as",
+      "status": "direct_rule",
+      "rule": "CastRule"
+    },
+    {
+      "entry": "Tensor.unbind",
+      "status": "direct_rule",
+      "rule": "SplitRule"
+    },
+    {
+      "entry": "Tensor.unflatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.unfold",
+      "status": "direct_rule",
+      "rule": "TensorUnfoldRule"
+    },
+    {
+      "entry": "Tensor.uniform_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unique",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unique_consecutive",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unsafe_chunk",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unsafe_split",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unsafe_split_with_sizes",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.unsqueeze",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.unsqueeze_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.untyped_storage",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.values",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.var",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.vdot",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "Tensor.view",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "Tensor.view_as",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.vsplit",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.where",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.xlogy",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.xlogy_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "Tensor.xpu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "Tensor.zero_",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.Optional",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.adaptive_avg_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_avg_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_avg_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool1d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool2d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.adaptive_max_pool3d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.affine_grid",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.alpha_dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.assert_int_or_pair",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.avg_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.avg_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.avg_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.batch_norm",
+      "status": "direct_rule",
+      "rule": "BatchNormRule"
+    },
+    {
+      "entry": "F.bilinear",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.binary_cross_entropy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.binary_cross_entropy_with_logits",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.boolean_dispatch",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.celu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.celu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.channel_shuffle",
+      "status": "direct_rule",
+      "rule": "ChannelShuffleRule"
+    },
+    {
+      "entry": "F.conv1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.conv2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.conv3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.conv_tbc",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.conv_transpose1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.conv_transpose2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.conv_transpose3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "F.cosine_embedding_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.cosine_similarity",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.cross_entropy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.ctc_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.dropout1d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.dropout2d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.dropout3d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.elu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.elu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.embedding",
+      "status": "direct_rule",
+      "rule": "EmbeddingRule"
+    },
+    {
+      "entry": "F.embedding_bag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.feature_alpha_dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.fold",
+      "status": "direct_rule",
+      "rule": "UnfoldFoldRule"
+    },
+    {
+      "entry": "F.fractional_max_pool2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.fractional_max_pool2d_with_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.fractional_max_pool3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.fractional_max_pool3d_with_indices",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.gaussian_nll_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.gelu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.glu",
+      "status": "direct_rule",
+      "rule": "GluRule"
+    },
+    {
+      "entry": "F.grid_sample",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.group_norm",
+      "status": "direct_rule",
+      "rule": "GroupNormRule"
+    },
+    {
+      "entry": "F.grouped_mm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.gumbel_softmax",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.handle_torch_function",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.hardshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.hardsigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.hardswish",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.hardtanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.hardtanh_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.has_torch_function",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.has_torch_function_unary",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.has_torch_function_variadic",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.hinge_embedding_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.huber_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.instance_norm",
+      "status": "direct_rule",
+      "rule": "InstanceNormRule"
+    },
+    {
+      "entry": "F.interpolate",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.kl_div",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.l1_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.layer_norm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "F.leaky_relu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.leaky_relu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.linear",
+      "status": "direct_rule",
+      "rule": "LinearRule"
+    },
+    {
+      "entry": "F.linear_cross_entropy",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.local_response_norm",
+      "status": "direct_rule",
+      "rule": "NormalizeRule"
+    },
+    {
+      "entry": "F.log_softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "F.logsigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.lp_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.lp_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.lp_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.margin_ranking_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.max_pool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_pool1d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_pool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_pool2d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_pool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_pool3d_with_indices",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_unpool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_unpool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.max_unpool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "F.mish",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.mse_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.multi_head_attention_forward",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.multi_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.multilabel_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.multilabel_soft_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.native_channel_shuffle",
+      "status": "direct_rule",
+      "rule": "ChannelShuffleRule"
+    },
+    {
+      "entry": "F.nll_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.normalize",
+      "status": "direct_rule",
+      "rule": "NormalizeRule"
+    },
+    {
+      "entry": "F.one_hot",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.pad",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "F.pairwise_distance",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.pdist",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.pixel_shuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "F.pixel_unshuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "F.poisson_nll_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.prelu",
+      "status": "direct_rule",
+      "rule": "PreluRule"
+    },
+    {
+      "entry": "F.relu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.relu6",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.relu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.rms_norm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "F.rrelu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.rrelu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.scaled_dot_product_attention",
+      "status": "direct_rule",
+      "rule": "AttentionRule"
+    },
+    {
+      "entry": "F.scaled_grouped_mm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.scaled_mm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.selu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.selu_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.sigmoid",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.silu",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.smooth_l1_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.soft_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "F.softmin",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "F.softplus",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.softshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.softsign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.tanh",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.tanhshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.threshold",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.threshold_",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "F.triplet_margin_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.triplet_margin_with_distance_loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.unfold",
+      "status": "direct_rule",
+      "rule": "UnfoldFoldRule"
+    },
+    {
+      "entry": "F.upsample",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.upsample_bilinear",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "F.upsample_nearest",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.AdaptiveAvgPool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AdaptiveAvgPool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AdaptiveAvgPool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AdaptiveLogSoftmaxWithLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.AdaptiveMaxPool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AdaptiveMaxPool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AdaptiveMaxPool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AlphaDropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.AvgPool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AvgPool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.AvgPool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.BCELoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.BCEWithLogitsLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.BatchNorm1d",
+      "status": "direct_rule",
+      "rule": "BatchNormRule"
+    },
+    {
+      "entry": "nn.BatchNorm2d",
+      "status": "direct_rule",
+      "rule": "BatchNormRule"
+    },
+    {
+      "entry": "nn.BatchNorm3d",
+      "status": "direct_rule",
+      "rule": "BatchNormRule"
+    },
+    {
+      "entry": "nn.Bilinear",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.CELU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.CTCLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.ChannelShuffle",
+      "status": "direct_rule",
+      "rule": "ChannelShuffleRule"
+    },
+    {
+      "entry": "nn.CircularPad1d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.CircularPad2d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.CircularPad3d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ConstantPad1d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ConstantPad2d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ConstantPad3d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.Container",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Conv1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.Conv2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.Conv3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.ConvTranspose1d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.ConvTranspose2d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.ConvTranspose3d",
+      "status": "direct_rule",
+      "rule": "ConvolutionRule"
+    },
+    {
+      "entry": "nn.CosineEmbeddingLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.CosineSimilarity",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.CrossEntropyLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.CrossMapLRN2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.DataParallel",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Dropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Dropout1d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Dropout2d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Dropout3d",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.ELU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Embedding",
+      "status": "direct_rule",
+      "rule": "EmbeddingRule"
+    },
+    {
+      "entry": "nn.EmbeddingBag",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.FeatureAlphaDropout",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Flatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "nn.Fold",
+      "status": "direct_rule",
+      "rule": "UnfoldFoldRule"
+    },
+    {
+      "entry": "nn.FractionalMaxPool2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.FractionalMaxPool3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.GELU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.GLU",
+      "status": "direct_rule",
+      "rule": "GluRule"
+    },
+    {
+      "entry": "nn.GRU",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.GRUCell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.GaussianNLLLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.GroupNorm",
+      "status": "direct_rule",
+      "rule": "GroupNormRule"
+    },
+    {
+      "entry": "nn.Hardshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Hardsigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Hardswish",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Hardtanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.HingeEmbeddingLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.HuberLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Identity",
+      "status": "direct_rule",
+      "rule": "IdentityRule"
+    },
+    {
+      "entry": "nn.InstanceNorm1d",
+      "status": "direct_rule",
+      "rule": "InstanceNormRule"
+    },
+    {
+      "entry": "nn.InstanceNorm2d",
+      "status": "direct_rule",
+      "rule": "InstanceNormRule"
+    },
+    {
+      "entry": "nn.InstanceNorm3d",
+      "status": "direct_rule",
+      "rule": "InstanceNormRule"
+    },
+    {
+      "entry": "nn.KLDivLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.L1Loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LPPool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.LPPool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.LPPool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.LSTM",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LSTMCell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LayerNorm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "nn.LazyBatchNorm1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyBatchNorm2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyBatchNorm3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConv1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConv2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConv3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConvTranspose1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConvTranspose2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyConvTranspose3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyInstanceNorm1d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyInstanceNorm2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyInstanceNorm3d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LazyLinear",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LeakyReLU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Linear",
+      "status": "direct_rule",
+      "rule": "LinearRule"
+    },
+    {
+      "entry": "nn.LinearCrossEntropyLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.LocalResponseNorm",
+      "status": "direct_rule",
+      "rule": "NormalizeRule"
+    },
+    {
+      "entry": "nn.LogSigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.LogSoftmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "nn.MSELoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MarginRankingLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MaxPool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.MaxPool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.MaxPool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.MaxUnpool1d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.MaxUnpool2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.MaxUnpool3d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.Mish",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Module",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.ModuleDict",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.ModuleList",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MultiLabelMarginLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MultiLabelSoftMarginLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MultiMarginLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.MultiheadAttention",
+      "status": "direct_rule",
+      "rule": "MultiheadAttentionRule"
+    },
+    {
+      "entry": "nn.NLLLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.NLLLoss2d",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.PReLU",
+      "status": "direct_rule",
+      "rule": "PreluRule"
+    },
+    {
+      "entry": "nn.PairwiseDistance",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.ParameterDict",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.ParameterList",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.PixelShuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "nn.PixelUnshuffle",
+      "status": "direct_rule",
+      "rule": "PixelShuffleRule"
+    },
+    {
+      "entry": "nn.PoissonNLLLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.RMSNorm",
+      "status": "direct_rule",
+      "rule": "LayerNormRule"
+    },
+    {
+      "entry": "nn.RNN",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.RNNBase",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.RNNCell",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.RNNCellBase",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.RReLU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.ReLU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.ReLU6",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.ReflectionPad1d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ReflectionPad2d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ReflectionPad3d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ReplicationPad1d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ReplicationPad2d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ReplicationPad3d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.SELU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Sequential",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.SiLU",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Sigmoid",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.SmoothL1Loss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.SoftMarginLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "nn.Softmax2d",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "nn.Softmin",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "nn.Softplus",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Softshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Softsign",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.SyncBatchNorm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Tanh",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Tanhshrink",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Threshold",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "nn.Transformer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TransformerDecoder",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TransformerDecoderLayer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TransformerEncoder",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TransformerEncoderLayer",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TripletMarginLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.TripletMarginWithDistanceLoss",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "nn.Unflatten",
+      "status": "direct_rule",
+      "rule": "ReshapeRule"
+    },
+    {
+      "entry": "nn.Unfold",
+      "status": "direct_rule",
+      "rule": "UnfoldFoldRule"
+    },
+    {
+      "entry": "nn.Upsample",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.UpsamplingBilinear2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.UpsamplingNearest2d",
+      "status": "direct_rule",
+      "rule": "ChannelOperatorRule"
+    },
+    {
+      "entry": "nn.ZeroPad1d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ZeroPad2d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "nn.ZeroPad3d",
+      "status": "direct_rule",
+      "rule": "PaddingRule"
+    },
+    {
+      "entry": "torch.special.airy_ai",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.bessel_j0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.bessel_j1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.bessel_y0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.bessel_y1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.chebyshev_polynomial_t",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.chebyshev_polynomial_u",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.chebyshev_polynomial_v",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.chebyshev_polynomial_w",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.digamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.entr",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.erf",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.erfc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.erfcx",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.erfinv",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.exp2",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.expit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.expm1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.gammainc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.gammaincc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.gammaln",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.hermite_polynomial_h",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.hermite_polynomial_he",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.i0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.i0e",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.i1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.i1e",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.laguerre_polynomial_l",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.legendre_polynomial_p",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.log1p",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.log_ndtr",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.log_softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "torch.special.logit",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.logsumexp",
+      "status": "direct_rule",
+      "rule": "ReductionRule"
+    },
+    {
+      "entry": "torch.special.modified_bessel_i0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.modified_bessel_i1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.modified_bessel_k0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.modified_bessel_k1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.multigammaln",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.ndtr",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.ndtri",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.polygamma",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.psi",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.round",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.scaled_modified_bessel_k0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.scaled_modified_bessel_k1",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.shifted_chebyshev_polynomial_t",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.shifted_chebyshev_polynomial_u",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.shifted_chebyshev_polynomial_v",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.shifted_chebyshev_polynomial_w",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.sinc",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.softmax",
+      "status": "direct_rule",
+      "rule": "SoftmaxRule"
+    },
+    {
+      "entry": "torch.special.spherical_bessel_j0",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.xlog1py",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.xlogy",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.special.zeta",
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
+    },
+    {
+      "entry": "torch.linalg.cholesky",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.cholesky_ex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.cond",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.cross",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.det",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.diagonal",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.eig",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.eigh",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.eigvals",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.eigvalsh",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.householder_product",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.inv",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.inv_ex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.ldl_factor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.ldl_factor_ex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.ldl_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.lstsq",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.lu",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.lu_factor",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.lu_factor_ex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.lu_solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.matmul",
+      "status": "direct_rule",
+      "rule": "MatmulRule"
+    },
+    {
+      "entry": "torch.linalg.matrix_exp",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.matrix_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.matrix_power",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.matrix_rank",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.matrix_sqrth",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.multi_dot",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.pinv",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.polar",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.qr",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.slogdet",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.solve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.solve_ex",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.solve_triangular",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.svd",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.svdvals",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.tensorinv",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.tensorsolve",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.vander",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.vecdot",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.linalg.vector_norm",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fft.fft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.fft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.fftfreq",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fft.fftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.fftshift",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.hfft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.hfft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.hfftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ifft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ifft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ifftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ifftshift",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ihfft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ihfft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.ihfftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.irfft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.irfft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.irfftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.rfft",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.rfft2",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    },
+    {
+      "entry": "torch.fft.rfftfreq",
+      "status": "no_direct_rule",
+      "rule": null
+    },
+    {
+      "entry": "torch.fft.rfftn",
+      "status": "direct_rule",
+      "rule": "FourierRule"
+    }
+  ],
+  "minimum_environment": {
+    "torch": "2.6.0+cpu",
+    "counts": {
+      "direct_rule": 813,
+      "no_direct_rule": 904
+    },
+    "only_in_minimum": [
+      "F.Callable",
+      "F.List",
+      "F.Tuple",
+      "F.Union",
+      "Tensor.align_as",
+      "Tensor.align_to",
+      "Tensor.has_names",
+      "Tensor.refine_names",
+      "Tensor.rename",
+      "Tensor.rename_",
+      "torch.align_tensors",
+      "torch.read_vitals",
+      "torch.set_vital",
+      "torch.vitals_enabled"
+    ],
+    "only_in_development": [
+      "F.grouped_mm",
+      "F.linear_cross_entropy",
+      "F.scaled_grouped_mm",
+      "F.scaled_mm",
+      "Tensor.const_data_ptr",
+      "Tensor.hash_tensor",
+      "Tensor.index",
+      "nn.LinearCrossEntropyLoss",
+      "torch.hash_tensor",
+      "torch.linalg.matrix_sqrth",
+      "torch.linalg.polar",
+      "torch.miopen_ctc_loss",
+      "torch.profiler_allow_cudagraph_cupti_lazy_reinit_cuda12",
+      "torch.thread_safe_generator"
+    ],
+    "properties_only_in_minimum": [
+      "Tensor.names"
+    ],
+    "properties_only_in_development": [
+      "Tensor.grad_dtype"
+    ]
+  }
+}

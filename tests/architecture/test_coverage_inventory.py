@@ -10,9 +10,25 @@ import torch_kirigami
 import torch_kirigami.measurement
 import torch_kirigami.pruning
 import torch_kirigami.sparsity
+from experiments.operator_surface_audit import inventory as operator_surface_inventory
 from torch_kirigami import OperatorRegistry
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_public_torch_surface_has_no_unreviewed_names():
+    """Detect new public spellings outside the default registry too."""
+    recorded = json.loads((ROOT / "experiments/operator_surface_results.json").read_text())
+    reviewed = {entry["entry"] for entry in recorded["entries"]}
+    reviewed.update(recorded["minimum_environment"]["only_in_minimum"])
+    reviewed.update(recorded["tensor_properties"])
+    reviewed.update(recorded["minimum_environment"]["properties_only_in_minimum"])
+    current_surface = operator_surface_inventory()
+    current = {entry["entry"] for entry in current_surface["entries"]}
+    current.update(current_surface["tensor_properties"])
+    # This is a review reminder, not an assertion that each entry is supported.
+    # Overload changes still need argument-specific lifecycle tests.
+    assert not current - reviewed, f"Review newly visible PyTorch entries: {current - reviewed}"
 
 
 def test_every_export_and_internal_class_has_contract_test_links():

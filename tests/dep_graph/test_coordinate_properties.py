@@ -121,6 +121,35 @@ def test_reshape_every_subset_uses_row_major_coordinates(source_shape, target_sh
         assert actual_points(relation.propagate(forward)[0]) == removed, removed
 
 
+@pytest.mark.parametrize(
+    "left_shape,right_shape",
+    [
+        ((2, 3, 2), (6, 2)),
+        ((2, 6, 3), (2, 2, 3, 3)),
+        ((1, 2, 1, 3, 2), (2, 3, 2)),
+        ((2, 1, 1), (1, 2, 1)),
+        ((), (1, 1)),
+        ((0, 2), (2, 0)),
+    ],
+)
+def test_reshape_shared_outer_axes_match_cartesian_coordinate_oracle(left_shape, right_shape):
+    left, right = TensorRef("left", left_shape), TensorRef("right", right_shape)
+    relation = ReshapeRelation(left, right)
+    for source, target in ((left, right), (right, left)):
+        mapping = dict(zip(points(source.shape), points(target.shape), strict=True))
+        choices = [tuple(IndexSet.of(s) for s in subsets(range(size))) for size in source.shape]
+        for axes in product(*choices):
+            original = Selection(source, (Region(axes),))
+            mapped = relation.propagate(original)[0]
+            expected = {mapping[p] for p in actual_points(original)}
+            assert actual_points(mapped) == expected, (source.shape, target.shape, axes)
+            assert actual_points(relation.propagate(mapped)[0]) == actual_points(original)
+        # Non-Cartesian unions must preserve the same pointwise correspondence.
+        sparse = selected(source, points(source.shape)[::2])
+        mapped = relation.propagate(sparse)[0]
+        assert actual_points(mapped) == {mapping[p] for p in actual_points(sparse)}
+
+
 @pytest.mark.parametrize("dims", list(permutations(range(3))))
 def test_permutation_every_subset_has_the_correct_inverse(dims):
     source = TensorRef("source", (1, 2, 3))

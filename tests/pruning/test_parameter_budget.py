@@ -181,13 +181,13 @@ def test_unsupported_branch_stays_fixed_and_counts_toward_parameter_limit(execut
             self.a, self.b, self.out = nn.Linear(4, 6), nn.Linear(4, 6), nn.Linear(6, 2)
 
         def forward(self, x):
-            return torch.special.gammaln(self.a(x).exp()), self.out(self.b(x))
+            return torch.roll(self.a(x).exp(), 1, -1), self.out(self.b(x))
 
     model = Branches().eval()
     original = copy.deepcopy(model)
     x = torch.randn(2, 4)
     graph = DependencyGraph.build(model, args=(x,))
-    unknown = next(op for op in graph.operations() if op.node.target is torch.special.gammaln)
+    unknown = next(op for op in graph.operations() if op.node.target is torch.roll)
     assert graph.operator_spec(unknown) is None
     pruner = Pruner(model, graph=graph, granularity=Granularity(default=1))
     space = pruner.discover_candidates()

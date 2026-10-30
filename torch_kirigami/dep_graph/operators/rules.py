@@ -1,11 +1,12 @@
 """Concrete built-in operator rules, sharing existing semantic implementations."""
 
+import torch
 from torch import fx, nn
 
 from ..contracts import ArgumentRef
 from ..operation import OperatorRule, TensorEffects, argument
 from .attention import addmm, einsum, multihead_attention, sdpa
-from .effects import native_effects
+from .effects import native_effects, normalization_effects
 from .extended import (
     cast,
     channel_operator,
@@ -23,7 +24,9 @@ from .indexing import (
     narrow,
     pixel_shuffle,
     repeat,
+    select,
     stack,
+    tensor_unfold,
     unfold_fold,
 )
 from .native import (
@@ -45,6 +48,7 @@ from .native import (
     softmax,
     split,
 )
+from .spectral import fourier
 
 
 class NativeRule(OperatorRule):
@@ -80,6 +84,10 @@ class BatchNormRule(NativeRule):
     """Provide batch norm structural semantics."""
 
     build_spec = staticmethod(batch_norm)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Declare native running-statistic and counter updates during training."""
+        return normalization_effects(node, module, instance=False)
 
 
 class CastRule(NativeRule):
@@ -143,6 +151,9 @@ class EmbeddingRule(NativeRule):
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
         """Declare native max_norm renormalization without changing its behavior."""
+        if node.target is torch.embedding:
+            # Unlike F.embedding, this weight-first primitive has no max_norm.
+            return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
         max_norm = (
             module.max_norm
             if module is not None
@@ -194,6 +205,10 @@ class InstanceNormRule(NativeRule):
     """Provide instance norm structural semantics."""
 
     build_spec = staticmethod(instance_norm)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Declare native statistic updates when input statistics are enabled."""
+        return normalization_effects(node, module, instance=True)
 
 
 class LayerNormRule(NativeRule):
@@ -310,13 +325,32 @@ class StackRule(NativeRule):
     build_spec = staticmethod(stack)
 
 
+class SelectRule(NativeRule):
+    """Map a fixed scalar index while retaining independent axes."""
+
+    build_spec = staticmethod(select)
+
+
+class FourierRule(NativeRule):
+    """Preserve independent axes while protecting transformed frequency domains."""
+
+    build_spec = staticmethod(fourier)
+
+
 class UnfoldFoldRule(NativeRule):
     """Provide unfold fold structural semantics."""
 
     build_spec = staticmethod(unfold_fold)
 
 
+class TensorUnfoldRule(NativeRule):
+    """Map nonwindow axes of Tensor.unfold and retain its view allocation contract."""
+
+    build_spec = staticmethod(tensor_unfold)
+
+
 NATIVE_RULE_TYPES = (
+    FourierRule,
     AddmmRule,
     AttentionRule,
     AttributeReadRule,
@@ -353,6 +387,8 @@ NATIVE_RULE_TYPES = (
     SoftmaxRule,
     SplitRule,
     StackRule,
+    SelectRule,
+    TensorUnfoldRule,
     UnfoldFoldRule,
 )
 

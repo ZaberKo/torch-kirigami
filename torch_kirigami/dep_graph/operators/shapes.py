@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import Any, cast
 
+import torch
 from torch import fx
 
 from ...errors import UnsupportedOperation
@@ -42,6 +43,8 @@ def expression_for(operation: Operation) -> ShapeExpr | None:
     node = operation.node
     x = operation.args[0] if operation.args else None
     expression = None
+    if node.op == "call_function" and node.target is torch.numel:
+        expression = ShapeExpr("numel", operation.argument("input", 0))
     if (
         node.op == "call_function"
         and node.target is builtins.getattr
@@ -60,8 +63,9 @@ def expression_for(operation: Operation) -> ShapeExpr | None:
                 if dim is None
                 else ShapeExpr("dimension", (x, dim % len(x.shape)))
             )
-        elif node.target in ("dim", "numel"):
-            expression = ShapeExpr(node.target, x)
+        elif node.target in ("dim", "ndimension", "numel", "nelement"):
+            kind = "dim" if node.target in ("dim", "ndimension") else "numel"
+            expression = ShapeExpr(kind, x)
     if node.op == "call_function" and node.target is operator.getitem:
         source = operation.expressions.get(node.args[0])
         if source and source.kind == "shape" and isinstance(operation.args[1], int):

@@ -19,6 +19,24 @@ The registry matches the target that FX records, not equivalent mathematical exp
 Built-in registrations cover functions such as `F.linear`, `F.conv2d`, and `F.scaled_dot_product_attention`.
 Support for one spelling does not imply support for every function alias or Tensor method.
 
+Built-in equivalent spellings share their existing semantic rule.
+Examples include function/method `detach`, `numel`, `masked_fill`, `broadcast_to`, and `relu_`.
+PReLU supports its module, function, and Tensor method forms.
+LayerNorm and RMSNorm support their module, functional, and direct `torch` forms.
+The direct `torch` forms still require FX-compatible arguments.
+Older PyTorch native argument parsers can reject Proxy-valued normalization sizes before registration applies. Use the functional form in that case.
+Pointwise aliases include `absolute`, `negative`, `multiply`, `subtract`, `divide`, `clip`, and comparison aliases.
+These names retain the corresponding canonical operation's constraints and effect checks.
+Function `torch.numel` also preserves dimension provenance. Using its result as a semantic scalar still guards that value.
+
+The [operator audit](operator-audit.md) records the reviewed PyTorch namespace surface and remaining semantic gaps.
+Independent spelling tests complement the registered-entry tests.
+Neither enumeration nor registration proves support for every overload.
+
+Equal names alone do not establish equivalent semantics.
+For example, Tensor `unfold` returns window views along one axis, while functional `unfold` extracts and flattens two-dimensional image patches.
+Those operations use separate coordinate rules.
+
 FX can expand a custom Python function into supported operations without a custom rule.
 Use `opaque=True` to request a separate function call through FX's public wrapping mechanism.
 The function must still satisfy FX capture requirements.
@@ -52,20 +70,22 @@ This table lists the main structural behavior and the primary boundary for each 
 | --- | --- | --- |
 | Linear | Module and functional input/output features, weight rows/columns, and bias. Functional rank-one weights have a supported rule. | Exact registered spelling. Original call arguments must remain valid. |
 | Convolution | Conv and ConvTranspose 1D–3D, including ordinary, grouped, and depthwise channels. Partitioned weights compact by group and retain group order. | Spatial and kernel axes stay fixed. Group constraints apply. |
-| Normalization | BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, PReLU, and `normalize`. Affine parameters and statistics follow feature axes. | GroupNorm keeps its group count and balances retained channels. Normalization uses the compact domain. |
+| Normalization | BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, local response normalization, PReLU, and `normalize`. Affine parameters and statistics follow feature axes. | GroupNorm keeps its group count and balances retained channels. Normalization uses the compact domain. |
 | Embedding | Module and functional feature width and downstream consumers. | Vocabulary rows stay fixed. With `max_norm`, capture warns and permits native updates to directly bound parameter values. |
 | Pooling and interpolation | Batch/channel correspondence. Supported max-pooling values and indices remain paired. | Spatial coordinates stay fixed. |
 | Padding | Coordinate correspondence on axes that padding does not change. | Padded or cropped axes stay fixed, even if output size matches input size. |
 | Elementwise operations | Registered arithmetic, comparisons, activations, broadcasting, `where`, and `masked_fill`. | Exact registered spellings. Mutation and alias checks still apply. |
 | Casts and storage calls | Coordinate correspondence for dtype/device conversion, clone, detach, and contiguous. | A call can alias input storage. View and copy behavior must satisfy alias checks. |
-| Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, and `baddbmm` map free, contracted, and broadcast batch axes. | Original ranks and call semantics must remain valid. |
+| Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, `baddbmm`, `dot`, `vdot`, `mv`, `outer`, and `ger` map free and contracted axes. | Original ranks, broadcasting, and call semantics must remain valid. |
 | Einsum | String equations with explicit or implicit outputs, repeated input labels, reductions, and supported ellipsis broadcasting. Repeated axes retain matching original positions. | Rules require string equations, not the sublist format. Outputs can share input storage. In-place consumers and subsequent views require alias and stride checks. |
 | Concatenation and partitioning | `cat`, `stack`, `split`, `chunk`, and `unbind` map offsets and captured ports. | Stack/unbind port counts stay fixed. Other call arguments must preserve retained coordinates. |
-| Indexing | Static basic slices, `narrow`, and `index_select` coordinate maps. | Basic slices need positive steps. `index_select` needs a registered constant integer vector. The vector is not rewritten. |
+| Indexing | Static basic slices, `narrow`, `select`, and `index_select` coordinate maps. | Basic slices need positive steps. `select` keeps its indexed axis fixed. `index_select` needs an unchanged registered constant integer vector. |
 | Shape transforms | Permute, transpose, movedim/moveaxis, reshape/view, flatten/unflatten, squeeze/unsqueeze, and supported shape provenance. | Incompatible sizes, changed rank, or unproved view strides reject affected requests. |
 | Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, and `broadcast_to` map repeated blocks or broadcast fibers. | Repeat factors must be positive static integers. `repeat_interleave` needs scalar repeats and an explicit axis. `expand_as` depends on the template shape. |
+| Tensor window views | `Tensor.unfold` maps all axes except the unfolded axis, including features in time-series patch inputs. Its result shares input storage. | Positive integer size and step. The input window axis, output window count, and appended window axis stay fixed. In-place consumers need alias checks. |
 | Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle/Unshuffle, and batched 2D Unfold/Fold. | Shuffle patterns must be compatible. Pixel and Unfold/Fold spatial or kernel positions stay fixed. |
 | Reductions and softmax | Sum, mean, product, extrema, logsumexp, softmax, and log_softmax distinguish reduced from retained axes. | The operation recomputes on the compact domain. Position-index outputs are not generally covered. |
+| Fourier operations | FFT, inverse and real/Hermitian transforms, and frequency shifts map axes outside the transform. | Transform and frequency axes stay fixed. Layout remains unknown when backend behavior determines strides. |
 | Scaled dot-product attention | Q/K contractions, V width, batch/head broadcasting, masks, and supported grouped-query attention changes. | Head axes must be explicit. Causal Q/K token axes stay fixed. |
 | Native `MultiheadAttention` | Packed or separate projections with balanced embedding-width changes. | Head count, batch/token axes, masks, and attention-weight axes stay fixed. The rule does not delete whole heads at unchanged external width. |
 | `ChannelGate` extension | An explicitly registered activation axis, trainable scale, and fixed mask shrink together. | Call `register_gate_operators()`. Gates do not add a default budget domain. |
@@ -108,6 +128,11 @@ Unknown operators and unsupported axes block requests that reach them. They do n
 Capture safety is a separate prerequisite.
 An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.
 In that case, graph construction fails before sample execution.
+
+BatchNorm and InstanceNorm can update running statistics.
+Registered buffers execute on isolated copies.
+When statistics are directly bound Parameters, capture warns and permits their declared native updates.
+The same declaration does not permit writes through an unproved parameter view.
 
 A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`.
 The resulting structural barrier blocks only related pruning requests.

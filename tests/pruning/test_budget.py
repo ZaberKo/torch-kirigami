@@ -173,7 +173,7 @@ def test_unknown_branch_underfill_keeps_denominator():
             self.a, self.b = nn.Linear(4, 6), nn.Linear(4, 6)
 
         def forward(self, x):
-            return torch.special.gammaln(self.a(x)), self.b(x)
+            return torch.roll(self.a(x), 1, -1), self.b(x)
 
     model = Unknown()
     _graph, pruner = build(model, torch.randn(2, 4))

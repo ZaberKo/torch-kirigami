@@ -103,7 +103,12 @@ def instance_norm(operation: Operation) -> OperatorSpec:
         ]
         channel = len(x.shape) - spatial - 1
     relations = [ReshapeRelation(x, y, operation.node.name)]
-    for name, position in (("running_mean", 1), ("running_var", 2), ("weight", 3), ("bias", 4)):
+    positions = (
+        (("weight", 1), ("bias", 2), ("running_mean", 3), ("running_var", 4))
+        if operation.node.target is torch.instance_norm
+        else (("running_mean", 1), ("running_var", 2), ("weight", 3), ("bias", 4))
+    )
+    for name, position in positions:
         value = bind(operation, name, position)
         if value is not None:
             relations.append(equal(x, channel, one(value), 0, operation.node.name))
@@ -135,8 +140,10 @@ def prelu(operation: Operation) -> OperatorSpec:
 
 def embedding(operation: Operation) -> OperatorSpec:
     """Expose embedding feature width while fixing vocabulary IDs and row positions."""
-    x, y = one(operation.argument("input", 0)), one(operation.result)
-    weight = one(bind(operation, "weight", 1))
+    native = operation.node.target is torch.embedding
+    x = one(operation.argument("indices", 1) if native else operation.argument("input", 0))
+    y = one(operation.result)
+    weight = one(bind(operation, "weight", 0 if native else 1))
     relations = [equal(weight, 1, y, -1, operation.node.name)]
     relations.extend(equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)))
     constraints = (

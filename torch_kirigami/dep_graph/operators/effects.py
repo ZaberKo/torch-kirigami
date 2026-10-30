@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import operator
 
+import torch
 from torch import fx, nn
 
 from ..contracts import ArgumentRef
@@ -57,6 +58,42 @@ def native_effects(node: fx.Node, module: nn.Module | None, *, fresh_output: boo
     return TensorEffects(
         writes_inputs=(ArgumentRef("input", 0),) if mutates else (),
         outputs_are_fresh=fresh_output and not mutates,
+    )
+
+
+def normalization_effects(
+    node: fx.Node, module: nn.Module | None, *, instance: bool
+) -> TensorEffects:
+    """Declare native running-statistic updates without treating inputs as writable.
+
+    Registered buffers remain isolated by capture. Directly bound parameters
+    used as statistics receive the same explicit permission and warning as
+    other declared native parameter updates. A view does not receive permission.
+    """
+    names = ("running_mean", "running_var")
+    if module is not None:
+        updates = module.training or (instance and not module.track_running_stats)
+        if not instance:
+            updates = module.training and module.track_running_stats
+            names += ("num_batches_tracked",)
+        paths = tuple(
+            name for name in names if updates and isinstance(getattr(module, name), nn.Parameter)
+        )
+        return TensorEffects(writes_inputs=(), outputs_are_fresh=True, mutable_parameters=paths)
+    flag = "use_input_stats" if instance else "training"
+    updates = argument(node.args, node.kwargs, flag, 5, instance, target=node.target)
+    if updates is False:
+        return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
+    native = node.target in (torch.batch_norm, torch.instance_norm)
+    statistics = tuple(
+        ArgumentRef(name, position)
+        for name, position in zip(names, (3, 4) if native else (1, 2), strict=True)
+        if argument(node.args, node.kwargs, name, position, target=node.target) is not None
+    )
+    return TensorEffects(
+        writes_inputs=statistics,
+        outputs_are_fresh=True,
+        mutable_parameters=statistics,
     )
 
 

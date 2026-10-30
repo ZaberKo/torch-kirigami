@@ -38,7 +38,7 @@ _KEYWORD_ALIASES = {
     "keepdim": ("keepdims",),
     "dim0": ("axis0",),
     "dim1": ("axis1",),
-    "split_size_or_sections": ("split_size",),
+    "split_size_or_sections": ("split_size", "split_sizes"),
     "sizes": ("repeats",),
     "shape": ("size",),
 }

@@ -13,6 +13,17 @@ Use this page to find representative evidence for a contract. A test proves only
 
 A registered operator-entry test covers a rule. It does not establish complete model lifecycle support. Read the [operator support guide](operator-support.md) for supported forms and conditions.
 
+Registered-entry tests cannot detect an omitted entry because they enumerate the registry itself.
+`tests/dep_graph/operators/test_entry_aliases.py` maintains an independent spelling list and captures each call through the public build/plan/apply flow.
+It checks numerical references, parameter roles, shape provenance, and rejected alias writes on CPU and CUDA.
+This list covers declared families. It does not claim coverage of every PyTorch API.
+
+The [operator audit](operator-audit.md) adds an inventory independent of registered targets.
+It enumerates visible entries in `torch`, Tensor, functional, module, special, linear algebra, and Fourier namespaces.
+The namespace guard reports newly visible names.
+Public lifecycle tests separately check mathematical, functional, coordinate, and Fourier families on CPU and CUDA.
+The inventory records unregistered entries too. A direct rule still does not establish every overload.
+
 ## Representative test areas
 
 The [test organization guide](../tests/README.md) defines directory ownership. Use the feature directory as the starting point:
@@ -25,6 +36,17 @@ The [test organization guide](../tests/README.md) defines directory ownership. U
 - `tests/integration/` covers composed networks and contracts that span independent features.
 
 Inspect the individual test before relying on a claim. Cross-layer changes need public lifecycle coverage. Use an independent numerical reference when checking formulas. For rejected changes, check preserved state and include a valid alternative when one exists.
+
+Tensor window views have public build/plan/apply and checkpoint tests in `tests/dep_graph/operators/test_tensor_unfold.py`.
+The tests check nonwindow coordinates, rejected window changes, alias safety, and both greedy strategies.
+`tests/pruning/test_reshape_outer_dimensions.py` checks patch-head compaction with batch 128 and the default interval bound.
+It also checks that hardcoded widths still reject physical execution.
+
+The standalone [reshape benchmark](../experiments/reshape_mapping_benchmark.py) measures exact mapping without model execution or activation allocation.
+Its [recorded results](../experiments/reshape_mapping_results.json) compare commit `4701f49` with the implementation that preserves common outer dimensions.
+Batch 1 takes approximately 0.475 seconds before the change and 0.000013 seconds after it.
+Batch 128 previously reaches the interval limit. The revised mapping retains one region without increasing that limit.
+These local timings do not measure complete planning or model latency.
 
 ## Workflow evidence
 

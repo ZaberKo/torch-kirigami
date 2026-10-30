@@ -231,7 +231,7 @@ def test_unknown_influence_rejects_groups_but_valid_alternative_can_train():
             self.out = nn.Linear(3, 1)
 
         def forward(self, x):
-            return torch.special.gammaln(self.bad(x)), self.out(self.good(x))
+            return torch.roll(self.bad(x), 1, -1), self.out(self.good(x))
 
     model = Branches()
     graph = DependencyGraph.build(model, args=(torch.ones(2, 2),))

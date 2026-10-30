@@ -20,6 +20,7 @@ from torch_kirigami import (
     Selection,
     SliceRelation,
     TensorRef,
+    config,
 )
 
 
@@ -59,6 +60,19 @@ def test_reshape_keeps_large_token_prefix_symbolic():
         18,
         19,
     }
+
+
+def test_reshape_keeps_split_batch_and_shared_suffix_symbolic():
+    config.max_parts = 1
+    source = TensorRef("source", (5000, 128 * 7, 42, 128))
+    target = TensorRef("target", (5000, 128, 7, 42, 128))
+    relation = ReshapeRelation(source, target)
+    selected = source.axis(-1).select([7])
+    mapped = relation.propagate(selected)[0]
+    assert mapped == target.axis(-1).select([7])
+    assert len(mapped.regions) == 1
+    assert mapped.count == 5000 * 128 * 7 * 42
+    assert relation.propagate(mapped)[0] == selected
 
 
 @pytest.mark.parametrize(

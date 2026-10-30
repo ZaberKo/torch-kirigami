@@ -29,7 +29,7 @@ class Branches(nn.Module):
         self.out = nn.Linear(6, 2, dtype=torch.float64)
 
     def forward(self, x):
-        return self.out(self.good(x) + self.alias(x)), torch.special.gammaln(self.bad(x).exp())
+        return self.out(self.good(x) + self.alias(x)), torch.roll(self.bad(x).exp(), 1, -1)
 
 
 def test_shared_budget_constraint_completion_preserves_opaque_branch_and_io(execution_device):

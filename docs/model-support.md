@@ -56,6 +56,12 @@ For `F.embedding` with a registered buffer as its weight, capture updates only t
 Planning supports this form and does not change the original buffer.
 The parameter-update warning does not apply to isolated buffer writes or writes to fresh temporary tensors.
 
+BatchNorm and InstanceNorm normally keep running statistics in registered buffers.
+Capture isolates those buffers.
+If a model instead registers statistics as Parameters, the same declared-update warning applies when the call updates them.
+These native updates persist in the original Parameters.
+The declaration does not permit updates through unproved parameter aliases or views.
+
 Warnings use Python's `warnings` module, not `print`.
 Callers can record, filter, or promote them to errors.
 Promoting the parameter-update warning to an error stops metadata execution before these updates occur.

@@ -47,7 +47,7 @@ def test_unknown_operator_keeps_diagnostics_without_warning(execution_device):
             self.free = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
 
         def forward(self, x):
-            return torch.special.i0(self.fixed(x)), self.free(x)
+            return torch.roll(self.fixed(x), 1, -1), self.free(x)
 
     model = Model()
     original = copy.deepcopy(model)

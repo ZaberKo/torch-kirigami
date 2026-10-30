@@ -49,6 +49,74 @@ def sample(shape, *, integer=False):
 
 
 UNARY = {
+    "acos",
+    "acosh",
+    "asin",
+    "asinh",
+    "atan",
+    "atanh",
+    "tan",
+    "arccos",
+    "arccosh",
+    "arcsin",
+    "arcsinh",
+    "arctan",
+    "arctanh",
+    "erfc",
+    "erfcx",
+    "erfinv",
+    "exp2",
+    "log2",
+    "log10",
+    "trunc",
+    "fix",
+    "frac",
+    "deg2rad",
+    "rad2deg",
+    "sinc",
+    "signbit",
+    "isfinite",
+    "isinf",
+    "isnan",
+    "isneginf",
+    "isposinf",
+    "isreal",
+    "logical_not",
+    "sgn",
+    "nan_to_num",
+    "i0",
+    "lgamma",
+    "digamma",
+    "positive",
+    "airy_ai",
+    "bessel_j0",
+    "bessel_j1",
+    "bessel_y0",
+    "bessel_y1",
+    "entr",
+    "expit",
+    "gammaln",
+    "i0e",
+    "i1",
+    "i1e",
+    "log_ndtr",
+    "logit",
+    "modified_bessel_i0",
+    "modified_bessel_i1",
+    "modified_bessel_k0",
+    "modified_bessel_k1",
+    "ndtr",
+    "ndtri",
+    "psi",
+    "scaled_modified_bessel_k0",
+    "scaled_modified_bessel_k1",
+    "spherical_bessel_j0",
+    "angle",
+    "conj",
+    "conj_physical",
+    "resolve_conj",
+    "resolve_neg",
+    "real",
     "neg",
     "relu",
     "sigmoid",
@@ -78,6 +146,24 @@ UNARY = {
     "pos",
 }
 BINARY = {
+    "atan2",
+    "arctan2",
+    "copysign",
+    "fmod",
+    "fmax",
+    "fmin",
+    "hypot",
+    "logaddexp",
+    "logaddexp2",
+    "nextafter",
+    "xlogy",
+    "heaviside",
+    "float_power",
+    "gammainc",
+    "gammaincc",
+    "xlog1py",
+    "zeta",
+    "isclose",
     "bitwise_and",
     "bitwise_or",
     "bitwise_xor",
@@ -109,6 +195,14 @@ BINARY = {
     "xor",
 }
 ACTIVATIONS = {
+    "softmin",
+    "hardshrink",
+    "softshrink",
+    "logsigmoid",
+    "rrelu",
+    "alpha_dropout",
+    "feature_alpha_dropout",
+    "feature_dropout",
     "relu",
     "relu6",
     "gelu",
@@ -130,8 +224,13 @@ ACTIVATIONS = {
     "tanhshrink",
     "threshold",
 }
-REDUCTIONS = {"sum", "mean", "amax", "amin", "prod", "logsumexp"}
+REDUCTIONS = {"sum", "mean", "amax", "amin", "prod", "logsumexp", "all", "any", "nansum", "nanmean"}
 CASTS = {
+    "byte",
+    "char",
+    "short",
+    "cfloat",
+    "cdouble",
     "to",
     "type_as",
     "float",
@@ -190,22 +289,34 @@ def module_case(target):
     if name == "Embedding":
         x, module = sample((2, 3), integer=True), target(5, 6).double()
         return NativeCase((x,), module.weight, 1, (2,), module=module)
-    if "pool" in lowered or name == "Upsample":
+    if name == "LocalResponseNorm":
+        x = sample((2, 6, 3))
+        return NativeCase((x,), x, 1, module=target(3))
+    if "pool" in lowered or name in {"Upsample", "UpsamplingNearest2d", "UpsamplingBilinear2d"}:
         x = sample((2, 6, *((4,) * spatial)))
         if "Unpool" in name:
             pooled, indices = getattr(F, f"max_pool{spatial}d")(x, 2, return_indices=True)
             return NativeCase(
                 (pooled, indices), pooled, 1, module=target(2), companions=((indices, 1, (1,)),)
             )
-        module = target(scale_factor=2) if name == "Upsample" else target(2)
+        module = (
+            target(scale_factor=2)
+            if name in {"Upsample", "UpsamplingNearest2d", "UpsamplingBilinear2d"}
+            else target(2, 2)
+            if name.startswith("LPPool")
+            else target(2)
+        )
         return NativeCase((x,), x, 1, module=module)
     if "Pad" in name:
         x = sample((2, 6, *((3,) * spatial)))
         module = target(1, 0.25) if name.startswith("Constant") else target(1)
         return NativeCase((x,), x, 1, module=module)
-    if name in {"Softmax", "LogSoftmax"}:
+    if name in {"Softmax", "LogSoftmax", "Softmin"}:
         x = sample((2, 6, 3))
         return NativeCase((x,), x, 1, module=target(dim=2))
+    if name == "Softmax2d":
+        x = sample((2, 6, 3, 3))
+        return NativeCase((x,), x, 1, module=target())
     if name == "Flatten":
         x = sample((2, 3, 2))
         return NativeCase((x,), x, 1, output_removed=((2, 3),), module=target(1))
@@ -270,7 +381,60 @@ def module_case(target):
 def callable_case(kind, target):
     name = target if kind == "method" else target.__name__
     public_name = name.removeprefix("_")
+    public_name = public_name.removeprefix("special_")
+    if public_name == "native_channel_shuffle":
+        public_name = "channel_shuffle"
+    if kind == "method" or str(getattr(target, "__module__", "")).startswith("torch"):
+        public_name = public_name.removesuffix("_")
+    public_name = {
+        "log_sigmoid": "logsigmoid",
+        "true_divide": "div",
+        "rsub": "sub",
+        "mvlgamma": "multigammaln",
+        "igamma": "gammainc",
+        "igammac": "gammaincc",
+        "linalg_matmul": "matmul",
+        "ndimension": "dim",
+        "nelement": "numel",
+        "absolute": "abs",
+        "negative": "neg",
+        "multiply": "mul",
+        "subtract": "sub",
+        "divide": "div",
+        "clip": "clamp",
+        "greater": "gt",
+        "greater_equal": "ge",
+        "less": "lt",
+        "less_equal": "le",
+        "not_equal": "ne",
+    }.get(public_name, public_name)
     x = sample((2, 6, 3))
+    if public_name in ("acosh", "arccosh", "zeta"):
+        x = x + 1.1
+    if public_name == "imag":
+        x = x.to(torch.complex128) * (1 + 2j)
+        return NativeCase((x,), x, 1)
+    if public_name in ("bitwise_not", "gcd", "lcm", "bitwise_left_shift", "bitwise_right_shift"):
+        x = sample((2, 6, 3), integer=True)
+        return NativeCase((x,) if public_name == "bitwise_not" else (x, torch.ones_like(x)), x, 1)
+    if public_name in ("addcdiv", "addcmul"):
+        return NativeCase((x, x + 0.3, x + 0.7), x, 1)
+    if public_name == "lerp":
+        return NativeCase((x, x + 0.7, 0.3), x, 1)
+    if public_name == "ldexp":
+        return NativeCase((x, (x * 2).int() + 1), x, 1)
+    if "polynomial" in public_name or public_name == "multigammaln":
+        return NativeCase((x, 1 if public_name == "multigammaln" else 2), x, 1)
+    if public_name == "polygamma":
+        return NativeCase((x, 1) if kind == "method" else (1, x), x, 1)
+    if name.startswith("fft_"):
+        transform = name.removeprefix("fft_")
+        if transform.endswith(("2", "n")):
+            x = sample((2, 6, 4, 4))
+            dims = (2, 3)
+        else:
+            x, dims = sample((2, 6, 4)), 2
+        return NativeCase((x,), x, 1, kwargs={"dim": dims})
     if public_name in UNARY:
         return NativeCase((x,), x, 1)
     if public_name in BINARY:
@@ -288,6 +452,15 @@ def callable_case(kind, target):
         args = (x, 0.2, 0.7) if public_name == "clamp" else (x, 0.4)
         return NativeCase(args, x, 1)
     if public_name in ACTIVATIONS:
+        if public_name == "softmin":
+            return NativeCase((x,), x, 1, kwargs={"dim": 2})
+        if target in (
+            torch.dropout,
+            torch.feature_dropout,
+            torch.alpha_dropout,
+            torch.feature_alpha_dropout,
+        ):
+            return NativeCase((x, 0.0, False), x, 1)
         kwargs = {"p": 0.0, "training": False} if "dropout" in public_name else {}
         if public_name == "dropout3d":
             x = sample((2, 6, 3, 3, 3))
@@ -320,6 +493,13 @@ def callable_case(kind, target):
         )
     if public_name in {"batch_norm", "instance_norm"}:
         mean, var, weight, bias = sample((6,)), sample((6,)) + 1, sample((6,)), sample((6,))
+        if target in (torch.batch_norm, torch.instance_norm):
+            return NativeCase(
+                (x, weight, bias, mean, var, False, 0.1, 1e-5, True),
+                x,
+                1,
+                companions=((mean, 0, (1,)), (weight, 0, (1,))),
+            )
         return NativeCase(
             (x, mean, var, weight, bias), x, 1, companions=((mean, 0, (1,)), (weight, 0, (1,)))
         )
@@ -344,7 +524,10 @@ def callable_case(kind, target):
         )
     if public_name == "embedding":
         indices, weight = sample((2, 3), integer=True), sample((5, 6))
-        return NativeCase((indices, weight), weight, 1, (2,))
+        args = (weight, indices) if target is torch.embedding else (indices, weight)
+        return NativeCase(args, weight, 1, (2,))
+    if public_name == "local_response_norm":
+        return NativeCase((x, 3), x, 1)
     if "pool" in public_name or public_name == "interpolate":
         spatial = next((n for n in (1, 2, 3) if f"{n}d" in public_name), 2)
         x = sample((2, 6, *((4,) * spatial)))
@@ -352,12 +535,34 @@ def callable_case(kind, target):
             pooled, indices = getattr(F, f"max_pool{spatial}d")(x, 2, return_indices=True)
             return NativeCase((pooled, indices, 2), pooled, 1, companions=((indices, 1, (1,)),))
         kwargs = {"scale_factor": 2} if public_name == "interpolate" else {}
-        args = (x,) if kwargs else (x, 2)
-        if public_name.endswith("with_indices"):
+        args = (x,) if kwargs else (x, 2, 2) if public_name.startswith("lp_pool") else (x, 2)
+        if public_name.endswith("with_indices") or target is torch.adaptive_max_pool1d:
             return NativeCase(args, x, 1, (1, 1), output_removed=((1,), (1,)), kwargs=kwargs)
         return NativeCase(args, x, 1, kwargs=kwargs)
     if public_name == "pad":
         return NativeCase((x, (1, 1)), x, 1)
+    if public_name in {"dot", "vdot", "mv", "outer", "ger"}:
+        x = sample((3, 6) if public_name == "mv" else (6,))
+        right = sample((4,) if public_name in {"outer", "ger"} else (6,))
+        keyword = (
+            "vec"
+            if public_name == "mv"
+            else "vec2"
+            if public_name in {"outer", "ger"}
+            else "tensor"
+            if public_name == "dot"
+            else "other"
+        )
+        axis = 1 if public_name == "mv" else 0
+        outer = public_name in {"outer", "ger"}
+        return NativeCase(
+            (x,),
+            x,
+            axis,
+            (0,) if outer else (None,),
+            kwargs={keyword: right},
+            companions=() if outer else ((right, 0, (1,)),),
+        )
     if public_name in {"matmul", "mm", "bmm", "addmm", "baddbmm", "einsum"}:
         batched = public_name in {"bmm", "baddbmm"}
         x, right = (
@@ -381,6 +586,9 @@ def callable_case(kind, target):
     if public_name == "unflatten":
         x = sample((2, 6))
         return NativeCase((x, 1, (2, 3)), x, 1, (2,), (1, 4))
+    if public_name == "ravel":
+        x = sample((2, 6))
+        return NativeCase((x,), x, 1, (0,), output_removed=((1, 7),))
     if public_name in {"reshape", "view", "flatten", "squeeze", "unsqueeze"}:
         if public_name in {"reshape", "view"}:
             x = sample((2, 6))
@@ -396,13 +604,23 @@ def callable_case(kind, target):
         x = sample((2, 6))
         other = sample((2, 6) if public_name == "stack" else (2, 3))
         return NativeCase(((x, other), 1), x, 1, (2 if public_name == "stack" else 1,))
-    if public_name in {"split", "chunk", "unbind"}:
+    if public_name in {"split", "split_with_sizes", "chunk", "unbind"}:
         if public_name == "unbind":
             return NativeCase((x, 2), x, 1, (1, 1, 1), output_removed=((1,), (1,), (1,)))
         x = sample((2, 6))
         return NativeCase(
-            (x, 3 if public_name == "split" else 2, 1), x, 1, (1, None), output_removed=((1,), ())
+            (
+                x,
+                [3, 3] if public_name == "split_with_sizes" else 3 if public_name == "split" else 2,
+                1,
+            ),
+            x,
+            1,
+            (1, None),
+            output_removed=((1,), ()),
         )
+    if public_name == "select":
+        return NativeCase((x, 2, 0), x, 1)
     if public_name in {"getitem", "narrow", "index_select"}:
         if public_name == "getitem":
             args = (x, (slice(None), slice(None), slice(0, 2)))
@@ -426,6 +644,9 @@ def callable_case(kind, target):
             return NativeCase((x, (1, 2)), x, 1, output_removed=((1, 7),))
         args = (x, sample((3, 6))) if public_name == "expand_as" else (x, (3, 6))
         return NativeCase(args, x, 1)
+    if kind == "method" and public_name == "unfold":
+        x = sample((2, 6, 8))
+        return NativeCase((x, -1, 3, 1), x, 1)
     if public_name in {
         "glu",
         "channel_shuffle",

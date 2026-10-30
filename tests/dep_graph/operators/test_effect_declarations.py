@@ -411,7 +411,7 @@ def test_capture_write_uncertainty_is_distinct_from_local_structural_barrier(exe
             self.out = nn.Linear(4, 2)
 
         def forward(self, x):
-            return torch.special.i0(self.constant), self.out(self.hidden(x))
+            return torch.roll(self.constant, 1, -1), self.out(self.hidden(x))
 
     class ReadOnlyUnknown(OperatorRule):
         def build_spec(self, operation):
@@ -423,9 +423,7 @@ def test_capture_write_uncertainty_is_distinct_from_local_structural_barrier(exe
     with pytest.raises(CaptureError, match="Parameter/alias write"):
         DependencyGraph.build(model, args=(x,))
     torch.testing.assert_close(model.constant, before.constant)
-    registry = OperatorRegistry.default().register(
-        torch.special.i0, ReadOnlyUnknown(), opaque=False
-    )
+    registry = OperatorRegistry.default().register(torch.roll, ReadOnlyUnknown(), opaque=False)
     graph = DependencyGraph.build(model, args=(x,), operators=registry)
     pruner = Pruner(model, graph=graph)
     with pytest.raises(PlanningError):

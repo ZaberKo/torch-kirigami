@@ -20,7 +20,7 @@ def test_unknown_branch_only_blocks_related_queries():
             self.a, self.b = nn.Linear(4, 4), nn.Linear(4, 4)
 
         def forward(self, x):
-            return torch.special.gammaln(self.a(x)), self.b(x)
+            return torch.roll(self.a(x), 1, -1), self.b(x)
 
     graph = DependencyGraph.build(Branch(), args=(torch.randn(2, 4),))
     assert graph.diagnostics

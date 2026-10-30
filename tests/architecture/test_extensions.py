@@ -157,7 +157,7 @@ def test_external_function_capture_is_local():
 def test_overridden_linear_subclass_does_not_inherit_rule():
     class Different(nn.Linear):
         def forward(self, x):
-            return torch.special.gammaln(F.linear(x, self.weight, self.bias))
+            return torch.roll(F.linear(x, self.weight, self.bias), 1, -1)
 
     graph = DependencyGraph.build(nn.Sequential(Different(4, 4)), args=(torch.randn(2, 4),))
     assert (

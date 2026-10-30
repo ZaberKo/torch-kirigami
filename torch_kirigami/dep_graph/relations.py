@@ -366,7 +366,7 @@ class ReshapeRelation:
         return (self.left, self.right)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Map regions while retaining common leading dimensions symbolically.
+        """Map regions while retaining common outer dimensions symbolically.
 
         Raises:
             ValueError: source does not belong to either endpoint.
@@ -375,19 +375,30 @@ class ReshapeRelation:
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         target = self.right if source.tensor == self.left else self.left
-        # Preserve common leading dimensions symbolically. In particular, batch/token
-        # axes of attention reshapes must not multiply the number of index intervals.
+        # Row-major reshapes preserve matching prefix and suffix coordinates.
+        # Convert only the middle: splitting a merged batch axis must not expand
+        # unchanged patch/feature axes into one interval per batch/token position.
         prefix = 0
         for left, right in zip(source.tensor.shape, target.shape, strict=False):
             if left != right:
                 break
             prefix += 1
+        suffix = 0
+        while (
+            suffix < min(len(source.tensor.shape), len(target.shape)) - prefix
+            and source.tensor.shape[-1 - suffix] == target.shape[-1 - suffix]
+        ):
+            suffix += 1
+        source_stop = len(source.tensor.shape) - suffix
+        target_stop = len(target.shape) - suffix
         regions: list[Region] = []
         for region in source.regions:
-            offsets = linear_indices(Region(region.axes[prefix:]), source.tensor.shape[prefix:])
+            offsets = linear_indices(
+                Region(region.axes[prefix:source_stop]), source.tensor.shape[prefix:source_stop]
+            )
             regions.extend(
-                Region(region.axes[:prefix] + mapped.axes)
-                for mapped in offset_regions(offsets, target.shape[prefix:])
+                Region(region.axes[:prefix] + mapped.axes + region.axes[source_stop:])
+                for mapped in offset_regions(offsets, target.shape[prefix:target_stop])
             )
         return (Selection(target, tuple(regions)),)
 

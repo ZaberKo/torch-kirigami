@@ -26,6 +26,34 @@ from .coordinates import narrow_index
 from .native import equal, one, split
 
 
+def tensor_unfold(operation: Operation) -> OperatorSpec:
+    """Preserve nonwindow axes of Tensor.unfold without expanding overlapping patches.
+
+    The unfolded input axis, output window count, and appended window axis stay
+    fixed. The output is a view; its rule must not promise independent storage.
+    """
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dim = operation.argument("dimension", 1)
+    size, step = operation.argument("size", 2), operation.argument("step", 3)
+    if not x.shape or not all(type(v) is int for v in (dim, size, step)):
+        raise UnsupportedOperation("Tensor.unfold requires a nonscalar input and integer arguments")
+    if size < 1 or step < 1:
+        raise UnsupportedOperation("Tensor.unfold requires positive size and step")
+    dim %= len(x.shape)
+    relations = tuple(
+        equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != dim
+    )
+    constraints = tuple(
+        AxisBarrier(
+            axis,
+            "Tensor.unfold window coordinates stay fixed; only nonwindow axes can shrink",
+            operation.node.name,
+        )
+        for axis in (x.axis(dim), y.axis(dim), y.axis(-1))
+    )
+    return OperatorSpec(relations, constraints)
+
+
 def stack(operation: Operation) -> OperatorSpec:
     """Align every stacked input and protect the newly introduced port axis."""
     items, y = operation.argument("tensors", 0), one(operation.result)
@@ -84,11 +112,36 @@ def narrow(operation: Operation) -> OperatorSpec:
     )
 
 
+def select(operation: Operation) -> OperatorSpec:
+    """Map an integer-selected slice while preserving its indexing axis.
+
+    The selected axis stays fixed, so the original integer cannot acquire a
+    different coordinate after compaction. Other axes map through SliceRelation.
+    """
+    x, y = one(operation.argument("input", 0)), one(operation.result)
+    dim, index = operation.argument("dim", 1), operation.argument("index", 2)
+    if not x.shape or type(dim) is not int or type(index) is not int:
+        raise UnsupportedOperation("select requires a nonscalar tensor and static integer indices")
+    dim %= len(x.shape)
+    indices = [slice(None)] * len(x.shape)
+    indices[dim] = index
+    return OperatorSpec(
+        (SliceRelation(x, y, tuple(indices), operation.node.name),),
+        (
+            AxisBarrier(
+                x.axis(dim),
+                "The select indexing axis stays fixed to preserve original integer coordinates",
+                operation.node.name,
+            ),
+        ),
+    )
+
+
 def repeat(operation: Operation) -> OperatorSpec:
     """Map repeated positions through compressed block relations."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     target = operation.node.target
-    if target in ("expand", "expand_as", torch.broadcast_to):
+    if target in ("expand", "expand_as", "broadcast_to", torch.broadcast_to):
         relations = [BroadcastRelation(x, y, operation.node.name)]
         if target == "expand_as":
             template = one(operation.argument("other", 1))
@@ -103,7 +156,9 @@ def repeat(operation: Operation) -> OperatorSpec:
                     "Validate compact broadcast dimensions",
                     arguments=(
                         ArgumentRef(
-                            "size" if target is torch.broadcast_to else "sizes", 1, variadic=True
+                            "size" if target in ("broadcast_to", torch.broadcast_to) else "sizes",
+                            1,
+                            variadic=True,
                         ),
                     )
                     if target != "expand_as"

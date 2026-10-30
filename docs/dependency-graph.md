@@ -325,6 +325,13 @@ Relations describe forced coordinate changes. They are deterministic, monotone, 
 | `PermuteRelation` | Maps regions through an explicit axis permutation and its inverse. |
 | `SliceRelation` | Maps normalized integer indexing and positive-step slices. Operator rules expand ellipses and handle inserted axes separately. Advanced indexing is outside this relation. |
 
+Reshape mapping preserves matching leading and trailing dimensions symbolically.
+Only the changed middle dimensions need conversion through row-major offsets.
+For example, `[B * V, P, C] -> [B, V, P, C]` keeps the patch and feature coordinates symbolic.
+Deleting feature positions does not require one interval for each batch, variable, and patch position.
+This optimization preserves exact coordinates. It does not infer Python attribute bindings or establish view stride compatibility.
+Mappings that still require excessive fragmentation report `analysis_limit`.
+
 `AxisPort` exposes an axis within an optional region scope. Use a scope for a group or packed projection partition. `BlockMap` describes corresponding contiguous blocks and their completion rules. `PartitionedLayout` describes disjoint original-coordinate partitions that compact separately and concatenate in declared order.
 
 `AxisPort.is_full` reports whether the scope covers the entire original tensor.
@@ -444,8 +451,10 @@ Function calls use `ArgumentRef` entries that also appear in `writes_inputs`.
 Capture and planning use the same argument resolver, including containers and variadic arguments.
 These declarations must preserve tensor identity, shape, layout, dtype, device, and `requires_grad`.
 They do not permit writes through unproven parameter aliases or views.
-The built-in Embedding rule uses this field for native `max_norm` renormalization.
-Build warns that scores will read updated weights and prior gradients may be stale.
+Embedding uses this field for native `max_norm` renormalization.
+BatchNorm and InstanceNorm use it when running statistics are directly bound Parameters.
+Build warns that declared updates persist and prior gradients may be stale.
+Scores read current parameter values.
 Declared writes to directly bound buffers need no parameter-update permission.
 Capture isolates these buffers. Planning checks their compact calls without changing the original buffers.
 Writes through views still need an alias proof.
