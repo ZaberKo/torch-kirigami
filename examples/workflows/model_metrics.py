@@ -2,7 +2,7 @@
 
 `measure_model` calls the public complexity and latency measurement APIs.
 It uses the supplied example tensor and device options.
-The result includes parameter counts, MAC counts, and unsupported operations.
+The result includes parameter counts, MACs, FLOPs, and separate coverage diagnostics.
 It also records input, device, compilation, and warmup settings for comparison.
 
 The measurements describe the current model and run configuration.
@@ -40,8 +40,10 @@ def measure_model(
     return {
         "#Params": complexity.params,
         "#MACs": complexity.macs,
+        "#FLOPs": complexity.flops,
         "latency_ms": latency,
         "unsupported_ops": complexity.unsupported_ops,
+        "unsupported_flop_ops": complexity.unsupported_flop_ops,
         "device": str(example.device),
         "dtype": str(example.dtype),
         "input_shape": tuple(example.shape),

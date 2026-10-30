@@ -2274,6 +2274,42 @@
       "object": "torch_kirigami.measurement.calculate_model_complexity",
       "contracts": [
         {
+          "behavior": "Validate each FLOP formula invocation, preserve dense MAC counts, and report independent nominal FLOP coverage.",
+          "tests": [
+            "tests/measurement/test_flops.py::test_nominal_arithmetic_formulas",
+            "tests/measurement/test_flops.py::test_normalization_counts_explicit_arithmetic",
+            "tests/measurement/test_flops.py::test_raw_convolution_signatures_and_bias",
+            "tests/measurement/test_flops.py::test_invalid_non_mac_formula_fails_before_aggregation",
+            "tests/measurement/test_flops.py::test_flop_coverage_is_separate_from_mac_coverage",
+            "tests/measurement/test_flops.py::test_valid_external_flops_remain_python_integers",
+            "tests/measurement/test_operation_surface.py::test_unary_spellings_share_counts",
+            "tests/measurement/test_operation_surface.py::test_binary_spellings_share_counts",
+            "tests/measurement/test_operation_surface.py::test_biased_matrix_spellings",
+            "tests/measurement/test_operation_surface.py::test_hidden_arithmetic_is_not_covered_by_another_call",
+            "tests/measurement/test_operation_surface.py::test_softmax_and_safe_softmax_are_both_counted",
+            "tests/measurement/test_operation_surface.py::test_raw_efficient_attention_uses_sequence_before_heads"
+          ],
+          "conditions": "CPU/CUDA and PyTorch 2.6/2.14, native convolution signatures, broadcasting, affine normalization, invalid external formulas, and large Python integers.",
+          "gaps": [
+            "The declared nominal formulas do not establish hardware instruction counts or complete coverage for opaque operations."
+          ]
+        },
+        {
+          "behavior": "Execute counting without gradients, restore attention switches, and count frozen MHA and vector products consistently.",
+          "tests": [
+            "tests/measurement/test_counting_paths.py::test_counting_uses_no_grad_and_restores_modes",
+            "tests/measurement/test_counting_paths.py::test_mha_counts_do_not_depend_on_parameter_freezing",
+            "tests/measurement/test_counting_paths.py::test_transformer_counts_do_not_depend_on_parameter_freezing",
+            "tests/measurement/test_counting_paths.py::test_vector_products_have_consistent_dense_counts",
+            "tests/measurement/test_counting_paths.py::test_einsum_counts_exposed_matrix_work",
+            "tests/measurement/test_counting_paths.py::test_known_zero_mac_calls_do_not_report_missing_coverage"
+          ],
+          "conditions": "CPU and CUDA, outer grad/no-grad/inference modes, success and failure, and singleton vector contractions.",
+          "gaps": [
+            "Counts follow exposed kernels, not representation-independent symbolic arithmetic."
+          ]
+        },
+        {
           "behavior": "MACs独立公式、全参数去重、未计量操作报告；CPU/CUDA计时及编译、剪枝生命周期与状态隔离",
           "tests": [
             "tests/measurement/test_complexity_and_latency.py::test_complexity_linear_conv_and_frozen_shared_parameters",

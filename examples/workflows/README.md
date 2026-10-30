@@ -671,10 +671,11 @@ For other entries, construct the matching original skeleton, including any inser
 The library does not replace native MHA automatically during load.
 
 Stage records include validation loss, top-1/top-5 accuracy, and accuracy change in percentage points.
-They also include parameter elements, MACs, latency, and measurement settings.
-MACs and latency describe one image, with batch size one.
+They also include parameter elements, MACs, FLOPs, latency, and measurement settings.
+MACs, FLOPs, and latency describe one image, with batch size one.
 Accuracy uses `--val_batch_size`, which does not change the measurement batch.
 Check `unsupported_ops` before assuming complete MAC coverage.
+Check `unsupported_flop_ops` separately for incomplete FLOP coverage.
 Neither MACs nor latency is a pruning target in these entries.
 
 Compare methods with matched candidate scope, parameter target, calibration, and recovery settings.

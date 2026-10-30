@@ -21,11 +21,11 @@ def test_complexity_linear_conv_and_frozen_shared_parameters(execution_device):
     linear.register_parameter("alias", linear.weight)
     value = calculate_model_complexity(linear, torch.ones(2, 3, 4), execution_device)
     assert (value.macs, value.params, value.unsupported_ops) == (2 * 3 * 4 * 5, 4 * 5 + 5, ())
-    assert value.flops == 2 * (2 * 3 * 4 * 5)
+    assert value.flops == 2 * (2 * 3 * 4 * 5) + 2 * 3 * 5
     conv = nn.Conv2d(4, 6, 3, padding=1, groups=2).to(execution_device)
     value = calculate_model_complexity(conv, torch.ones(2, 4, 5, 5), execution_device)
     assert value.macs == 2 * 6 * 5 * 5 * 2 * 3 * 3
-    assert value.flops == 2 * (2 * 6 * 5 * 5 * 2 * 3 * 3)
+    assert value.flops == 2 * (2 * 6 * 5 * 5 * 2 * 3 * 3) + 2 * 6 * 5 * 5
     assert value.params == 6 * 2 * 3 * 3 + 6
     assert not value.unsupported_ops
 
@@ -42,6 +42,8 @@ def test_grouped_convolution_mac_formulas(dimensions, transposed, execution_devi
     result = calculate_model_complexity(conv, torch.ones(2, 4, *((5,) * dimensions)))
     positions = 5**dimensions if transposed else 3**dimensions
     assert result.macs == 2 * positions * 4 * (6 // 2) * 3**dimensions
+    output_positions = (9 if transposed else 3) ** dimensions
+    assert result.flops == 2 * result.macs + 2 * 6 * output_positions
     assert result.unsupported_ops == ()
 
 
@@ -121,7 +123,7 @@ def test_non_mac_flop_registration_does_not_change_macs(monkeypatch, execution_d
     model = nn.Sequential(nn.Linear(4, 5), nn.ReLU()).to(execution_device)
     result = calculate_model_complexity(model, torch.ones(2, 4))
     assert result.macs == 2 * 4 * 5
-    assert result.flops == 2 * (2 * 4 * 5) + 3
+    assert result.flops == 2 * (2 * 4 * 5) + 2 * 5 + 3
     assert result.unsupported_ops == ()
 
 
@@ -229,7 +231,7 @@ def test_latency_statistics_exclude_compile_and_warmup(monkeypatch):
         torch, "compile", lambda target, **kwargs: compiled.append(kwargs) or target
     )
     clock = iter([0.0, 0.001, 1.0, 1.003])
-    monkeypatch.setattr("torch_kirigami.measurement.time.perf_counter", lambda: next(clock))
+    monkeypatch.setattr("torch_kirigami.measurement.latency.time.perf_counter", lambda: next(clock))
     model = Calls()
     value = measure_module_latency(
         model,
