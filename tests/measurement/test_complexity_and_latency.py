@@ -20,14 +20,14 @@ def test_complexity_linear_conv_and_frozen_shared_parameters(execution_device):
     linear.weight.requires_grad_(False)
     linear.register_parameter("alias", linear.weight)
     value = calculate_model_complexity(linear, torch.ones(2, 3, 4), execution_device)
-    assert (value.macs, value.params, value.unsupported_ops) == (2 * 3 * 4 * 5, 4 * 5 + 5, ())
+    assert (value.macs, value.params, value.uncovered_ops["macs"]) == (2 * 3 * 4 * 5, 4 * 5 + 5, ())
     assert value.flops == 2 * (2 * 3 * 4 * 5) + 2 * 3 * 5
     conv = nn.Conv2d(4, 6, 3, padding=1, groups=2).to(execution_device)
     value = calculate_model_complexity(conv, torch.ones(2, 4, 5, 5), execution_device)
     assert value.macs == 2 * 6 * 5 * 5 * 2 * 3 * 3
     assert value.flops == 2 * (2 * 6 * 5 * 5 * 2 * 3 * 3) + 2 * 6 * 5 * 5
     assert value.params == 6 * 2 * 3 * 3 + 6
-    assert not value.unsupported_ops
+    assert not value.uncovered_ops["macs"]
 
 
 @pytest.mark.parametrize("dimensions", [1, 2, 3])
@@ -44,7 +44,7 @@ def test_grouped_convolution_mac_formulas(dimensions, transposed, execution_devi
     assert result.macs == 2 * positions * 4 * (6 // 2) * 3**dimensions
     output_positions = (9 if transposed else 3) ** dimensions
     assert result.flops == 2 * result.macs + 2 * 6 * output_positions
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("causal", [False, True])
@@ -59,7 +59,7 @@ def test_attention_macs_are_dense_even_with_causal_mask(causal, execution_device
         device=execution_device,
     )
     assert result.macs == 2 * 3 * 4 * 4 * (8 + 6)
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("gated", [False, True])
@@ -74,7 +74,7 @@ def test_complexity_includes_attention_and_survives_pruning(gated, execution_dev
         before.macs
         == 4 * (8 * 16 + 8 * 8 + 8 * 8 + 16 * 8 + 8 * 12 + 12 * 8) + 8 * 3 + 2 * 4 * 4 * 4 * 4
     )
-    assert not before.unsupported_ops
+    assert not before.uncovered_ops["macs"]
     assert model.training
     pruner.graph.validate()
     pruner.apply(
@@ -85,17 +85,19 @@ def test_complexity_includes_attention_and_survives_pruning(gated, execution_dev
         after.macs
         == 4 * (8 * 8 + 8 * 4 + 8 * 4 + 8 * 8 + 8 * 12 + 12 * 8) + 8 * 3 + 2 * 2 * 4 * 4 * 4
     )
-    assert after.params < before.params and not after.unsupported_ops
+    assert after.params < before.params and not after.uncovered_ops["macs"]
     model(x).sum().backward()
 
 
-def test_complexity_reports_unsupported_work():
+def test_complexity_reports_uncovered_work():
     class Inverse(nn.Module):
         def forward(self, x):
             return torch.linalg.inv(x)
 
     result = calculate_model_complexity(Inverse(), torch.eye(3))
-    assert result.unsupported_ops and any("linalg" in op for op in result.unsupported_ops)
+    assert result.uncovered_ops["macs"] and any(
+        "linalg" in op for op in result.uncovered_ops["macs"]
+    )
 
 
 def test_complexity_excludes_cnn_non_mac_work(execution_device):
@@ -113,7 +115,7 @@ def test_complexity_excludes_cnn_non_mac_work(execution_device):
     model = CNN().to(execution_device)
     result = calculate_model_complexity(model, torch.randn(2, 4, 6, 6))
     assert result.macs == 2 * 8 * 6 * 6 * 3 * 3
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 def test_non_mac_flop_registration_does_not_change_macs(monkeypatch, execution_device):
@@ -124,7 +126,7 @@ def test_non_mac_flop_registration_does_not_change_macs(monkeypatch, execution_d
     result = calculate_model_complexity(model, torch.ones(2, 4))
     assert result.macs == 2 * 4 * 5
     assert result.flops == 2 * (2 * 4 * 5) + 2 * 5 + 3
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 def test_unverified_registered_formula_still_reports_missing_coverage(
@@ -138,7 +140,7 @@ def test_unverified_registered_formula_still_reports_missing_coverage(
     result = calculate_model_complexity(Inverse(), torch.eye(3), device=execution_device)
     assert result.macs == 0
     assert result.flops == 42
-    assert "aten::linalg_inv_ex" in result.unsupported_ops
+    assert "aten::linalg_inv_ex" in result.uncovered_ops["macs"]
 
 
 def test_registered_composite_cannot_hide_missing_macs(monkeypatch, execution_device):
@@ -147,7 +149,7 @@ def test_registered_composite_cannot_hide_missing_macs(monkeypatch, execution_de
     result = calculate_model_complexity(model, torch.ones(2, 4))
     # Depending on dispatch decomposition, linear may still reach addmm. Both
     # paths must either count its MACs or explicitly report missing coverage.
-    assert result.macs == 40 or "aten::linear" in result.unsupported_ops
+    assert result.macs == 40 or "aten::linear" in result.uncovered_ops["macs"]
     assert result.macs != 21
 
 

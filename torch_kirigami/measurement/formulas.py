@@ -474,7 +474,7 @@ MAC_COMPOSITES = frozenset(
 )
 
 # Explicit exclusions under the matrix/conv MAC convention. Unfamiliar kernels
-# must appear in unsupported_ops, not silently become zero-cost operations.
+# must appear in uncovered_ops["macs"], not silently become zero-cost operations.
 MAC_FREE_OPS = frozenset(
     f"aten::{name}"
     for name in (

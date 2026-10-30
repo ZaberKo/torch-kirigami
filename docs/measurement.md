@@ -30,8 +30,8 @@ model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4)).eval()
 x = torch.randn(2, 8)
 result = calculate_model_complexity(model, (x,))
 latency_ms = measure_module_latency(model, (x,), warmup=5, repetitions=20)
-print(result.params, result.macs, result.flops, result.unsupported_ops)
-print(result.unsupported_flop_ops)
+print(result.params, result.macs, result.flops)
+print(result.uncovered_ops)
 print(f"Batch latency: {latency_ms:.3f} ms")
 ```
 
@@ -52,8 +52,7 @@ Measurement isolates inputs from model execution and preserves repeated input id
 | `params` | Elements in unique registered Parameter objects, including frozen parameters |
 | `macs` | Dense matrix and convolution MACs for the supplied batch and executed path |
 | `flops` | Nominal arithmetic from native, local, and external registered formulas |
-| `unsupported_ops` | Observed operations whose MAC coverage could not be verified |
-| `unsupported_flop_ops` | Observed operations whose FLOP coverage could not be verified |
+| `uncovered_ops` | Dictionary of operator names with incomplete or uncertain counting coverage, under `macs` and `flops` |
 
 One dense MAC contributes two FLOPs in the convention used here.
 Matrix products and convolutions contribute MACs, including the matrix products in attention.
@@ -68,12 +67,25 @@ Invalid external formulas fail measurement, with execution state restored.
 Coverage diagnostics match individual calls through profiler scopes.
 A counted call does not establish coverage for another call with the same operator name.
 
-`unsupported_ops` describes MAC coverage only.
-`unsupported_flop_ops` independently identifies unverified FLOP work.
+`uncovered_ops` always contains `macs` and `flops` keys in measurement results.
+Each value is a sorted tuple of unique operator names.
+A name can occur under both keys. Repeated calls do not duplicate names.
 A nonempty tuple means coverage is incomplete or unverified under that convention.
+An empty tuple means the counter found no coverage issue.
+These names describe measurement coverage, not pruning support or execution failure.
+The dictionary is mutable. Its tuple values are immutable.
 Known operations with no MAC work, such as normalization and pooling, do not cause MAC diagnostics.
 An unimplemented FLOP formula can still cause a FLOP diagnostic.
 Opaque work without profiler events remains outside both coverage checks.
+
+For example, a Linear followed by GELU can report:
+
+```python
+{"macs": (), "flops": ("aten::gelu",)}
+```
+
+The matrix product contributes MACs. GELU contributes no matrix/convolution MACs, but its FLOP formula remains uncovered.
+JSON serialization represents the tuples as arrays.
 
 ### Nominal arithmetic conventions
 

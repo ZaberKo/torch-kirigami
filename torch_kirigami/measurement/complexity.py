@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import torch
@@ -51,25 +51,28 @@ class ModelComplexity:
 
     One multiply-accumulate counts as one MAC (two FLOPs). Matrix products and
     convolutions count toward MACs; bias, normalization and elementwise
-    arithmetic contribute only to FLOPs. `unsupported_ops` lists unverified MAC
-    coverage, not these explicit exclusions. `unsupported_flop_ops` separately
-    lists unverified FLOP coverage. A nonempty tuple means completeness is unknown
-    for the corresponding count.
+    arithmetic contribute only to FLOPs. `uncovered_ops` lists operations whose
+    counting coverage is incomplete or cannot be established, separately for
+    MACs and FLOPs. An empty tuple means the counter found no coverage issue.
     Parameters include frozen weights, deduplicated by Parameter identity.
 
     Attributes:
         macs: Count of audited matrix and convolution multiply-accumulates.
         params: Count of unique registered Parameter elements.
         flops: Nominal floating-point arithmetic under the registered formulas.
-        unsupported_ops: Captured operations with unverified MAC coverage.
-        unsupported_flop_ops: Captured operations with unverified FLOP coverage.
+        uncovered_ops: Dictionary with `macs` and `flops` keys. Each value is a
+            sorted tuple of unique operator names. Names can occur under both
+            keys. The dictionary is mutable, although the record fields are
+            frozen and the tuples are immutable. This reports counting coverage,
+            not whether an operation supports pruning.
     """
 
     macs: int
     params: int
     flops: int
-    unsupported_ops: tuple[str, ...] = ()
-    unsupported_flop_ops: tuple[str, ...] = ()
+    uncovered_ops: dict[str, tuple[str, ...]] = field(
+        default_factory=lambda: {"macs": (), "flops": ()}
+    )
 
 
 @contextmanager
@@ -115,9 +118,9 @@ def find_coverage_gaps(
             parent = event.cpu_parent
         if parent is not None:
             counted[parent.id] = name
-    unsupported = recorded - MAC_FORMULAS - mac_free
+    mac_gaps = recorded - MAC_FORMULAS - mac_free
     flop_gaps: set[str] = set()
-    mac_ignored = (mac_free | MAC_COMPOSITES) - unsupported
+    mac_ignored = (mac_free | MAC_COMPOSITES) - mac_gaps
     flop_ignored = FLOP_FREE_OPS | MAC_COMPOSITES | FLOP_COMPOSITES
     for event in events:
         if "::" not in event.name or event.name.startswith(prefix):
@@ -130,10 +133,10 @@ def find_coverage_gaps(
                 mac_covered |= counted[parent.id] in MAC_FORMULAS
             parent = parent.cpu_parent
         if not mac_covered and event.name not in mac_ignored:
-            unsupported.add(event.name)
+            mac_gaps.add(event.name)
         if not flop_covered and event.name not in flop_ignored:
             flop_gaps.add(event.name)
-    return unsupported, flop_gaps
+    return mac_gaps, flop_gaps
 
 
 def calculate_model_complexity(
@@ -153,9 +156,9 @@ def calculate_model_complexity(
         input_kwargs: Keyword inputs, including nested tensor containers.
 
     Returns:
-        Counts for the entire supplied batch and explicit unsupported operations.
+        Counts for the entire supplied batch and explicit counting coverage issues.
         FLOPs include supported bias, arithmetic, reduction and normalization work.
-        Check `unsupported_flop_ops` independently of MAC coverage diagnostics.
+        Check both entries in `uncovered_ops` for their respective coverage issues.
         Dense MACs exclude this additional arithmetic. SDPA uses the math
         backend here, and MHA fast paths are disabled during counting.
 
@@ -269,12 +272,14 @@ def calculate_model_complexity(
             | FLOP_FREE_OPS
             | {str(op).replace("aten.", "aten::", 1) for op in arithmetic}
         )
-        unsupported, flop_gaps = find_coverage_gaps(trace.events(), mac_free)
+        uncovered_macs, flop_gaps = find_coverage_gaps(trace.events(), mac_free)
         uncovered_flops.update(flop_gaps)
         return ModelComplexity(
             macs=macs,
             params=count_parameters(target),
             flops=counter.get_total_flops(),
-            unsupported_ops=tuple(sorted(unsupported)),
-            unsupported_flop_ops=tuple(sorted(uncovered_flops)),
+            uncovered_ops={
+                "macs": tuple(sorted(uncovered_macs)),
+                "flops": tuple(sorted(uncovered_flops)),
+            },
         )

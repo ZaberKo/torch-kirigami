@@ -2243,10 +2243,18 @@
       "object": "torch_kirigami.measurement.ModelComplexity",
       "contracts": [
         {
+          "behavior": "Expose uncovered_ops with macs and flops keys, sorted unique tuple values, independent dictionaries, and JSON-serializable contents.",
+          "tests": [
+            "tests/measurement/test_flops.py::test_default_uncovered_ops_dictionaries_are_not_shared",
+            "tests/measurement/test_flops.py::test_uncovered_ops_are_sorted_unique_and_independent"
+          ],
+          "conditions": "CPU/CUDA measurement; repeated operations, independent records, and defaults."
+        },
+        {
           "behavior": "MACs独立公式、全参数去重、未计量操作报告；CPU/CUDA计时及编译、剪枝生命周期与状态隔离",
           "tests": [
             "tests/measurement/test_complexity_and_latency.py::test_complexity_linear_conv_and_frozen_shared_parameters",
-            "tests/measurement/test_complexity_and_latency.py::test_complexity_reports_unsupported_work"
+            "tests/measurement/test_complexity_and_latency.py::test_complexity_reports_uncovered_work"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA；Inductor 示例另作实际冒烟验收",
           "gaps": [
@@ -2314,7 +2322,7 @@
           "tests": [
             "tests/measurement/test_complexity_and_latency.py::test_complexity_linear_conv_and_frozen_shared_parameters",
             "tests/measurement/test_complexity_and_latency.py::test_complexity_includes_attention_and_survives_pruning",
-            "tests/measurement/test_complexity_and_latency.py::test_complexity_reports_unsupported_work",
+            "tests/measurement/test_complexity_and_latency.py::test_complexity_reports_uncovered_work",
             "tests/measurement/test_complexity_and_latency.py::test_measurement_restores_modes_buffers_inputs_rng_and_gc"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA；Inductor 示例另作实际冒烟验收",

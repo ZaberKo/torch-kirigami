@@ -1,12 +1,42 @@
 """Independent nominal arithmetic references and native formula regressions."""
 
+import json
+
 import pytest
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.flop_counter import flop_registry
 
-from torch_kirigami.measurement import calculate_model_complexity
+from torch_kirigami.measurement import ModelComplexity, calculate_model_complexity
+
+
+def test_default_uncovered_ops_dictionaries_are_not_shared():
+    first = ModelComplexity(macs=0, flops=0, params=0)
+    second = ModelComplexity(macs=0, flops=0, params=0)
+    assert first.uncovered_ops == {"macs": (), "flops": ()}
+    first.uncovered_ops["flops"] = ("changed",)
+    assert second.uncovered_ops == {"macs": (), "flops": ()}
+
+
+def test_uncovered_ops_are_sorted_unique_and_independent(execution_device):
+    class Model(nn.Module):
+        def forward(self, x):
+            # Repeated calls and different uncovered operators must produce
+            # unique names, while recording the two counting conventions separately.
+            return F.gelu(x), F.gelu(x), torch.lgamma(x)
+
+    first = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    second = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    assert first.uncovered_ops == {"macs": (), "flops": ("aten::gelu", "aten::lgamma")}
+    assert json.loads(json.dumps(first.uncovered_ops)) == {
+        "macs": [],
+        "flops": ["aten::gelu", "aten::lgamma"],
+    }
+    first.uncovered_ops["macs"] = ("changed",)
+    assert second.uncovered_ops["macs"] == ()
+    assert not hasattr(second, "unsupported_ops")
+    assert not hasattr(second, "unsupported_flop_ops")
 
 
 @pytest.mark.parametrize(
@@ -32,8 +62,8 @@ def test_nominal_arithmetic_formulas(operation, expected, execution_device):
     result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
     assert result.flops == expected
     assert result.macs == 0
-    assert result.unsupported_flop_ops == ()
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("affine", [False, True])
@@ -56,7 +86,7 @@ def test_normalization_counts_explicit_arithmetic(kind, affine, execution_device
     result = calculate_model_complexity(model, x, device=execution_device)
     assert result.flops == expected
     assert result.macs == 0
-    assert result.unsupported_flop_ops == ()
+    assert result.uncovered_ops["flops"] == ()
 
 
 def test_flop_coverage_is_separate_from_mac_coverage(execution_device):
@@ -66,8 +96,8 @@ def test_flop_coverage_is_separate_from_mac_coverage(execution_device):
 
     result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
     assert result.macs == result.flops == 0
-    assert result.unsupported_ops == ()
-    assert "aten::lgamma" in result.unsupported_flop_ops
+    assert result.uncovered_ops["macs"] == ()
+    assert "aten::lgamma" in result.uncovered_ops["flops"]
 
 
 @pytest.mark.parametrize("count", [-1, 2.5, float("nan"), float("inf"), True])
@@ -106,7 +136,7 @@ def test_valid_external_flops_remain_python_integers(monkeypatch, execution_devi
     result = calculate_model_complexity(nn.ReLU(), torch.ones(2, 4), device=execution_device)
     assert type(result.flops) is int and result.flops == huge
     assert result.macs == 0
-    assert not result.unsupported_flop_ops
+    assert not result.uncovered_ops["flops"]
 
 
 @pytest.mark.parametrize("benchmark", [False, True])
@@ -142,7 +172,7 @@ def test_raw_convolution_signatures_and_bias(benchmark, bias, execution_device):
     macs = 2 * 6 * 4 * 5 * (4 // groups) * 9
     assert result.macs == macs
     assert result.flops == 2 * macs + (2 * 6 * 4 * 5 if bias else 0)
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
 
 def test_integer_work_does_not_become_floating_point_work(execution_device):
@@ -165,7 +195,7 @@ def test_training_statistics_remain_explicitly_uncovered(execution_device):
             return F.batch_norm(x, None, None, training=True)
 
     result = calculate_model_complexity(Model(), torch.randn(2, 4, 3), device=execution_device)
-    assert any("batch_norm" in op for op in result.unsupported_flop_ops)
+    assert any("batch_norm" in op for op in result.uncovered_ops["flops"])
 
 
 def test_complex_abs_does_not_claim_a_real_scalar_formula(execution_device):
@@ -177,4 +207,4 @@ def test_complex_abs_does_not_claim_a_real_scalar_formula(execution_device):
         Model(), torch.ones(2, 4, dtype=torch.complex64), device=execution_device
     )
     assert result.flops == 0
-    assert "aten::abs" in result.unsupported_flop_ops
+    assert "aten::abs" in result.uncovered_ops["flops"]

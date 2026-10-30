@@ -19,7 +19,7 @@ from torch_kirigami.measurement import calculate_model_complexity, measure_modul
 
 def measure_model(
     model: nn.Module, example: torch.Tensor, options: Namespace
-) -> dict[str, int | float | str | bool | tuple[str, ...] | tuple[int, ...]]:
+) -> dict[str, int | float | str | bool | tuple[int, ...] | dict[str, tuple[str, ...]]]:
     """Measure complexity and latency using the supplied example unchanged."""
     print(f"Counting model complexity on {example.device}; batch={example.shape[0]}", flush=True)
     complexity = calculate_model_complexity(model, example, device=options.device)
@@ -42,8 +42,7 @@ def measure_model(
         "#MACs": complexity.macs,
         "#FLOPs": complexity.flops,
         "latency_ms": latency,
-        "unsupported_ops": complexity.unsupported_ops,
-        "unsupported_flop_ops": complexity.unsupported_flop_ops,
+        "uncovered_ops": complexity.uncovered_ops,
         "device": str(example.device),
         "dtype": str(example.dtype),
         "input_shape": tuple(example.shape),

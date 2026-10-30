@@ -43,7 +43,7 @@ def test_unary_spellings_share_counts(name, form, execution_device):
     result = calculate_model_complexity(Model(), sample, device=execution_device)
     assert result.flops == 6
     assert result.macs == 0
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
     torch.testing.assert_close(sample, torch.ones(2, 3))
 
 
@@ -63,7 +63,7 @@ def test_binary_spellings_share_counts(name, form, execution_device):
     result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
     assert result.flops == 6
     assert result.macs == 0
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("name", ["addcmul", "addcdiv"])
@@ -79,7 +79,7 @@ def test_scaled_elementwise_product(name, inplace, value, execution_device):
     )
     assert result.flops == 6 * (2 if value == 1 else 3)
     assert result.macs == 0
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("name", ["addmm", "baddbmm", "addbmm"])
@@ -99,7 +99,7 @@ def test_biased_matrix_spellings(name, inplace, alpha, beta, execution_device):
     extras = {(1, 1): 1, (2, 3): 3, (1, 0): 0}[alpha, beta]
     assert result.macs == macs
     assert result.flops == 2 * macs + bias.numel() * extras
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("include_visible", [False, True])
@@ -113,8 +113,8 @@ def test_hidden_arithmetic_is_not_covered_by_another_call(include_visible, execu
 
     result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
     assert result.flops == (6 if include_visible else 0)
-    assert "aten::deg2rad" in result.unsupported_flop_ops
-    assert "aten::mul" in result.unsupported_flop_ops
+    assert "aten::deg2rad" in result.uncovered_ops["flops"]
+    assert "aten::mul" in result.uncovered_ops["flops"]
 
 
 @pytest.mark.parametrize("safe", [False, True])
@@ -127,7 +127,7 @@ def test_softmax_and_safe_softmax_are_both_counted(safe, execution_device):
     # Four subtractions, four exponentials, three additions, four divisions per row.
     result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
     assert result.flops == 30 * (2 if safe else 1)
-    assert result.unsupported_flop_ops == result.unsupported_ops == ()
+    assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("key_length", [3, 7])
@@ -151,8 +151,8 @@ def test_raw_efficient_attention_uses_sequence_before_heads(key_length, executio
     result = calculate_model_complexity(Model(), (q, k, v), device=execution_device)
     assert result.macs == 2 * 4 * 3 * key_length * (8 + 16)
     assert result.flops == 2 * result.macs
-    assert result.unsupported_ops == ()
-    assert "aten::_efficient_attention_forward" in result.unsupported_flop_ops
+    assert result.uncovered_ops["macs"] == ()
+    assert "aten::_efficient_attention_forward" in result.uncovered_ops["flops"]
 
 
 def test_raw_cpu_attention_counts_both_matrix_products():
@@ -164,8 +164,8 @@ def test_raw_cpu_attention_counts_both_matrix_products():
     torch.testing.assert_close(Model()(q, k, v), F.scaled_dot_product_attention(q, k, v))
     result = calculate_model_complexity(Model(), (q, k, v))
     assert result.macs == 2 * 4 * 3 * 7 * (8 + 8)
-    assert result.unsupported_ops == ()
-    assert "aten::_scaled_dot_product_flash_attention_for_cpu" in result.unsupported_flop_ops
+    assert result.uncovered_ops["macs"] == ()
+    assert "aten::_scaled_dot_product_flash_attention_for_cpu" in result.uncovered_ops["flops"]
 
 
 def test_custom_namespace_formula_covers_its_own_call(monkeypatch, execution_device):
@@ -178,9 +178,9 @@ def test_custom_namespace_formula_covers_its_own_call(monkeypatch, execution_dev
     )
     result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
     assert result.flops == 6
-    assert result.unsupported_flop_ops == ()
+    assert result.uncovered_ops["flops"] == ()
     # A user FLOP formula does not define how to convert arbitrary work to MACs.
-    assert result.unsupported_ops == ("kirigami_measurement::square",)
+    assert result.uncovered_ops["macs"] == ("kirigami_measurement::square",)
 
 
 def test_native_backward_formula_retains_its_partial_coverage(execution_device):
@@ -195,7 +195,8 @@ def test_native_backward_formula_retains_its_partial_coverage(execution_device):
     )
     # The native formula counts input gradients but omits the bias reduction.
     assert result.flops == 6
-    assert "aten::convolution_backward" in result.unsupported_flop_ops
+    assert "aten::convolution_backward" in result.uncovered_ops["flops"]
+    assert "aten::convolution_backward" in result.uncovered_ops["macs"]
 
 
 def test_static_split_indices_do_not_require_a_host_tensor(execution_device):

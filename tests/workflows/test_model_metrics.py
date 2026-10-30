@@ -57,7 +57,9 @@ def test_measurement_uses_supplied_example_for_complexity_and_latency(
     assert observed == ["complexity", "latency"]
     assert report["#MACs"] == example_batch_size * 12 * 6
     assert report["#FLOPs"] == example_batch_size * (2 * 12 * 6 + 6)
-    assert report["unsupported_flop_ops"] == ()
+    assert report["uncovered_ops"]["flops"] == ()
+    assert report["uncovered_ops"]["macs"] == ()
+    assert "unsupported_ops" not in report and "unsupported_flop_ops" not in report
     assert report["#Params"] == 12 * 6 + 6
     assert report["input_shape"] == tuple(example.shape)
     assert report["compiled"] is compiled

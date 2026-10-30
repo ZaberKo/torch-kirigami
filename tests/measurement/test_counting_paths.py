@@ -47,7 +47,7 @@ def test_counting_uses_no_grad_and_restores_modes(mode, fastpath, fail, executio
             else:
                 result = calculate_model_complexity(model, sample)
                 assert result.macs == 2 * 4 * 3
-                assert result.unsupported_ops == ()
+                assert result.uncovered_ops["macs"] == ()
             assert (torch.is_grad_enabled(), torch.is_inference_mode_enabled()) == before
         assert torch.backends.mha.get_fastpath_enabled() == fastpath
         assert tuple(read() for read in backend_flags) == saved_flags
@@ -69,7 +69,7 @@ def test_mha_counts_do_not_depend_on_parameter_freezing(need_weights, execution_
         # Three input projections, output projection, QK and attention-times-V.
         assert result.macs == 4 * 2 * 5 * 8 * 8 + 2 * 2 * 5 * 5 * 8
         assert result.flops > 2 * result.macs  # Bias, scaling and softmax arithmetic.
-        assert result.unsupported_ops == ()
+        assert result.uncovered_ops["macs"] == ()
         assert all(p.requires_grad is not frozen for p in model.parameters())
         results.append(result)
     assert results[0] == results[1]
@@ -83,7 +83,7 @@ def test_transformer_counts_do_not_depend_on_parameter_freezing(execution_device
     after = calculate_model_complexity(model, x)
     assert before == after
     assert after.macs == 3360 + 2 * 2 * 5 * 8 * 12
-    assert after.unsupported_ops == ()
+    assert after.uncovered_ops["macs"] == ()
 
 
 @pytest.mark.parametrize("width", [1, 7])
@@ -113,7 +113,7 @@ def test_vector_products_have_consistent_dense_counts(form, width, execution_dev
     result = calculate_model_complexity(Model(), (a, b), device=execution_device)
     assert result.macs == width * (1 if vector else 3)
     assert result.flops == 2 * result.macs + (9 if form in ("addmv", "addmv_") else 0)
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
     assert flop_registry == registry  # Supplementary formulas are local to this counter.
 
 
@@ -129,7 +129,7 @@ def test_einsum_counts_exposed_matrix_work(width, expected, execution_device):
     # PyTorch simplifies the singleton contraction into elementwise multiply.
     # This counter excludes that work. It does not reconstruct symbolic MACs.
     assert result.macs == expected
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
 
 
 def test_known_zero_mac_calls_do_not_report_missing_coverage(execution_device):
@@ -143,4 +143,4 @@ def test_known_zero_mac_calls_do_not_report_missing_coverage(execution_device):
 
     result = calculate_model_complexity(Model(), torch.ones(4), device=execution_device)
     assert result.macs == 12
-    assert result.unsupported_ops == ()
+    assert result.uncovered_ops["macs"] == ()
