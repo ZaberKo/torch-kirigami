@@ -3081,6 +3081,59 @@
           "gaps": []
         }
       ]
+    },
+    {
+      "object": "torch_kirigami.pruning.CPDMetric",
+      "contracts": [
+        {
+          "behavior": "CPD 校准分数只为完整生产者通道候选打分：先对 fan-in 求和再平方（(Σ w·g)²/A），统计缺失、非有限或不完整候选抛 PlanningError，并拒绝已含 selection 的 impact",
+          "tests": [
+            "tests/workflows/test_cpd_workflow.py::test_cpd_fisher_squares_the_channel_sum",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_metric_drives_structural_plan_and_checkpoint",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_ranks_group_prefixes_not_the_global_minimum",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_rejects_multichannel_candidate_without_mutation"
+          ],
+          "conditions": "CPU/CUDA；带张量的用例经 execution_device 各执行一次",
+          "gaps": [
+            "不做跨组额外归一化；原实现的 (len(og)+len(oig)) 折算由工作流按成员数×消费者基数完成"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.CPDLeastFirst",
+      "contracts": [
+        {
+          "behavior": "每个区间只删除一批最小分数耦合组：CNN 轴步长按 min(pow2(remaining//16), cap) 自适应，FFN 轴固定 32 并夹到 width-1 保留一个存活通道；预算满足后停止",
+          "tests": [
+            "tests/workflows/test_cpd_workflow.py::test_cpd_removes_a_group_batch_sized_like_the_source_hook",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_group_batch_shrinks_as_an_axis_narrows",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_channel_count_boundaries",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_ffn_fixed_count_is_independent_of_cnn_cap",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_mixed_cnn_ffn_prefixes_use_their_own_counts"
+          ],
+          "conditions": "CPU/CUDA；覆盖纯 CNN 轴、纯 FFN 轴与混合前缀",
+          "gaps": [
+            "只做静态排序，不在区间内重新打分",
+            "依赖 Pruner.plan 在策略返回后独立复算传播与预算"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.fisher_scores",
+      "contracts": [
+        {
+          "behavior": "返回逐通道 (Σ w·g)²/A 的 Python 元组；权重与梯度形状不一致、稀疏梯度、activation_elements 非有限或非正、维越界均抛 ValueError",
+          "tests": [
+            "tests/workflows/test_cpd_workflow.py::test_cpd_fisher_squares_the_channel_sum",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_interval_consumes_exactly_requested_batches_and_averages_bn_group",
+            "tests/workflows/test_cpd_workflow.py::test_cpd_ffn_group_includes_producer_bias_and_consumer_cardinality"
+          ],
+          "conditions": "CPU；乘积以 float64 计算后校验有限且非负",
+          "gaps": []
+        }
+      ]
     }
   ],
   "operators": [
