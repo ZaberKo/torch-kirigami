@@ -1,6 +1,6 @@
 # Structural pruning workflow examples
 
-These eleven examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
+These examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
 Each entry owns its CLI and training stages.
 The examples implement selected research ideas, with explicit changes to scope and training.
 They do not claim the papers' published accuracy.
@@ -682,3 +682,11 @@ Compare methods with matched candidate scope, parameter target, calibration, and
 Parameter reduction does not guarantee better latency or preserved accuracy.
 Synthetic tests and small execution checks do not establish ImageNet accuracy.
 Accuracy claims require pretrained weights, the actual dataset, and recorded evaluation settings.
+
+## DVBP and OB2C workflow
+
+[`dvbp_pruning.py`](dvbp_pruning.py) supports ViT and ConvNeXt dense MLPs,
+with per-MLP covariance denoising and weight/bias compensation. It defaults to
+ViT-B/16 and uses optional CE recovery without KD. See
+[scope, regularization and usage](../../docs/dvbp.md), including the difference
+from the reference ConvNeXt stage-concatenated statistics.
