@@ -1,6 +1,6 @@
 # Structural pruning workflow examples
 
-These eleven examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
+These examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
 Each entry owns its CLI and training stages.
 The examples implement selected research ideas, with explicit changes to scope and training.
 They do not claim the papers' published accuracy.
@@ -682,3 +682,10 @@ Compare methods with matched candidate scope, parameter target, calibration, and
 Parameter reduction does not guarantee better latency or preserved accuracy.
 Synthetic tests and small execution checks do not establish ImageNet accuracy.
 Accuracy claims require pretrained weights, the actual dataset, and recorded evaluation settings.
+
+## Fixed Pruner-Zero workflow
+
+[`pruner_zero_pruning.py`](pruner_zero_pruning.py) uses the published fixed formula
+through `EvolvedMetric`, sample-mean task gradients and ordinary CE recovery.
+It supports the existing ResNet/ViT catalog and defaults to ViT-B/16.
+There is no evolutionary search or KD. See [scope and usage](../../docs/pruner-zero.md).

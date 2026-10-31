@@ -3081,6 +3081,24 @@
           "gaps": []
         }
       ]
+    },
+    {
+      "object": "torch_kirigami.pruning.EvolvedMetric",
+      "contracts": [
+        {
+          "behavior": "Evaluate fixed W squared times per-tensor min-max absolute gradients on marginal dependency unions.",
+          "tests": [
+            "tests/pruning/test_evolved.py::test_formula_uses_full_tensor_minmax_and_is_batch_independent",
+            "tests/pruning/test_evolved.py::test_conditional_intersections_deduplicate_aliases_and_preserve_normalization",
+            "tests/pruning/test_evolved.py::test_invalid_gradients_fail_without_mutation",
+            "tests/pruning/test_evolved.py::test_plan_apply_recovery_and_checkpoint_lifecycle"
+          ],
+          "conditions": "Dense real gradients; full-tensor normalization; zero constant-gradient scores; alias and overlap deduplication; CE recovery and checkpoint restoration.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
     }
   ],
   "operators": [
