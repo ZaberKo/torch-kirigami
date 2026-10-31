@@ -90,11 +90,13 @@ def test_entry_calibrates_compensates_and_recovers(
         torch.randn(3, 3, 224, 224, device="cpu"), torch.tensor([0, 1, 2], device="cpu")
     )
     monkeypatch.setattr(workflow, "load_images", lambda *a, **kw: (data, data, {"fixture": True}))
-    monkeypatch.setattr(
-        workflow,
-        "measure_model",
-        lambda model, *a: {"#Params": sum(p.numel() for p in model.parameters())},
-    )
+
+    def measurement(model, example, options):
+        assert next(model.parameters()).device.type == execution_device
+        assert example.device.type == execution_device
+        return {"#Params": sum(p.numel() for p in model.parameters())}
+
+    monkeypatch.setattr(workflow, "measure_model", measurement)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -124,7 +126,10 @@ def test_entry_calibrates_compensates_and_recovers(
             str(tmp_path),
         ],
     )
-    workflow.main()
+    # Match normal CLI execution: loaders and their RNG stay on CPU, while
+    # --device still moves the model and input batches to the requested GPU.
+    with torch.device("cpu"):
+        workflow.main()
     result = json.loads((tmp_path / "metrics.json").read_text())
     assert [r["stage"] for r in result["stages"]] == ["pretrained", "pruned"] + (
         ["finetuned"] if epochs else []
