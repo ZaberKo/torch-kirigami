@@ -4,6 +4,17 @@ from ..operator_recipes import AttributeRecipe, OperatorRecipe, TensorRecipe
 from .axis_domains import IdentityAxisIndex
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
+from .dvbp import (
+    ActivationCovariance,
+    DenoisedStatistics,
+    DenoisedVariance,
+    apply_ob2c_updates,
+    collect_covariances,
+    denoise_covariance,
+    mp_median,
+    prepare_ob2c_updates,
+    solve_ob2c,
+)
 from .granularity import Granularity
 from .groups import ParameterGroup, unique_groups
 from .metrics import GroupMagnitude, Magnitude, WeightTaylor, parameter_regions
@@ -30,6 +41,7 @@ from .types import (
 )
 
 __all__ = [
+    "ActivationCovariance",
     "AnalysisSummary",
     "AttributeRecipe",
     "Candidate",
@@ -37,6 +49,8 @@ __all__ = [
     "ChannelCount",
     "ChannelRatio",
     "CoordinateSegment",
+    "DenoisedStatistics",
+    "DenoisedVariance",
     "DynamicGreedy",
     "ExecutionError",
     "Granularity",
@@ -61,8 +75,14 @@ __all__ = [
     "StrategyResult",
     "TensorRecipe",
     "WeightTaylor",
+    "apply_ob2c_updates",
+    "collect_covariances",
+    "denoise_covariance",
     "load_checkpoint",
+    "mp_median",
     "parameter_regions",
+    "prepare_ob2c_updates",
     "save_checkpoint",
+    "solve_ob2c",
     "unique_groups",
 ]

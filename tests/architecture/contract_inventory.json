@@ -3081,6 +3081,144 @@
           "gaps": []
         }
       ]
+    },
+    {
+      "object": "torch_kirigami.pruning.ActivationCovariance",
+      "contracts": [
+        {
+          "behavior": "Collect centered covariance with separate image and flattened observation counts.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore",
+            "tests/workflows/test_dvbp_pruning.py::test_entry_calibrates_compensates_and_recovers"
+          ],
+          "conditions": "Actual ViT and ConvNeXt MLP consumer inputs; evaluation-only hooks; population covariance; bounded activation chunks.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.DenoisedStatistics",
+      "contracts": [
+        {
+          "behavior": "Retain scores, reconstruction systems and serializable calibration diagnostics.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_entry_calibrates_compensates_and_recovers"
+          ],
+          "conditions": "Image counts and small diagnostics serialized separately from covariance tensors.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.DenoisedVariance",
+      "contracts": [
+        {
+          "behavior": "Rank independent MLP hidden positions with fixed hybrid variance scores.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_entry_calibrates_compensates_and_recovers"
+          ],
+          "conditions": "Current graph coordinates, whole-model budgets and finite calibrated scores.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.collect_covariances",
+      "contracts": [
+        {
+          "behavior": "Observe actual MLP consumer inputs without labels or optimizer updates.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore"
+          ],
+          "conditions": "Real torchvision MLPs, temporary hooks, separate image counts and restored modes.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.denoise_covariance",
+      "contracts": [
+        {
+          "behavior": "Form MP-filtered hybrid scores and explicitly regularized reconstruction matrices.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore",
+            "tests/workflows/test_dvbp_pruning.py::test_entry_calibrates_compensates_and_recovers"
+          ],
+          "conditions": "Per-MLP covariance, image-count aspect ratio, float64 spectral solves, reported damping and ridge floor.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.mp_median",
+      "contracts": [
+        {
+          "behavior": "Compute the normalized continuous-bulk Marchenko-Pastur median without SciPy.",
+          "tests": [
+            "tests/pruning/test_dvbp.py::test_mp_unit_aspect_against_analytic_cdf"
+          ],
+          "conditions": "Independent analytic CDF at unit aspect; additional aspect and invalid-input checks in DVBPTests.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.solve_ob2c",
+      "contracts": [
+        {
+          "behavior": "Solve retained covariance blocks and compensate consumer weights and bias.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore"
+          ],
+          "conditions": "Dense biased Linear consumers; independent least-squares and ridge references in DVBPTests; finite compact values.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.prepare_ob2c_updates",
+      "contracts": [
+        {
+          "behavior": "Prepare compact value updates before applying a structural plan.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore"
+          ],
+          "conditions": "Matched hidden-width deletions only; original coordinates; interface and topology preservation.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.pruning.apply_ob2c_updates",
+      "contracts": [
+        {
+          "behavior": "Install prevalidated compact weights and biases after physical pruning.",
+          "tests": [
+            "tests/workflows/test_dvbp_pruning.py::test_real_pairs_reconstruct_apply_backward_and_restore",
+            "tests/workflows/test_dvbp_pruning.py::test_entry_calibrates_compensates_and_recovers"
+          ],
+          "conditions": "Corrected compact checkpoint roundtrip and task-loss recovery; validation before writes.",
+          "gaps": [
+            "CUDA execution is conditional on the CUDA fixture; no published ImageNet accuracy reproduction."
+          ]
+        }
+      ]
     }
   ],
   "operators": [
