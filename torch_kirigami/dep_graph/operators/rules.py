@@ -1,12 +1,15 @@
 """Concrete built-in operator rules, sharing existing semantic implementations."""
 
+import operator
+
 import torch
 from torch import fx, nn
+from torch.nn import functional as F
 
 from ..contracts import ArgumentRef
 from ..operation import OperatorRule, TensorEffects, argument
 from .attention import addmm, einsum, multihead_attention, sdpa
-from .effects import native_effects, normalization_effects
+from .effects import INPUT, native_effects, normalization_effects, to_copy
 from .extended import (
     cast,
     channel_operator,
@@ -19,6 +22,7 @@ from .extended import (
 from .indexing import (
     channel_shuffle,
     chunk,
+    getitem,
     glu,
     index_select,
     narrow,
@@ -35,7 +39,6 @@ from .native import (
     concatenate,
     convolution,
     getattr_rule,
-    getitem,
     group_norm,
     layer_norm,
     linear,
@@ -73,6 +76,10 @@ class IdentityRule(NativeRule):
 
     build_spec = staticmethod(_identity)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Declare the returned Tensor to be the input itself."""
+        return TensorEffects(writes_inputs=(), aliases_input=INPUT, returns_input=True)
+
 
 class AddmmRule(NativeRule):
     """Provide addmm structural semantics."""
@@ -95,6 +102,13 @@ class CastRule(NativeRule):
 
     build_spec = staticmethod(cast)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """A conversion can share only the receiver's storage."""
+        copy = node.target == "to" and to_copy(node.args, node.kwargs) is True
+        return TensorEffects(
+            writes_inputs=(), outputs_are_fresh=copy, aliases_input=None if copy else INPUT
+        )
+
 
 class ChannelOperatorRule(NativeRule):
     """Provide channel operator structural semantics."""
@@ -106,6 +120,10 @@ class ChannelShuffleRule(NativeRule):
     """Provide channel shuffle structural semantics."""
 
     build_spec = staticmethod(channel_shuffle)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Allow a degenerate shuffle to share its input storage."""
+        return TensorEffects(writes_inputs=(), aliases_input=INPUT)
 
 
 class ChunkRule(NativeRule):
@@ -124,6 +142,45 @@ class ConvolutionRule(NativeRule):
     """Provide convolution structural semantics."""
 
     build_spec = staticmethod(convolution)
+
+
+class DropoutRule(NativeRule):
+    """Describe dropout coordinates and effects for fixed mode and probability."""
+
+    build_spec = staticmethod(pointwise)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Account for inactive dropout and the unbatched spatial wrappers."""
+        native = module is None and getattr(node.target, "__module__", None) == "torch"
+        direct_function = native or node.target in (
+            F.dropout,
+            F.alpha_dropout,
+            F.feature_alpha_dropout,
+        )
+        alpha_module = type(module) in (nn.AlphaDropout, nn.FeatureAlphaDropout)
+        if module is not None:
+            training, p = module.training, module.p
+        else:
+            if native:
+                training = argument(node.args, node.kwargs, "train", 2, target=node.target)
+            else:
+                default = node.target not in (F.alpha_dropout, F.feature_alpha_dropout)
+                training = argument(node.args, node.kwargs, "training", 2, default)
+            p = argument(node.args, node.kwargs, "p", 1, 0.5, target=node.target)
+        inactive = training is False or (type(p) in (int, float) and p == 0)
+        if inactive and (type(module) is nn.Dropout or alpha_module or direct_function):
+            return TensorEffects(writes_inputs=(), aliases_input=INPUT, returns_input=True)
+        active = training is True and type(p) in (int, float) and 0 < p <= 1
+        effects = native_effects(
+            node, module, fresh_output=active, returns_written_input=not alpha_module
+        )
+        if effects.outputs_are_fresh:
+            return effects
+        return TensorEffects(
+            writes_inputs=effects.writes_inputs,
+            aliases_input=INPUT,
+            returns_input=effects.returns_input,
+        )
 
 
 class EinsumRule(NativeRule):
@@ -182,6 +239,20 @@ class IndexRule(NativeRule):
 
     build_spec = staticmethod(getitem)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Separate native list-index copies from possible views."""
+        index = node.args[1]
+        items = index if isinstance(index, tuple) else (index,)
+        if any(
+            isinstance(item, list)
+            and item
+            and type(item[0]) in (int, bool)
+            and all(type(i) is type(item[0]) for i in item)
+            for item in items
+        ):
+            return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
+        return TensorEffects(writes_inputs=(), aliases_input=INPUT)
+
 
 class GluRule(NativeRule):
     """Provide glu structural semantics."""
@@ -228,6 +299,12 @@ class MatmulRule(NativeRule):
 
     build_spec = staticmethod(matmul)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Use Python's non-mutating matmul fallback for native Tensors."""
+        if node.target is operator.imatmul and not hasattr(torch.Tensor, "__imatmul__"):
+            return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
+        return super().tensor_effects(node, module)
+
 
 class MultiheadAttentionRule(NativeRule):
     """Provide multihead attention structural semantics."""
@@ -270,6 +347,12 @@ class PointwiseRule(NativeRule):
 
     build_spec = staticmethod(pointwise)
 
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Record exact Tensor returns for unary plus and value-only writes."""
+        if node.target in (operator.pos, torch.positive, "positive"):
+            return TensorEffects(writes_inputs=(), aliases_input=INPUT, returns_input=True)
+        return native_effects(node, module, fresh_output=self.fresh, returns_written_input=True)
+
 
 class PreluRule(NativeRule):
     """Provide prelu structural semantics."""
@@ -287,6 +370,12 @@ class RepeatRule(NativeRule):
     """Provide repeat structural semantics."""
 
     build_spec = staticmethod(repeat)
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Expand can borrow the input's storage. Its shape template is read-only."""
+        if not self.fresh:
+            return TensorEffects(writes_inputs=(), aliases_input=INPUT)
+        return super().tensor_effects(node, module)
 
 
 class ReshapeRule(NativeRule):
@@ -361,6 +450,7 @@ NATIVE_RULE_TYPES = (
     ChunkRule,
     ConcatenateRule,
     ConvolutionRule,
+    DropoutRule,
     EinsumRule,
     EmbeddingRule,
     GluRule,

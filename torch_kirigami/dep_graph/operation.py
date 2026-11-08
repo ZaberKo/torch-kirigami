@@ -159,9 +159,9 @@ class Operation:
         bindings: Module-local parameter and buffer paths mapped to references.
         expressions: Read-only shape-expression table shared by inspection contexts.
         metadata: Captured tensor facts indexed by reference ID.
-        constants: Small captured integer tensors, used only with declared value guards.
+        constants: Small captured integer and boolean tensors with declared value guards.
         graph_id: Owning snapshot identity, preserved by inspection copies.
-        effects: Write/allocation declaration captured once before metadata execution.
+        effects: Write and storage declaration captured before metadata execution.
     """
 
     node: fx.Node
@@ -460,6 +460,11 @@ class TensorEffects:
             entries also listed in `writes_inputs`.
             Only values may change. Identity, shape, layout, dtype, device, and
             `requires_grad` must stay unchanged. This field does not cover buffers.
+        aliases_input: The only argument whose storage a result can share.
+            None leaves the possible storage sources unspecified.
+        returns_input: Whether the call returns the same Tensor object named by
+            `aliases_input`, with unchanged storage, shape, strides, dtype, and
+            device. Set this only for a single Tensor result.
 
     Notes:
         Capture warns before permitted parameter updates. These changes remain
@@ -470,6 +475,8 @@ class TensorEffects:
     writes_inputs: tuple[ArgumentRef, ...] | None = None
     outputs_are_fresh: bool = False
     mutable_parameters: tuple[str | ArgumentRef, ...] = ()
+    aliases_input: ArgumentRef | None = None
+    returns_input: bool = False
 
     def __post_init__(self) -> None:
         if self.writes_inputs is not None:
@@ -479,6 +486,15 @@ class TensorEffects:
             object.__setattr__(self, "writes_inputs", tuple(dict.fromkeys(writes)))
         if type(self.outputs_are_fresh) is not bool:
             raise TypeError("Output allocation guarantee must be boolean")
+        if type(self.returns_input) is not bool:
+            raise TypeError("Input return guarantee must be boolean")
+        if self.aliases_input is not None:
+            if not isinstance(self.aliases_input, ArgumentRef):
+                raise TypeError("Output alias requires an ArgumentRef")
+            if self.outputs_are_fresh or self.aliases_input.variadic:
+                raise ValueError("Output alias requires a single argument and non-fresh output")
+        elif self.returns_input:
+            raise ValueError("Input return guarantee requires an alias argument")
         if isinstance(self.mutable_parameters, str):
             raise TypeError("Parameter updates require a sequence of paths or ArgumentRef entries")
         updates = tuple(self.mutable_parameters)
@@ -547,7 +563,7 @@ class OperatorRule(ABC):
         return None
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Declare writes and output allocation guarantees for one call.
+        """Declare writes and output storage guarantees for one call.
 
         Args:
             node: Captured FX call, before sample metadata execution.

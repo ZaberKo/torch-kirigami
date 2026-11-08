@@ -11,6 +11,7 @@ from tests.support.models import Chain
 from tests.support.numerics import _assert_value_and_input_gradient, _initialize, _sample
 from tests.support.pruning import build
 from torch_kirigami import (
+    CaptureError,
     DependencyGraph,
     StaleGraphError,
 )
@@ -130,6 +131,224 @@ def test_index_select_alias_with_registered_constant(alias, execution_device):
         Pruner(model, graph=graph).plan_remove([graph.parameter("fc.weight").axis(0).select([5])])
     )
     torch.testing.assert_close(model(x), expected)
+
+
+@pytest.mark.parametrize("form", ["ellipsis", "newaxes", "shape-bound", "last"])
+def test_basic_bracket_indices_keep_original_coordinates(form: str, execution_device: str) -> None:
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = nn.Linear(3, 6)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            y = self.first(x)
+            if form == "ellipsis":
+                return y[...]
+            if form == "newaxes":
+                return y[None, ..., None]
+            if form == "shape-bound":
+                return y[None, ..., : y.size(-1) - 1]
+            return y[None, ..., -1]
+
+    model = Model().to(execution_device)
+    x = torch.randn(2, 3, device=execution_device)
+    y = F.linear(x, model.first.weight[[0, 2, 4, 5]], model.first.bias[[0, 2, 4, 5]])
+    expected = {
+        "ellipsis": y,
+        "newaxes": y.unsqueeze(0).unsqueeze(-1),
+        "shape-bound": y.unsqueeze(0)[..., :-1],
+        "last": y.select(-1, 3).unsqueeze(0),
+    }[form]
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    plan = pruner.plan_remove([graph.parameter("first.weight").axis(0).select([1, 3])])
+    Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
+    torch.testing.assert_close(model(x), expected)
+    model(x).sum().backward()
+
+
+@pytest.mark.parametrize("form", ["buffer", "list", "list-inplace"])
+def test_static_advanced_index_preserves_negative_and_repeated_positions(
+    form: str, execution_device: str
+) -> None:
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = nn.Linear(3, 6)
+            self.register_buffer("indices", torch.tensor([0, -2, 0]))
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            y = self.first(x)
+            selected = y[..., self.indices] if form == "buffer" else y[..., [0, -2, 0]]
+            return selected.relu_() if form == "list-inplace" else selected
+
+    model = Model().to(execution_device)
+    x = torch.randn(2, 3, device=execution_device)
+    before = model(x).detach().clone()
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    axis = graph.parameter("first.weight").axis(0)
+    with pytest.raises(
+        PlanningError, match=r"Index -2 selected position 4 before pruning.*original position 3"
+    ):
+        pruner.plan_remove([axis.select([5])])
+    assert model.first.out_features == 6
+    plan = pruner.plan_remove([axis.select([1, 3])])
+    if form == "buffer":
+        model.indices[1] = -1
+        with pytest.raises(ExecutionError, match="preconditions"):
+            Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
+        model.indices[1] = -2
+    Pruner(model).apply(PruningPlan.from_dict(plan.to_dict()))
+    torch.testing.assert_close(model(x), before)
+
+
+def test_compact_slice_reports_a_zero_step(execution_device: str) -> None:
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = nn.Linear(3, 6)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            y = self.first(x)
+            return y[..., :: y.size(-1) - 5]
+
+    model = Model().to(execution_device)
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 3, device=execution_device),))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    weight = model.first.weight
+    with pytest.raises(PlanningError, match="slice step on axis 1 becomes 0"):
+        pruner.plan_remove([graph.parameter("first.weight").axis(0).select([1])])
+    assert model.first.weight is weight
+
+
+def test_capture_reports_native_mask_shape_error(execution_device: str) -> None:
+    class Model(nn.Module):
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return x[..., [True, False, True]]
+
+    sample = torch.ones(2, 4, device=execution_device)
+    with pytest.raises(CaptureError, match=r"Index operation 'getitem'.*shape of the mask"):
+        DependencyGraph.build(Model(), args=(sample,))
+
+
+@pytest.mark.parametrize("form", ["list", "buffer", "parameter"])
+@pytest.mark.parametrize("last_axis", [False, True])
+def test_fixed_boolean_mask_allows_pruning_only_other_axes(
+    form: str, last_axis: bool, execution_device: str
+) -> None:
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first = nn.Linear(3, 6)
+            if form == "buffer":
+                self.register_buffer("mask", torch.tensor([True, False, True]))
+            elif form == "parameter":
+                self.mask = nn.Parameter(torch.tensor([True, False, True]), requires_grad=False)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            y = self.first(x)
+            mask = [True, False, True] if form == "list" else self.mask
+            return y.transpose(0, 1)[..., mask] if last_axis else y[mask]
+
+    model = Model().to(execution_device)
+    x = torch.randn(3, 3, device=execution_device)
+    keep = [0, 2, 4, 5]
+    expected = F.linear(x[[0, 2]], model.first.weight[keep], model.first.bias[keep])
+    if last_axis:
+        expected = expected.transpose(0, 1)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    masked_axis = graph.operations("first")[0].outputs[0].axis(0)
+    with pytest.raises(PlanningError, match="Fixed boolean mask"):
+        pruner.plan_remove([masked_axis.select([1])])
+    plan = pruner.plan_remove([graph.parameter("first.weight").axis(0).select([1, 3])])
+    saved = PruningPlan.from_dict(plan.to_dict())
+    if form != "list":
+        with torch.no_grad():
+            model.mask.copy_(torch.tensor([False, True, True], device=execution_device))
+        with pytest.raises(StaleGraphError, match="Structural constant 'mask' changed"):
+            graph.validate()
+        with pytest.raises(ExecutionError, match="preconditions"):
+            Pruner(model).apply(saved)
+        with torch.no_grad():
+            model.mask.copy_(torch.tensor([True, False, True], device=execution_device))
+    Pruner(model).apply(saved)
+    torch.testing.assert_close(model(x), expected)
+    model(x).sum().backward()
+
+
+@pytest.mark.parametrize(
+    ("form", "message"),
+    [
+        pytest.param(
+            "byte",
+            "dtype torch.uint8",
+            marks=pytest.mark.filterwarnings("ignore:indexing with dtype torch.uint8"),
+        ),
+        ("data-dependent", "Runtime index Tensors"),
+        ("runtime-mask", "Runtime index Tensors"),
+        ("computed-mask", "Runtime index Tensors"),
+        ("scalar-bool", "A scalar boolean index inserts an axis"),
+        ("two-vectors", "Multiple advanced indices"),
+        ("mixed", "Keep every other axis as a full slice"),
+        ("unregistered", "Register the fixed index Tensor as a buffer"),
+        ("matrix-mask", "Index Tensor must be one-dimensional"),
+    ],
+)
+def test_unproved_bracket_index_blocks_only_its_dependencies(
+    form: str, message: str, execution_device: str
+) -> None:
+    class Model(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.bad = nn.Linear(3, 4)
+            self.good = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
+            self.indices = torch.tensor([0, 2])
+            self.register_buffer(
+                "mask",
+                torch.tensor([1, 0, 1, 0], dtype=torch.uint8)
+                if form == "byte"
+                else torch.tensor([[True, False, True, False], [False, True, False, True]]),
+            )
+
+        def forward(
+            self, x: torch.Tensor, index: torch.Tensor
+        ) -> tuple[torch.Tensor, torch.Tensor]:
+            y = self.bad(x)
+            if form == "byte":
+                y = y[..., self.mask]
+            elif form == "matrix-mask":
+                y = y[self.mask]
+            elif form in ("data-dependent", "runtime-mask"):
+                y = y[..., index]
+            elif form == "computed-mask":
+                y = y[..., y[0] > y[0].median()]
+            elif form == "scalar-bool":
+                y = y[True]
+            elif form == "unregistered":
+                y = y[..., self.indices]
+            elif form == "mixed":
+                y = y[1:, [0, 2]]
+            else:
+                y = y[[0, 1], [1, 2]]
+            return y, self.good(x)
+
+    model = Model().to(execution_device)
+    x = torch.randn(2, 3, device=execution_device)
+    index = torch.tensor(
+        [True, False, True, False] if form == "runtime-mask" else [0, 2],
+        device=execution_device,
+    )
+    original = model(x, index)[0].detach().clone()
+    graph = DependencyGraph.build(model, args=(x, index))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    assert any(message in diagnostic.message for diagnostic in graph.diagnostics)
+    with pytest.raises(PlanningError, match=message):
+        pruner.plan_remove([graph.parameter("bad.weight").axis(0).select([1])])
+    pruner.apply(pruner.plan_remove([graph.parameter("good.0.weight").axis(0).select([1])]))
+    torch.testing.assert_close(model(x, index)[0], original)
+    assert model.good[0].out_features == model.good[1].in_features == 3
 
 
 @pytest.mark.parametrize(

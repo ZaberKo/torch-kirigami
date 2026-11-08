@@ -3081,6 +3081,44 @@
           "gaps": []
         }
       ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.capture._MutationProxy",
+      "contracts": [
+        {
+          "behavior": "Preserve Python Tensor write syntax in FX.",
+          "conditions": "Use native Tensor operands and ordinary symbolic capture.",
+          "tests": [
+            "tests/dep_graph/capture/test_python_writes.py::test_augmentation_rejects_writes_through_unproved_aliases",
+            "tests/dep_graph/capture/test_python_writes.py::test_python_writes_protect_the_original_parameter"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.capture._MutationAttribute",
+      "contracts": [
+        {
+          "behavior": "Preserve Python Tensor write syntax in FX.",
+          "conditions": "Use native Tensor operands and ordinary symbolic capture.",
+          "tests": [
+            "tests/dep_graph/capture/test_python_writes.py::test_augmentation_rejects_writes_through_unproved_aliases",
+            "tests/dep_graph/capture/test_python_writes.py::test_python_writes_protect_the_original_parameter"
+          ]
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.operators.rules.DropoutRule",
+      "contracts": [
+        {
+          "behavior": "Use captured mode and probability to identify ordinary inactive dropout and allocation.",
+          "conditions": "Fixed configuration with native Dropout.",
+          "tests": [
+            "tests/dep_graph/operators/test_effect_contracts.py::test_value_write_after_proven_identity_or_copy"
+          ]
+        }
+      ]
     }
   ],
   "operators": [
@@ -8318,6 +8356,432 @@
       "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
       "conditions": "Reviewed native spelling; public lifecycle cases in test_pointwise_surface.py, test_functional_surface.py, test_coordinate_surface.py and test_spectral.py.",
       "contract": "Preserve declared original coordinates and argument roles; retain effect, layout and constraint checks."
+    },
+    {
+      "entry": "function:_operator.iadd",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.iand",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.ifloordiv",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.ilshift",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.imatmul",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.imod",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.imul",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.ior",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.ipow",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.irshift",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.isub",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.itruediv",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:_operator.ixor",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.alpha_dropout_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.conj_physical_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.dropout_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.feature_alpha_dropout_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.feature_dropout_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.fill_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.gcd_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.i0_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.lcm_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.ldexp_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.logit_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "function:torch.zero_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:addcdiv_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:addcmul_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:arctan2_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:atan2_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_and_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_left_shift_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_not_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_or_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_right_shift_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:bitwise_xor_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:conj_physical_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:copy_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:copysign_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:digamma_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:eq_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:fill_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:float_power_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:gcd_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:ge_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:greater_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:greater_equal_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:gt_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:heaviside_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:hypot_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:i0_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:igamma_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:igammac_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:lcm_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:ldexp_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:le_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:lerp_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:less_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:less_equal_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:lgamma_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:logical_and_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:logical_not_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:logical_or_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:logical_xor_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:logit_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:lt_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:masked_fill_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:ne_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:nextafter_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:not_equal_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:true_divide_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
+    },
+    {
+      "entry": "method:zero_",
+      "test": "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis",
+      "conditions": "Native Tensor operands and compatible original coordinates.",
+      "contract": "Map original coordinates and preserve the native write and return semantics."
     }
   ],
   "operator_verification": {

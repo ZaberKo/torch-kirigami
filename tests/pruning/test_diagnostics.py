@@ -54,6 +54,8 @@ class RewriteExample(nn.Module):
             y = y.view(-1) if self.mode == "view" else y.reshape(-1)
         elif self.mode == "advanced":
             y = y[:, [0, 2]]
+        elif self.mode == "paired_indices":
+            y = y[[0, 1], [0, 2]]
         return y, self.good(x)
 
 
@@ -68,7 +70,7 @@ def ranked(context, batch):
         ("view", "view", "If a copy is acceptable"),
         ("whole_shape", "metadata scale.shape", "If only one dimension is needed"),
         ("hardcoded", "reshape", "If a fixed number was intended"),
-        ("newaxis", "getitem", "unsqueeze(dim)"),
+        ("paired_indices", "getitem", "Multiple advanced indices"),
         ("inplace", "relu_", "If no consumer relies"),
     ],
 )

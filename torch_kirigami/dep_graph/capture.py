@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import operator
 import warnings
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
@@ -13,6 +14,7 @@ from typing import Any
 import torch
 from torch import fx, nn
 from torch.fx.passes.shape_prop import ShapeProp
+from torch.fx.proxy import Attribute
 from torch.overrides import TorchFunctionMode
 
 from ..bindings import (
@@ -33,18 +35,31 @@ from ..configuration import (
 from ..errors import CaptureError
 from .operation import TensorEffects, TensorFacts
 from .operation import argument as call_argument
-from .operators.effects import mutable_parameter_inputs, named_inplace, written_inputs
+from .operators.effects import (
+    AUGMENTED_BINARY,
+    INPUT,
+    argument_nodes,
+    indexed_write,
+    inplace_name,
+    metadata_read,
+    mutable_parameter_inputs,
+    named_inplace,
+    written_inputs,
+)
+from .operators.rules import is_native_rule
 from .registry import OperatorRegistry
 
 
 def tree_map(fn: Callable[[Any], Any], value: Any) -> Any:
-    """Apply a function to leaves of nested tuple, list, and dict containers."""
+    """Apply a function to leaves of containers and slice arguments."""
     if isinstance(value, tuple):
         return tuple(tree_map(fn, item) for item in value)
     if isinstance(value, list):
         return [tree_map(fn, item) for item in value]
     if isinstance(value, dict):
         return {key: tree_map(fn, item) for key, item in value.items()}
+    if isinstance(value, slice):
+        return slice(*(tree_map(fn, item) for item in (value.start, value.stop, value.step)))
     return fn(value)
 
 
@@ -350,7 +365,7 @@ class _TraceDataGuard(TorchFunctionMode):
         ):
             raise CaptureError("Unrecorded Tensor runtime-state read during symbolic tracing")
         if inputs and (
-            (name.endswith("_") and not name.endswith("__"))
+            inplace_name(name)
             or name in ("__setitem__", "__set__")
             or (kwargs or {}).get("out") is not None
         ):
@@ -394,8 +409,50 @@ class _TraceDataGuard(TorchFunctionMode):
         return result
 
 
+class _MutationProxy(fx.Proxy):
+    """Preserve Python writes that FX's default Proxy omits."""
+
+    # FX must find the tracer in both ordinary proxies and lazy attributes.
+    __torch_function__ = fx.Proxy.__torch_function__
+
+    def __getattr__(self, name: str) -> Attribute:
+        return _MutationAttribute(self, name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        # These fields belong to FX's Proxy and lazy Attribute implementations.
+        if name not in ("node", "tracer", "root", "attr", "_node"):
+            raise CaptureError(f"Tensor attribute assignment is unsupported: {name}")
+        super().__setattr__(name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise CaptureError(f"Tensor attribute deletion is unsupported: {name}")
+
+    def __setitem__(self, index: object, value: object) -> None:
+        self.tracer.create_proxy("call_function", operator.setitem, (self, index, value), {})
+
+    def __delitem__(self, index: object) -> None:
+        raise CaptureError("Tensor item deletion is unsupported")
+
+
+class _MutationAttribute(Attribute, _MutationProxy):
+    """Retain FX's lazy attribute handling for writes to values such as x.T."""
+
+
+def _augmented_method(target: Callable) -> Callable:
+    """Create an FX recorder for one Python augmented binary operator."""
+
+    def record(self: fx.Proxy, other: object) -> fx.Proxy:
+        return self.tracer.create_proxy("call_function", target, (self, other), {})
+
+    return record
+
+
+for _target in AUGMENTED_BINARY:
+    setattr(_MutationProxy, f"__{_target.__name__}__", _augmented_method(_target))
+
+
 class _LeafTracer(fx.Tracer):
-    """Extend only the public FX leaf policy and function autowrap configuration."""
+    """Use public FX hooks for leaf calls and Python write syntax."""
 
     def __init__(self, registry: OperatorRegistry) -> None:
         super().__init__(autowrap_functions=tuple(registry.opaque_functions))
@@ -406,6 +463,10 @@ class _LeafTracer(fx.Tracer):
         return type(module) in self.registry.opaque_modules or super().is_leaf_module(
             module, module_qualified_name
         )
+
+    def proxy(self, node: fx.Node) -> fx.Proxy:
+        """Use the standard FX proxy with additional Python write methods."""
+        return _MutationProxy(node, self)
 
 
 def _root_graph(model: nn.Module, signature: inspect.Signature) -> fx.GraphModule:
@@ -657,10 +718,11 @@ def _check_tensor_effects(
         rule = registry.lookup(node, module)
         if rule is not None:
             rule.validate_capture(node, module)
-        if rule is not None:
             effects = rule.tensor_effects(node, module)
         elif node.op in ("placeholder", "get_attr", "output"):
             effects = TensorEffects(writes_inputs=())
+        elif indexed_write(node):
+            effects = TensorEffects(writes_inputs=(INPUT,), aliases_input=INPUT)
         else:
             effects = TensorEffects()
         if not isinstance(effects, TensorEffects):
@@ -675,14 +737,16 @@ def _check_tensor_effects(
                 parameter_nodes[node] = id(value)
             if id(value) in buffers:
                 aliases[node] = {id(value)}
-        inputs = set(node.all_input_nodes)
         write_nodes = written_inputs(node, effects)
         recognized_write = named_inplace(node) or node.kwargs.get("inplace") is True
         if node.op == "call_module":
             recognized_write = recognized_write or getattr(module, "inplace", False)
-        if recognized_write and effects.writes_inputs == ():
+        if (
+            recognized_write
+            and effects.writes_inputs == ()
+            and (rule is None or not is_native_rule(rule))
+        ):
             raise CaptureError(f"Input mutation contradicts tensor_effects at {node.name}")
-        sources = set().union(*(aliases.get(n, set()) for n in inputs))
         write_sources = set().union(*(aliases.get(n, set()) for n in write_nodes))
         written.update(write_sources)
         if write_sources - isolated_buffers:
@@ -694,13 +758,14 @@ def _check_tensor_effects(
                 if module is None:
                     raise CaptureError("Parameter update paths require a module call")
                 updated_parameters.add(id(module.get_parameter(path)))
-        if (write_nodes & tainted) - allowed:
-            raise CaptureError(f"Parameter/alias write at {node.name}: {node.target}")
-        # Opaque modules may return their own parameters/buffers, not only inputs.
-        if module is not None and not effects.outputs_are_fresh:
-            if any(True for _ in module.parameters()):
-                tainted.add(node)
-            sources.update(id(buffer) for buffer in module.buffers())
+        unsafe_writes = (write_nodes & tainted) - allowed
+        if unsafe_writes:
+            sources = ", ".join(sorted(source.name for source in unsafe_writes))
+            raise CaptureError(
+                f"Parameter/alias write at {node.name}: {node.target}. "
+                f"The write to {sources} can modify a model parameter during capture. "
+                "Capture requires an explicit declaration for updates to directly bound parameters."
+            )
         out = node.kwargs.get("out")
         if node.op == "call_function":
             try:
@@ -711,10 +776,22 @@ def _check_tensor_effects(
                 out = bound.arguments.get("out", out)
         if out is not None:
             raise CaptureError(f"out= mutation is unsupported at {node.name}")
-        if not effects.outputs_are_fresh and sources:
+        if effects.outputs_are_fresh or metadata_read(node):
+            continue
+        alias_inputs = (
+            argument_nodes(node, (effects.aliases_input,), required=True)
+            if effects.aliases_input is not None
+            else set(node.all_input_nodes)
+        )
+        sources = set().union(*(aliases.get(n, set()) for n in alias_inputs))
+        # Without an explicit origin, opaque modules may return their own state.
+        if module is not None and effects.aliases_input is None:
+            if any(True for _ in module.parameters()):
+                tainted.add(node)
+            sources.update(id(buffer) for buffer in module.buffers())
+        if sources:
             aliases.setdefault(node, set()).update(sources)
-        if inputs & tainted and not effects.outputs_are_fresh:
-            # Conservative over-approximation: no unsafe alias write is assumed harmless.
+        if alias_inputs & tainted:
             tainted.add(node)
     return written, declarations, updated_parameters
 
@@ -738,7 +815,28 @@ class _MetadataPropagator(ShapeProp):
 
     def run_node(self, node: fx.Node) -> object:
         """Execute one node and save only supported metadata leaves."""
-        result = super().run_node(node)
+        if node.op == "call_function" and (
+            node.target is operator.setitem or node.target in AUGMENTED_BINARY
+        ):
+            args, _ = self.fetch_args_kwargs_from_env(node)
+            receiver = args[0]
+            scalar = node.target is not operator.setitem and type(receiver) in (bool, int, float)
+            if type(receiver) not in (torch.Tensor, nn.Parameter) and not scalar:
+                raise CaptureError(
+                    f"{node.name}: Python assignment requires a native Tensor "
+                    "or an immutable numeric scalar for augmented arithmetic"
+                )
+        try:
+            result = super().run_node(node)
+        except Exception as error:
+            if (node.op == "call_function" and node.target is operator.getitem) or indexed_write(
+                node
+            ):
+                reason = error.__cause__ or error
+                raise CaptureError(
+                    f"Index operation '{node.name}' failed on the example input: {reason}"
+                ) from error
+            raise
 
         def facts(value: object) -> object:
             """Extract detached tensor facts from a propagated metadata value."""
@@ -776,7 +874,7 @@ class CaptureResult:
             structural constants. Includes declared writes, even if the sample
             leaves values unchanged, and observed buffer mutations. Also includes
             original storage keys for isolated buffers.
-        effects: Per-node write and allocation declarations used during capture.
+        effects: Per-node write and storage declarations used during capture.
     """
 
     module: fx.GraphModule

@@ -74,21 +74,43 @@ This table lists the main structural behavior and the primary boundary for each 
 | Embedding | Module and functional feature width and downstream consumers. | Vocabulary rows stay fixed. With `max_norm`, capture warns and permits native updates to directly bound parameter values. |
 | Pooling and interpolation | Batch/channel correspondence. Supported max-pooling values and indices remain paired. | Spatial coordinates stay fixed. |
 | Padding | Coordinate correspondence on axes that padding does not change. | Padded or cropped axes stay fixed, even if output size matches input size. |
-| Elementwise operations | Registered arithmetic, comparisons, activations, broadcasting, `where`, and `masked_fill`. | Exact registered spellings. Mutation and alias checks still apply. |
+| Elementwise operations | Registered arithmetic, comparisons, activations, broadcasting, `where`, and `masked_fill`. Python augmented arithmetic preserves native Tensor semantics. | In-place operations require a proof of safe storage use. |
 | Casts and storage calls | Coordinate correspondence for dtype/device conversion, clone, detach, and contiguous. | A call can alias input storage. View and copy behavior must satisfy alias checks. |
 | Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, `baddbmm`, `dot`, `vdot`, `mv`, `outer`, and `ger` map free and contracted axes. | Original ranks, broadcasting, and call semantics must remain valid. |
 | Einsum | String equations with explicit or implicit outputs, repeated input labels, reductions, and supported ellipsis broadcasting. Repeated axes retain matching original positions. | Rules require string equations, not the sublist format. Outputs can share input storage. In-place consumers and subsequent views require alias and stride checks. |
 | Concatenation and partitioning | `cat`, `stack`, `split`, `chunk`, and `unbind` map offsets and captured ports. | Stack/unbind port counts stay fixed. Other call arguments must preserve retained coordinates. |
-| Indexing | Static basic slices, `narrow`, `select`, and `index_select` coordinate maps. | Basic slices need positive steps. `select` keeps its indexed axis fixed. `index_select` needs an unchanged registered constant integer vector. |
+| Indexing | Basic indexing supports `...`, `None`, integers, and positive-step slices with known size expressions. [Bracket indexing](#bracket-indexing) also supports one fixed integer vector or boolean mask. | The call must retain original coordinates. |
 | Shape transforms | Permute, transpose, movedim/moveaxis, reshape/view, flatten/unflatten, squeeze/unsqueeze, and supported shape provenance. | Incompatible sizes, changed rank, or unproved view strides reject affected requests. |
 | Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, and `broadcast_to` map repeated blocks or broadcast fibers. | Repeat factors must be positive static integers. `repeat_interleave` needs scalar repeats and an explicit axis. `expand_as` depends on the template shape. |
 | Tensor window views | `Tensor.unfold` maps all axes except the unfolded axis, including features in time-series patch inputs. Its result shares input storage. | Positive integer size and step. The input window axis, output window count, and appended window axis stay fixed. In-place consumers need alias checks. |
-| Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle/Unshuffle, and batched 2D Unfold/Fold. | Shuffle patterns must be compatible. Pixel and Unfold/Fold spatial or kernel positions stay fixed. |
+| Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle/Unshuffle, and batched 2D Unfold/Fold. | Shuffle patterns must be compatible. ChannelShuffle can share input storage. Pixel and Unfold/Fold spatial or kernel positions stay fixed. |
 | Reductions and softmax | Sum, mean, product, extrema, logsumexp, softmax, and log_softmax distinguish reduced from retained axes. | The operation recomputes on the compact domain. Position-index outputs are not generally covered. |
 | Fourier operations | FFT, inverse and real/Hermitian transforms, and frequency shifts map axes outside the transform. | Transform and frequency axes stay fixed. Layout remains unknown when backend behavior determines strides. |
 | Scaled dot-product attention | Q/K contractions, V width, batch/head broadcasting, masks, and supported grouped-query attention changes. | Head axes must be explicit. Causal Q/K token axes stay fixed. |
 | Native `MultiheadAttention` | Packed or separate projections with balanced embedding-width changes. | Head count, batch/token axes, masks, and attention-weight axes stay fixed. The rule does not delete whole heads at unchanged external width. |
 | `ChannelGate` extension | An explicitly registered activation axis, trainable scale, and fixed mask shrink together. | Call `register_gate_operators()`. Gates do not add a default budget domain. |
+
+### Bracket indexing
+
+`x[..., [0, 2]]` selects positions 0 and 2 on the last axis and keeps all positions on the other axes.
+When one axis uses a vector or mask, every other axis must use a full slice.
+Kirigami supports `x[:, [0, 2]]`. The rule excludes `x[1:, [0, 2]]` and `x[0, [0, 2]]`.
+
+To use a Tensor as an index, bind it as a model buffer or parameter. Use a buffer for ordinary indices.
+For example, call `self.register_buffer("indices", torch.tensor([0, 2], dtype=torch.long))`, then use `x[..., self.indices]`.
+Use a one-dimensional `int32` or `int64` Tensor for positions. The graph and saved plan check the index values.
+
+Use a one-dimensional `bool` Tensor or a literal boolean list for a fixed mask.
+For example, `x[..., [True, False, True]]` selects positions 0 and 2 on an axis of width 3.
+The indexed axis keeps its original width. Pruning can still reduce other axes.
+
+Scalar boolean indices such as `x[True]` insert an axis. The rule excludes them.
+Scalar and higher-rank index Tensors, runtime indices, legacy `uint8` masks, and multiple index vectors block affected requests.
+The rule also excludes indexed writes. Keep their affected dimensions fixed.
+A valid slice can still block a request when the same expression selects different original positions after compaction.
+The error identifies the axis and reports a coordinate or length mismatch.
+If the index fails on the example input, capture reports the PyTorch error.
+See [capture and planning results](model-support.md#failure-scope) for where to read each diagnostic.
 
 ## Default candidate axes
 
@@ -272,7 +294,7 @@ The arrows show information flow, not inheritance or the order of every rule met
 | Part | Contract |
 | --- | --- |
 | `validate_capture(node, module)` | Reject recognized unsafe calls before metadata execution. |
-| `tensor_effects(node, module)` | Declare input mutation and fresh output storage before output metadata exists. |
+| `tensor_effects(node, module)` | Declare input writes and output storage sources before sample execution. |
 | `build_spec(operation)` | Return pure structural facts in an `OperatorSpec`. |
 | `build_recipe(operation, spec, impact)` | Return special edits or `None`. The compiler combines these edits with standard edits and checks all obligations. Do not mutate the model. |
 
@@ -296,7 +318,7 @@ In-place alias checks apply even with `evaluate_on_meta=False`.
 A declared reshape, slice, index, or partition validation requirement needs `evaluate_on_meta=True`.
 A successful custom recipe cannot bypass that check.
 
-An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered integer constants. Register structural integer tensors as buffers so the graph can guard their values.
+An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered constants. Register structural index Tensors as buffers so the graph can guard their values.
 
 A custom constraint can declare `Diagnostic(..., severity="conflict", irreversible=True)` when every superset of the current removals retains the violation. Candidate filtering trusts this declaration. Ordinary conflicts and missing proofs must keep the default `irreversible=False`. For example, a difference between two widths can change after one deletion and recover after another. See [query results](dependency-graph.md#query-results) for the distinction between current validity, completeness, and irreversibility.
 
@@ -318,7 +340,7 @@ See [pruning](pruning.md#recipe-validation-and-application) for recipe compilati
 | Constraints | Unsupported axes, balance, and nonempty conditions are explicit. |
 | Effects | Reject recognized writes before execution. Match allocation declarations to actual storage behavior. |
 | Shape provenance | Permitted argument changes use exact argument locations. Other semantic parameters remain unchanged. |
-| Bindings | Parameters and buffers use registered references. Structural integer constants have value guards. |
+| Bindings | Parameters and buffers use registered references. Structural constants have value guards. |
 | Lowering | Implement or reject every activated requirement. Preserve the original call semantics. |
 | Persistence | A compatible model factory and the same extension definitions can restore the compact model. |
 

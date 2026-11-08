@@ -26,7 +26,6 @@ from ..operation import (
     OperatorSpec,
     OutputContract,
     PartitionedLayout,
-    tensors,
 )
 from ..relations import (
     AxisPort,
@@ -632,68 +631,6 @@ def split(operation: Operation) -> OperatorSpec:
         else (ArgumentRef("split_size_or_sections", 1),),
     )
     return OperatorSpec(tuple(relations), tuple(constraints), (requirement_,))
-
-
-def getitem(operation: Operation) -> OperatorSpec:
-    """Normalize container access and supported basic tensor indexing."""
-    scalar = scalar_spec(operation)
-    if scalar is not None:
-        return scalar
-    source, index = operation.args
-    if not isinstance(source, TensorRef):
-        selected = source[index]
-        a, b = tuple(tensors(selected)), operation.outputs
-        if len(a) != len(b):
-            raise UnsupportedOperation("Container indexing mismatch")
-        return OperatorSpec(
-            tuple(ReshapeRelation(x, y, operation.node.name) for x, y in zip(a, b, strict=False))
-        )
-    if not isinstance(index, tuple):
-        index = (index,)
-    if any(item is None for item in index):
-        raise UnsupportedOperation(
-            "New-axis indexing is unsupported; use unsqueeze(dim) to insert singleton "
-            "dimensions separately from indexing, then rebuild the dependency graph. "
-            "Other indexing restrictions still apply."
-        )
-    if sum(item is Ellipsis for item in index) > 1:
-        raise UnsupportedOperation("Multiple ellipses")
-    expanded = []
-    for item in index:
-        if item is Ellipsis:
-            expanded.extend([slice(None)] * (len(source.shape) - len(index) + 1))
-        else:
-            expanded.append(item)
-    expanded.extend([slice(None)] * (len(source.shape) - len(expanded)))
-    if len(expanded) != len(source.shape):
-        raise UnsupportedOperation("Advanced indexing has no supported coordinate rule")
-    normalized = []
-    for size, item in zip(source.shape, expanded, strict=False):
-        if isinstance(item, bool):
-            raise UnsupportedOperation("Boolean indexing is data-dependent")
-        if isinstance(item, int):
-            normalized.append(item % size)
-        elif isinstance(item, slice) and all(
-            v is None or isinstance(v, int) for v in (item.start, item.stop, item.step)
-        ):
-            start, stop, step = item.indices(size)
-            if step <= 0:
-                raise UnsupportedOperation("Negative slice steps are unsupported")
-            normalized.append(slice(start, max(start, stop), step))
-        else:
-            raise UnsupportedOperation("Only static basic tensor indexing is supported")
-    y = one(operation.result)
-    req = Requirement(
-        "slice_arguments",
-        operation.node.name,
-        (source, y),
-        "Remap slice coordinates after upstream compaction",
-        (("index", tuple(normalized)),),
-        arguments=(ArgumentRef("index", 1),),
-    )
-    return OperatorSpec(
-        (SliceRelation(source, y, tuple(normalized), operation.node.name),), requirements=(req,)
-    )
 
 
 def reduction(operation: Operation) -> OperatorSpec:

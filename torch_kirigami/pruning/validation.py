@@ -6,14 +6,19 @@ import copy
 from collections.abc import Callable, Iterable, Mapping, Sequence
 
 import torch
-from torch import nn
+from torch import fx, nn
 
 from ..configuration import freeze, thaw
 from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import Operation, OperatorSpec, TensorFacts, argument
-from ..dep_graph.operators.coordinates import narrow_index, retained_indices
-from ..dep_graph.operators.effects import mutable_parameter_inputs, written_inputs
+from ..dep_graph.operators.coordinates import expand_index, narrow_index, retained_indices
+from ..dep_graph.operators.effects import (
+    metadata_read,
+    mutable_parameter_inputs,
+    returned_input,
+    written_inputs,
+)
 from ..dep_graph.operators.shapes import evaluate, reevaluate
 from ..dep_graph.selection import TensorRef
 from ..operator_recipes import AttributeRecipe, TensorRecipe
@@ -90,29 +95,69 @@ def _check_slice_coordinates(
     """Reject slices that select different original coordinates after compaction."""
     x, y = op.inputs[0], op.outputs[0]
     expanded = dict(next(r for r in requirements if r.kind == "slice_arguments").data)["index"]
-    new_raw = new_index if isinstance(new_index, tuple) else (new_index,)
-    new_expanded = []
-    for item in new_raw:
-        new_expanded.extend(
-            [slice(None)] * (len(x.shape) - len(new_raw) + 1) if item is Ellipsis else [item]
+    try:
+        new_expanded = expand_index(new_index, len(x.shape))
+    except ValueError as error:
+        raise PlanningError(f"{op.name}: {error}") from error
+    if len(new_expanded) != len(expanded):
+        raise PlanningError(
+            f"{op.name}: compact slice changes the indexed axes. "
+            f"Expected {len(expanded)} index entries, got {len(new_expanded)}."
         )
-    new_expanded.extend([slice(None)] * (len(x.shape) - len(new_expanded)))
-    out_dim = 0
-    for dim, (item, new_item) in enumerate(zip(expanded, new_expanded, strict=True)):
-        old = list(range(x.shape[dim]))
+    dim = out_dim = 0
+    for entry, (item, new_item) in enumerate(zip(expanded, new_expanded, strict=True)):
+        if type(new_item) is not type(item):
+            raise PlanningError(
+                f"{op.name}: compact slice changes the indexed axes at entry {entry}. "
+                f"Expected {type(item).__name__}, got {type(new_item).__name__}."
+            )
+        if item is None:
+            out_dim += 1
+            continue
+        old = range(x.shape[dim])
         kept = list(retained_indices(impact, x.axis(dim)))
         if isinstance(item, int):
-            if not -len(kept) <= new_item < len(kept) or kept[new_item] != old[item]:
+            original = old[item]
+            if not -len(kept) <= new_item < len(kept):
                 raise PlanningError(
-                    f"{op.node.name}: integer slice selects a different original coordinate"
+                    f"{op.name}: index {new_item} on axis {dim} is out of bounds for "
+                    f"compact width {len(kept)}. It must still select original position {original}."
+                )
+            if kept[new_item] != original:
+                raise PlanningError(
+                    f"{op.name}: integer slice selects a different original coordinate on "
+                    f"axis {dim}. Expected position {original}, got {kept[new_item]}."
                 )
         else:
-            expected = [old[item][i] for i in retained_indices(impact, y.axis(out_dim))]
-            if kept[new_item] != expected:
+            if new_item.step is not None and new_item.step <= 0:
                 raise PlanningError(
-                    f"{op.node.name}: slice has incorrect original-coordinate correspondence"
+                    f"{op.name}: slice step on axis {dim} becomes {new_item.step} "
+                    "after pruning. PyTorch requires a positive step."
+                )
+            indexed = old[item]
+            expected = [indexed[i] for i in retained_indices(impact, y.axis(out_dim))]
+            actual = kept[new_item]
+            if actual != expected:
+                mismatch = next(
+                    (
+                        (i, before, after)
+                        for i, (before, after) in enumerate(zip(expected, actual, strict=False))
+                        if before != after
+                    ),
+                    None,
+                )
+                detail = f"Expected {len(expected)} positions, got {len(actual)}."
+                if mismatch is not None:
+                    i, before, after = mismatch
+                    detail = (
+                        f"At result position {i}, expected original position {before}, got {after}."
+                    )
+                raise PlanningError(
+                    f"{op.name}: slice has incorrect original-coordinate correspondence on "
+                    f"axis {dim}. {detail}"
                 )
             out_dim += 1
+        dim += 1
 
 
 def _meta_module(
@@ -147,6 +192,57 @@ def _meta_module(
         return result
 
     return clone(operation.module)
+
+
+def _temporary_write_issue(
+    source: fx.Node,
+    writer: Operation,
+    operations: Mapping[str, Operation],
+    positions: Mapping[fx.Node, int],
+) -> str | None:
+    """Explain why a write cannot be traced to an isolated temporary Tensor."""
+    consumer = writer.node
+    value_only = returned_input(consumer, writer.effects) is source
+    while True:
+        for user in source.users:
+            if user is consumer:
+                continue
+            # A value-only write keeps metadata reads valid. Later uses of the
+            # same Tensor see the write in both the original and compact calls.
+            if value_only and (metadata_read(user) or positions[user] > positions[writer.node]):
+                continue
+            if user is writer.node:
+                return f"'{source.name}' also reaches the writer through another argument."
+            if positions[user] < positions[writer.node]:
+                earlier = operations.get(user.name)
+                if (
+                    value_only
+                    and not user.users
+                    and earlier is not None
+                    and not earlier.effects.mutable_parameters
+                    and returned_input(user, earlier.effects) is source
+                    and written_inputs(user, earlier.effects) == {source}
+                ):
+                    # Another value-only write in the same sequence. Its
+                    # unused return creates no separate alias path.
+                    continue
+                return f"'{source.name}' also feeds earlier consumer '{user.name}'."
+            return f"'{source.name}' also feeds '{user.name}' without a value-only write proof."
+        producer = operations.get(source.name)
+        if producer is None:
+            return f"'{source.name}' comes from a model input or a stored value."
+        effects = producer.effects
+        if effects.outputs_are_fresh:
+            return None
+        if not effects.returns_input or not isinstance(producer.result, TensorRef):
+            return (
+                f"'{source.name}' does not guarantee fresh storage or return an identified "
+                "input unchanged in storage and shape."
+            )
+        origin = returned_input(source, effects)
+        if origin is None:
+            return f"'{source.name}' has no single captured Tensor source for its result."
+        consumer, source = source, origin
 
 
 def check_forward(
@@ -187,6 +283,7 @@ def check_forward(
         for op, spec, requirements, evaluate_on_meta in active
     }
     operations_by_name = {op.node.name: op for op in operations}
+    positions = None
     values, uncertain = {}, set()
     shapes: dict[TensorRef, tuple[int, ...]] = {}
 
@@ -277,7 +374,6 @@ def check_forward(
             }
             buffer_paths = {path for ref in op.inputs if ref.kind == "buffer" for path in ref.paths}
             for source in written_inputs(op.node, effects):
-                producer = operations_by_name.get(source.name)
                 # Capture isolates registered buffers. Parameter updates need an
                 # explicit permission. Neither permits writes through views.
                 if source.op == "get_attr" and (
@@ -285,13 +381,12 @@ def check_forward(
                     or (effects.writes_inputs is not None and str(source.target) in buffer_paths)
                 ):
                     continue
-                if (
-                    producer is None
-                    or not producer.effects.outputs_are_fresh
-                    or len(source.users) != 1
-                ):
+                if positions is None:
+                    positions = {node: i for i, node in enumerate(op.node.graph.nodes)}
+                issue = _temporary_write_issue(source, op, operations_by_name, positions)
+                if issue is not None:
                     raise PlanningError(
-                        f"{op.name}: cannot prove in-place alias/consumer safety. "
+                        f"{op.name}: cannot prove in-place alias/consumer safety. {issue} "
                         "If no consumer relies on modifying the original tensor, use an "
                         "out-of-place operation and rebuild the dependency graph."
                     )
@@ -322,11 +417,33 @@ def check_forward(
         for req in requirements:
             data = dict(req.data)
             if req.kind == "index_arguments":
-                kept = list(retained_indices(impact, data["axis"]))
-                if any(i >= len(kept) or kept[i] != i for i in data["indices"]):
-                    raise PlanningError(
-                        f"{op.node.name}: static indices change original coordinates"
-                    )
+                axis = data["axis"]
+                size = axis.tensor.shape[axis.dim]
+                kept = list(retained_indices(impact, axis))
+                for i in data["indices"]:
+                    if not -len(kept) <= i < len(kept):
+                        raise PlanningError(
+                            f"{op.name}: static index {i} is out of bounds for compact width "
+                            f"{len(kept)} and cannot preserve original coordinates"
+                        )
+                    if kept[i] != i % size:
+                        raise PlanningError(
+                            f"{op.name}: static indices change original coordinates. "
+                            f"Index {i} selected position {i % size} before pruning and "
+                            f"would select original position {kept[i]} after pruning."
+                        )
+                if data.get("mask"):
+                    width = shape(axis.tensor)[axis.dim]
+                    if width != size:
+                        raise PlanningError(
+                            f"{op.name}: fixed boolean mask needs width {size} on axis {axis.dim}. "
+                            f"Pruning would change it to {width}."
+                        )
+                    # Meta tensors have no boolean values for nonzero. Use the
+                    # guarded True positions to check the same compact shape.
+                    index = [slice(None)] * len(axis.tensor.shape)
+                    index[axis.dim] = list(data["indices"])
+                    normalized_args = (normalized_args[0], tuple(index))
             if req.kind == "slice_arguments":
                 if "narrow_dim" in data:
                     dim = argument(

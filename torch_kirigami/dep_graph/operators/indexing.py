@@ -6,13 +6,13 @@ from dataclasses import replace
 from math import prod
 
 import torch
-from torch import nn
+from torch import fx, nn
 from torch.nn import functional as F
 
 from ...errors import UnsupportedOperation
 from ...settings import config
 from ..contracts import ArgumentRef, AxisBarrier, Balanced, Requirement
-from ..operation import Operation, OperatorSpec, OutputContract
+from ..operation import Operation, OperatorSpec, OutputContract, tensors
 from ..relations import (
     AxisPort,
     AxisRelation,
@@ -21,9 +21,10 @@ from ..relations import (
     ReshapeRelation,
     SliceRelation,
 )
-from ..selection import IndexSet
-from .coordinates import narrow_index
+from ..selection import IndexSet, TensorRef
+from .coordinates import expand_index, narrow_index
 from .native import equal, one, split
+from .shapes import has_known_provenance, scalar_spec
 
 
 def tensor_unfold(operation: Operation) -> OperatorSpec:
@@ -213,56 +214,226 @@ def repeat(operation: Operation) -> OperatorSpec:
     return OperatorSpec(tuple(relations), tuple(constraints))
 
 
+def getitem(operation: Operation) -> OperatorSpec:
+    """Map basic indices and one fixed vector or mask in original coordinates."""
+    scalar = scalar_spec(operation)
+    if scalar is not None:
+        return scalar
+    source, index = operation.args
+    raw_refs: set[fx.Node] = set()
+    fx.map_arg(operation.node.args[1], lambda node: raw_refs.add(node) or node)
+    if not isinstance(source, TensorRef):
+        if any(node not in operation.expressions for node in raw_refs):
+            raise UnsupportedOperation("Container indices require static or shape-derived values")
+        try:
+            inputs = tuple(tensors(source[index]))
+        except (IndexError, KeyError, TypeError) as error:
+            raise UnsupportedOperation("Container index cannot be resolved") from error
+        if len(inputs) != len(operation.outputs):
+            raise UnsupportedOperation("Container indexing mismatch")
+        return OperatorSpec(
+            tuple(
+                ReshapeRelation(x, y, operation.name)
+                for x, y in zip(inputs, operation.outputs, strict=True)
+            )
+        )
+
+    try:
+        expanded = expand_index(index, len(source.shape))
+    except ValueError as error:
+        raise UnsupportedOperation(str(error)) from error
+    y = one(operation.result)
+    vectors = [
+        (dim, item) for dim, item in enumerate(expanded) if isinstance(item, (list, TensorRef))
+    ]
+    if any(type(item) is bool for item in expanded):
+        raise UnsupportedOperation(
+            "Scalar boolean indices are unsupported. A scalar boolean index inserts an axis."
+        )
+    if len(vectors) > 1:
+        raise UnsupportedOperation(
+            "Multiple advanced indices are unsupported. Use one static integer vector or mask."
+        )
+    if vectors:
+        ((dim, item),) = vectors
+        if not all(
+            isinstance(other, slice)
+            and other.start is None
+            and other.stop is None
+            and other.step in (None, 1)
+            for i, other in enumerate(expanded)
+            if i != dim
+        ):
+            raise UnsupportedOperation(
+                "Mixed advanced indexing is unsupported. Keep every other axis as a full slice."
+            )
+        index_ref = item if isinstance(item, TensorRef) else None
+        if index_ref is not None:
+            indices = _static_tensor_index(operation, index_ref, allow_mask=True)
+        elif raw_refs:
+            raise UnsupportedOperation("Runtime index lists are unsupported. Use a fixed list.")
+        else:
+            indices = tuple(item)
+        mask = all(type(value) is bool for value in indices)
+        if mask:
+            if len(indices) != source.shape[dim]:
+                raise UnsupportedOperation(
+                    "A boolean mask must match the width of its indexed axis"
+                )
+            indices = tuple(i for i, keep in enumerate(indices) if keep)
+        elif any(type(value) is not int for value in indices):
+            raise UnsupportedOperation("Use a flat list of integers or a flat list of booleans")
+        return _vector_index(operation, source, y, dim, indices, index_ref, mask=mask)
+    if not all(
+        item is None
+        or type(item) is int
+        or (
+            isinstance(item, slice)
+            and all(
+                value is None or isinstance(value, int)
+                for value in (item.start, item.stop, item.step)
+            )
+        )
+        for item in expanded
+    ):
+        raise UnsupportedOperation(
+            "Unsupported bracket index. Use basic slices, one fixed integer vector, "
+            "or one fixed 1-D boolean mask."
+        )
+    if any(
+        node not in operation.expressions or not has_known_provenance(operation.expressions[node])
+        for node in raw_refs
+    ):
+        raise UnsupportedOperation("Basic indices require static or shape-derived integer values")
+    try:
+        relation = SliceRelation(source, y, expanded, operation.name)
+    except (IndexError, ValueError) as error:
+        raise UnsupportedOperation(str(error)) from error
+    return OperatorSpec(
+        (relation,),
+        requirements=(
+            Requirement(
+                "slice_arguments",
+                operation.name,
+                (source, y),
+                "Remap slice coordinates after upstream compaction",
+                (("index", relation.index),),
+                arguments=(ArgumentRef("index", 1),),
+            ),
+        ),
+    )
+
+
+def _static_tensor_index(
+    operation: Operation, index: TensorRef, *, allow_mask: bool = False
+) -> tuple[int, ...]:
+    """Read a fixed index Tensor with a guardable binding."""
+    if len(index.shape) != 1:
+        raise UnsupportedOperation(
+            f"Index Tensor must be one-dimensional. Got shape {index.shape}."
+        )
+    dtype = operation.metadata[index.id].dtype
+    if allow_mask and dtype == torch.uint8:
+        raise UnsupportedOperation("Index Tensor has dtype torch.uint8. Use torch.bool for a mask.")
+    if dtype not in (torch.int32, torch.int64) and not (allow_mask and dtype == torch.bool):
+        supported = "int32, int64, or bool" if allow_mask else "int32 or int64"
+        raise UnsupportedOperation(f"Index Tensor has dtype {dtype}. Use {supported}.")
+    values = operation.constants.get(index.id)
+    if index.kind == "input" or (not index.paths and values is None):
+        raise UnsupportedOperation(
+            "Runtime index Tensors are unsupported. Use a fixed index buffer. "
+            "The current index has no captured value bound to the model."
+        )
+    if not index.paths:
+        raise UnsupportedOperation("Register the fixed index Tensor as a buffer.")
+    if index.shape[0] > config.max_literal_elements:
+        raise UnsupportedOperation(
+            f"Index Tensor has {index.shape[0]} entries. "
+            f"config.max_literal_elements allows {config.max_literal_elements}."
+        )
+    if values is None:
+        raise UnsupportedOperation(
+            "Index Tensor has no captured constant value. Keep its values fixed during forward."
+        )
+    return values
+
+
+def _vector_index(
+    operation: Operation,
+    x: TensorRef,
+    y: TensorRef,
+    dim: int,
+    indices: tuple[int, ...],
+    index: TensorRef | None = None,
+    *,
+    mask: bool = False,
+) -> OperatorSpec:
+    """Map one integer vector while guarding coordinate order and repeated entries."""
+    constraints = (
+        (
+            AxisBarrier(
+                index.axis(0), "Static index vector entries cannot be deleted", operation.name
+            ),
+        )
+        if index is not None
+        else ()
+    )
+    constants = (index,) if index is not None else ()
+    if not x.shape:
+        return OperatorSpec(
+            (ReshapeRelation(x, y, operation.name),), constraints, constants=constants
+        )
+    dim %= len(x.shape)
+    size = x.shape[dim]
+    if mask:
+        constraints += (
+            AxisBarrier(
+                x.axis(dim),
+                "Fixed boolean mask requires retaining its indexed axis",
+                operation.name,
+            ),
+        )
+    for i in indices:
+        if type(i) is not int or not -size <= i < size:
+            raise UnsupportedOperation(
+                f"Invalid fixed index {i!r} for axis {dim} of width {size}. "
+                f"Use integers in [{-size}, {size - 1}]."
+            )
+    relations = [equal(x, d, y, d, operation.name) for d in range(len(x.shape)) if d != dim]
+    relations.append(
+        AxisRelation(
+            AxisPort(x.axis(dim)),
+            AxisPort(y.axis(dim)),
+            tuple(BlockMap(i % size, j, 1) for j, i in enumerate(indices)),
+            operation.name,
+        )
+    )
+    return OperatorSpec(
+        tuple(relations),
+        constraints,
+        (
+            Requirement(
+                "index_arguments",
+                operation.name,
+                (x, y),
+                "Preserve static index coordinates",
+                (("axis", x.axis(dim)), ("indices", indices), ("mask", mask)),
+            ),
+        ),
+        constants=constants,
+        contract=OutputContract(output_layout="backend_dependent") if mask else None,
+    )
+
+
 def index_select(operation: Operation) -> OperatorSpec:
     """Map captured constant indices and guard their values for portable replay."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     dim = operation.argument("dim", 1)
     index = one(operation.argument("index", 2))
-    indices = operation.constants.get(index.id)
-    if indices is None or len(index.shape) != 1:
-        raise UnsupportedOperation("index_select requires a captured constant integer vector")
-    if not x.shape:
-        return OperatorSpec(
-            (ReshapeRelation(x, y, operation.node.name),),
-            (
-                AxisBarrier(
-                    index.axis(0),
-                    "Static index vector entries cannot be deleted",
-                    operation.node.name,
-                ),
-            ),
-            constants=(index,),
-        )
-    dim %= len(x.shape)
-    if any(type(i) is not int or not 0 <= i < x.shape[dim] for i in indices):
+    indices = _static_tensor_index(operation, index)
+    if any(type(i) is not int or i < 0 for i in indices):
         raise UnsupportedOperation("Invalid static index_select coordinates")
-    relations = [equal(x, d, y, d, operation.node.name) for d in range(len(x.shape)) if d != dim]
-    relations.append(
-        AxisRelation(
-            AxisPort(x.axis(dim)),
-            AxisPort(y.axis(dim)),
-            tuple(BlockMap(i, j, 1) for j, i in enumerate(indices)),
-            operation.node.name,
-        )
-    )
-    return OperatorSpec(
-        tuple(relations),
-        (
-            AxisBarrier(
-                index.axis(0), "Static index vector entries cannot be deleted", operation.node.name
-            ),
-        ),
-        (
-            Requirement(
-                "index_arguments",
-                operation.node.name,
-                (x, y),
-                "Preserve static index coordinates",
-                (("axis", x.axis(dim)), ("indices", indices)),
-            ),
-        ),
-        constants=(index,),
-    )
+    return _vector_index(operation, x, y, dim, indices, index)
 
 
 def glu(operation: Operation) -> OperatorSpec:

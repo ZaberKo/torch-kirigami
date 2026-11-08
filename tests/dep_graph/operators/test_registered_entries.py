@@ -6,6 +6,7 @@ from torch import fx
 
 from tests.support.operator_cases import make_case
 from torch_kirigami import Operation, OperatorRegistry, Selection, TensorFacts, TensorRef
+from torch_kirigami.dep_graph.operation import argument
 
 REGISTRY = OperatorRegistry.default()
 ENTRIES = [
@@ -47,6 +48,8 @@ def native_context(kind, target, case):
     if case.module is not None:
         for name, tensor in (*case.module.named_parameters(), *case.module.named_buffers()):
             bindings[name] = record(tensor, path=name)
+    if target in (torch.index_select, "index_select"):
+        record(case.args[2], path="indices")
 
     def tree(value, *, symbolic=False):
         if isinstance(value, torch.Tensor):
@@ -63,7 +66,14 @@ def native_context(kind, target, case):
     node = graph.create_node(
         f"call_{kind}", "op" if kind == "module" else target, raw_args, raw_kwargs
     )
-    REGISTRY.lookup(node, case.module).validate_capture(node, case.module)
+    rule = REGISTRY.lookup(node, case.module)
+    rule.validate_capture(node, case.module)
+    effects = rule.tensor_effects(node, case.module)
+    if effects.returns_input:
+        ref = effects.aliases_input
+        assert ref is not None
+        receiver = argument(case.args, case.kwargs, ref.name, ref.position, target=node.target)
+        original_layout = receiver.shape, receiver.stride(), receiver.untyped_storage().data_ptr()
     # Native execution validates the case signature and supplies metadata only.
     # Expected structural axes and indices come exclusively from make_case.
     if kind == "module":
@@ -83,7 +93,15 @@ def native_context(kind, target, case):
             for child in value.values():
                 yield from tensor_leaves(child)
 
-    if REGISTRY.lookup(node, case.module).tensor_effects(node, case.module).outputs_are_fresh:
+    if effects.returns_input:
+        assert result is receiver
+        assert (
+            result.shape,
+            result.stride(),
+            result.untyped_storage().data_ptr(),
+        ) == original_layout
+
+    if effects.outputs_are_fresh:
         registered = (
             (*case.module.parameters(), *case.module.buffers()) if case.module is not None else ()
         )
@@ -94,11 +112,14 @@ def native_context(kind, target, case):
         }
         # Check the allocation promise against real PyTorch execution for every
         # native spelling. Structural relation tests alone cannot establish it.
-        assert all(
-            (str(t.device), t.untyped_storage().data_ptr()) not in storages
+        outputs = [
+            (str(t.device), t.untyped_storage().data_ptr())
             for t in tensor_leaves(result)
             if t.numel()
-        ), f"{kind}:{target} declares fresh output but aliases an input or registered tensor"
+        ]
+        assert len(set(outputs)) == len(outputs) and not storages.intersection(outputs), (
+            f"{kind}:{target} declares fresh output but shares storage"
+        )
 
     def output_tree(value):
         if isinstance(value, torch.Tensor):

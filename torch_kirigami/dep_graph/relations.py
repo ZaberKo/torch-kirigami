@@ -477,26 +477,32 @@ class SliceRelation:
     Attributes:
         big: Tensor before indexing.
         small: Indexed tensor.
-        index: One integer or positive-step slice per original axis.
+        index: One integer or positive-step slice per original axis. None
+            inserts a singleton axis without consuming an original axis.
         reason: Explanation attached to propagated selections.
 
     Notes:
-        Rules expand ellipses before constructing this relation. Axis insertion
-        uses ReshapeRelation; advanced indexing is unsupported.
+        Rules expand ellipses before constructing this relation.
     """
 
     big: TensorRef
     small: TensorRef
-    index: tuple[int | slice, ...]
+    index: tuple[int | slice | None, ...]
     reason: str = "static slice"
 
     def __post_init__(self) -> None:
         index = tuple(self.index)
-        if len(index) != len(self.big.shape):
+        if sum(item is not None for item in index) != len(self.big.shape):
             raise ValueError("Basic indexing requires one entry per source axis")
-        normalized: list[int | slice] = []
+        normalized: list[int | slice | None] = []
         shape: list[int] = []
-        for item, size in zip(index, self.big.shape, strict=True):
+        sizes = iter(self.big.shape)
+        for item in index:
+            if item is None:
+                normalized.append(None)
+                shape.append(1)
+                continue
+            size = next(sizes)
             if isinstance(item, int) and not isinstance(item, bool):
                 if not -size <= item < size:
                     raise IndexError("Integer index exceeds source axis bounds")
@@ -527,9 +533,16 @@ class SliceRelation:
         regions = []
         for region in source.regions:
             result = []
-            small_axis = 0
+            big_axis = small_axis = 0
             valid = True
-            for axis, item in enumerate(self.index):
+            for item in self.index:
+                if item is None:
+                    if forward:
+                        result.append(IndexSet.span(0, 1))
+                    small_axis += 1
+                    continue
+                axis = big_axis
+                big_axis += 1
                 if isinstance(item, int):
                     if forward and not region.axes[axis].intersect(IndexSet.of([item])):
                         valid = False

@@ -51,8 +51,8 @@
   ],
   "interpretation": "Visible names include infrastructure and backend entry points. No-direct-rule entries may expand through FX or require additional semantics. This inventory is not a claim of complete operator or overload support.",
   "counts": {
-    "direct_rule": 813,
-    "no_direct_rule": 904
+    "direct_rule": 871,
+    "no_direct_rule": 846
   },
   "entries": [
     {
@@ -168,12 +168,12 @@
     {
       "entry": "torch.alpha_dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.alpha_dropout_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.amax",
@@ -732,8 +732,8 @@
     },
     {
       "entry": "torch.conj_physical_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.constant_pad_nd",
@@ -1008,12 +1008,12 @@
     {
       "entry": "torch.dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.dropout_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.dsmm",
@@ -1203,22 +1203,22 @@
     {
       "entry": "torch.feature_alpha_dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.feature_alpha_dropout_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.feature_dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.feature_dropout_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "DropoutRule"
     },
     {
       "entry": "torch.fill",
@@ -1227,8 +1227,8 @@
     },
     {
       "entry": "torch.fill_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.fix",
@@ -1367,8 +1367,8 @@
     },
     {
       "entry": "torch.gcd_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.ge",
@@ -1587,8 +1587,8 @@
     },
     {
       "entry": "torch.i0_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.igamma",
@@ -1877,8 +1877,8 @@
     },
     {
       "entry": "torch.lcm_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.ldexp",
@@ -1887,8 +1887,8 @@
     },
     {
       "entry": "torch.ldexp_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.le",
@@ -2022,8 +2022,8 @@
     },
     {
       "entry": "torch.logit_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.logspace",
@@ -3682,8 +3682,8 @@
     },
     {
       "entry": "torch.zero_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "torch.zeros",
@@ -3762,8 +3762,8 @@
     },
     {
       "entry": "Tensor.addcdiv_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.addcmul",
@@ -3772,8 +3772,8 @@
     },
     {
       "entry": "Tensor.addcmul_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.addmm",
@@ -3902,8 +3902,8 @@
     },
     {
       "entry": "Tensor.arctan2_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.arctan_",
@@ -3992,8 +3992,8 @@
     },
     {
       "entry": "Tensor.atan2_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.atan_",
@@ -4052,8 +4052,8 @@
     },
     {
       "entry": "Tensor.bitwise_and_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bitwise_left_shift",
@@ -4062,8 +4062,8 @@
     },
     {
       "entry": "Tensor.bitwise_left_shift_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bitwise_not",
@@ -4072,8 +4072,8 @@
     },
     {
       "entry": "Tensor.bitwise_not_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bitwise_or",
@@ -4082,8 +4082,8 @@
     },
     {
       "entry": "Tensor.bitwise_or_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bitwise_right_shift",
@@ -4092,8 +4092,8 @@
     },
     {
       "entry": "Tensor.bitwise_right_shift_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bitwise_xor",
@@ -4102,8 +4102,8 @@
     },
     {
       "entry": "Tensor.bitwise_xor_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.bmm",
@@ -4252,8 +4252,8 @@
     },
     {
       "entry": "Tensor.conj_physical_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.const_data_ptr",
@@ -4267,8 +4267,8 @@
     },
     {
       "entry": "Tensor.copy_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.copysign",
@@ -4277,8 +4277,8 @@
     },
     {
       "entry": "Tensor.copysign_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.corrcoef",
@@ -4442,8 +4442,8 @@
     },
     {
       "entry": "Tensor.digamma_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.dim",
@@ -4512,8 +4512,8 @@
     },
     {
       "entry": "Tensor.eq_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.equal",
@@ -4597,8 +4597,8 @@
     },
     {
       "entry": "Tensor.fill_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.fill_diagonal_",
@@ -4647,8 +4647,8 @@
     },
     {
       "entry": "Tensor.float_power_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.floor",
@@ -4717,8 +4717,8 @@
     },
     {
       "entry": "Tensor.gcd_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.ge",
@@ -4727,8 +4727,8 @@
     },
     {
       "entry": "Tensor.ge_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.geometric_",
@@ -4757,8 +4757,8 @@
     },
     {
       "entry": "Tensor.greater_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.greater_equal",
@@ -4767,8 +4767,8 @@
     },
     {
       "entry": "Tensor.greater_equal_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.gt",
@@ -4777,8 +4777,8 @@
     },
     {
       "entry": "Tensor.gt_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.half",
@@ -4802,8 +4802,8 @@
     },
     {
       "entry": "Tensor.heaviside_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.histc",
@@ -4827,8 +4827,8 @@
     },
     {
       "entry": "Tensor.hypot_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.i0",
@@ -4837,8 +4837,8 @@
     },
     {
       "entry": "Tensor.i0_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.igamma",
@@ -4847,8 +4847,8 @@
     },
     {
       "entry": "Tensor.igamma_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.igammac",
@@ -4857,8 +4857,8 @@
     },
     {
       "entry": "Tensor.igammac_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.index",
@@ -5082,8 +5082,8 @@
     },
     {
       "entry": "Tensor.lcm_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.ldexp",
@@ -5092,8 +5092,8 @@
     },
     {
       "entry": "Tensor.ldexp_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.le",
@@ -5102,8 +5102,8 @@
     },
     {
       "entry": "Tensor.le_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.lerp",
@@ -5112,8 +5112,8 @@
     },
     {
       "entry": "Tensor.lerp_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.less",
@@ -5122,8 +5122,8 @@
     },
     {
       "entry": "Tensor.less_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.less_equal",
@@ -5132,8 +5132,8 @@
     },
     {
       "entry": "Tensor.less_equal_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.lgamma",
@@ -5142,8 +5142,8 @@
     },
     {
       "entry": "Tensor.lgamma_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.log",
@@ -5222,8 +5222,8 @@
     },
     {
       "entry": "Tensor.logical_and_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.logical_not",
@@ -5232,8 +5232,8 @@
     },
     {
       "entry": "Tensor.logical_not_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.logical_or",
@@ -5242,8 +5242,8 @@
     },
     {
       "entry": "Tensor.logical_or_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.logical_xor",
@@ -5252,8 +5252,8 @@
     },
     {
       "entry": "Tensor.logical_xor_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.logit",
@@ -5262,8 +5262,8 @@
     },
     {
       "entry": "Tensor.logit_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.logsumexp",
@@ -5287,8 +5287,8 @@
     },
     {
       "entry": "Tensor.lt_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.lu",
@@ -5317,8 +5317,8 @@
     },
     {
       "entry": "Tensor.masked_fill_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.masked_scatter",
@@ -5507,8 +5507,8 @@
     },
     {
       "entry": "Tensor.ne_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.neg",
@@ -5577,8 +5577,8 @@
     },
     {
       "entry": "Tensor.nextafter_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.nonzero",
@@ -5607,8 +5607,8 @@
     },
     {
       "entry": "Tensor.not_equal_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.numel",
@@ -6387,8 +6387,8 @@
     },
     {
       "entry": "Tensor.true_divide_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "Tensor.trunc",
@@ -6522,8 +6522,8 @@
     },
     {
       "entry": "Tensor.zero_",
-      "status": "no_direct_rule",
-      "rule": null
+      "status": "direct_rule",
+      "rule": "PointwiseRule"
     },
     {
       "entry": "F.Optional",
@@ -6583,7 +6583,7 @@
     {
       "entry": "F.alpha_dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.assert_int_or_pair",
@@ -6703,22 +6703,22 @@
     {
       "entry": "F.dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.dropout1d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.dropout2d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.dropout3d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.elu",
@@ -6743,7 +6743,7 @@
     {
       "entry": "F.feature_alpha_dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "F.fold",
@@ -7258,7 +7258,7 @@
     {
       "entry": "nn.AlphaDropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.AvgPool1d",
@@ -7413,22 +7413,22 @@
     {
       "entry": "nn.Dropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.Dropout1d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.Dropout2d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.Dropout3d",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.ELU",
@@ -7448,7 +7448,7 @@
     {
       "entry": "nn.FeatureAlphaDropout",
       "status": "direct_rule",
-      "rule": "PointwiseRule"
+      "rule": "DropoutRule"
     },
     {
       "entry": "nn.Flatten",

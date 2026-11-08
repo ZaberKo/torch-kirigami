@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from ..operation import OperatorRule
+from .effects import AUGMENTED_BINARY
 from .rules import (
     AddmmRule,
     AttentionRule,
@@ -20,6 +21,7 @@ from .rules import (
     ChunkRule,
     ConcatenateRule,
     ConvolutionRule,
+    DropoutRule,
     EinsumRule,
     EmbeddingRule,
     FourierRule,
@@ -106,8 +108,38 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
     functions([F.layer_norm, torch.layer_norm], LayerNormRule, fresh=True)
     modules([nn.GroupNorm], GroupNormRule, fresh=True)
     functions([F.group_norm], GroupNormRule, fresh=True)
-    modules([nn.Dropout, nn.Dropout1d, nn.Dropout2d, nn.Dropout3d], PointwiseRule, fresh=False)
-    functions([F.dropout], PointwiseRule, fresh=False)
+    modules(
+        [
+            nn.Dropout,
+            nn.Dropout1d,
+            nn.Dropout2d,
+            nn.Dropout3d,
+            nn.AlphaDropout,
+            nn.FeatureAlphaDropout,
+        ],
+        DropoutRule,
+        fresh=False,
+    )
+    functions(
+        [
+            F.dropout,
+            F.dropout1d,
+            F.dropout2d,
+            F.dropout3d,
+            F.alpha_dropout,
+            F.feature_alpha_dropout,
+            torch.dropout,
+            torch.dropout_,
+            torch.feature_dropout,
+            torch.feature_dropout_,
+            torch.alpha_dropout,
+            torch.alpha_dropout_,
+            torch.feature_alpha_dropout,
+            torch.feature_alpha_dropout_,
+        ],
+        DropoutRule,
+        fresh=False,
+    )
     methods(["detach", "contiguous"], PointwiseRule, fresh=False)
     functions([torch.detach], PointwiseRule, fresh=False)
     modules([nn.Identity], IdentityRule, fresh=False)
@@ -166,7 +198,16 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
         PointwiseRule,
         fresh=True,
     )
-    functions([operator.matmul, torch.matmul, torch.mm, torch.bmm], MatmulRule, fresh=True)
+    functions(
+        [operator.matmul, operator.imatmul, torch.matmul, torch.mm, torch.bmm],
+        MatmulRule,
+        fresh=True,
+    )
+    functions(
+        [target for target in AUGMENTED_BINARY if target is not operator.imatmul],
+        PointwiseRule,
+        fresh=False,
+    )
     methods(["matmul", "mm", "bmm"], MatmulRule, fresh=True)
     functions(
         [torch.dot, torch.vdot, torch.mv, torch.outer, torch.ger, torch.linalg.matmul],
@@ -402,14 +443,14 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
         PointwiseRule,
         fresh=True,
     )
-    functions([operator.pos, F.dropout1d, F.dropout2d, F.dropout3d], PointwiseRule, fresh=False)
+    functions([operator.pos], PointwiseRule, fresh=False)
     methods(
         [name for name in (*unary, *binary) if hasattr(torch.Tensor, name)],
         PointwiseRule,
         fresh=True,
     )
-    methods(["masked_fill"], PointwiseRule, fresh=True)
-    functions([torch.masked_fill, torch.relu_], PointwiseRule, fresh=True)
+    methods(["masked_fill", "masked_fill_", "copy_", "fill_", "zero_"], PointwiseRule, fresh=True)
+    functions([torch.masked_fill, torch.relu_, torch.fill_, torch.zero_], PointwiseRule, fresh=True)
     methods(
         [
             "to",
@@ -482,9 +523,8 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
     methods(["broadcast_to"], RepeatRule, fresh=False)
     modules([nn.GLU], GluRule, fresh=True)
     functions([F.glu], GluRule, fresh=True)
-    modules([nn.ChannelShuffle], ChannelShuffleRule, fresh=True)
-    functions([torch.channel_shuffle], ChannelShuffleRule, fresh=True)
-    functions([F.native_channel_shuffle], ChannelShuffleRule, fresh=True)
+    modules([nn.ChannelShuffle], ChannelShuffleRule, fresh=False)
+    functions([torch.channel_shuffle, F.native_channel_shuffle], ChannelShuffleRule, fresh=False)
     modules([nn.PixelShuffle, nn.PixelUnshuffle], PixelShuffleRule, fresh=True)
     functions(
         list(
@@ -668,13 +708,6 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
     modules([nn.Hardshrink, nn.LogSigmoid, nn.Softshrink, nn.RReLU], PointwiseRule, fresh=True)
     functions([F.hardshrink, F.logsigmoid, F.softshrink, F.rrelu], PointwiseRule, fresh=True)
     methods(["hardshrink"], PointwiseRule, fresh=True)
-    modules([nn.AlphaDropout, nn.FeatureAlphaDropout], PointwiseRule, fresh=False)
-    functions([F.alpha_dropout, F.feature_alpha_dropout], PointwiseRule, fresh=False)
-    functions(
-        [torch.alpha_dropout, torch.feature_alpha_dropout, torch.dropout, torch.feature_dropout],
-        PointwiseRule,
-        fresh=False,
-    )
     functions([torch.rrelu, torch.celu, torch.selu, torch.threshold], PointwiseRule, fresh=True)
     modules([nn.LocalResponseNorm], NormalizeRule, fresh=True)
     functions([F.local_response_norm], NormalizeRule, fresh=True)
@@ -742,6 +775,48 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
         "pow_",
         "multiply_",
         "xlogy_",
+        "addcdiv_",
+        "addcmul_",
+        "atan2_",
+        "arctan2_",
+        "bitwise_and_",
+        "bitwise_left_shift_",
+        "bitwise_not_",
+        "bitwise_or_",
+        "bitwise_right_shift_",
+        "bitwise_xor_",
+        "conj_physical_",
+        "copysign_",
+        "digamma_",
+        "eq_",
+        "float_power_",
+        "gcd_",
+        "ge_",
+        "greater_",
+        "greater_equal_",
+        "gt_",
+        "heaviside_",
+        "hypot_",
+        "i0_",
+        "igamma_",
+        "igammac_",
+        "lcm_",
+        "ldexp_",
+        "le_",
+        "lerp_",
+        "less_",
+        "less_equal_",
+        "lgamma_",
+        "logical_and_",
+        "logical_not_",
+        "logical_or_",
+        "logical_xor_",
+        "logit_",
+        "lt_",
+        "ne_",
+        "nextafter_",
+        "not_equal_",
+        "true_divide_",
     ]
     methods(inplace_math, PointwiseRule, fresh=True)
     functions(

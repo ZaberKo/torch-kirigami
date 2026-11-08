@@ -294,7 +294,7 @@ class DependencyGraph:
         return original
 
     def constant_guards(self) -> tuple[str, ...]:
-        """Return registered integer tensors whose values are analysis preconditions."""
+        """Return paths to registered Tensors whose values guard the analysis."""
         return tuple(ref.paths[0] for ref in self._data.constant_refs)
 
     def affected_operations(self, impact: Impact) -> frozenset[str]:
@@ -345,7 +345,7 @@ class DependencyGraph:
                 tuple(value.detach().cpu().reshape(-1).tolist())
                 != self._data.literal_values[ref.id]
             ):
-                raise StaleGraphError("An integer tensor used as a structural constant changed")
+                raise StaleGraphError(f"Structural constant {ref.paths[0]!r} changed")
 
     def propagate(
         self, *, remove: Iterable[Selection], constraints: Iterable[Constraint] = ()

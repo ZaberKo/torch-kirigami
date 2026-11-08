@@ -24,6 +24,7 @@ from .contracts import (
 )
 from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
 from .operation import Operation, OperatorSpec, TensorFacts, tensors
+from .operators.effects import indexed_write, metadata_read, returned_input, written_inputs
 from .operators.shapes import CallArgumentConstraint, dependencies
 from .registry import OperatorRegistry
 from .relations import AxisRelation
@@ -79,6 +80,7 @@ class _Analyzer:
                 self._by_object[identity] = self._by_object[id(original)]
             self._record_static_metadata(captured.module)
             self.data.constraints.extend(storage_constraints)
+            self._index_write_dependencies(captured)
             self._analyze_nodes(captured)
             self.data.constraints = self._complete_constraints()
             self.data.constants = tuple(
@@ -176,6 +178,35 @@ class _Analyzer:
                     )
                 )
 
+    def _index_write_dependencies(self, captured: CaptureResult) -> None:
+        """Link each use of a Tensor to its latest declared write."""
+        if not any(effects.writes_inputs for effects in captured.effects.values()):
+            return
+        aliases: dict[fx.Node, fx.Node] = {}
+        last_write: dict[fx.Node, fx.Node] = {}
+        for node, effects in captured.effects.items():
+            predecessors = {}
+            for argument in node.all_input_nodes:
+                origin = aliases.get(argument, argument)
+                writer = last_write.get(origin)
+                if writer is not None:
+                    # A write that returns this input with unchanged metadata
+                    # cannot affect the result of a size or dtype read.
+                    if metadata_read(node):
+                        source = returned_input(writer, captured.effects[writer])
+                        if source is not None and aliases.get(source, source) is origin:
+                            continue
+                    predecessors[writer] = None
+            if predecessors:
+                self.data.write_dependencies[node] = tuple(predecessors)
+            source = returned_input(node, effects)
+            if source is not None and isinstance(captured.facts.get(node), TensorFacts):
+                aliases[node] = aliases.get(source, source)
+            if effects.writes_inputs:
+                for source in written_inputs(node, effects):
+                    if isinstance(captured.facts.get(source), TensorFacts):
+                        last_write[aliases.get(source, source)] = node
+
     def _analyze_nodes(self, captured: CaptureResult) -> None:
         """Create structural values and analyze calls in FX topological order."""
         module = captured.module
@@ -237,7 +268,7 @@ class _Analyzer:
             self._analyze_operation(ctx)
 
     def _record_literal(self, ref: TensorRef, value: object) -> None:
-        """Retain small integer constants used by shape and indexing rules."""
+        """Retain small integer and boolean constants for structural rules."""
         if (
             isinstance(value, torch.Tensor)
             and not value.is_floating_point()
@@ -286,6 +317,12 @@ class _Analyzer:
         rule = self.data.registry.lookup(node, ctx.module)
         try:
             if rule is None:
+                if indexed_write(node):
+                    name = getattr(node.target, "__name__", node.target)
+                    raise UnsupportedOperation(
+                        f"Indexed writes have no compact coordinate rule for {name}. "
+                        "Keep the dimensions used by this write fixed."
+                    )
                 raise UnsupportedOperation(f"No semantics registered for {node.target}")
             result = rule.build_spec(ctx)
             if not isinstance(result, OperatorSpec):
@@ -294,7 +331,7 @@ class _Analyzer:
             if any(not ref.paths for ref in result.constants):
                 raise UnsupportedOperation(
                     "Structural constants require registered parameter/buffer value guards; "
-                    "register integer index tensors as buffers"
+                    "register index tensors as buffers"
                 )
             self.data.specs[node.name] = result
             if result.expression is not None:
@@ -375,7 +412,8 @@ class _Analyzer:
 
     def _ancestor_refs(self, node: fx.Node) -> tuple[TensorRef, ...]:
         """Collect upstream tensor references for conservative scalar barriers."""
-        pending, visited, result = list(node.all_input_nodes), set(), []
+        pending = [*node.all_input_nodes, *self.data.write_dependencies.get(node, ())]
+        visited, result = set(), []
         while pending:
             current = pending.pop()
             if current in visited:
@@ -383,6 +421,7 @@ class _Analyzer:
             visited.add(current)
             result.extend(tensors(self._values.get(current)))
             pending.extend(current.all_input_nodes)
+            pending.extend(self.data.write_dependencies.get(current, ()))
         return result
 
     def _validate_spec(self, spec: OperatorSpec) -> None:

@@ -13,6 +13,21 @@ def retained_indices(impact: Impact, axis: AxisRef) -> IndexSet:
     )
 
 
+def expand_index(index: object, rank: int) -> tuple:
+    """Expand ellipsis and trailing slices for indices that consume one axis each."""
+    items = index if isinstance(index, tuple) else (index,)
+    missing = rank - sum(item is not None and item is not Ellipsis for item in items)
+    ellipses = sum(item is Ellipsis for item in items)
+    if ellipses > 1:
+        raise ValueError("Use at most one ellipsis in a bracket index")
+    if missing < 0:
+        raise ValueError(f"Index consumes more axes than the tensor rank of {rank}")
+    full = (slice(None),) * missing
+    if not ellipses:
+        return (*items, *full)
+    return tuple(part for item in items for part in (full if item is Ellipsis else (item,)))
+
+
 def narrow_index(shape: tuple[int, ...], dim: int, start: int, length: int) -> tuple[slice, ...]:
     """Convert narrow's signed start into an equivalent positive Python slice."""
     dim %= len(shape)

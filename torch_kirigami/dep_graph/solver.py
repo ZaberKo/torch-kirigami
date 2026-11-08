@@ -104,6 +104,8 @@ class DependencySolver:
                 elif expression:
                     for ref in expression.refs:
                         direct[ref.id].add(name)
+            for writer in self._data.write_dependencies.get(operation.node, ()):
+                successors[writer.name].add(name)
         tensor_operations = {key: tuple(sorted(names)) for key, names in direct.items()}
         operation_successors = {key: tuple(sorted(names)) for key, names in successors.items()}
         return tensor_operations, operation_successors, tuple(dynamic)

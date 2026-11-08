@@ -272,7 +272,7 @@ The main inspection methods are:
 | `operator_spec(operation)`, `operator_rule(operation)` | Return a call's structural specification or registered rule. Either query can return `None` when that information is absent. |
 | `relations`, `constraints`, `diagnostics`, `shape_expressions` | Inspect the structural facts recorded during build. |
 | `tensor(ref)`, `tensor_bindings()`, `bindings(ref)` | Access live registered tensors or their owner slots after freshness checks. The returned tensors are live objects. |
-| `constants()`, `constant_guards()` | Inspect lifted FX constants and registered integer tensors whose values act as structural premises. |
+| `constants()`, `constant_guards()` | Inspect lifted FX constants and registered Tensors whose values guard structural analysis. |
 | `validate()`, `invalidate()` | Check the source snapshot or explicitly invalidate it. |
 
 `operations()` returns copies of FX nodes and argument containers.
@@ -309,9 +309,9 @@ The graph records eager `stride(dim)`, `stride()`, and `is_contiguous()` reads a
 
 Plain list, tuple, and dictionary attributes can hold tensor references. Capture rejects separate ordinary tensor views into registered storage. Arbitrary custom objects must not hide tensor bindings. Their internal state is outside the fingerprint contract.
 
-Small registered integer tensors can act as structural constants when a rule declares them and capture sees no writes or mutation. The graph guards their values. Register index vectors as buffers when a rule needs their persistent coordinates.
+Small registered integer and boolean tensors can act as structural constants when a rule declares them and capture sees no writes. The graph guards their values. Register index tensors as buffers when a rule needs their persistent coordinates.
 
-The fingerprint checks detectable tensor identities and layouts, module identities and modes, recognized configuration, hooks, and supported ordinary tensor references. It does not hash ordinary parameter values. Registered integer constants declared by rules receive value guards. Rebuild the graph after structural changes, relevant configuration changes, mode changes, or guarded-constant changes.
+The fingerprint checks detectable tensor identities and layouts, module identities and modes, recognized configuration, hooks, and supported ordinary tensor references. It does not hash ordinary parameter values. Rules can declare value guards for registered integer or boolean constants. Rebuild the graph after structural changes, relevant configuration changes, mode changes, or guarded-constant changes.
 
 ## Relations and constraints
 
@@ -323,7 +323,7 @@ Relations describe forced coordinate changes. They are deterministic, monotone, 
 | `BroadcastRelation` | Maps selections through broadcasting. Reverse propagation removes a shared source position only when the query selects every broadcast copy. |
 | `ReshapeRelation` | Maps row-major logical positions between equal-element-count shapes. The operator rule must prove that the captured reshape is valid. The relation does not prove view stride compatibility. |
 | `PermuteRelation` | Maps regions through an explicit axis permutation and its inverse. |
-| `SliceRelation` | Maps normalized integer indexing and positive-step slices. Operator rules expand ellipses and handle inserted axes separately. Advanced indexing is outside this relation. |
+| `SliceRelation` | Maps integer indexing, positive-step slices, and singleton axes inserted by `None`. The operator rule expands an ellipsis before it creates the relation. |
 
 Reshape mapping preserves matching leading and trailing dimensions symbolically.
 Only the changed middle dimensions need conversion through row-major offsets.
@@ -461,11 +461,20 @@ Writes through views still need an alias proof.
 `outputs_are_fresh=True` guarantees that each tensor result has storage independent of inputs, module state, and other outputs.
 It does not guarantee contiguous layout.
 
-Capture uses mutation facts before metadata execution.
-The planner uses allocation facts to check alias safety for compact execution.
-A rule author must describe effects truthfully.
+`aliases_input` names the only argument whose storage a result can share.
+Set `returns_input=True` if the call returns that same Tensor with unchanged storage, shape, strides, dtype, and device.
+Element values can still change.
+For example, `nn.Identity` returns its input, and `Tensor.to(copy=True)` allocates new storage.
 
-An operation can return a view even when it succeeds on the example input. A rule must not claim fresh output unless it guarantees independent storage for all supported calls. The executor still checks downstream consumers and alias relationships before it accepts an in-place path.
+Capture checks which storage a write can reach before it executes the sample.
+Dependency analysis links later reads of the same Tensor to earlier declared writes.
+This includes reads through exact Tensor aliases.
+For example, an in-place addition can affect a later mask that reads the Tensor through its original name.
+Planning follows exact Tensor returns to a fresh allocation.
+It checks other consumers along that path.
+For a value-only write, metadata reads and uses of the same Tensor after the write can pass.
+A view or a copy that depends on layout needs separate proof.
+Each declaration must hold for the original call and supported compact calls.
 
 ## Extending operator semantics
 
@@ -477,7 +486,7 @@ The dependency core does not import the pruning executor.
 
 `Operation` describes one captured call.
 It supplies the FX node, called module, original module paths, graph identity, and capture-time effects.
-It also provides shape expressions, tensor metadata, and small integer constants.
+It also provides shape expressions, tensor metadata, and small integer or boolean constants.
 Inspection copies retain graph ownership.
 
 | Accessor | Meaning |
@@ -488,7 +497,7 @@ Inspection copies retain graph ownership.
 | `argument(name, position, ...)` | A normalized positional or keyword argument. |
 | `raw_argument(name, position, ...)` | The original FX operand, with the same argument resolution rules. |
 
-`build_spec()` returns an `OperatorSpec` with relations, constraints, requirements, candidate axes, layouts, an output contract, a scalar expression, and guarded integer constants.
+`build_spec()` returns an `OperatorSpec` with relations, constraints, requirements, candidate axes, layouts, an output contract, a scalar expression, and guarded constants.
 The graph returns `None` from `operator_spec(operation)` when a call has no structural specification.
 An absent specification differs from an empty specification returned by a rule.
 

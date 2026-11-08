@@ -57,6 +57,7 @@ from torchvision.ops import stochastic_depth
 from tqdm.auto import tqdm
 
 from torch_kirigami import (
+    ArgumentRef,
     AxisRef,
     AxisRelation,
     CaptureError,
@@ -66,6 +67,7 @@ from torch_kirigami import (
     OperatorRegistry,
     OperatorRule,
     OperatorSpec,
+    TensorEffects,
 )
 from torch_kirigami.pruning import (
     Candidate,
@@ -92,10 +94,16 @@ class EvaluationStochasticDepthRule(OperatorRule):
             )
 
     def build_spec(self, operation: Operation) -> OperatorSpec:
-        """Preserve every axis without promising independent output storage."""
+        """Preserve every axis in evaluation mode."""
         x, y = operation.inputs[0], operation.outputs[0]
         return OperatorSpec(
             relations=tuple(AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape)))
+        )
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Return the input Tensor unchanged in evaluation mode."""
+        return TensorEffects(
+            writes_inputs=(), aliases_input=ArgumentRef("input", 0), returns_input=True
         )
 
 

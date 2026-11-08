@@ -16,6 +16,7 @@ from ...errors import UnsupportedOperation
 from ..contracts import ArgumentRef, Diagnostic, ShapeExpr
 from ..operation import Operation, OperatorSpec, PartitionedLayout, argument_locations
 from ..selection import Selection, TensorRef, concatenated_shape
+from .effects import AUGMENTED_BINARY
 
 
 class _PendingLayout(Exception):
@@ -81,7 +82,8 @@ def expression_for(operation: Operation) -> ShapeExpr | None:
         operator.floordiv: "floordiv",
         operator.mod: "mod",
     }
-    if node.op == "call_function" and node.target in arithmetic and not operation.outputs:
+    target = AUGMENTED_BINARY.get(node.target, node.target)
+    if node.op == "call_function" and target in arithmetic and not operation.outputs:
         expressions = []
         for arg in node.args:
             if isinstance(arg, int):
@@ -91,7 +93,7 @@ def expression_for(operation: Operation) -> ShapeExpr | None:
             else:
                 break
         else:
-            expression = ShapeExpr(arithmetic[node.target], args=tuple(expressions))
+            expression = ShapeExpr(arithmetic[target], args=tuple(expressions))
     return expression
 
 
@@ -143,6 +145,12 @@ def reevaluate(
         )
     if isinstance(raw, dict):
         return {k: reevaluate(v, normalized[k], expressions, shape) for k, v in raw.items()}
+    if isinstance(raw, slice):
+        return slice(
+            reevaluate(raw.start, normalized.start, expressions, shape),
+            reevaluate(raw.stop, normalized.stop, expressions, shape),
+            reevaluate(raw.step, normalized.step, expressions, shape),
+        )
     return normalized
 
 
@@ -213,6 +221,10 @@ class CallArgumentConstraint:
             elif isinstance(raw, dict):
                 for key, item in raw.items():
                     visit(item, observed[key])
+            elif isinstance(raw, slice):
+                visit(raw.start, observed.start)
+                visit(raw.stop, observed.stop)
+                visit(raw.step, observed.step)
 
         # Match parameter locations, not expression identity: the same size()
         # node may feed a checked groups argument and an unchecked stride.

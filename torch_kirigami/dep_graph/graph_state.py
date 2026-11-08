@@ -51,14 +51,15 @@ class DependencyGraphState:
         parameters: Original parameter paths mapped to tensor references.
         buffers: Original buffer paths mapped to tensor references.
         expressions: Shape expressions indexed by captured FX nodes.
-        literal_values: Small integer tensor values used as structural constants.
+        literal_values: Small integer or boolean tensor values used as structural constants.
         relations: Structural selection relations between tensor references.
         constraints: Conditions checked after selection propagation.
         requirements: Execution obligations declared by operator rules.
         diagnostics: Build-time conflicts and unresolved analysis results.
         operations: Captured operation contexts indexed by FX node name.
+        write_dependencies: Earlier writes read through exact Tensor aliases.
         specs: Structural specifications indexed by FX node name.
-        constant_refs: Tensor references whose integer values guard the analysis.
+        constant_refs: Tensor references whose values guard the analysis.
         interfaces: IDs of external input and output tensor references.
         constants: Non-registered tensor references and their FX attribute paths.
         complete: Whether construction populated the retained graph state successfully.
@@ -83,6 +84,7 @@ class DependencyGraphState:
     requirements: list[Requirement | AttributeBinding] = field(default_factory=list)
     diagnostics: list[Diagnostic] = field(default_factory=list)
     operations: dict[str, Operation] = field(default_factory=dict)
+    write_dependencies: dict[fx.Node, tuple[fx.Node, ...]] = field(default_factory=dict)
     specs: dict[str, OperatorSpec] = field(default_factory=dict)
     constant_refs: tuple[TensorRef, ...] = ()
     interfaces: set[str] = field(default_factory=set)

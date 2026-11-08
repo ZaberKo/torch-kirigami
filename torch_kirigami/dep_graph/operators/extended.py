@@ -16,7 +16,7 @@ from ..operation import (
     OutputContract,
 )
 from ..relations import ReshapeRelation
-from ..selection import TensorRef
+from .effects import to_copy
 from .native import (
     affine_layouts,
     bind,
@@ -188,12 +188,7 @@ def cast(operation: Operation) -> OperatorSpec:
     x, y = one(operation.argument("input", 0)), one(operation.result)
     copy_output = False
     if operation.node.target == "to":
-        position = (
-            3
-            if len(operation.args) > 1 and isinstance(operation.args[1], (torch.dtype, TensorRef))
-            else 4
-        )
-        copy_output = operation.argument("copy", position, False)
+        copy_output = to_copy(operation.args, operation.kwargs)
         if type(copy_output) is not bool:
             raise UnsupportedOperation("Tensor.to copy must be a static boolean")
     return OperatorSpec(

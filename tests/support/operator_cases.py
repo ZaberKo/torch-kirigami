@@ -4,6 +4,7 @@ Every registry entry has an explicit case family. The registry is only the
 inventory; it never supplies expected axes or removal coordinates.
 """
 
+import operator
 from dataclasses import dataclass, field
 
 import torch
@@ -407,8 +408,40 @@ def callable_case(kind, target):
         "less": "lt",
         "less_equal": "le",
         "not_equal": "ne",
+        "arctan2": "atan2",
     }.get(public_name, public_name)
     x = sample((2, 6, 3))
+    if getattr(target, "__module__", "") == "_operator" and name in {
+        "iadd",
+        "isub",
+        "imul",
+        "itruediv",
+        "ifloordiv",
+        "imod",
+        "ipow",
+        "iand",
+        "ior",
+        "ixor",
+        "ilshift",
+        "irshift",
+    }:
+        if target in (
+            operator.iand,
+            operator.ior,
+            operator.ixor,
+            operator.ilshift,
+            operator.irshift,
+        ):
+            x = sample((2, 6, 3), integer=True)
+        other = torch.full_like(x, 2)
+        return NativeCase((x, other), x, 1, companions=((other, 1, (1,)),))
+    if target is operator.imatmul:
+        public_name = "matmul"
+    if public_name == "copy":
+        other = x + 1
+        return NativeCase((x, other), x, 1, companions=((other, 1, (1,)),))
+    if public_name in {"fill", "zero"}:
+        return NativeCase((x, 2) if public_name == "fill" else (x,), x, 1)
     if public_name in ("acosh", "arccosh", "zeta"):
         x = x + 1.1
     if public_name == "imag":
@@ -456,9 +489,13 @@ def callable_case(kind, target):
             return NativeCase((x,), x, 1, kwargs={"dim": 2})
         if target in (
             torch.dropout,
+            torch.dropout_,
             torch.feature_dropout,
+            torch.feature_dropout_,
             torch.alpha_dropout,
+            torch.alpha_dropout_,
             torch.feature_alpha_dropout,
+            torch.feature_alpha_dropout_,
         ):
             return NativeCase((x, 0.0, False), x, 1)
         kwargs = {"p": 0.0, "training": False} if "dropout" in public_name else {}

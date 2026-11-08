@@ -20,10 +20,14 @@ Examples provide metadata. They do not specialize tensor-dependent Python contro
 | Stage | Result |
 | --- | --- |
 | Capture or metadata execution | Capture raises `CaptureError` and returns no graph. |
-| Operator analysis | Missing semantics create barriers over affected dependencies and remain visible in `graph.diagnostics`. Independent subgraphs remain queryable. Unexpected extension errors are not converted to barriers. |
+| Operator analysis | Missing semantics create barriers over affected dependencies. Read the reasons in `graph.diagnostics`. Independent subgraphs remain queryable. Unexpected extension errors propagate to the caller. |
 | Manual planning | The full request must be executable. Invalid requests raise `PlanningError`. Planning does not drop requested selections. |
 | Automatic planning | The default strategy keeps verified combinations and reports exclusions and search limits. An unmet target raises before mutation. Search limits do not prove mathematical infeasibility. |
 | Application | Application checks the model and plan again. It does not choose a new candidate set. |
+
+Kirigami records structural barriers without emitting a warning.
+Use `graph.diagnostics` to inspect them even when the requested pruning stays in another branch.
+Use `plan.selection_report.exclusions` to inspect candidate exclusions from a successful automatic plan.
 
 Unknown operations can use input values as indices or sizes. Their barriers can therefore reach data ancestors across branches. Shared parameters and residual joins can also connect branches. An unsupported operation is not a fixed box that permits unrestricted upstream pruning.
 
@@ -43,6 +47,11 @@ Capture rejects empty tensor examples and results.
 
 Capture rejects forward hooks, unsupported registration callbacks, undeclared parameter writes, unsupported storage, and metadata values that it cannot represent.
 It also rejects inputs or buffers that share storage with parameters.
+
+Capture preserves Tensor writes such as `x += y`, `x[idx] = y`, and `x[idx] += y`.
+Capture rejects Tensor attribute assignment and deletion.
+Indexed writes can execute on isolated data during capture.
+They create a structural barrier when compact coordinates have no rule.
 
 Input and buffer isolation preserves lazy conjugate flags and supported shared storage.
 The current copy path rejects lazy negative views because it cannot preserve their flags and aliases.
@@ -73,7 +82,7 @@ Promoting the parameter-update warning to an error stops metadata execution befo
 
 Some Python tests can run on FX proxies without leaving a graph node. Tensor identity checks, `isinstance(x, torch.Tensor)`, and runtime-state tests such as `x.grad is None` can silently select a branch. Capture does not guarantee an error for every such case. Treat models with these decisions as outside the current contract.
 
-The graph checks detectable structure, tensor identity and layout, module modes, recognized configuration, supported ordinary tensor references, and guarded integer constants. It does not hash ordinary weight values. Rebuild after structural or relevant configuration changes. Recreate optimizers after nonempty pruning because affected parameters become new objects. Optimizer-state migration is not implemented.
+The graph checks detectable structure, tensor identity and layout, module modes, recognized configuration, supported ordinary tensor references, and guarded structural constants. It does not hash ordinary weight values. Rebuild after structural or relevant configuration changes. Recreate optimizers after nonempty pruning because affected parameters become new objects. Optimizer-state migration is not implemented.
 
 ## Structural support
 
@@ -103,6 +112,16 @@ When strides are unknown, accept a view only if it works for every legal input s
 
 Use `size(dim)` when Python needs one changing dimension. A whole-shape read guards the full shape because later Python indexing is outside FX. Reshape and view arguments need supported dimension provenance, fixed algorithmic constants, or valid inferred dimensions. Shape inference alone does not prove axis identity.
 
+## In-place operations
+
+A value-only write can use a fresh temporary Tensor.
+The proof can follow calls that return that Tensor unchanged in storage and metadata.
+For example, a chain of `nn.Identity` calls can connect a convolution to `ReLU(inplace=True)`.
+Earlier data consumers and operations with uncertain storage sharing can prevent this proof.
+Earlier size reads and later uses of the same Tensor can pass.
+If the proof fails, the error names the value that the writer can reach.
+For an earlier consumer, the error also names that consumer.
+
 ## Adaptations
 
 The model author makes an adaptation, then builds a new graph.
@@ -112,9 +131,8 @@ The model author makes an adaptation, then builds a new graph.
 | A view merges axes without a layout proof | Use `reshape(...)` or `contiguous().view(...)`. | Preserve shape and element order. Copying can change alias behavior. |
 | A reshape size encodes a changing feature width | Use `size(dim)`, supported integer arithmetic, or valid `-1` inference. | Keep algorithmic constants fixed. |
 | Python reads a whole shape but uses one changing dimension | Read that dimension with `size(dim)`. | Any Python decision that uses it must remain valid after compaction. |
-| Indexing inserts a new axis with `None` | Use `unsqueeze(dim)` separately. | Remaining indexing must still use supported semantics. |
 | In-place behavior lacks an alias and consumer proof | Use an out-of-place call when appropriate. | No consumer may depend on mutation through an alias. |
-| `index_select` uses an unregistered constant vector | Register the integer vector as a buffer. | The vector must be static, one-dimensional, and unchanged. |
+| Bracket indexing or `index_select` uses an unregistered index Tensor | Register the index Tensor as a buffer. | Keep the index one-dimensional and its values fixed. See [bracket indexing](operator-support.md#bracket-indexing) for supported types. |
 | A hook supplies forward behavior | Represent that behavior in `forward` or a declared module boundary. | Preserve required computation and gradient behavior. |
 
 An explicit operator rule can describe a third-party operation. Opaque registration creates a capture boundary, but it does not prove internal mathematics, alias behavior, or output strides. The extension author must provide those proofs and the required lowering. See the [operator extension contract](operator-support.md#implementing-an-operator-rule).
