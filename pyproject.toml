@@ -10,7 +10,7 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
-dependencies = ["torch>=2.6"]
+dependencies = ["torch>=2.6", "torch-prisma>=0.1.0"]
 keywords = [
     "pytorch",
     "pruning",

@@ -6,10 +6,10 @@ from dataclasses import replace
 import pytest
 import torch
 from torch import nn
+from torch_prisma import count_parameters
 
 from tests.support.pruning import KeyStrategy, StaticMetric
 from torch_kirigami import DependencyGraph, Divisible
-from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,

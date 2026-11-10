@@ -7,8 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.flop_counter import flop_registry
-
-from torch_kirigami.measurement import ModelComplexity, calculate_model_complexity
+from torch_prisma import ModelComplexity, calculate_model_complexity
 
 
 def test_default_uncovered_ops_dictionaries_are_not_shared():
@@ -26,8 +25,8 @@ def test_uncovered_ops_are_sorted_unique_and_independent(execution_device):
             # unique names, while recording the two counting conventions separately.
             return F.gelu(x), F.gelu(x), torch.lgamma(x)
 
-    first = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
-    second = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    first = calculate_model_complexity(Model(), torch.ones(2, 4))
+    second = calculate_model_complexity(Model(), torch.ones(2, 4))
     assert first.uncovered_ops == {"macs": (), "flops": ("aten::gelu", "aten::lgamma")}
     assert json.loads(json.dumps(first.uncovered_ops)) == {
         "macs": [],
@@ -59,7 +58,7 @@ def test_nominal_arithmetic_formulas(operation, expected, execution_device):
         def forward(self, x):
             return operation(x)
 
-    result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 4))
     assert result.flops == expected
     assert result.macs == 0
     assert result.uncovered_ops["flops"] == ()
@@ -83,7 +82,8 @@ def test_normalization_counts_explicit_arithmetic(kind, affine, execution_device
         model = nn.BatchNorm1d(4, affine=affine)
         # Four variance adjustments and rsqrts, then 24 subtracts and multiplies.
         expected = 56 + (48 if affine else 0)
-    result = calculate_model_complexity(model, x, device=execution_device)
+    model.eval()
+    result = calculate_model_complexity(model, x)
     assert result.flops == expected
     assert result.macs == 0
     assert result.uncovered_ops["flops"] == ()
@@ -94,7 +94,7 @@ def test_flop_coverage_is_separate_from_mac_coverage(execution_device):
         def forward(self, x):
             return torch.special.gammaln(x)
 
-    result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 4))
     assert result.macs == result.flops == 0
     assert result.uncovered_ops["macs"] == ()
     assert "aten::lgamma" in result.uncovered_ops["flops"]
@@ -123,17 +123,17 @@ def test_invalid_non_mac_formula_fails_before_aggregation(count, monkeypatch, ex
     buffer = model.state
     fastpath = torch.backends.mha.get_fastpath_enabled()
     with pytest.raises(ValueError, match="nonnegative integer FLOP count"):
-        calculate_model_complexity(model, torch.ones(2, 4), device=execution_device)
+        calculate_model_complexity(model, torch.ones(2, 4))
     assert calls == [1]
     assert model.training and model.state is buffer
-    assert buffer.item() == 0
+    assert buffer.item() == 1
     assert torch.backends.mha.get_fastpath_enabled() == fastpath
 
 
 def test_valid_external_flops_remain_python_integers(monkeypatch, execution_device):
     huge = 10**30 + 1
     monkeypatch.setitem(flop_registry, torch.ops.aten.relu, lambda *args, **kwargs: huge)
-    result = calculate_model_complexity(nn.ReLU(), torch.ones(2, 4), device=execution_device)
+    result = calculate_model_complexity(nn.ReLU(), torch.ones(2, 4))
     assert type(result.flops) is int and result.flops == huge
     assert result.macs == 0
     assert not result.uncovered_ops["flops"]
@@ -168,7 +168,7 @@ def test_raw_convolution_signatures_and_bias(benchmark, bias, execution_device):
         rtol=1e-4,
         atol=1e-4,
     )
-    result = calculate_model_complexity(model, x, device=execution_device)
+    result = calculate_model_complexity(model, x)
     macs = 2 * 6 * 4 * 5 * (4 // groups) * 9
     assert result.macs == macs
     assert result.flops == 2 * macs + (2 * 6 * 4 * 5 if bias else 0)
@@ -182,9 +182,7 @@ def test_integer_work_does_not_become_floating_point_work(execution_device):
 
     # CUDA int64 GEMM is not generally available; integer pointwise work is.
     macs = 0 if execution_device == "cuda" else 8
-    result = calculate_model_complexity(
-        Model(), torch.ones(2, 2, dtype=torch.int64), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), torch.ones(2, 2, dtype=torch.int64))
     assert result.flops == 0
     assert result.macs == macs
 
@@ -194,7 +192,7 @@ def test_training_statistics_remain_explicitly_uncovered(execution_device):
         def forward(self, x):
             return F.batch_norm(x, None, None, training=True)
 
-    result = calculate_model_complexity(Model(), torch.randn(2, 4, 3), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.randn(2, 4, 3))
     assert any("batch_norm" in op for op in result.uncovered_ops["flops"])
 
 
@@ -203,9 +201,7 @@ def test_complex_abs_does_not_claim_a_real_scalar_formula(execution_device):
         def forward(self, x):
             return x.abs()
 
-    result = calculate_model_complexity(
-        Model(), torch.ones(2, 4, dtype=torch.complex64), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), torch.ones(2, 4, dtype=torch.complex64))
     assert result.flops == 0
     assert "aten::abs" in result.uncovered_ops["flops"]
 
@@ -232,7 +228,7 @@ def test_complex_products_preserve_logical_macs_without_real_flop_conversion(
         a = torch.ones(2, 4, dtype=torch.complex64)
         b = torch.ones((3, 4) if form == "linear" else (4, 3), dtype=torch.complex64)
         macs = 24
-    result = calculate_model_complexity(Model(), (a, b), device=execution_device)
+    result = calculate_model_complexity(Model(), (a, b))
     assert result.macs == macs
     assert result.flops == 0
     assert result.uncovered_ops["flops"]
@@ -244,9 +240,7 @@ def test_uncovered_complex_product_keeps_other_known_real_flops(execution_device
         def forward(self, x):
             return x @ x, x.real.square().sum()
 
-    result = calculate_model_complexity(
-        Model(), torch.ones(2, 2, dtype=torch.complex64), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), torch.ones(2, 2, dtype=torch.complex64))
     assert result.macs == 8
     assert result.flops == 7  # Four real squares and three reduction additions.
     assert "aten::mm" in result.uncovered_ops["flops"]

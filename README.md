@@ -29,12 +29,13 @@ a structural change propagates through a model.
   restore them using the original model definition.
 - **Custom operators:** extend analysis and pruning through explicit operator
   rules, including fused attention blocks.
-- **Model measurement:** inspect parameter counts, supported MACs, and measured
-  inference latency, including compiled execution.
+- **Model measurement:** use Torch Prisma for parameter counts, MACs, FLOPs,
+  and inference latency, including compiled execution.
 
 ## Installation
 
-Requires **Python 3.10+** and **PyTorch 2.6+**. PyTorch is the only runtime dependency.
+Requires **Python 3.10+** and **PyTorch 2.6+**.
+Runtime dependencies are PyTorch and [Torch Prisma](https://github.com/ZaberKo/torch-prisma).
 
 Install from [PyPI](https://pypi.org/project/torch-kirigami/) with uv:
 

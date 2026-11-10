@@ -9,7 +9,7 @@ Three modules provide shared infrastructure:
 
 - `imagenet_data.py` loads local data and evaluates accuracy.
 - `imagenet_models.py` loads official weights and supplies ViT adapters.
-- `model_metrics.py` measures complexity and inference latency.
+- `model_metrics.py` uses Torch Prisma to measure complexity and inference latency.
 
 ## Prepare the environment and data
 
@@ -146,8 +146,11 @@ Option names use underscores and do not accept abbreviations.
 
 Isomorphic has separate calibration batch controls, with a default batch size of 64.
 Training, accuracy evaluation, and MAC counting remain eager.
-Latency excludes compilation, its first invocation, input transfer, and warmup.
+Latency excludes compilation preparation and warmup. The workflow prepares the model and input on the selected device before measurement.
 Compilation errors propagate instead of silently selecting eager execution.
+Measurement temporarily selects evaluation mode and restores each module's previous mode, including after failure.
+Other forward side effects persist, including input or buffer writes and random-number consumption.
+See the [measurement guide](../../docs/measurement.md) for the Torch Prisma API and execution contract.
 
 CUDA runs still use CPU work for graph analysis, image decoding, and compilation.
 Progress bars identify the current stage and device.

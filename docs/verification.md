@@ -24,8 +24,9 @@ The namespace guard reports newly visible names.
 Public lifecycle tests separately check mathematical, functional, coordinate, and Fourier families on CPU and CUDA.
 The inventory records unregistered entries too. A direct rule still does not establish every overload.
 
-The [measurement inventory script](../experiments/measurement_surface_audit.py) also enumerates registered ATen overloads.
-Measurement tests separately check counting formulas, deliberate exclusions, partial counts, and state isolation.
+Torch Prisma supplies the counting implementation.
+Kirigami does not maintain a separate measurement inventory or inspect Prisma's internal formula declarations.
+Measurement tests separately check counting formulas, deliberate exclusions, partial counts, and pruning integration with Torch Prisma.
 Successful execution alone does not establish complete MAC or FLOP coverage.
 
 ## Representative test areas
@@ -35,7 +36,7 @@ The [test organization guide](../tests/README.md) defines directory ownership. U
 - `tests/dep_graph/` covers coordinates, constraints, propagation, and freshness. Its `capture/` and `operators/` directories cover capture and operator contracts.
 - `tests/pruning/` and `tests/persistence/` cover selection, budgets, plans, application, and checkpoints.
 - `tests/sparsity/` and lifecycle tests cover sparse losses, gates, projections, and iterative budgets.
-- `tests/measurement/` covers complexity, latency, and measurement isolation.
+- `tests/measurement/` covers complexity, latency, and pruning integration with Torch Prisma.
 - `tests/workflows/` covers executable examples and their shared infrastructure.
 - `tests/integration/` covers composed networks and contracts that span independent features.
 

@@ -66,10 +66,10 @@ from model_metrics import measure_model
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, RandomSampler
+from torch_prisma import count_parameters
 from tqdm.auto import tqdm
 
 from torch_kirigami import DependencyGraph, Operation
-from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
     Granularity,
     ParameterBudget,

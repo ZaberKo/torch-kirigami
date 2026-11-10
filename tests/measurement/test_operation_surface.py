@@ -5,9 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.flop_counter import flop_registry
-
-from torch_kirigami.measurement import calculate_model_complexity
-from torch_kirigami.measurement.formulas import MAC_FORMULAS, is_native_pointwise
+from torch_prisma import calculate_model_complexity
 
 
 @torch.library.custom_op("kirigami_measurement::square", mutates_args=())
@@ -41,11 +39,12 @@ def test_unary_spellings_share_counts(name, form, execution_device):
             return getattr(x, name + ("_" if form == "inplace" else ""))()
 
     sample = torch.ones(2, 3)
-    result = calculate_model_complexity(Model(), sample, device=execution_device)
+    result = calculate_model_complexity(Model(), sample)
     assert result.flops == 6
     assert result.macs == 0
     assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
-    torch.testing.assert_close(sample, torch.ones(2, 3))
+    expected = getattr(torch, name)(torch.ones(2, 3)) if form == "inplace" else torch.ones(2, 3)
+    torch.testing.assert_close(sample, expected)
 
 
 @pytest.mark.parametrize(
@@ -61,7 +60,7 @@ def test_binary_spellings_share_counts(name, form, execution_device):
                 return getattr(torch, name)(x, 2, out=torch.empty_like(x))
             return getattr(x, name + ("_" if form == "inplace" else ""))(2)
 
-    result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 3))
     assert result.flops == 6
     assert result.macs == 0
     assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
@@ -75,9 +74,7 @@ def test_scaled_elementwise_product(name, inplace, value, execution_device):
         def forward(self, x, y):
             return getattr(x, name + ("_" if inplace else ""))(x, y, value=value)
 
-    result = calculate_model_complexity(
-        Model(), (torch.ones(2, 3), torch.ones(3)), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), (torch.ones(2, 3), torch.ones(3)))
     assert result.flops == 6 * (2 if value == 1 else 3)
     assert result.macs == 0
     assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
@@ -95,7 +92,7 @@ def test_biased_matrix_spellings(name, inplace, alpha, beta, execution_device):
     bias_shape = (5, 2, 4) if name == "baddbmm" else (2, 4)
     a, b = torch.ones(*batch_shape, 2, 3), torch.ones(*batch_shape, 3, 4)
     bias = torch.ones(bias_shape)
-    result = calculate_model_complexity(Model(), (bias, a, b), device=execution_device)
+    result = calculate_model_complexity(Model(), (bias, a, b))
     macs = 2 * 3 * 4 * (1 if name == "addmm" else 5)
     extras = {(1, 1): 1, (2, 3): 3, (1, 0): 0}[alpha, beta]
     assert result.macs == macs
@@ -112,7 +109,7 @@ def test_hidden_arithmetic_is_not_covered_by_another_call(include_visible, execu
             hidden = torch.deg2rad(x)
             return (hidden, x * x) if include_visible else hidden
 
-    result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 3))
     assert result.flops == (6 if include_visible else 0)
     assert "aten::deg2rad" in result.uncovered_ops["flops"]
     assert "aten::mul" in result.uncovered_ops["flops"]
@@ -126,7 +123,7 @@ def test_softmax_and_safe_softmax_are_both_counted(safe, execution_device):
             return (plain, torch.ops.aten._safe_softmax(x, -1)) if safe else plain
 
     # Four subtractions, four exponentials, three additions, four divisions per row.
-    result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 4))
     assert result.flops == 30 * (2 if safe else 1)
     assert result.uncovered_ops["flops"] == result.uncovered_ops["macs"] == ()
 
@@ -149,7 +146,7 @@ def test_raw_efficient_attention_uses_sequence_before_heads(key_length, executio
         q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
     ).transpose(1, 2)
     torch.testing.assert_close(Model()(q, k, v), reference, atol=1e-5, rtol=1e-5)
-    result = calculate_model_complexity(Model(), (q, k, v), device=execution_device)
+    result = calculate_model_complexity(Model(), (q, k, v))
     assert result.macs == 2 * 4 * 3 * key_length * (8 + 16)
     assert result.flops == 2 * result.macs
     assert result.uncovered_ops["macs"] == ()
@@ -177,7 +174,7 @@ def test_custom_namespace_formula_covers_its_own_call(monkeypatch, execution_dev
     monkeypatch.setitem(
         flop_registry, torch.ops.kirigami_measurement.square, lambda x, **kwargs: x.numel()
     )
-    result = calculate_model_complexity(Model(), torch.ones(2, 3), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 3))
     assert result.flops == 6
     assert result.uncovered_ops["flops"] == ()
     # A user FLOP formula does not define how to convert arbitrary work to MACs.
@@ -191,9 +188,7 @@ def test_native_backward_formula_retains_its_partial_coverage(execution_device):
                 x, x, w, [1], [1], [0], [1], False, [0], 1, [True, False, True]
             )
 
-    result = calculate_model_complexity(
-        Model(), (torch.ones(1, 1, 3), torch.ones(1, 1, 1)), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), (torch.ones(1, 1, 3), torch.ones(1, 1, 1)))
     # The native formula counts input gradients but omits the bias reduction.
     assert result.flops == 6
     assert "aten::convolution_backward" in result.uncovered_ops["flops"]
@@ -206,9 +201,7 @@ def test_static_split_indices_do_not_require_a_host_tensor(execution_device):
             assert x.device.type == execution_device
             return torch.tensor_split(x, indices, dim=-1)
 
-    result = calculate_model_complexity(
-        Model(), (torch.ones(2, 6), [2, 4]), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), (torch.ones(2, 6), [2, 4]))
     assert result.flops == result.macs == 0
 
 
@@ -219,21 +212,10 @@ def test_native_pointwise_tags_exclude_macs_without_inventing_flops(name, execut
             operation = getattr(torch.ops.aten, name).default
             return operation(x) if name == "special_bessel_j0" else operation(x, x)
 
-    assert is_native_pointwise(f"aten::{name}")
-    result = calculate_model_complexity(Model(), torch.ones(2, 4), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(2, 4))
     assert result.macs == result.flops == 0
     assert result.uncovered_ops["macs"] == ()
     assert f"aten::{name}" in result.uncovered_ops["flops"]
-
-
-def test_pointwise_metadata_does_not_classify_contractions_or_custom_ops():
-    assert all(not is_native_pointwise(name) for name in MAC_FORMULAS)
-    assert not is_native_pointwise("kirigami_measurement::square")
-    assert not is_native_pointwise("aten::not_a_registered_operation")
-    assert not is_native_pointwise("aten::__dict__")
-    # cos includes untagged scalar overloads. Do not extend a tensor overload's
-    # tag to a whole packet unless every overload declares the same property.
-    assert not is_native_pointwise("aten::cos")
 
 
 @pytest.mark.parametrize("dimensions", [1, 2, 3])
@@ -244,9 +226,7 @@ def test_forward_max_pooling_is_comparison_and_selection(dimensions, adaptive, e
             prefix = "adaptive_max_pool" if adaptive else "max_pool"
             return getattr(F, f"{prefix}{dimensions}d")(x, 2, return_indices=True)
 
-    result = calculate_model_complexity(
-        Model(), torch.randn(2, 3, *([6] * dimensions)), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), torch.randn(2, 3, *([6] * dimensions)))
     assert result.flops == result.macs == 0
     assert result.uncovered_ops == {"macs": (), "flops": ()}
 
@@ -263,6 +243,6 @@ def test_coordinate_and_padding_operations_have_no_arithmetic(operation, executi
                 return torch.channel_shuffle(x, 2)
             return getattr(F, operation)(x, 2)
 
-    result = calculate_model_complexity(Model(), torch.randn(2, 4, 6, 6), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.randn(2, 4, 6, 6))
     assert result.flops == result.macs == 0
     assert result.uncovered_ops == {"macs": (), "flops": ()}

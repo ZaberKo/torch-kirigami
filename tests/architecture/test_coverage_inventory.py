@@ -7,10 +7,8 @@ import json
 from pathlib import Path
 
 import torch_kirigami
-import torch_kirigami.measurement
 import torch_kirigami.pruning
 import torch_kirigami.sparsity
-from experiments.measurement_surface_audit import inventory as measurement_surface_inventory
 from experiments.operator_surface_audit import inventory as operator_surface_inventory
 from torch_kirigami import OperatorRegistry
 
@@ -32,27 +30,6 @@ def test_public_torch_surface_has_no_unreviewed_names():
     assert not current - reviewed, f"Review newly visible PyTorch entries: {current - reviewed}"
 
 
-def test_measurement_surface_has_no_unreviewed_names_or_overloads():
-    recorded = json.loads((ROOT / "experiments/measurement_surface_results.json").read_text())
-    minimum = recorded["minimum_environment"]
-    current = measurement_surface_inventory()
-    for namespace, names in current["public_entries"].items():
-        reviewed = set(recorded["public_entries"][namespace]) | set(
-            minimum["public_entries_only_in_minimum"][namespace]
-        )
-        assert not set(names) - reviewed, (namespace, set(names) - reviewed)
-    properties = set(recorded["tensor_properties"]) | set(minimum["properties_only_in_minimum"])
-    assert not set(current["tensor_properties"]) - properties
-    reviewed = {row["name"]: set(row["overloads"]) for row in recorded["aten_packets"]}
-    for name, overloads in minimum["aten_overloads_only_in_minimum"].items():
-        reviewed.setdefault(name, set()).update(overloads)
-    for row in current["aten_packets"]:
-        additions = set(row["overloads"]) - reviewed.get(row["name"], set())
-        assert not additions, (row["name"], additions)
-    # This guard requires an explicit review of new names. It does not claim
-    # numerical coverage for all the recorded operators or overloads.
-
-
 def test_every_export_and_internal_class_has_contract_test_links():
     inventory = json.loads((ROOT / "tests/architecture/contract_inventory.json").read_text())
     rows = inventory["objects"]
@@ -64,7 +41,6 @@ def test_every_export_and_internal_class_has_contract_test_links():
             torch_kirigami,
             torch_kirigami.pruning,
             torch_kirigami.sparsity,
-            torch_kirigami.measurement,
         )
         for name in module.__all__
     }

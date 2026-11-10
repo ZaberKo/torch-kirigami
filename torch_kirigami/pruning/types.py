@@ -9,6 +9,7 @@ from fractions import Fraction
 from typing import Literal, Protocol, TypeVar
 
 import torch
+from torch_prisma import count_parameters
 
 from ..configuration import FrozenDict, FrozenList, FrozenScalar
 from ..dep_graph.contracts import Impact
@@ -21,7 +22,6 @@ from ..dep_graph.selection import (
     resolve_reference,
 )
 from ..errors import KirigamiError
-from ..measurement import count_parameters
 from ..settings import config
 
 

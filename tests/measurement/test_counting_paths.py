@@ -4,8 +4,7 @@ import pytest
 import torch
 from torch import nn
 from torch.utils.flop_counter import flop_registry
-
-from torch_kirigami.measurement import calculate_model_complexity
+from torch_prisma import calculate_model_complexity
 
 
 @pytest.mark.parametrize("mode", [torch.enable_grad, torch.no_grad, torch.inference_mode])
@@ -110,7 +109,7 @@ def test_vector_products_have_consistent_dense_counts(form, width, execution_dev
     a = torch.randn(width) if vector else torch.randn(3, width)
     b = torch.randn(width)
     registry = dict(flop_registry)
-    result = calculate_model_complexity(Model(), (a, b), device=execution_device)
+    result = calculate_model_complexity(Model(), (a, b))
     assert result.macs == width * (1 if vector else 3)
     assert result.flops == 2 * result.macs + (9 if form in ("addmv", "addmv_") else 0)
     assert result.uncovered_ops["macs"] == ()
@@ -123,9 +122,7 @@ def test_einsum_counts_exposed_matrix_work(width, expected, execution_device):
         def forward(self, a, b):
             return torch.einsum("i,i->", a, b)
 
-    result = calculate_model_complexity(
-        Model(), (torch.ones(width), torch.ones(width)), device=execution_device
-    )
+    result = calculate_model_complexity(Model(), (torch.ones(width), torch.ones(width)))
     # PyTorch simplifies the singleton contraction into elementwise multiply.
     # This counter excludes that work. It does not reconstruct symbolic MACs.
     assert result.macs == expected
@@ -141,6 +138,6 @@ def test_known_zero_mac_calls_do_not_report_missing_coverage(execution_device):
         def forward(self, x):
             return torch.special.gammaln(self.linear(x).abs() + 1)
 
-    result = calculate_model_complexity(Model(), torch.ones(4), device=execution_device)
+    result = calculate_model_complexity(Model(), torch.ones(4))
     assert result.macs == 12
     assert result.uncovered_ops["macs"] == ()

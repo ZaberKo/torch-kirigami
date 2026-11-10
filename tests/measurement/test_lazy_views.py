@@ -4,9 +4,9 @@ import pytest
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch_prisma import calculate_model_complexity, measure_module_latency
 
 from torch_kirigami import CaptureError, DependencyGraph
-from torch_kirigami.measurement import calculate_model_complexity, measure_module_latency
 from torch_kirigami.pruning import Pruner
 
 
@@ -21,8 +21,7 @@ class Projection(nn.Module):
 
 
 @pytest.mark.parametrize("source", ["input", "buffer"])
-@pytest.mark.parametrize("entry", ["capture", "complexity", "latency"])
-def test_lazy_negative_view_copy_rejection_preserves_state(source, entry, execution_device):
+def test_lazy_negative_view_copy_rejection_preserves_state(source, execution_device):
     base = torch.full((4,) if source == "buffer" else (2, 4), 1 + 2j, dtype=torch.complex64)
     lazy = base.conj().imag
     cache = lazy if source == "buffer" else torch.zeros(4, dtype=lazy.dtype)
@@ -32,12 +31,7 @@ def test_lazy_negative_view_copy_rejection_preserves_state(source, entry, execut
     before = lazy.clone()
     rng = torch.get_rng_state()
     with pytest.raises(CaptureError, match="lazy conjugate/negative view flags"):
-        if entry == "capture":
-            DependencyGraph.build(model, args=(x,))
-        elif entry == "complexity":
-            calculate_model_complexity(model, x, device=execution_device)
-        else:
-            measure_module_latency(model, x, device=execution_device, warmup=0, repetitions=1)
+        DependencyGraph.build(model, args=(x,))
     assert model.cache is saved_cache and model.training and model.proj.training
     assert lazy.is_neg()
     torch.testing.assert_close(lazy, before)
@@ -59,9 +53,11 @@ def test_conjugate_input_buffer_aliases_survive_both_measurements(execution_devi
     x = torch.full((2, 4), 1 + 2j, dtype=torch.complex64)
     model = Model(x)
     cache = model.cache
-    result = calculate_model_complexity(model, x, device=execution_device)
+    result = calculate_model_complexity(model, x)
     assert result.flops == 0 and "aten::add" in result.uncovered_ops["flops"]
-    measure_module_latency(model, x, device=execution_device, warmup=0, repetitions=1)
+    measure_module_latency(
+        model, x, device=execution_device, warmup=0, repetitions=1, compile=False
+    )
     assert model.cache is cache and cache.is_conj()
     torch.testing.assert_close(model(x), torch.full_like(x, 2))
 
@@ -74,7 +70,7 @@ def test_materialized_views_support_measurement_capture_and_pruning(kind, source
     value = lazy.resolve_conj().resolve_neg()
     model = Projection(value if source == "buffer" else torch.zeros(4, dtype=value.dtype))
     x = value if source == "input" else torch.ones(2, 4, dtype=value.dtype)
-    result = calculate_model_complexity(model, x, device=execution_device)
+    result = calculate_model_complexity(model, x)
     assert result.macs == 24
     graph = DependencyGraph.build(model, args=(x,))
     expected = F.linear(

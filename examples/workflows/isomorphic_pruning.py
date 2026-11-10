@@ -56,6 +56,7 @@ from imagenet_models import MODELS, make_model
 from model_metrics import measure_model
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from torch_prisma import count_parameters
 from tqdm.auto import tqdm
 
 from torch_kirigami import (
@@ -77,7 +78,6 @@ from torch_kirigami import (
 from torch_kirigami.dep_graph.eligibility import has_native_semantics
 from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
 from torch_kirigami.dep_graph.selection import gather_region
-from torch_kirigami.measurement import count_parameters
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,

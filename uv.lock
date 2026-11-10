@@ -848,6 +848,7 @@ version = "0.2.4"
 source = { editable = "." }
 dependencies = [
     { name = "torch" },
+    { name = "torch-prisma" },
 ]
 
 [package.dev-dependencies]
@@ -860,13 +861,28 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "torch", specifier = ">=2.6" }]
+requires-dist = [
+    { name = "torch", specifier = ">=2.6" },
+    { name = "torch-prisma", specifier = ">=0.1.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "numpy", specifier = ">=1.26" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.12" },
+]
+
+[[package]]
+name = "torch-prisma"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/28/6d/7aa8f27948c20498a891cdd40992785b4be5697fee35d1f969b7fccb033d/torch_prisma-0.1.0.tar.gz", hash = "sha256:9b75d401e716b0762def4236edca375bafad1df484aa232423c5b4bef72947ab", size = 21174, upload-time = "2026-11-09T18:49:50.684Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/2e/988f83a44cce77edb2e149f5adbab1d7f2e6ab3760a679d54d5957ce7533/torch_prisma-0.1.0-py3-none-any.whl", hash = "sha256:1ba29157f2dedce4149621092a7af9d7d29a1216a07c8b6ebd1e909c88ee0c90", size = 15572, upload-time = "2026-11-09T18:49:49.595Z" },
 ]
 
 [[package]]

@@ -156,7 +156,11 @@ Live reads and write preparation still check the complete snapshot.
 Commit checks the snapshot again.
 Regularizer calls still inspect the live graph and current parameter values.
 
-Measurement reports parameter counts, theoretical FLOPs and MACs, and inference latency.
+Torch Prisma supplies parameter counts, theoretical FLOPs and MACs, and inference latency.
+The pruning package uses its parameter counter for ratio-based parameter budgets.
+The workflow adapter selects evaluation mode and restores each module's previous mode.
+Measurement forward calls can change inputs, buffers, weights, and random-number state.
+See the [measurement guide](measurement.md) for ownership and execution contracts.
 Task accuracy requires separate evaluation with task data.
 Fewer parameters or MACs do not guarantee lower latency or preserved accuracy.
 

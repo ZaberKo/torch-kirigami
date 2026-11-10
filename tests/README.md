@@ -13,7 +13,7 @@ Use `integration/` when a scenario spans several independent feature contracts.
 | `pruning/` | Candidate discovery, metrics, strategies, budgets, recipes, and application. |
 | `persistence/` | Portable plans, checkpoints, registration identity, and restoration. |
 | `sparsity/` | Regularizers, gates, coordinate reuse, projections, and transactional writes. |
-| `measurement/` | Complexity, latency, input transfer, and measurement isolation. |
+| `measurement/` | Torch Prisma counting contracts and integration with pruning and latency. |
 | `workflows/` | Executable examples, research methods, ImageNet infrastructure, and CLI contracts. |
 | `integration/` | Composed networks, multiple pruning rounds, and shared lifecycle assumptions. |
 | `support/` | Explicitly imported model factories, numerical references, and rule helpers. |
