@@ -6,9 +6,9 @@ Use the [ImageNet workflows](https://github.com/ZaberKo/torch-kirigami/blob/main
 
 ```mermaid
 flowchart LR
-    model["Model + inputs"] --> graph["Build graph"]
-    graph --> impact["Inspect impact"]
-    graph --> plan["Plan removal"]
+    model["Model + inputs"] --> dependency["Build graph"]
+    dependency --> impact["Inspect impact"]
+    dependency --> plan["Plan removal"]
     impact -. informs .-> plan
     plan --> apply["Apply plan"] --> compact["Compact model"]
 ```

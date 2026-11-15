@@ -14,7 +14,7 @@ plans to the original `nn.Module`.
 Use it for automatic model pruning, custom pruning algorithms, or inspecting how
 a structural change propagates through a model.
 
-[Quick start](#quick-start) · [Documentation](docs/index.md) · [ImageNet examples](examples/workflows/README.md) · [Development](docs/development/index.md)
+[Documentation](https://torch-kirigami.readthedocs.io/) · [ImageNet examples](examples/workflows/README.md)
 
 ## Features
 
@@ -46,7 +46,7 @@ uv pip install --torch-backend=auto torch-kirigami
 ```
 
 For an editable installation and development tools, see the
-[development guide](docs/development/index.md). ImageNet examples have additional
+[development guide](https://torch-kirigami.readthedocs.io/en/latest/development/). ImageNet examples have additional
 dependencies listed in the [workflow guide](examples/workflows/README.md).
 
 ## Quick start
@@ -87,7 +87,7 @@ unchanged.
 
 `prune()` selects and applies a plan in place. You can also inspect a plan before
 applying it, or specify exactly which positions to remove. The
-[getting-started tutorial](docs/getting-started.md) covers manual pruning,
+[getting-started tutorial](https://torch-kirigami.readthedocs.io/en/latest/getting-started.html) covers manual pruning,
 training after pruning, and checkpoint restoration.
 
 For another pruning round, rebuild the dependency graph. Create a new optimizer
@@ -117,25 +117,15 @@ reproduce published benchmark results.
 
 ## Documentation
 
-| Topic | Guide |
-| --- | --- |
-| First pruning operation | [Getting started](docs/getting-started.md) |
-| Supported models and operators | [Model support](docs/guides/model-support.md), [operator support](docs/reference/operator-support.md) |
-| Budgets, scoring, and custom pruning policies | [Pruning](docs/guides/pruning.md) |
-| Sparse training components | [Sparse training](docs/guides/sparse-training.md) |
-| Saving and restoring compact models | [Persistence](docs/guides/persistence.md) |
-| Parameters, MACs, and latency | [Measurement](docs/guides/measurement.md) |
-| Development, testing, and PyPI releases | [Development guide](docs/development/index.md) |
-
-The [documentation index](docs/index.md) also links to the architecture and
-dependency-graph references.
+Read the [documentation](https://torch-kirigami.readthedocs.io/) for guides,
+API references, and development instructions.
 
 ## Model support
 
 Support depends on the model's operator forms and the dimensions being pruned.
 The graph is captured with PyTorch FX; tensor-dependent Python control flow and
 unsupported structural transformations are reported explicitly. Consult the
-[model support contract](docs/guides/model-support.md) before adapting a new architecture.
+[model support contract](https://torch-kirigami.readthedocs.io/en/latest/guides/model-support.html) before adapting a new architecture.
 
 Pruning changes the model's computation. Evaluate the compact model on your task
 and fine-tune as needed; the library leaves the loss, optimizer, and training loop
@@ -145,7 +135,7 @@ under your control.
 
 Bug reports, operator extensions, and pruning workflows are welcome. Include a
 minimal model and representative inputs when reporting an issue. Follow the
-[development guide](docs/development/index.md) for environment setup, regression tests,
+[development guide](https://torch-kirigami.readthedocs.io/en/latest/development/) for environment setup, regression tests,
 and public API checks.
 
 ## License

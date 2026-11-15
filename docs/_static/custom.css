@@ -2,3 +2,10 @@
 html.dark pre.mermaid > svg {
   filter: none;
 }
+
+/* API module paths must wrap inside the navigation sidebar. */
+.globaltoc code,
+.globaltoc code .pre {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
