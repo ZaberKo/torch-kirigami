@@ -172,7 +172,7 @@ def isolated_execution(
         Copied args, copied kwargs, and clone-ID-to-original-buffer bindings.
 
     Raises:
-        CaptureError: Inputs cannot be copied or alias parameter storage.
+        torch_kirigami.CaptureError: Inputs cannot be copied or alias parameter storage.
 
     Notes:
         Restores buffer bindings, training flags, and CPU/initialized CUDA RNG
@@ -704,7 +704,7 @@ def _check_tensor_effects(
         and parameter object IDs with explicitly permitted value updates.
 
     Raises:
-        CaptureError: A recognized write violates isolation or effect declarations.
+        torch_kirigami.CaptureError: A recognized write violates isolation or effect declarations.
         TypeError: A rule returns an invalid effect declaration.
     """
     declarations = {}
@@ -904,7 +904,7 @@ def capture(
         signature, mutable storage keys, and per-node effect declarations.
 
     Raises:
-        CaptureError: Argument binding, tracing, write checks, or execution fail.
+        torch_kirigami.CaptureError: Argument binding, tracing, write checks, or execution fail.
 
     Notes:
         Example inputs and buffers are isolated. Declared parameter value

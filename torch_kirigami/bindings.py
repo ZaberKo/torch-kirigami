@@ -26,7 +26,7 @@ def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:
         A device/pointer pair, or None for an empty tensor.
 
     Raises:
-        CaptureError: The tensor is quantized or does not have strided layout.
+        torch_kirigami.CaptureError: The tensor is quantized or does not have strided layout.
     """
     if tensor.layout != torch.strided or tensor.is_quantized:
         raise CaptureError("Only dense, non-quantized strided tensors are supported")

@@ -157,6 +157,13 @@ class Pruner:
         requests proved irreversibly conflicting are excluded. Entire excluded
         domains are removed before freezing the discovered channel baseline.
         Patterns use `fnmatchcase`: `*` can match across path separators (`.`).
+
+        Args:
+            targets: Optional patterns matched against module paths. None considers
+                every supported candidate entry point.
+
+        Returns:
+            The discovered candidates, their channel axes, and any exclusions.
         """
         graph = self._validate_graph()
         return self._remember_filtered(graph, discover_candidates(graph, self.constraints, targets))
@@ -198,7 +205,15 @@ class Pruner:
         return self._remember_filtered(graph, filter_candidates(graph, self.constraints, space))
 
     def impact(self, candidates: Iterable[Candidate]) -> Impact:
-        """Analyze a joint candidate batch under this pruner's fixed constraints."""
+        """Analyze a joint candidate batch under this pruner's fixed constraints.
+
+        Args:
+            candidates: Hypothetical removals to analyze together.
+
+        Returns:
+            Their combined dependency impact. This does not modify the model or
+            prove that the removals can be executed.
+        """
         graph = self._validate_graph()
         return graph.propagate(
             remove=tuple(s for c in candidates for s in c.remove),
@@ -234,7 +249,7 @@ class Pruner:
             not checked. A group alone is not proof that a request can be applied.
 
         Raises:
-            PlanningError: A candidate has incomplete influence or no parameter
+            torch_kirigami.pruning.PlanningError: A candidate has incomplete influence or no parameter
                 regions after extraction and filtering. No candidate is skipped.
         """
         graph = self._validate_graph()
@@ -269,7 +284,7 @@ class Pruner:
             A portable plan for the requested selections.
 
         Raises:
-            PlanningError: Influence is incomplete or has no verified recipe.
+            torch_kirigami.pruning.PlanningError: Influence is incomplete or has no verified recipe.
         """
         graph = self._validate_graph()
         before = snapshot(self.model, guarded=graph.constant_guards())
@@ -304,7 +319,7 @@ class Pruner:
             A portable static plan. No discovery, metric, or strategy is implicit.
 
         Raises:
-            PlanningError: The strategy result misses its target or cannot be executed.
+            torch_kirigami.pruning.PlanningError: The strategy result misses its target or cannot be executed.
             TypeError: The candidate space or strategy result has the wrong type.
         """
         graph = self._validate_graph()
@@ -427,7 +442,7 @@ class Pruner:
             The original model and execution details.
 
         Raises:
-            ExecutionError: The plan is invalid, the model changed, or commit failed.
+            torch_kirigami.pruning.ExecutionError: The plan is invalid, the model changed, or commit failed.
         """
         if not isinstance(plan, PruningPlan):
             raise ExecutionError("Expected a PruningPlan")

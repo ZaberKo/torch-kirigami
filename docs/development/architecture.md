@@ -2,6 +2,7 @@
 
 torch-kirigami separates dependency analysis, pruning decisions, and model changes.
 A workflow combines these components with training, calibration, and task evaluation.
+Use the [API reference](../api/index.md) for public signatures and the guides for usage examples.
 
 ## From a model to a compact model
 
@@ -66,7 +67,7 @@ It is neither a weight backup nor a checkpoint.
 `OperatorSpec` contains the structural facts that the rule returns for that call.
 `AttributeBinding` uses `ShapeExpr` to describe structural attributes.
 `TensorEffects` uses `ArgumentRef` to identify input writes.
-The [operator guide](operator-support.md#rule-contract) shows how these records connect.
+The [operator guide](../reference/operator-support.md#rule-contract) shows how these records connect.
 
 `operator_recipes.py` defines static records for physical edits.
 Dependency analysis can import these records without importing the pruning executor.
@@ -86,7 +87,7 @@ The helper does not import the solver or pruning code.
 `settings.py` exports one process-global `config` for resource limits, scoring batches, and cache bounds.
 Library operations read settings when work starts.
 Do not change settings during an operation.
-See [global configuration](pruning.md#global-resource-configuration) for validation and invalidation rules.
+See [global configuration](../guides/pruning.md#global-resource-configuration) for validation and invalidation rules.
 
 Package initialization in `dep_graph/__init__.py` performs no eager imports.
 Internal consumers import concrete submodules. Public imports such as
@@ -160,7 +161,7 @@ Torch Prisma supplies parameter counts, theoretical FLOPs and MACs, and inferenc
 The pruning package uses its parameter counter for ratio-based parameter budgets.
 The workflow adapter selects evaluation mode and restores each module's previous mode.
 Measurement forward calls can change inputs, buffers, weights, and random-number state.
-See the [measurement guide](measurement.md) for ownership and execution contracts.
+See the [measurement guide](../guides/measurement.md) for ownership and execution contracts.
 Task accuracy requires separate evaluation with task data.
 Fewer parameters or MACs do not guarantee lower latency or preserved accuracy.
 
@@ -193,5 +194,5 @@ Add a metric when an algorithm needs a different score.
 Add a strategy when an algorithm needs a different selection procedure.
 A solver with exact selections can submit them through `plan_remove()`.
 
-The [dependency guide](dependency-graph.md) defines analysis records and propagation.
-The [pruning guide](pruning.md) defines planning and application contracts.
+The [dependency guide](../reference/dependency-graph.md) defines analysis records and propagation.
+The [pruning guide](../guides/pruning.md) defines planning and application contracts.

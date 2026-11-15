@@ -43,7 +43,7 @@ def parameter_regions(
         Use `context.graph.tensor_bindings()` to resolve parameter values.
 
     Raises:
-        PlanningError: Dependency influence is incomplete. Constraint violations
+        torch_kirigami.pruning.PlanningError: Dependency influence is incomplete. Constraint violations
             do not prevent this query. It does not certify an executable plan.
         ValueError: References or the accepted impact belong to another graph.
     """
@@ -100,7 +100,7 @@ class Magnitude:
             that scores are finite when it calls this metric.
 
         Raises:
-            PlanningError: Influence is incomplete, or a new request has no
+            torch_kirigami.pruning.PlanningError: Influence is incomplete, or a new request has no
                 parameter effects from which to compute a score.
         """
         return _parameter_scores(self, context, candidates, accepted_impact=accepted_impact)
@@ -161,7 +161,7 @@ class WeightTaylor:
             checks that scores are finite when it calls this metric.
 
         Raises:
-            PlanningError: Influence is incomplete, a new request has no parameter
+            torch_kirigami.pruning.PlanningError: Influence is incomplete, a new request has no parameter
                 effects, or an affected parameter lacks a dense current gradient
                 or has complex values.
         """
@@ -304,7 +304,7 @@ class GroupMagnitude:
             context checks that scores are finite when it calls this metric.
 
         Raises:
-            PlanningError: A candidate does not select complete slices of its
+            torch_kirigami.pruning.PlanningError: A candidate does not select complete slices of its
                 declared axis, influence is incomplete, or scoring has no
                 parameter basis. Also raised for nonfinite normalization values
                 or nonzero joint energy with a zero single-position baseline.

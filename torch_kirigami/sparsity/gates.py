@@ -197,7 +197,7 @@ class GateMagnitude:
 
         Raises:
             ValueError: A binding uses a different graph or a candidate has no bound gate.
-            PlanningError: The accepted influence or candidate influence is incomplete.
+            torch_kirigami.pruning.PlanningError: The accepted influence or candidate influence is incomplete.
         """
         context.require_complete(accepted_impact)
         if not candidates:

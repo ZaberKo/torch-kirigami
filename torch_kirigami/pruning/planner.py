@@ -153,12 +153,25 @@ class PlanningContext:
 
         Strategies own their attempt limit. Ordinary `impact` calls used for
         scoring and inspection do not count as selection trials.
+
+        Args:
+            remove: Original-coordinate selections to analyze together.
+
+        Returns:
+            Their combined dependency impact.
         """
         self._trials += 1
         return self.impact(remove)
 
     def impact(self, remove: tuple[Selection, ...]) -> Impact:
-        """Analyze joint original-coordinate seeds without executing the model."""
+        """Analyze joint original-coordinate selections without executing the model.
+
+        Args:
+            remove: Hypothetical selections to propagate together.
+
+        Returns:
+            Their combined impact, including constraints and diagnostics.
+        """
         self._sync_cache_settings()
         remove = tuple(remove)
         for selection in remove:
@@ -265,7 +278,14 @@ class PlanningContext:
         return values
 
     def remaining(self, impact: Impact) -> tuple[int, ...]:
-        """Measure final resource sizes in targets order, without compact weights."""
+        """Measure final resource sizes without creating compact weights.
+
+        Args:
+            impact: Joint analysis of the proposed removals.
+
+        Returns:
+            Final parameter count or channel widths, in `targets` order.
+        """
         self.graph.validate_impact(impact)
         recipes = self.compile(impact)[0] if self._target.resource == "parameters" else ()
         return self._target.remaining(impact, recipes)
@@ -275,7 +295,15 @@ class PlanningContext:
         return remaining_parameters(self._parameter_count, self.compile(impact)[0])
 
     def within_budget(self, impact: Impact) -> bool:
-        """Check all final-size upper bounds; execution validity is checked separately."""
+        """Check all final-size upper bounds.
+
+        Args:
+            impact: Joint analysis of the proposed removals.
+
+        Returns:
+            Whether every budget target is met. This does not establish that
+            the removals can be executed.
+        """
         return self._target.met(self.remaining(impact))
 
     def deficit(self, impact: Impact) -> int:
@@ -287,7 +315,15 @@ class PlanningContext:
         return self._target.deficit(self.remaining(impact))
 
     def require_budget(self, impact: Impact, *, result: StrategyResult | None = None) -> None:
-        """Reject a missed final target with measured sizes and search diagnostics."""
+        """Reject a missed final target with measured sizes and search diagnostics.
+
+        Args:
+            impact: Joint analysis of the proposed removals.
+            result: Optional strategy diagnostics to include in the failure.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: A budget target is not met.
+        """
         self._target.require(self.remaining(impact), self.trials, result)
 
     def compile(

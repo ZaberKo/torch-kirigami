@@ -271,7 +271,7 @@ def check_forward(
         meta_outputs: Optional cache of reusable metadata outputs, updated in place.
 
     Raises:
-        PlanningError: A call cannot preserve its declared compact shape,
+        torch_kirigami.pruning.PlanningError: A call cannot preserve its declared compact shape,
             coordinates, layout, or mutation contract.
 
     Notes:

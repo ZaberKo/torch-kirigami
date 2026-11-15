@@ -279,7 +279,15 @@ class Strategy(Protocol[_StrategyContext]):
     """Select registered candidate keys using a shared PlanningContext."""
 
     def select(self, context: _StrategyContext) -> StrategyResult:
-        """Return registered choices and diagnostics without modifying the model."""
+        """Select candidates without modifying the model.
+
+        Args:
+            context: Planning services and the registered candidate universe.
+
+        Returns:
+            Selected candidate keys and search diagnostics. The planner validates
+            the result before producing a plan.
+        """
         ...
 
 
@@ -287,11 +295,25 @@ class MetricContext(Protocol):
     """Minimal planner contract required by scoring metrics."""
 
     def impact(self, remove: tuple[Selection, ...]) -> Impact:
-        """Return dependency impact for candidate selections."""
+        """Analyze selections together using their original tensor coordinates.
+
+        Args:
+            remove: Hypothetical selections to propagate jointly.
+
+        Returns:
+            Their combined impact, including constraints and diagnostics.
+        """
         ...
 
     def require_complete(self, impact: Impact) -> None:
-        """Reject incomplete dependency influence."""
+        """Reject incomplete dependency influence.
+
+        Args:
+            impact: Dependency analysis to check for completeness.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The influence is incomplete.
+        """
         ...
 
     @property

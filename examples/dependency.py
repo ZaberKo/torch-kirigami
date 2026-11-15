@@ -1,6 +1,6 @@
 """Build and query a structural dependency graph for a small MLP.
 
-The example captures the model with :meth:`DependencyGraph.build`, removes two
+The example captures the model with `DependencyGraph.build`, removes two
 output coordinates from the first Linear weight, then inspects the propagated
 impact on the next Linear layer. `propagate` computes structural closure and
 `explain` reports it; neither API chooses an importance policy nor mutates the

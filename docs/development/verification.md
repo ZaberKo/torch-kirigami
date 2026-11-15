@@ -11,14 +11,14 @@ Use this page to find representative evidence for a contract. A test proves only
 | Model lifecycle | Do capture, planning, application, backward, and restoration work together? |
 | Task evaluation | Does the method achieve the claimed quality on the target data? |
 
-A registered operator-entry test covers a rule. It does not establish complete model lifecycle support. Read the [operator support guide](operator-support.md) for supported forms and conditions.
+A registered operator-entry test covers a rule. It does not establish complete model lifecycle support. Read the [operator support guide](../reference/operator-support.md) for supported forms and conditions.
 
 Registered-entry tests cannot detect an omitted entry because they enumerate the registry itself.
 `tests/dep_graph/operators/test_entry_aliases.py` maintains an independent spelling list and captures each call through the public build/plan/apply flow.
 It checks numerical references, parameter roles, shape provenance, and rejected alias writes on CPU and CUDA.
 This list covers declared families. It does not claim coverage of every PyTorch API.
 
-The [operator inventory script](../experiments/operator_surface_audit.py) enumerates entries independently of registered targets.
+The [operator inventory script](https://github.com/ZaberKo/torch-kirigami/blob/main/experiments/operator_surface_audit.py) enumerates entries independently of registered targets.
 It enumerates visible entries in `torch`, Tensor, functional, module, special, linear algebra, and Fourier namespaces.
 The namespace guard reports newly visible names.
 Public lifecycle tests separately check mathematical, functional, coordinate, and Fourier families on CPU and CUDA.
@@ -31,7 +31,7 @@ Successful execution alone does not establish complete MAC or FLOP coverage.
 
 ## Representative test areas
 
-The [test organization guide](../tests/README.md) defines directory ownership. Use the feature directory as the starting point:
+The [test organization guide](https://github.com/ZaberKo/torch-kirigami/blob/main/tests/README.md) defines directory ownership. Use the feature directory as the starting point:
 
 - `tests/dep_graph/` covers coordinates, constraints, propagation, and freshness. Its `capture/` and `operators/` directories cover capture and operator contracts.
 - `tests/pruning/` and `tests/persistence/` cover selection, budgets, plans, application, and checkpoints.
@@ -47,7 +47,7 @@ The tests check nonwindow coordinates, rejected window changes, alias safety, an
 `tests/pruning/test_reshape_outer_dimensions.py` checks patch-head compaction with batch 128 and the default interval bound.
 It also checks that hardcoded widths still reject physical execution.
 
-The standalone [reshape benchmark](../experiments/reshape_mapping_benchmark.py) measures exact mapping without model execution or activation allocation.
+The standalone [reshape benchmark](https://github.com/ZaberKo/torch-kirigami/blob/main/experiments/reshape_mapping_benchmark.py) measures exact mapping without model execution or activation allocation.
 Compare mappings against independent retained-coordinate references.
 A mapping benchmark does not establish complete planning speed or model latency.
 
@@ -67,4 +67,4 @@ CI tests Python 3.10 with PyTorch 2.6 and Python 3.12 with PyTorch 2.14 on CPU. 
 
 Trace each new invariant to an assertion that can fail independently. Add public build, plan, apply, or save/load coverage when a change crosses layers. A direct rule test alone does not establish lifecycle support.
 
-Keep the [contract inventory](../tests/architecture/contract_inventory.json) current when adding a public export, class, or built-in operator registration. Its guard tests check navigation coverage. They do not establish the quality of each assertion.
+Keep the [contract inventory](https://github.com/ZaberKo/torch-kirigami/blob/main/tests/architecture/contract_inventory.json) current when adding a public export, class, or built-in operator registration. Its guard tests check navigation coverage. They do not establish the quality of each assertion.

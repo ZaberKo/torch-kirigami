@@ -1,0 +1,4 @@
+/* Mermaid rerenders for dark mode, so Shibuya must not invert the SVG again. */
+html.dark pre.mermaid > svg {
+  filter: none;
+}

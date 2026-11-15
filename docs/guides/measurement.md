@@ -62,7 +62,7 @@ These diagnostics describe counting coverage, not pruning support.
 
 See the [Torch Prisma measurement API](https://github.com/ZaberKo/torch-prisma/blob/main/docs/measurement.md) for formulas, latency statistics, and device support.
 
-The [workflow examples](../examples/workflows/README.md) report complexity and median latency for a batch of one image.
+The [workflow examples](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) report complexity and median latency for a batch of one image.
 Their `model_metrics.measure_model()` adapter temporarily selects evaluation mode and restores each module's previous mode after success or failure.
 Other forward side effects persist. The adapter does not copy model weights, buffers, or inputs.
 The CLI's `--compile_latency` flag controls timing compilation explicitly, independently of Prisma's default.

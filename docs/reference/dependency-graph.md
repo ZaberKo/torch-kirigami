@@ -2,9 +2,10 @@
 
 The dependency graph answers one question: if you remove these tensor positions, which other positions or structural properties must change?
 
-The graph records operator semantics. A query computes the closure of a joint removal request. The graph does not rank candidates, choose a budget, or change model tensors. See [model support](model-support.md) for capture limits and [operator support](operator-support.md) for built-in rules.
+The graph records operator semantics. A query computes the closure of a joint removal request. The graph does not rank candidates, choose a budget, or change model tensors. See [model support](../guides/model-support.md) for capture limits and [operator support](operator-support.md) for built-in rules.
+The [dependency API reference](../apidocs/torch_kirigami/torch_kirigami.dep_graph.dependency_graph.md) documents the graph.
 
-The process-global [`config`](pruning.md#global-resource-configuration) controls structural expansion limits, including integer literal capture and ChannelShuffle mapping.
+The process-global [`config`](../guides/pruning.md#global-resource-configuration) controls structural expansion limits, including integer literal capture and ChannelShuffle mapping.
 Set these limits before building a graph.
 Propagation and planning require the structural settings from construction.
 Rebuild the graph after changing those settings.
@@ -73,11 +74,7 @@ An interval includes its start and excludes its stop. The highlighted positions 
 
 ```mermaid
 ---
-config:
-  htmlLabels: false
-  theme: base
-  themeVariables:
-    primaryTextColor: "#20364d"
+config: {"htmlLabels": false, "theme": "base", "themeVariables": {"primaryTextColor": "#20364d"}}
 ---
 block-beta
     columns 8
@@ -98,11 +95,7 @@ For a tensor with shape `(4, 5)`, this region selects rows `[1,3)` and columns `
 
 ```mermaid
 ---
-config:
-  htmlLabels: false
-  theme: base
-  themeVariables:
-    primaryTextColor: "#20364d"
+config: {"htmlLabels": false, "theme": "base", "themeVariables": {"primaryTextColor": "#20364d"}}
 ---
 block-beta
     columns 6
@@ -127,11 +120,7 @@ A selection forms the union of regions on one tensor. Here, region A covers row 
 
 ```mermaid
 ---
-config:
-  htmlLabels: false
-  theme: base
-  themeVariables:
-    primaryTextColor: "#20364d"
+config: {"htmlLabels": false, "theme": "base", "themeVariables": {"primaryTextColor": "#20364d"}}
 ---
 block-beta
     columns 5
@@ -161,11 +150,7 @@ Selecting row 1 through `AxisRef` covers the entire row. A selection that covers
 
 ```mermaid
 ---
-config:
-  htmlLabels: false
-  theme: base
-  themeVariables:
-    primaryTextColor: "#20364d"
+config: {"htmlLabels": false, "theme": "base", "themeVariables": {"primaryTextColor": "#20364d"}}
 ---
 block-beta
     columns 11
@@ -239,7 +224,7 @@ Calling `DependencyGraph()` without those internal records is not supported.
 Construction releases its temporary tables.
 The graph owns a solver with local indexes and caches.
 Every public propagation request checks model freshness first.
-See [the implementation responsibilities](architecture.md#dependency-analysis) for
+See [the implementation responsibilities](../development/architecture.md#dependency-analysis) for
 the internal module boundaries.
 
 ```python

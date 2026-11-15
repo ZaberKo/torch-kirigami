@@ -280,7 +280,7 @@ def load_checkpoint(
         The supplied model with its final pruned structure and checkpoint values.
 
     Raises:
-        ExecutionError: The schema, skeleton, aliases, or state payload is incompatible.
+        torch_kirigami.pruning.ExecutionError: The schema, skeleton, aliases, or state payload is incompatible.
 
     Ordinary registered state is prepared before committing. set_extra_state
     runs on an isolated module shell; external side effects remain outside the

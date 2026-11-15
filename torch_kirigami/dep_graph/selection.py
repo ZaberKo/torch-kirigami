@@ -62,7 +62,7 @@ class IndexSet:
 
         Raises:
             ValueError: An index is negative or is not a Python integer.
-            AnalysisLimitError: The normalized set exceeds the interval limit.
+            torch_kirigami.AnalysisLimitError: The normalized set exceeds the interval limit.
         """
         values = []
         for i in indices:
@@ -250,7 +250,7 @@ def normalize(regions: Iterable[Region]) -> tuple[Region, ...]:
         Sorted, nonoverlapping regions with empty pieces removed.
 
     Raises:
-        AnalysisLimitError: The intermediate region representation exceeds its limit.
+        torch_kirigami.AnalysisLimitError: The intermediate region representation exceeds its limit.
     """
     result: list[Region] = []
     for region in sorted(set(regions), key=lambda r: tuple(a.intervals for a in r.axes)):
@@ -545,7 +545,7 @@ class Selection:
 
         Raises:
             ValueError: The selections refer to different tensor references.
-            AnalysisLimitError: Their normalized union exceeds the region limit.
+            torch_kirigami.AnalysisLimitError: Their normalized union exceeds the region limit.
         """
         self._same(other)
         return Selection(self.tensor, self.regions + other.regions)
@@ -555,7 +555,7 @@ class Selection:
 
         Raises:
             ValueError: The selections refer to different tensor references.
-            AnalysisLimitError: The difference exceeds the region limit.
+            torch_kirigami.AnalysisLimitError: The difference exceeds the region limit.
         """
         self._same(other)
         pending = self.regions
@@ -713,7 +713,7 @@ def linear_indices(region: Region, shape: tuple[int, ...]) -> IndexSet:
         Flat offset intervals, collapsing complete trailing dimensions.
 
     Raises:
-        AnalysisLimitError: The exact offset representation exceeds its limit.
+        torch_kirigami.AnalysisLimitError: The exact offset representation exceeds its limit.
     """
     if not shape:
         return IndexSet.span(0, 1)

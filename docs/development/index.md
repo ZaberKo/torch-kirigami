@@ -56,7 +56,7 @@ Run Ruff and the relevant pytest suites directly:
 .venv/bin/pytest tests/pruning tests/persistence tests/integration/test_lifecycle.py
 ```
 
-The [test organization guide](../tests/README.md) defines directory ownership and shared fixtures.
+The [test organization guide](https://github.com/ZaberKo/torch-kirigami/blob/main/tests/README.md) defines directory ownership and shared fixtures.
 
 Choose suites for the changed contract:
 
@@ -92,8 +92,8 @@ A masked dense model is a valid reference only when masking preserves the releva
 Removing normalization or attention dimensions can change that calculation.
 Use an independent compact reference for those cases.
 
-The [planning and sparse-operation benchmark](../experiments/planning_sparsity_benchmark.py) runs without downloaded data.
-The [residual benchmark](../experiments/residual_planning_benchmark.py) exercises shared domains and repeated sparse writes.
+The [planning and sparse-operation benchmark](https://github.com/ZaberKo/torch-kirigami/blob/main/experiments/planning_sparsity_benchmark.py) runs without downloaded data.
+The [residual benchmark](https://github.com/ZaberKo/torch-kirigami/blob/main/experiments/residual_planning_benchmark.py) exercises shared domains and repeated sparse writes.
 Compare the same model, inputs, strategy, metric, configuration, interpreter, and device across implementations.
 Check selected keys, trial counts, final widths, parameter layouts, and numerical outputs as well as timing.
 Instrumentation and warmup affect timings. Host-specific measurements do not guarantee application performance.
@@ -118,6 +118,7 @@ Require CUDA in a configured GPU environment:
 
 The regular CI tests Python 3.10 with PyTorch 2.6 and Python 3.12 with PyTorch 2.14 on CPU.
 The development pair also runs Ruff, the small examples, and a package build.
+The documentation job builds and checks the site without installing PyTorch.
 Manual compatibility jobs cover intermediate PyTorch releases.
 A separate manual workflow runs tests on a configured GPU runner.
 
@@ -131,6 +132,36 @@ The [verification guide](verification.md) explains the limits of each evidence l
 Keep formal documentation in English.
 Use short sentences and consistent API terms.
 Retain conditions and uncertainty when simplifying a contract.
+
+Build the documentation with Python 3.12 or newer:
+
+```bash
+uv pip install --python .venv/bin/python --group docs --group dev
+.venv/bin/python -m sphinx -W --keep-going -b html docs docs/_build/html
+.venv/bin/pytest --confcutdir=tests/docs tests/docs
+```
+
+If the configured locale is unavailable on Linux, prefix the Sphinx command with `LC_ALL=C.UTF-8`.
+Read the Docs uses the same pinned requirements and fails its build on warnings.
+The documentation build analyzes Python source without importing PyTorch.
+It excludes `docs/dev-notes/` from the published site.
+
+Sphinx uses MyST for Markdown pages and static autodoc2 analysis for the API reference.
+`docs/google_docstrings.py` applies Napoleon to Google-style sections and uses MyST to render Markdown in docstrings.
+It converts Napoleon's headings and admonitions to MyST directives.
+Napoleon can treat standalone lines such as `Args:` inside fenced code as docstring sections.
+Avoid those lines in docstring examples.
+A code fence used as the entire parameter description may also render incorrectly.
+Put such examples in an `Examples:` section.
+Autodoc2 generates an API page for each module.
+The package `__all__` lists define the public imports.
+Some generated pages also describe internal modules.
+Give each public object a source docstring so the reference can include it.
+
+HTML diagrams use Mermaid 12.3.0, loaded from jsDelivr in the reader's browser.
+The pinned version supports the flowcharts and block diagrams used in these guides.
+If the browser cannot load the script, the page retains the diagram source.
+Check both Sphinx output and browser rendering when changing diagrams or the pinned version.
 
 Check documentation changes with these steps:
 
@@ -225,4 +256,4 @@ Check the workflow result, the PyPI version, and the GitHub Release assets.
 If only the `release-assets` job fails, rerun that job.
 This retries the asset upload without repeating the successful PyPI upload.
 
-The [workflow guide](../examples/workflows/README.md) covers data and pretrained experiments.
+The [workflow guide](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) covers data and pretrained experiments.

@@ -58,20 +58,22 @@ class GroupLasso:
 
     Examples:
         Assume `group` selects parameter values `[3, 4]`. Its L2 norm is 5.
-        Passing it twice adds two loss terms. Explicit deduplication keeps one::
+        Passing it twice adds two loss terms. Explicit deduplication keeps one:
 
-            from torch_kirigami.pruning import unique_groups
-            from torch_kirigami.sparsity import GroupLasso
+        ```python
+        from torch_kirigami.pruning import unique_groups
+        from torch_kirigami.sparsity import GroupLasso
 
-            repeated = GroupLasso((group, group))
-            repeated()  # 10 = 5 + 5
+        repeated = GroupLasso((group, group))
+        repeated()  # 10 = 5 + 5
 
-            groups = unique_groups((group, group))
-            once = GroupLasso(groups)
-            once()  # 5
+        groups = unique_groups((group, group))
+        once = GroupLasso(groups)
+        once()  # 5
 
-            weighted = GroupLasso(groups, coefficients=(2.0,))
-            weighted()  # 10 = 2 * 5
+        weighted = GroupLasso(groups, coefficients=(2.0,))
+        weighted()  # 10 = 2 * 5
+        ```
 
         The deduplicated tuple has one group, so it needs only one coefficient.
         `unique_groups` does not sum coefficients from the original tuple.

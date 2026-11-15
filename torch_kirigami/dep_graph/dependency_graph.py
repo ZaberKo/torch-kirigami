@@ -106,8 +106,8 @@ class DependencyGraph:
 
         Raises:
             TypeError: model is not an nn.Module.
-            CaptureError: Arguments, tracing, or isolated metadata execution fail.
-            StaleGraphError: A tracked structural property changes during construction.
+            torch_kirigami.CaptureError: Arguments, tracing, or isolated metadata execution fail.
+            torch_kirigami.StaleGraphError: A tracked structural property changes during construction.
 
         Notes:
             Examples provide metadata; they do not specialize dynamic Python branches.
@@ -198,9 +198,9 @@ class DependencyGraph:
             updates: Iterable of attribute paths and proposed configuration values.
 
         Raises:
-            CaptureError: Configuration cannot be isolated or re-tracing changes
+            torch_kirigami.CaptureError: Configuration cannot be isolated or re-tracing changes
                 the captured structure or constants.
-            StaleGraphError: The source no longer matches this snapshot.
+            torch_kirigami.StaleGraphError: The source no longer matches this snapshot.
 
         This checks edits without modifying weights or choosing removals. Opaque
         leaf internals remain the responsibility of their declared operator rules.
@@ -362,9 +362,9 @@ class DependencyGraph:
             pruning plan nor a numerical equivalence guarantee.
 
         Raises:
-            StaleGraphError: A tracked model property has changed.
+            torch_kirigami.StaleGraphError: A tracked model property has changed.
             ValueError: A selection or constraint refers to another graph.
-            AnalysisLimitError: A supplied selection exceeds the region limit.
+            torch_kirigami.AnalysisLimitError: A supplied selection exceeds the region limit.
                 Limits reached while following relations are reported as diagnostics.
         """
         self._check_fresh()

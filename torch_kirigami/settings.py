@@ -80,3 +80,4 @@ class Config:
 
 
 config = Config()
+"""Process-wide resource configuration for analysis and pruning."""

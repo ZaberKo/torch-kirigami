@@ -2,7 +2,8 @@
 
 Structural pruning changes tensor shapes and module attributes in an existing PyTorch model. The graph finds coupled coordinates. A planner checks a joint removal and creates static recipes. Apply executes those recipes on the original module.
 
-Read the [dependency graph guide](dependency-graph.md) for coordinate propagation and constraints. Read [operator support](operator-support.md) for registered rules and supported operations.
+Read the [dependency graph guide](../reference/dependency-graph.md) for coordinate propagation and constraints. Read [operator support](../reference/operator-support.md) for registered rules and supported operations.
+The [pruning API reference](../apidocs/torch_kirigami/torch_kirigami.pruning.pruner.md) lists arguments and return values from the source docstrings.
 
 ## Lifecycle and ownership
 
@@ -235,7 +236,7 @@ A new request without parameter effects raises `PlanningError`.
 Actual zero-valued parameters and requests whose parameter effects are already covered can score zero.
 
 Use a custom Metric for a different scoring basis or formula.
-For example, [BN-guided pruning](../examples/workflows/bn_guided_pruning.py) uses `BNScaleMagnitude` with explicit BN scale references.
+For example, [BN-guided pruning](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/bn_guided_pruning.py) uses `BNScaleMagnitude` with explicit BN scale references.
 It uses `parameter_regions` to find the affected scales, then sums their absolute values.
 Other parameter effects still participate in dependency analysis and physical pruning.
 The metric rejects a new request without associated scales instead of assigning zero importance.

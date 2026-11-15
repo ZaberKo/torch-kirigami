@@ -370,7 +370,7 @@ class ReshapeRelation:
 
         Raises:
             ValueError: source does not belong to either endpoint.
-            AnalysisLimitError: The mapped region representation exceeds its limit.
+            torch_kirigami.AnalysisLimitError: The mapped region representation exceeds its limit.
         """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")

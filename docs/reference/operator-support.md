@@ -3,6 +3,7 @@
 Support applies to one captured call, its arguments, the requested axes, and the resulting compact execution. A rule may not support every overload or requested removal.
 
 Rules match exact module classes, function objects, and Tensor method names. A custom subclass does not inherit a base module's rule. An opaque registration keeps a callable boundary where FX supports it. The rule author then owns that boundary's semantics.
+The [operator API reference](../apidocs/torch_kirigami/torch_kirigami.dep_graph.operation.md) documents rule and effect contracts.
 
 ## Module, function, and Tensor method forms
 
@@ -31,7 +32,7 @@ Function `torch.numel` also preserves dimension provenance. Using its result as 
 
 Independent spelling tests complement the registered-entry tests.
 Neither enumeration nor registration proves support for every overload.
-See the [verification guide](verification.md) for test levels and inventory checks.
+See the [verification guide](../development/verification.md) for test levels and inventory checks.
 
 Equal names alone do not establish equivalent semantics.
 For example, Tensor `unfold` returns window views along one axis, while functional `unfold` extracts and flattens two-dimensional image patches.
@@ -47,7 +48,7 @@ Rules obtain weights and other operands through `Operation.argument()` rather th
 
 A call can pass capture and still lack a structural rule. A rule can propagate coordinates while a constraint rejects the requested change. A valid dependency result can still lack a safe model edit.
 
-Capture records the call. Analysis follows coordinate changes. Execution checks establish whether the library supports the proposed compact structure. See [dependency graph](dependency-graph.md) for shared records and [model support](model-support.md) for lifecycle limits.
+Capture records the call. Analysis follows coordinate changes. Execution checks establish whether the library supports the proposed compact structure. See [dependency graph](dependency-graph.md) for shared records and [model support](../guides/model-support.md) for lifecycle limits.
 
 ```mermaid
 flowchart LR
@@ -110,7 +111,7 @@ The rule also excludes indexed writes. Keep their affected dimensions fixed.
 A valid slice can still block a request when the same expression selects different original positions after compaction.
 The error identifies the axis and reports a coordinate or length mismatch.
 If the index fails on the example input, capture reports the PyTorch error.
-See [capture and planning results](model-support.md#failure-scope) for where to read each diagnostic.
+See [capture and planning results](../guides/model-support.md#failure-scope) for where to read each diagnostic.
 
 ## Default candidate axes
 
@@ -330,7 +331,7 @@ Implement `build_recipe()` only when shared descriptors cannot express a require
 Return an `OperatorRecipe` from `torch_kirigami.operator_recipes`.
 Ordinary cuts and declared attributes or layouts need no override.
 The compiler must implement or reject every activated requirement.
-See [pruning](pruning.md#recipe-validation-and-application) for recipe compilation and plan behavior.
+See [pruning](../guides/pruning.md#recipe-validation-and-application) for recipe compilation and plan behavior.
 
 ### Proof obligations
 

@@ -1,8 +1,9 @@
 # Sparse training and iterative pruning
 
-`torch_kirigami.sparsity` provides sparse losses, gates, parameter operations, schedules, and cumulative channel budgets. It does not own a task loss, optimizer, training loop, or pruning policy. The [workflow examples](../examples/workflows/README.md) combine these components with pretrained models and ImageNet data.
+`torch_kirigami.sparsity` provides sparse losses, gates, parameter operations, schedules, and cumulative channel budgets. It does not own a task loss, optimizer, training loop, or pruning policy. The [workflow examples](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) combine these components with pretrained models and ImageNet data.
 
 A sparse regularizer returns a scalar tensor. Ordinary autograd computes its gradient as part of the caller's total loss. The caller owns loss scaling, optimization, training duration, and recovery.
+The [sparse training API reference](../apidocs/torch_kirigami/torch_kirigami.sparsity.regularizers.md) documents the regularizers.
 
 ## Components and responsibilities
 
@@ -115,7 +116,7 @@ There is no implicit deduplication, averaging, or group-size normalization. Mult
 For example, BatchNorm uses one learned scale per channel, stored in its `weight` parameter.
 `ScaleL1(graph, ("bn.weight",))` returns `model.bn.weight.abs().sum()` for a model with that BatchNorm module.
 Adding a weighted version of this scalar to the task loss encourages small scales during training.
-The [BN-guided pruning workflow](../examples/workflows/bn_guided_pruning.py) uses this loss, then scores candidate removals from the trained scales.
+The [BN-guided pruning workflow](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/bn_guided_pruning.py) uses this loss, then scores candidate removals from the trained scales.
 `ScaleL1` does not propagate dependencies, rank candidates, or physically prune the model.
 
 Regularizers read current parameter values on every call. They preserve autograd connectivity and do not retain graphs across calls. They do not call `backward()`, change parameters or gradients, or read optimizer state. Frozen parameters remain in the objective. Built-in L2 penalties support first-order autograd only. Nonfinite values or results raise an error.
@@ -159,7 +160,7 @@ optimizer.step()
 
 The same contract works with SGD, AdamW, gradient accumulation, AMP, and clipping. When averaging `N` microbatches, scale the total loss consistently so the sparse term is not multiplied by `N`. Under AMP, combine losses before applying the gradient scaler. Unscale before clipping or reading Taylor statistics.
 
-For Taylor scoring, collect task-only gradients in a separate pass. Choose the model mode explicitly. Evaluation mode can avoid changes to BatchNorm running statistics. The [single-pass pruning example](../examples/workflows/prune_finetune.py) restores the original module modes after collection.
+For Taylor scoring, collect task-only gradients in a separate pass. Choose the model mode explicitly. Evaluation mode can avoid changes to BatchNorm running statistics. The [single-pass pruning example](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/prune_finetune.py) restores the original module modes after collection.
 
 ## Explicit activation gates
 
@@ -288,6 +289,6 @@ Thresholds, regularization triggers, reselection, and stage changes belong to th
 
 The workflow scripts show magnitude and Taylor pruning, iterative budgets, BatchNorm-scale L1, group Lasso, squared-L2 training, soft projection, explicit gates, and selection stability. They demonstrate library components. They do not claim to reproduce complete paper recipes or paper accuracy results.
 
-Each workflow entry documents its candidate scope, training stages, and paper adaptations. The [workflow README](../examples/workflows/README.md) combines these explanations with runnable commands. Scores collected during training do not make later planning dynamic. Recovery training is a separate caller-owned stage.
+Each workflow entry documents its candidate scope, training stages, and paper adaptations. The [workflow README](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) combines these explanations with runnable commands. Scores collected during training do not make later planning dynamic. Recovery training is a separate caller-owned stage.
 
 Compact model checkpoints store the pruned model. Save optimizer state, progress, algorithm state, and random-number state separately when training must resume. See [training state](persistence.md#training-state-is-caller-owned).

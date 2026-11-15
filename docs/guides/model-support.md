@@ -15,6 +15,22 @@ Examples provide metadata. They do not specialize tensor-dependent Python contro
 | Rejected | A stage cannot establish safe capture, complete influence, or executable compaction. The failure scope depends on the stage. |
 | Verification limit | Unsupported behavior may escape detection. Successful capture or planning alone does not establish correctness. |
 
+The scope of a failure depends on where it occurs:
+
+```mermaid
+flowchart TD
+    Capture["Capture model"] -->|fails| NoGraph["No dependency graph"]
+    Capture -->|succeeds| Graph["Dependency graph"]
+    Graph -->|rule missing on affected path| Barrier["Affected requests blocked"]
+    Graph -->|unaffected path| Query["Analyze unaffected requests"]
+    Query --> Plan["Check a pruning plan"]
+    Plan -->|valid| Apply["Apply the plan"]
+    Plan -->|invalid| Rejected["Planning error"]
+```
+
+An operator barrier affects requests that depend on that operation.
+A capture failure prevents building the graph for that model invocation.
+
 ### Failure scope
 
 | Stage | Result |
@@ -86,7 +102,7 @@ The graph checks detectable structure, tensor identity and layout, module modes,
 
 ## Structural support
 
-The [operator support page](operator-support.md) lists supported families and their main restrictions. This page states cross-cutting conditions.
+The [operator support page](../reference/operator-support.md) lists supported families and their main restrictions. This page states cross-cutting conditions.
 
 - Dependency support does not imply a default candidate axis. Default candidate domains come from selected module rules. Explicit requests can still use other supported dependency axes.
 - Interface preservation protects external input and output axes by default. Disabling it does not disable operator constraints.
@@ -132,10 +148,10 @@ The model author makes an adaptation, then builds a new graph.
 | A reshape size encodes a changing feature width | Use `size(dim)`, supported integer arithmetic, or valid `-1` inference. | Keep algorithmic constants fixed. |
 | Python reads a whole shape but uses one changing dimension | Read that dimension with `size(dim)`. | Any Python decision that uses it must remain valid after compaction. |
 | In-place behavior lacks an alias and consumer proof | Use an out-of-place call when appropriate. | No consumer may depend on mutation through an alias. |
-| Bracket indexing or `index_select` uses an unregistered index Tensor | Register the index Tensor as a buffer. | Keep the index one-dimensional and its values fixed. See [bracket indexing](operator-support.md#bracket-indexing) for supported types. |
+| Bracket indexing or `index_select` uses an unregistered index Tensor | Register the index Tensor as a buffer. | Keep the index one-dimensional and its values fixed. See [bracket indexing](../reference/operator-support.md#bracket-indexing) for supported types. |
 | A hook supplies forward behavior | Represent that behavior in `forward` or a declared module boundary. | Preserve required computation and gradient behavior. |
 
-An explicit operator rule can describe a third-party operation. Opaque registration creates a capture boundary, but it does not prove internal mathematics, alias behavior, or output strides. The extension author must provide those proofs and the required lowering. See the [operator extension contract](operator-support.md#implementing-an-operator-rule).
+An explicit operator rule can describe a third-party operation. Opaque registration creates a capture boundary, but it does not prove internal mathematics, alias behavior, or output strides. The extension author must provide those proofs and the required lowering. See the [operator extension contract](../reference/operator-support.md#implementing-an-operator-rule).
 
 ## Persistence and rebuilds
 

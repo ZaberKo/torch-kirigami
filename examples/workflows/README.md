@@ -150,7 +150,7 @@ Latency excludes compilation preparation and warmup. The workflow prepares the m
 Compilation errors propagate instead of silently selecting eager execution.
 Measurement temporarily selects evaluation mode and restores each module's previous mode, including after failure.
 Other forward side effects persist, including input or buffer writes and random-number consumption.
-See the [measurement guide](../../docs/measurement.md) for the Torch Prisma API and execution contract.
+See the [measurement guide](../../docs/guides/measurement.md) for the Torch Prisma API and execution contract.
 
 CUDA runs still use CPU work for graph analysis, image decoding, and compilation.
 Progress bars identify the current stage and device.

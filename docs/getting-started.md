@@ -1,6 +1,19 @@
 # Getting started
 
-This guide shows how to inspect, plan, apply, train, and save a small PyTorch model. Use the [ImageNet workflows](../examples/workflows/README.md) for accuracy comparisons.
+This guide shows how to inspect, plan, apply, train, and save a small PyTorch model.
+The first example runs on CPU and uses manual channel selection.
+Use the [ImageNet workflows](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) for accuracy comparisons.
+
+```mermaid
+flowchart LR
+    model["Model + inputs"] --> graph["Build graph"]
+    graph --> impact["Inspect impact"]
+    graph --> plan["Plan removal"]
+    impact -. informs .-> plan
+    plan --> apply["Apply plan"] --> compact["Compact model"]
+```
+
+An impact describes the requested change. A plan also checks whether the change can be applied.
 
 ## Install
 
@@ -93,7 +106,7 @@ restored = load_checkpoint(make_model(), "compact.pt", map_location="cpu")
 torch.testing.assert_close(restored(inputs), model(inputs))
 ```
 
-The checkpoint restores final tensor sizes and values into a compatible model skeleton. It does not contain model code, pruning history, or optimizer state. See [persistence](persistence.md) for the checkpoint contract.
+The checkpoint restores final tensor sizes and values into a compatible model skeleton. It does not contain model code, pruning history, or optimizer state. See [persistence](guides/persistence.md) for the checkpoint contract.
 
 ## Let a policy choose channels
 

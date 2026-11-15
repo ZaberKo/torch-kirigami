@@ -544,7 +544,7 @@ class OperatorRule(ABC):
             Structural facts independent of scoring and model mutation.
 
         Raises:
-            UnsupportedOperation: The rule cannot analyze this call. Analysis
+            torch_kirigami.UnsupportedOperation: The rule cannot analyze this call. Analysis
                 retains a diagnostic and blocks affected dependency requests.
         """
         raise NotImplementedError
@@ -557,7 +557,7 @@ class OperatorRule(ABC):
             module: Called module, or None for a function or Tensor method.
 
         Raises:
-            CaptureError: The call cannot execute under the capture contract.
+            torch_kirigami.CaptureError: The call cannot execute under the capture contract.
                 This stops graph construction, rather than creating a local barrier.
         """
         return None
@@ -590,7 +590,7 @@ class OperatorRule(ABC):
             Returning None does not declare the request executable.
 
         Raises:
-            UnsupportedOperation: The rule rejects this request. The compiler
+            torch_kirigami.UnsupportedOperation: The rule rejects this request. The compiler
                 must not use a generic replacement to bypass this rejection.
         """
         return None

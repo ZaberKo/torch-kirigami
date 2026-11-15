@@ -1,6 +1,7 @@
 # Plans, model checkpoints, and training state
 
 Plans apply a pruning decision. Model checkpoints restore saved model values. Training state restores the caller's progress.
+See the [checkpoint API reference](../apidocs/torch_kirigami/torch_kirigami.pruning.checkpoint.md) for the checkpoint functions.
 
 ```mermaid
 flowchart LR

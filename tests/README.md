@@ -7,6 +7,7 @@ Use `integration/` when a scenario spans several independent feature contracts.
 | Directory | Scope |
 | --- | --- |
 | `architecture/` | Imports, registry contracts, and the contract coverage inventory. |
+| `docs/` | Sphinx build, public API pages, links, and Read the Docs configuration. |
 | `dep_graph/` | Coordinates, constraints, graph construction, propagation, and freshness. |
 | `dep_graph/capture/` | FX capture, source bindings, metadata, and execution isolation. |
 | `dep_graph/operators/` | Built-in operator rules and their public pruning behavior. |
