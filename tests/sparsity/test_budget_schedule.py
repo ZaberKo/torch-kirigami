@@ -206,6 +206,18 @@ def test_pure_schedules_endpoints_and_invalid_inputs():
         linear(-1)
 
 
+def test_piecewise_copies_list_pairs_into_hashable_tuples():
+    points = [[0, 0.1], [3, 0.5]]
+    piecewise = Piecewise(points)
+    points[1][1] = 9.0
+    points.append([5, 1.0])
+    assert piecewise.points == ((0, 0.1), (3, 0.5))
+    assert [piecewise(s) for s in (0, 3, 9)] == [0.1, 0.5, 0.5]
+    assert hash(piecewise) == hash(Piecewise(((0, 0.1), (3, 0.5))))
+    with pytest.raises(ValueError):
+        Piecewise([[0, 0.1, 2]])
+
+
 def test_selection_identity_window_resume_and_failure_purity():
     a, b = {"a": [0, 1], "b": []}, {"a": [1, 2], "b": []}
     assert selection_similarity(a, b) == pytest.approx(2 / 3)

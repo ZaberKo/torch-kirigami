@@ -1,4 +1,4 @@
-"""Explicit parameter operations, independent of optimizer and regularizer policy."""
+"""In-place operations on parameter groups, independent of optimizer and regularizer policy."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from .values import group_bindings, group_values, scaled_product
 
 
 def _region_index(tensor: torch.Tensor, region: Region) -> tuple[slice | torch.Tensor, ...]:
-    """Allocate write indices before mutation, using slices for rectangles."""
+    """Build write indices for a region: slices for one interval per axis, otherwise a mesh."""
     if all(len(axis.intervals) == 1 for axis in region.axes):
         return tuple(slice(*axis.intervals[0]) for axis in region.axes)
     indices = [
@@ -26,7 +26,7 @@ def _region_index(tensor: torch.Tensor, region: Region) -> tuple[slice | torch.T
 def _write(
     tensor: torch.Tensor, index: tuple[slice | torch.Tensor, ...], values: torch.Tensor
 ) -> None:
-    """Write prepared values without constructing coordinate tensors."""
+    """Write prepared values at a prepared index; an empty index writes the whole tensor."""
     if not index:
         tensor.copy_(values)
     elif all(isinstance(axis, slice) for axis in index):
@@ -36,7 +36,7 @@ def _write(
 
 
 def _proves_nonoverlap(tensor: torch.Tensor) -> bool:
-    """Prove nonoverlap for dense, transposed and regularly strided layouts."""
+    """Return whether the strides prove that no two elements share memory; False is unproven."""
     # Each stride must step past the address span of all smaller-stride axes.
     # Failure is not proof of overlap. The caller retains full-copy preparation.
     extent = 1
@@ -133,10 +133,12 @@ def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tens
 
 
 def _require_disjoint(groups: tuple[ParameterGroup, ...]) -> None:
-    """Sweep sparse axis bounds, using exact region checks for possible overlaps.
+    """Reject groups that select a common coordinate of any parameter.
 
-    Disjoint rows or columns avoid quadratic pair comparisons. General regions
-    retain exact intersection checks without constructing a large union.
+    A sweep over per-axis bounds finds candidate pairs, and exact region
+    intersections decide whether a pair overlaps. Disjoint rows or columns
+    therefore avoid quadratic pair comparisons, and general regions keep exact
+    checks without constructing a large union.
     """
     by_tensor: dict[TensorRef, list[Selection]] = {}
     for group in groups:
@@ -179,15 +181,26 @@ def _require_disjoint(groups: tuple[ParameterGroup, ...]) -> None:
 
 @torch.no_grad()
 def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> None:
-    """Scale a union once, keeping optimizer state and gradients untouched.
+    """Multiply the union of the selected parameter values by one factor in place.
+
+    A coordinate selected by several groups is scaled once. Values change under
+    `torch.no_grad()`. Gradients and optimizer state are not changed, so
+    optimizer momentum can regrow values that were scaled down or set to zero.
+    Call this outside a live forward and backward pass, normally after
+    `optimizer.step()`. Every new value is computed and validated before any
+    parameter changes, and completed writes are restored if a later write fails.
 
     Args:
-        groups: Nonempty groups belonging to one graph/device.
-        factor: Finite nonnegative scalar. Zero allows subsequent regrowth.
+        groups: Nonempty groups that share one dependency graph and device.
+        factor: Finite, nonnegative Python number.
 
-    Call outside a live forward/backward graph, normally after a successful
-    optimizer step. All values are prepared before committing changes. Distinct
-    tensors sharing storage are rejected, including unselected registered aliases.
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: `factor` is invalid; `groups` is empty or spans several
+            graphs or devices; a selected parameter is not a dense real
+            floating-point tensor; a selected tensor shares storage with another
+            registered tensor, selected or not; or a selected or resulting value
+            is nonfinite.
     """
     if (
         isinstance(factor, bool)
@@ -197,13 +210,11 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
     ):
         raise ValueError("factor must be finite and nonnegative")
     groups = tuple(groups)
-    if not groups or any(not isinstance(group, ParameterGroup) for group in groups):
-        raise ValueError("Expected nonempty ParameterGroup sequence")
     if len(groups) == 1:
         # group_values validates this existing union before reading any values.
         union = groups[0]
     else:
-        # Validate all source graphs/devices before combining their coordinates.
+        # Validate the groups, graphs and devices before combining their coordinates.
         group_bindings(groups)
         union = ParameterGroup(groups[0].graph, tuple(s for g in groups for s in g.selections))
     values = group_values((union,))[0]
@@ -211,33 +222,43 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
 
 
 def zero_groups_(groups: tuple[ParameterGroup, ...]) -> None:
-    """Zero regions once; no persistent mask or optimizer-state edits are installed.
+    """Set the union of the selected parameter values to zero in place.
+
+    This is `scale_groups_(groups, 0.0)`. It installs no persistent mask and
+    does not change gradients or optimizer state, so later optimizer steps,
+    including momentum, can regrow the zeroed values.
 
     Args:
-        groups: Nonempty groups on one graph and device.
+        groups: Nonempty groups that share one dependency graph and device.
 
     Raises:
-        ValueError: Groups do not share a graph or device, use unsupported
-            tensors, or include distinct registered tensors that share storage.
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: The groups violate the requirements of `scale_groups_`.
     """
     scale_groups_(groups, 0.0)
 
 
 @torch.no_grad()
 def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | float, ...]) -> None:
-    """Rescale disjoint groups to explicit nonnegative L2 norms.
+    """Rescale each group in place so that its values have the target L2 norm.
 
-    Equivalent groups with identical targets count once; other overlaps are
-    rejected. Zero vectors cannot acquire positive norms without a new direction.
-    All validation precedes mutation. Momentum and algorithm progress are external.
+    Each group keeps its direction. Equivalent groups count once if their
+    targets are equal; any other overlap between groups is rejected. An
+    all-zero group can only receive target zero because it has no direction.
+    Values change under `torch.no_grad()`, and every check runs before any
+    parameter changes. Gradients and optimizer state are not changed, so
+    momentum can move the norms again on later steps.
 
     Args:
-        groups: Nonempty groups on one graph and device.
-        targets: Finite nonnegative L2 norm for each group.
+        groups: Nonempty groups that share one dependency graph and device.
+        targets: One finite, nonnegative Python number per group.
 
     Raises:
-        ValueError: Targets are invalid, groups overlap incompatibly, or a zero
-            vector has a positive target.
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: The targets are invalid or do not match the groups in
+            number, equivalent groups have different targets, groups overlap
+            in any other way, an all-zero group has a positive target, or the
+            groups violate the requirements of `scale_groups_`.
     """
     groups, targets = tuple(groups), tuple(targets)
     if len(groups) != len(targets) or any(

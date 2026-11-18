@@ -5,12 +5,47 @@ from torch import nn
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
     ParameterGroup,
+    unique_groups,
 )
 from torch_kirigami.sparsity import (
+    GroupLasso,
+    GroupSquaredL2,
     scale_groups_,
     set_group_norms_,
     zero_groups_,
 )
+
+GROUP_ENTRY_POINTS = {
+    "scale": lambda groups: scale_groups_(groups, 0.5),
+    "zero": zero_groups_,
+    "norm": lambda groups: set_group_norms_(groups, (1.0,) * len(groups)),
+    "lasso": GroupLasso,
+    "squared": GroupSquaredL2,
+    "unique": unique_groups,
+}
+
+
+@pytest.mark.parametrize("entry", GROUP_ENTRY_POINTS)
+@pytest.mark.parametrize("position", [0, 1])
+def test_group_entry_points_reject_non_groups_with_type_error(entry, position):
+    model = nn.Linear(2, 2, bias=False)
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 2),))
+    group = ParameterGroup(graph, (graph.parameter("weight").axis(0).select([0]),))
+    groups = [group, group]
+    groups[position] = object()
+    before = model.weight.detach().clone()
+    with pytest.raises(TypeError, match="ParameterGroup"):
+        GROUP_ENTRY_POINTS[entry](tuple(groups))
+    torch.testing.assert_close(model.weight, before)
+    # One invalid item must not hide behind the single-group path.
+    with pytest.raises(TypeError, match="ParameterGroup"):
+        GROUP_ENTRY_POINTS[entry]((object(),))
+    if entry == "unique":
+        assert unique_groups(()) == ()
+    else:
+        with pytest.raises(ValueError, match="nonempty"):
+            GROUP_ENTRY_POINTS[entry](())
+    GROUP_ENTRY_POINTS[entry]((group,))
 
 
 def test_region_union_scaling_norm_targets_and_atomic_rejection(execution_device):

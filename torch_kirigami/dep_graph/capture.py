@@ -244,9 +244,7 @@ def isolated_execution(
     except Exception as error:
         raise CaptureError("Cannot safely copy example inputs and registered buffers") from error
     validate_isolated_tensors([*isolated, *related], memo)
-    aliases = {
-        id(clone): original for (_, _, original), clone in zip(buffers, copies, strict=False)
-    }
+    aliases = {id(clone): original for (_, _, original), clone in zip(buffers, copies, strict=True)}
     replacements = {id(old): new for (_, _, old), new in zip(buffers, copies, strict=True)}
     replacements.update((id(old), new) for old, new in zip(related, related_copies, strict=True))
     replacements.update(
@@ -264,7 +262,7 @@ def isolated_execution(
                 owner = model.get_submodule(parent)
                 restored.append((owner, name, getattr(owner, name)))
                 object.__setattr__(owner, name, edit.value)
-            for (module, name, _), clone in zip(buffers, copies, strict=False):
+            for (module, name, _), clone in zip(buffers, copies, strict=True):
                 module._buffers[name] = clone
             yield copied_args, copied_kwargs, aliases
     finally:

@@ -1,4 +1,8 @@
-"""Pure scalar schedules and selection statistics, without training policy."""
+"""Stateless scalar schedules and selection-stability statistics.
+
+Schedules keep no progress state: the caller passes the current step on every
+call and owns the training policy that uses the value.
+"""
 
 from __future__ import annotations
 
@@ -22,10 +26,13 @@ def _finite(*values: int | float) -> None:
 
 @dataclass(frozen=True)
 class Constant:
-    """Return a fixed finite value for every nonnegative step.
+    """A schedule that returns the same value at every step.
 
     Attributes:
-        value: Finite value returned at every step.
+        value: Finite Python number returned at every step.
+
+    Raises:
+        ValueError: `value` is not a finite Python `int` or `float`.
     """
 
     value: float
@@ -34,24 +41,41 @@ class Constant:
         _finite(self.value)
 
     def __call__(self, step: int) -> float:
-        """Evaluate without changing progress."""
+        """Return the value at a step.
+
+        Args:
+            step: Nonnegative integer step supplied by the caller.
+
+        Returns:
+            `value` as a float.
+
+        Raises:
+            ValueError: `step` is not a nonnegative integer.
+        """
         _step(step)
         return float(self.value)
 
 
 @dataclass(frozen=True)
 class Polynomial:
-    """Interpolate start + (end-start) * progress**power, clamped at endpoints.
+    """A schedule that moves from `start` to `end` along a power curve.
 
-    Steps before begin return start; steps at/after finish return end. Progress
-    is supplied by the caller, so schedules need no mutable checkpoint state.
+    Between `begin` and `finish`, the value is
+    `start + (end - start) * progress**power`, where
+    `progress = (step - begin) / (finish - begin)`. Steps at or before `begin`
+    return `start`, and steps at or after `finish` return `end`. The caller
+    supplies the step, so the schedule has no state to checkpoint.
 
     Attributes:
-        start: Value at and before the begin step.
-        end: Value at and after the finish step.
-        finish: Step at and after which the schedule returns `end`.
-        begin: Step at and before which the schedule returns `start`.
-        power: Positive exponent applied to normalized progress.
+        start: Finite value at and before `begin`.
+        end: Finite value at and after `finish`.
+        finish: First step that returns `end`. It must be greater than `begin`.
+        begin: Last step that returns `start`.
+        power: Finite, positive exponent applied to the progress.
+
+    Raises:
+        ValueError: A value is not a finite Python number, a step is not a
+            nonnegative integer, `finish <= begin`, or `power <= 0`.
     """
 
     start: float
@@ -68,7 +92,17 @@ class Polynomial:
             raise ValueError("Require finish > begin and power > 0")
 
     def __call__(self, step: int) -> float:
-        """Evaluate at an explicit step."""
+        """Return the scheduled value at a step.
+
+        Args:
+            step: Nonnegative integer step supplied by the caller.
+
+        Returns:
+            The interpolated value as a float.
+
+        Raises:
+            ValueError: `step` is not a nonnegative integer.
+        """
         _step(step)
         if step <= self.begin:
             return float(self.start)
@@ -83,32 +117,43 @@ class Polynomial:
 
 
 def Linear(start: float, end: float, finish: int, *, begin: int = 0) -> Polynomial:
-    """Construct a linear schedule with explicit endpoint steps.
+    """Construct a schedule that moves linearly from `start` to `end`.
 
     Args:
         start: Value at and before `begin`.
         end: Value at and after `finish`.
-        finish: First step that returns `end`.
-        begin: Step at and before which the schedule returns `start`.
+        finish: First step that returns `end`. It must be greater than `begin`.
+        begin: Last step that returns `start`.
 
     Returns:
-        A polynomial schedule with power one.
+        A `Polynomial` schedule with power one.
+
+    Raises:
+        ValueError: The arguments violate the `Polynomial` requirements.
     """
     return Polynomial(start, end, finish, begin)
 
 
 @dataclass(frozen=True)
 class Piecewise:
-    """Return the value at the latest milestone; first milestone must be zero.
+    """A step schedule that holds each milestone value until the next milestone.
 
     Attributes:
-        points: Strictly increasing step/value pairs beginning at step zero.
+        points: `(step, value)` pairs with strictly increasing nonnegative
+            integer steps, starting at step zero, and finite values. Any
+            iterable of two-item pairs is accepted; the pairs are copied into
+            tuples, so later changes to the input do not affect the schedule.
+
+    Raises:
+        ValueError: The first step is not zero, the steps do not increase
+            strictly, a pair does not have two items, or a step or value is
+            invalid.
     """
 
     points: tuple[tuple[int, float], ...]
 
     def __post_init__(self) -> None:
-        points: tuple[tuple[int, float], ...] = tuple(self.points)
+        points: tuple[tuple[int, float], ...] = tuple((step, value) for step, value in self.points)
         if not points or points[0][0] != 0:
             raise ValueError("Piecewise requires a zero starting milestone")
         previous = -1
@@ -121,7 +166,17 @@ class Piecewise:
         object.__setattr__(self, "points", points)
 
     def __call__(self, step: int) -> float:
-        """Evaluate without mutating the milestones."""
+        """Return the value of the latest milestone at or before a step.
+
+        Args:
+            step: Nonnegative integer step supplied by the caller.
+
+        Returns:
+            The milestone value as a float.
+
+        Raises:
+            ValueError: `step` is not a nonnegative integer.
+        """
         _step(step)
         return next(float(v) for s, v in reversed(self.points) if s <= step)
 
@@ -144,17 +199,22 @@ def _sets(selection: Mapping[str, Iterable[int]]) -> dict[str, frozenset[int]]:
 def selection_similarity(
     left: Mapping[str, Iterable[int]], right: Mapping[str, Iterable[int]]
 ) -> float:
-    """Average per-domain Jaccard of retained identities, with empty/empty = 1.
+    """Return the mean Jaccard similarity of two selections across their domains.
+
+    For each domain, the similarity is the size of the intersection of the
+    retained identities divided by the size of their union. Two empty sets
+    have similarity one.
 
     Args:
-        left: Retained identities keyed by domain.
-        right: Next retained identities with the same domain keys.
+        left: Retained nonnegative integer identities keyed by domain name.
+        right: Next retained identities with the same domain names.
 
     Returns:
-        Mean Jaccard similarity across domains, from zero to one.
+        The mean similarity, from zero to one.
 
     Raises:
-        ValueError: The mappings have different domain keys.
+        ValueError: A mapping is empty, has a non-string key or an invalid
+            identity, or the mappings have different domain names.
     """
     left, right = _sets(left), _sets(right)
     if left.keys() != right.keys():
@@ -166,13 +226,22 @@ def selection_similarity(
 
 
 class SelectionWindow:
-    """Track adjacent-selection similarity, leaving thresholds and triggers external.
+    """Average the similarity of consecutive selections over a sliding window.
+
+    Each `update()` compares the new selection with the previous one using
+    `selection_similarity`. The caller decides what threshold or trigger to
+    apply to the average. Call `reset()` after physical pruning or whenever the
+    identities start to refer to a different set of coordinates. The state
+    contains only domain names, integer identities, and finite similarities.
 
     Args:
-        size: Number of adjacent comparisons needed before returning an average.
+        size: Positive number of consecutive comparisons to average.
 
-    Call reset after physical pruning or a change of coordinate universe. State
-    contains only domain strings, integer identities and finite similarities.
+    Attributes:
+        size: Number of comparisons in the window.
+
+    Raises:
+        ValueError: `size` is not a positive integer.
     """
 
     def __init__(self, size: int) -> None:
@@ -182,18 +251,25 @@ class SelectionWindow:
         self.reset()
 
     def reset(self) -> None:
-        """Forget comparisons at an explicit structural-stage boundary."""
+        """Forget the previous selection and every recorded comparison."""
         self._previous: dict[str, frozenset[int]] | None = None
         self._values: list[float] = []
 
     def update(self, selection: Mapping[str, Iterable[int]]) -> float | None:
-        """Observe retained identities; return None until the window is full.
+        """Record a new selection and return the current window average.
+
+        The state changes only if the selection is valid.
 
         Args:
-            selection: Retained identities keyed by domain.
+            selection: Retained nonnegative integer identities keyed by domain name.
 
         Returns:
-            Mean adjacent-selection similarity once `size` comparisons exist.
+            The mean of the last `size` similarities, or `None` until `size`
+            comparisons exist, which needs `size + 1` selections after a reset.
+
+        Raises:
+            ValueError: The selection is invalid or its domain names differ
+                from those of the previous selection.
         """
         current = _sets(selection)
         values = list(self._values)
@@ -203,7 +279,12 @@ class SelectionWindow:
         return sum(self._values) / self.size if len(self._values) == self.size else None
 
     def state_dict(self) -> dict[str, object]:
-        """Return independent plain data for caller-owned training checkpoints."""
+        """Return the window state as new plain data for a caller-owned checkpoint.
+
+        Returns:
+            A dictionary with the window size, the previous selection as sorted
+            lists (or `None`), and the recorded similarities.
+        """
         return {
             "size": self.size,
             "previous": None
@@ -213,7 +294,18 @@ class SelectionWindow:
         }
 
     def load_state_dict(self, state: dict[str, object]) -> None:
-        """Validate the complete state before replacing any current statistics."""
+        """Restore state returned by `state_dict()`.
+
+        The complete state is validated before any current statistics change.
+
+        Args:
+            state: Mapping returned by `state_dict()` of a window with the same size.
+
+        Raises:
+            ValueError: The keys or size differ, the previous selection is
+                invalid, or the similarity history is too long, outside
+                `[0, 1]`, nonfinite, or present without a previous selection.
+        """
         if (
             set(state) != {"size", "previous", "values"}
             or type(state["size"]) is not int

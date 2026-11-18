@@ -2120,6 +2120,7 @@
           "tests": [
             "tests/integration/test_sparse_lifecycle.py::test_candidate_group_alignment_training_and_compaction",
             "tests/sparsity/test_group_scaling.py::test_equivalence_buckets_preserve_geometric_equality_and_resolve_collisions",
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error",
             "tests/sparsity/test_group_scaling.py::test_disjoint_groups_do_not_require_pairwise_equivalence",
             "tests/sparsity/test_group_scaling.py::test_group_bucketing_does_not_exceed_valid_region_coordinate_budgets",
             "tests/workflows/test_entrypoints.py::test_pretrained_workflow"
@@ -2204,6 +2205,14 @@
           ],
           "conditions": "CPU/CUDA；公共生命周期与失败状态检查",
           "gaps": []
+        },
+        {
+          "behavior": "非 ParameterGroup 元素抛 TypeError，空序列抛 ValueError",
+          "tests": [
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error"
+          ],
+          "conditions": "CPU",
+          "gaps": []
         }
       ]
     },
@@ -2215,7 +2224,8 @@
           "tests": [
             "tests/sparsity/test_regularizers.py::test_penalty_gradient_repeated_and_overlapping_terms",
             "tests/sparsity/test_regularizers.py::test_public_regularizer_gradcheck_and_zero_subgradient",
-            "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch"
+            "tests/sparsity/test_regularizers.py::test_sparse_loss_accumulation_matches_single_batch",
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",
           "gaps": [
@@ -2291,7 +2301,8 @@
         {
           "behavior": "纯调度端点、插值、分段及非法输入",
           "tests": [
-            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs"
+            "tests/sparsity/test_budget_schedule.py::test_pure_schedules_endpoints_and_invalid_inputs",
+            "tests/sparsity/test_budget_schedule.py::test_piecewise_copies_list_pairs_into_hashable_tuples"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",
           "gaps": [
@@ -2452,7 +2463,8 @@
           "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
           "tests": [
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
-            "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically"
+            "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",
           "gaps": [
@@ -2469,6 +2481,7 @@
           "tests": [
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
             "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error",
             "tests/integration/test_sparse_lifecycle.py::test_soft_example_regrowth_keeps_momentum_and_can_compact"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",
@@ -2487,6 +2500,7 @@
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
             "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
             "tests/sparsity/test_projection.py::test_norm_projection_of_nonzero_subnormals",
+            "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error",
             "tests/integration/test_sparse_lifecycle.py::test_soft_example_regrowth_keeps_momentum_and_can_compact"
           ],
           "conditions": "CPU；execution_device 用例另验 CUDA",

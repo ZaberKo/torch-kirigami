@@ -1,4 +1,4 @@
-"""Scalar sparse penalties with a single autograd-based differentiation path."""
+"""Scalar sparse regularizers over live parameter groups, differentiated by autograd."""
 
 from __future__ import annotations
 
@@ -13,7 +13,21 @@ from .values import group_penalty, group_values, reduction_plan, squared_norm, s
 
 
 def coefficients_for(count: int, coefficients: tuple[int | float, ...] | None) -> tuple[float, ...]:
-    """Validate fixed nonnegative weights without differentiating through them."""
+    """Validate per-group coefficients and convert them to Python floats.
+
+    Args:
+        count: Number of groups.
+        coefficients: One finite, nonnegative Python number per group, or
+            `None` for a coefficient of one per group. Tensors are rejected so
+            that coefficients never join the autograd graph.
+
+    Returns:
+        The coefficients as floats, in input order.
+
+    Raises:
+        ValueError: The count does not match, or a coefficient is a boolean,
+            a tensor, nonfinite, or negative.
+    """
     values = (1.0,) * count if coefficients is None else tuple(coefficients)
     if len(values) != count or any(
         isinstance(v, (bool, torch.Tensor))
@@ -43,7 +57,10 @@ class GroupLasso:
     without changing them or their gradients. Frozen parameters still contribute
     to the loss. The object does not retain autograd graphs between calls.
     Built-in L2 penalties support first-order autograd, not double backward.
-    Multiply the returned scalar by the overall loss strength in the training loop.
+
+    The regularizer only returns a scalar loss. The caller multiplies it by the
+    overall loss strength, adds it to the task loss, and owns the optimizer,
+    loss scaling, and training loop.
 
     Args:
         groups: Nonempty tuple of `torch_kirigami.pruning.ParameterGroup` objects
@@ -54,7 +71,13 @@ class GroupLasso:
 
     Attributes:
         groups: Supplied groups in input order, including repeated groups.
-        coefficients: Validated scalar weights in the same order.
+        coefficients: Validated coefficients as floats, in the same order.
+
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: `groups` is empty or spans several graphs or devices, a
+            selected parameter is not a dense real floating-point tensor, a
+            selected value is nonfinite, or the coefficients are invalid.
 
     Examples:
         Assume `group` selects parameter values `[3, 4]`. Its L2 norm is 5.
@@ -64,15 +87,11 @@ class GroupLasso:
         from torch_kirigami.pruning import unique_groups
         from torch_kirigami.sparsity import GroupLasso
 
-        repeated = GroupLasso((group, group))
-        repeated()  # 10 = 5 + 5
+        GroupLasso((group, group))()  # 10 = 5 + 5
 
         groups = unique_groups((group, group))
-        once = GroupLasso(groups)
-        once()  # 5
-
-        weighted = GroupLasso(groups, coefficients=(2.0,))
-        weighted()  # 10 = 2 * 5
+        GroupLasso(groups)()  # 5
+        GroupLasso(groups, coefficients=(2.0,))()  # 10 = 2 * 5
         ```
 
         The deduplicated tuple has one group, so it needs only one coefficient.
@@ -136,7 +155,17 @@ class GroupLasso:
         return result
 
     def penalty(self, values: torch.Tensor) -> torch.Tensor:
-        """Return the unweighted penalty for one flattened group."""
+        """Return the unweighted penalty for one group.
+
+        Subclasses override this method to define a custom penalty. The exact
+        built-in classes use an equivalent batched implementation instead.
+
+        Args:
+            values: Current selected values of one group, flattened to one dimension.
+
+        Returns:
+            A scalar tensor. This implementation returns the L2 norm.
+        """
         return stable_norm(values)
 
 
@@ -152,7 +181,8 @@ class GroupSquaredL2(GroupLasso):
     deduplication, then assign coefficients to the returned groups.
 
     The live bindings, dtype, and first-order autograd contract are inherited
-    from `GroupLasso`. Multiply the returned scalar by the overall loss strength.
+    from `GroupLasso`. Like `GroupLasso`, it only returns a scalar loss; the
+    caller multiplies it by the overall loss strength and owns training.
 
     Args:
         groups: Nonempty tuple of `torch_kirigami.pruning.ParameterGroup` objects
@@ -160,10 +190,21 @@ class GroupSquaredL2(GroupLasso):
             tensors on one device, with finite selected values.
         coefficients: One fixed, finite, nonnegative Python number per group,
             in input order. `None` assigns one to every group.
+
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: The groups or coefficients violate the requirements above.
     """
 
     def penalty(self, values: torch.Tensor) -> torch.Tensor:
-        """Return half the squared norm, whose gradient is the group itself."""
+        """Return half the squared L2 norm of one group.
+
+        Args:
+            values: Current selected values of one group, flattened to one dimension.
+
+        Returns:
+            A scalar tensor whose gradient with respect to `values` is `values`.
+        """
         return squared_norm(values)
 
 
@@ -172,8 +213,9 @@ class ScaleL1(GroupLasso):
 
     Typical inputs are BatchNorm scale vectors, such as `bn.weight`. Calling
     the object returns the sum of absolute values across the supplied parameters.
-    Add this scalar to the task loss to encourage small scale values during
-    training. The regularizer neither selects channels nor removes parameters.
+    The caller multiplies this scalar by a loss strength and adds it to the task
+    loss to encourage small scale values during training. The regularizer
+    neither selects channels nor removes parameters.
 
     Each distinct parameter contributes once, even when paths repeat or alias
     the same object. This class does not propagate dependencies to other weights.
@@ -186,6 +228,11 @@ class ScaleL1(GroupLasso):
         parameters: Nonempty tuple of parameter paths or `TensorRef` objects
             from this graph. Parameters must be one-dimensional, dense, real
             floating-point tensors on one device, with finite values.
+
+    Raises:
+        KeyError: A path is not a registered parameter of `graph`.
+        ValueError: `parameters` is empty, or a parameter violates the
+            requirements above.
     """
 
     def __init__(self, graph: DependencyGraph, parameters: tuple[str | TensorRef, ...]) -> None:
@@ -201,5 +248,12 @@ class ScaleL1(GroupLasso):
         )
 
     def penalty(self, values: torch.Tensor) -> torch.Tensor:
-        """Return L1 with autograd's zero subgradient at zero."""
+        """Return the L1 norm of one group.
+
+        Args:
+            values: Current selected values, flattened to one dimension.
+
+        Returns:
+            A scalar tensor. Autograd uses a zero subgradient at zero.
+        """
         return values.abs().sum()

@@ -1,4 +1,8 @@
-"""Live sparse parameter access below losses and mutation operations."""
+"""Live parameter-group access and numerically stable norm kernels.
+
+Regularizers and parameter operations share these helpers. They read current
+parameter values on every call and never cache values or autograd graphs.
+"""
 
 from __future__ import annotations
 
@@ -10,7 +14,7 @@ import torch
 from torch.autograd.function import FunctionCtx, once_differentiable
 
 from ..dep_graph.selection import IndexSet, TensorRef, gather_region
-from ..pruning.groups import ParameterGroup
+from ..pruning.groups import ParameterGroup, checked_groups
 
 
 def group_bindings(
@@ -18,10 +22,28 @@ def group_bindings(
     *,
     refs: tuple[TensorRef, ...] | None = None,
 ) -> tuple[dict[TensorRef, torch.Tensor], torch.dtype]:
-    """Validate live group ownership, device and dtype without gathering weights."""
-    groups = tuple(groups)
-    if not groups or any(not isinstance(g, ParameterGroup) for g in groups):
-        raise ValueError("Expected nonempty ParameterGroup sequence")
+    """Resolve live parameters for groups and choose the computation dtype.
+
+    No parameter values are gathered.
+
+    Args:
+        groups: Nonempty groups that share one dependency graph.
+        refs: Parameters to validate. `None` validates every parameter that
+            the groups select.
+
+    Returns:
+        The graph's tensor bindings and the computation dtype: float64 if any
+        validated parameter is float64, otherwise float32.
+
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: `groups` is empty or spans several graphs, or the validated
+            parameters are on several devices or are not dense real
+            floating-point tensors.
+    """
+    groups = checked_groups(groups)
+    if not groups:
+        raise ValueError("Expected a nonempty ParameterGroup sequence")
     graph = groups[0].graph
     if any(g.graph is not graph for g in groups):
         raise ValueError("Groups must share one dependency graph")
@@ -54,10 +76,20 @@ def _gather_group(
 
 
 def group_values(groups: tuple[ParameterGroup, ...]) -> tuple[torch.Tensor, ...]:
-    """Gather current dense real values on one device, preserving autograd.
+    """Gather the current selected values of each group, preserving autograd.
 
-    All groups belong to one graph. Distributed/sharded parameter gathering is
-    unsupported. No values or autograd graphs are cached.
+    Distributed or sharded parameters are unsupported.
+
+    Args:
+        groups: Nonempty groups that share one dependency graph and device.
+
+    Returns:
+        One flattened tensor per group, in the dtype chosen by `group_bindings`.
+
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: The groups violate the `group_bindings` requirements, or a
+            selected value is nonfinite.
     """
     groups = tuple(groups)
     bindings, dtype = group_bindings(groups)
@@ -68,10 +100,12 @@ def group_values(groups: tuple[ParameterGroup, ...]) -> tuple[torch.Tensor, ...]
 
 
 def scaled_product(*factors: torch.Tensor, divide: tuple[torch.Tensor, ...] = ()) -> torch.Tensor:
-    """Combine floating factors without losing range in intermediate products.
+    """Multiply factors and divide by divisors without intermediate overflow or underflow.
 
-    Mantissas stay near one; only the final exponent determines output range.
-    Split ldexp to avoid a premature power-of-two intermediate overflow.
+    Mantissas and exponents are combined separately, so only the final exponent
+    determines whether the result is representable. The final `ldexp` is split
+    in two to avoid overflowing an intermediate power of two. Divisors must be
+    nonzero. A zero factor gives an exact zero.
     """
     mantissa, exponent = torch.frexp(factors[0])
     for factor in factors[1:]:
@@ -88,7 +122,7 @@ def scaled_product(*factors: torch.Tensor, divide: tuple[torch.Tensor, ...] = ()
 def _norm_divisors(
     values: torch.Tensor, dimensions: tuple[int, ...]
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return the nonzero scale and normalized length used by norm backward."""
+    """Return the nonzero max-abs scale and scaled length used by norm backward."""
     scale = values.detach().abs().amax(dim=dimensions, keepdim=True)
     divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
     scaled = values / divisor
@@ -98,13 +132,13 @@ def _norm_divisors(
 
 
 class _StableNorm(torch.autograd.Function):
-    """Differentiate normalized directions without tiny scaled intermediates."""
+    """Coefficient-weighted L2 norm whose gradient avoids tiny scaled intermediates."""
 
     @staticmethod
     def forward(
         ctx: FunctionCtx, values: torch.Tensor, dimensions: tuple[int, ...], coefficient: float
     ) -> torch.Tensor:
-        """Evaluate normalized L2 magnitudes while saving backward inputs."""
+        """Evaluate weighted L2 norms over `dimensions` and save the inputs for backward."""
         ctx.save_for_backward(values)
         ctx.dimensions = dimensions
         ctx.coefficient = coefficient
@@ -138,14 +172,18 @@ class _StableNorm(torch.autograd.Function):
 
 
 def stable_norm(values: torch.Tensor, *, coefficient: float = 1.0) -> torch.Tensor:
-    """Compute scaled L2 with a stable gradient, including nonzero subnormals."""
+    """Return `coefficient` times the L2 norm of all elements, with a stable gradient.
+
+    The norm and its gradient stay accurate for nonzero subnormal values. An
+    all-zero input has a zero gradient. Only first-order autograd is supported.
+    """
     return _StableNorm.apply(values, tuple(range(values.ndim)), coefficient)
 
 
 def _scaled_segments(
     values: torch.Tensor, owner: torch.Tensor, count: int
 ) -> tuple[torch.Tensor, ...]:
-    """Compute stable per-owner scales and squared magnitudes."""
+    """Return scaled values, scaled roots, scales, and nonzero flags for each owner."""
     zero = values.new_zeros(count)
     scales = zero.scatter_reduce(0, owner, values.detach(), reduce="amax")
     divisors = torch.where(scales == 0, torch.ones_like(scales), scales)
@@ -156,7 +194,7 @@ def _scaled_segments(
 
 
 class _SegmentNorm(torch.autograd.Function):
-    """Stable norms and directions for ragged groups of batched row norms."""
+    """Stable L2 norm over each owner's ragged set of nonnegative row norms."""
 
     @staticmethod
     def forward(
@@ -195,18 +233,18 @@ class _HalfSquared(torch.autograd.Function):
 
 
 def half_squared(values: torch.Tensor) -> torch.Tensor:
-    """Return elementwise half squares, differentiating as gradient * values."""
+    """Return `0.5 * values**2` elementwise, with gradient `gradient * values`."""
     return _HalfSquared.apply(values)
 
 
 class _SquaredNorm(torch.autograd.Function):
-    """Aggregate weighted squares and preserve original factors for first derivatives."""
+    """Half the weighted squared norm of several tensors, with an exact first derivative."""
 
     @staticmethod
     def forward(
         ctx: FunctionCtx, coefficients: tuple[float, ...], *values: torch.Tensor
     ) -> torch.Tensor:
-        """Evaluate a weighted squared norm from concatenated group values."""
+        """Evaluate half the weighted squared norm in float64 and save the inputs."""
         ctx.save_for_backward(*values)
         ctx.coefficients = coefficients
         scaled = torch.cat(
@@ -238,13 +276,25 @@ class _SquaredNorm(torch.autograd.Function):
 def squared_norm(
     *values: torch.Tensor, coefficients: tuple[float, ...] | None = None
 ) -> torch.Tensor:
-    """Return half the weighted squared norm without per-element square underflow."""
+    """Return `0.5 * sum(a_i * ||v_i||**2)` without per-element square underflow.
+
+    Args:
+        *values: Tensors `v_i` to include.
+        coefficients: One weight `a_i` per tensor. `None` uses one for each.
+
+    Returns:
+        A scalar in the dtype of the first tensor.
+    """
     weights = (1.0,) * len(values) if coefficients is None else coefficients
     return _SquaredNorm.apply(weights, *values)
 
 
 def _axis_sections(group: ParameterGroup) -> list[tuple[TensorRef, int, IndexSet]] | None:
-    """Return whole-axis sections, or None when any region needs general gathering."""
+    """Return `(tensor, axis, indices)` sections that select whole slices along one axis.
+
+    Returns `None` when the group selects a scalar parameter or a region that
+    restricts more than one axis, because such a group needs general gathering.
+    """
     sections = []
     for selection in group.selections:
         ref = selection.tensor
@@ -267,7 +317,9 @@ def _axis_sections(group: ParameterGroup) -> list[tuple[TensorRef, int, IndexSet
 
 @dataclass(frozen=True, eq=False)
 class ReductionPlan:
-    """Cache coordinate indices without retaining values or autograd graphs.
+    """Precomputed coordinate indices for batched group penalties.
+
+    The plan retains no parameter values or autograd graphs.
 
     Attributes:
         batches: Entries containing a parameter reference, axis, optional selected
@@ -285,11 +337,24 @@ class ReductionPlan:
 
 
 def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
-    """Batch whole-axis sections; retain the region path for irregular groups.
+    """Plan batched penalty evaluation for groups.
 
-    The plan holds original-coordinate indices only. Each parameter/axis is
-    reduced once, then small axis vectors are shared by all participating groups.
+    Groups made only of whole slices along one axis are batched: each
+    parameter and axis pair is reduced once per call, and the reduced axis
+    vector is shared by every group that uses it. Other groups use general
+    region gathering. The plan holds original-coordinate indices only.
+
+    Args:
+        groups: Nonempty groups that share one dependency graph and device.
+
+    Returns:
+        A plan for `group_penalty` with the same groups.
+
+    Raises:
+        TypeError: An item of `groups` is not a `ParameterGroup`.
+        ValueError: The groups violate the `group_bindings` requirements.
     """
+    bindings, _ = group_bindings(groups)
     batches: dict[tuple[TensorRef, int], list[tuple[int, int]]] = {}
     fallback: list[int] = []
     for number, group in enumerate(groups):
@@ -302,7 +367,6 @@ def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
         for ref, axis, indices in sections:
             entries = batches.setdefault((ref, axis), [])
             entries.extend((number, i) for i in indices)
-    bindings, _ = group_bindings(groups)
     prepared: list[tuple[TensorRef, int, torch.Tensor | None, torch.Tensor]] = []
     owners: list[int] = []
     refs = tuple(dict.fromkeys(s.tensor for group in groups for s in group.selections))
@@ -328,7 +392,7 @@ def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
 
 
 def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor:
-    """Stable vector norms along axes, with zero subgradients at all-zero rows."""
+    """Return stable L2 norms over `dimensions`, or absolute values when there are none."""
     if not dimensions:
         return values.abs()
     return _StableNorm.apply(values, dimensions, 1.0)
@@ -337,7 +401,21 @@ def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor
 def group_penalty(
     groups: tuple[ParameterGroup, ...], kind: str, plan: ReductionPlan
 ) -> torch.Tensor:
-    """Evaluate the scalar batched L1/L2/squared-L2 objective."""
+    """Return the unweighted sum of one penalty over all groups.
+
+    Args:
+        groups: Groups used to build `plan`.
+        kind: `"l1"` for L1 norms, `"l2"` for L2 norms, or `"squared_l2"` for
+            half squared L2 norms.
+        plan: Result of `reduction_plan(groups)`.
+
+    Returns:
+        A scalar in the dtype chosen by `group_bindings`.
+
+    Raises:
+        ValueError: The groups violate the `group_bindings` requirements, or a
+            selected value or penalty is nonfinite.
+    """
     bindings, dtype = group_bindings(groups, refs=plan.refs)
     contributions: list[torch.Tensor] = []
     tiny_squares = []
