@@ -9,7 +9,14 @@ import torch
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import Selection, TensorRef, full_region
 from ..pruning.groups import ParameterGroup
-from .values import group_penalty, group_values, reduction_plan, squared_norm, stable_norm
+from .values import (
+    group_bindings,
+    group_penalty,
+    group_values,
+    reduction_plan,
+    squared_norm,
+    stable_norm,
+)
 
 
 def coefficients_for(count: int, coefficients: tuple[int | float, ...] | None) -> tuple[float, ...]:
@@ -106,9 +113,14 @@ class GroupLasso:
     ) -> None:
         self.groups = tuple(groups)
         self.coefficients = coefficients_for(len(self.groups), coefficients)
-        self._reduction_plan = reduction_plan(self.groups)
         with torch.no_grad():
-            group_values(self.groups)
+            bindings, dtype = group_bindings(self.groups)
+            group_values(tuple(g.selections for g in self.groups), bindings, dtype)
+            self._reduction_plan = (
+                reduction_plan(self.groups, bindings)
+                if type(self) in _BUILTIN_PENALTIES and all(a == 1 for a in self.coefficients)
+                else None
+            )
 
     def __call__(self) -> torch.Tensor:
         """Evaluate the loss on current parameters without running the model.
@@ -122,34 +134,31 @@ class GroupLasso:
             ValueError: Selected values or the resulting loss are nonfinite,
                 or the groups violate the device or dtype requirements.
         """
-        native = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}
         # Exact types keep the optimized path from bypassing a subclass penalty().
-        if type(self) in native:
-            kind = native[type(self)]
-            if all(a == 1 for a in self.coefficients):
-                result = group_penalty(self.groups, kind, self._reduction_plan)
-            else:
-                # Apply weights before the nonlinear reduction. Computing an
-                # unweighted square first can lose a representable weighted
-                # result. FP64 also keeps finite Python coefficients from being
-                # rounded to zero/infinity when parameters are FP32 or lower.
-                values = group_values(self.groups)
-                if kind == "squared_l2":
-                    result = squared_norm(*values, coefficients=self.coefficients)
-                else:
-                    terms = [
-                        stable_norm(value.double(), coefficient=coefficient)
-                        if kind == "l2"
-                        else (value.double() * coefficient).abs().sum()
-                        for value, coefficient in zip(values, self.coefficients, strict=True)
-                    ]
-                    result = torch.stack(terms).sum().to(values[0].dtype)
+        if self._reduction_plan is not None and all(a == 1 for a in self.coefficients):
+            result = group_penalty(
+                self.groups, _BUILTIN_PENALTIES[type(self)], self._reduction_plan
+            )
         else:
-            # Custom penalties still receive the original flattened union.
-            values = group_values(self.groups)
-            result = torch.stack(
-                [self.penalty(v) * a for v, a in zip(values, self.coefficients, strict=True)]
-            ).sum()
+            kind = _BUILTIN_PENALTIES.get(type(self))
+            bindings, dtype = group_bindings(self.groups)
+            values = group_values(tuple(g.selections for g in self.groups), bindings, dtype)
+            # Built-in weighted reductions apply coefficients before a square
+            # can overflow. FP64 preserves finite Python coefficients.
+            if kind is None:
+                result = torch.stack(
+                    [self.penalty(v) * a for v, a in zip(values, self.coefficients, strict=True)]
+                ).sum()
+            elif kind == "squared_l2":
+                result = squared_norm(*values, coefficients=self.coefficients)
+            else:
+                terms = [
+                    stable_norm(value.double(), coefficient=coefficient)
+                    if kind == "l2"
+                    else (value.double() * coefficient).abs().sum()
+                    for value, coefficient in zip(values, self.coefficients, strict=True)
+                ]
+                result = torch.stack(terms).sum().to(values[0].dtype)
         if not torch.isfinite(result):
             raise ValueError("Sparse penalty is nonfinite")
         return result
@@ -257,3 +266,6 @@ class ScaleL1(GroupLasso):
             A scalar tensor. Autograd uses a zero subgradient at zero.
         """
         return values.abs().sum()
+
+
+_BUILTIN_PENALTIES = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}

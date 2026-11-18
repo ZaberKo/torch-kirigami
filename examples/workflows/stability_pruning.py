@@ -383,8 +383,6 @@ def main() -> None:
 
     for check in range(options.max_selection_checks):
         plan = make_plan(pruner, space, budget)
-        selected_keys = set(plan.selected)
-        selected = tuple(c for c in space.candidates if c.key in selected_keys)
         retained = {}
         for axis in space.channel_axes:
             retained[axis.tensor.paths[0]] = sorted(
@@ -398,6 +396,8 @@ def main() -> None:
         if stable or check + 1 == options.max_selection_checks:
             break
         # Multiple candidate entry points must not repeat the same training penalty.
+        selected_keys = set(plan.selected)
+        selected = tuple(c for c in space.candidates if c.key in selected_keys)
         groups = unique_groups(pruner.parameter_groups(selected))
         regularizer = GroupSquaredL2(groups) if groups else None
         train_steps(
@@ -424,12 +424,7 @@ def main() -> None:
         training_steps=training_steps,
         similarity=similarity,
     )
-    # Evaluation preserves weights and modes; regenerate from the same checked
-    # coordinates immediately before apply to make execution preconditions clear.
     selection_report = plan.selection_report
-    plan = pruner.plan_remove(
-        [selection for candidate in selected for selection in candidate.remove]
-    )
     model, _ = pruner.apply(plan)
     window.reset()  # Original channel coordinates no longer describe the compact model.
     record(

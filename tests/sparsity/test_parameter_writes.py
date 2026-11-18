@@ -4,8 +4,9 @@ import pytest
 import torch
 from torch import nn
 
+import torch_kirigami.dep_graph.dependency_graph as graph_module
 import torch_kirigami.sparsity.operations as operations
-from torch_kirigami import DependencyGraph
+from torch_kirigami import DependencyGraph, StaleGraphError
 from torch_kirigami.pruning import ParameterGroup
 from torch_kirigami.sparsity import (
     set_group_norms_,
@@ -80,15 +81,35 @@ def test_sparse_writes_keep_unproved_nonoverlapping_layouts_usable(execution_dev
     assert model.weight.stride() == (2, 3)
 
 
-def test_sparse_writes_do_not_silently_modify_aliased_logical_rows(execution_device):
-    model = nn.Linear(2, 3, bias=False).double().eval()
-    model.weight = nn.Parameter(torch.ones(1, 2, dtype=torch.float64).expand(3, 2))
+@pytest.mark.parametrize("layout", ["expand", "unfold", "interleaved"])
+@pytest.mark.parametrize("operation", ["zero", "scale", "norm"])
+def test_sparse_writes_do_not_silently_modify_aliased_logical_rows(
+    layout, operation, execution_device
+):
+    model = nn.Linear(2, 3).double().eval()
+    storage = torch.arange(1, 12, dtype=torch.float64)
+    if layout == "expand":
+        weight = storage[:2].expand(3, 2)
+    elif layout == "unfold":
+        weight = storage[:4].unfold(0, 2, 1)
+    else:
+        # Six logical coordinates fit in nine storage slots, but two use offset 4.
+        weight = storage.as_strided((3, 2), (2, 4))
+    model.weight = nn.Parameter(weight)
     graph = DependencyGraph.build(model, args=(torch.ones(1, 2, dtype=torch.float64),))
-    selected = ParameterGroup(graph, (graph.parameter("weight").axis(0).select([1]),))
-    before = model.weight.detach().clone()
-    with pytest.raises(RuntimeError, match="single memory location"):
-        zero_groups_((selected,))
-    torch.testing.assert_close(model.weight, before)
+    groups = tuple(
+        ParameterGroup(graph, (graph.parameter(name).axis(0).select([1]),))
+        for name in ("bias", "weight")
+    )
+    before = {name: p.detach().clone() for name, p in model.named_parameters()}
+    with pytest.raises(ValueError, match=r"weight.*overlapping storage"):
+        if operation == "zero":
+            zero_groups_(groups)
+        elif operation == "scale":
+            operations.scale_groups_(groups, 0.5)
+        else:
+            set_group_norms_(groups, (1.0, 1.0))
+    torch.testing.assert_close(model.state_dict(), before, rtol=0, atol=0)
 
 
 def test_sparse_union_checks_final_dtype_before_any_commit(execution_device, monkeypatch):
@@ -137,3 +158,36 @@ def test_sparse_union_batches_finite_checks(execution_device, monkeypatch):
     # Input and final-cast checks are batched. Device dispatch can add a constant overhead.
     assert len(calls) <= 4
     torch.testing.assert_close(model.weight[::2], torch.zeros_like(model.weight[::2]))
+
+
+@pytest.mark.parametrize("change_before_commit", [False, True])
+def test_sparse_writes_validate_at_entry_and_before_commit(monkeypatch, change_before_commit):
+    model = nn.Linear(3, 4, bias=False).eval()
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 3),))
+    axis = graph.parameter("weight").axis(0)
+    groups = tuple(ParameterGroup(graph, (axis.select([i]),)) for i in (0, 1))
+    before = model.weight.detach().clone()
+    fingerprints = []
+    original = graph_module.fingerprint
+
+    def measured(current):
+        fingerprints.append(1)
+        return original(current)
+
+    monkeypatch.setattr(graph_module, "fingerprint", measured)
+    if change_before_commit:
+        gather = operations.gather_region
+
+        def change_mode(*args):
+            model.train()
+            return gather(*args)
+
+        monkeypatch.setattr(operations, "gather_region", change_mode)
+        with pytest.raises(StaleGraphError):
+            zero_groups_(groups)
+        torch.testing.assert_close(model.weight, before)
+    else:
+        zero_groups_(groups)
+        before[:2].zero_()
+        torch.testing.assert_close(model.weight, before)
+    assert len(fingerprints) == 2

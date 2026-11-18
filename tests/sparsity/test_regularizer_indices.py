@@ -8,7 +8,23 @@ from torch_kirigami import DependencyGraph, StaleGraphError
 from torch_kirigami.pruning import ParameterGroup
 from torch_kirigami.sparsity import (
     GroupLasso,
+    regularizers,
 )
+
+
+def test_weighted_and_custom_penalties_skip_batched_indices(monkeypatch):
+    class Sum(GroupLasso):
+        def penalty(self, values):
+            return values.sum()
+
+    model = nn.Linear(2, 1, bias=False).eval()
+    graph = DependencyGraph.build(model, args=(torch.ones(1, 2),))
+    group = ParameterGroup(graph, (graph.parameter("weight").axis(0).select([0]),))
+    monkeypatch.setattr(
+        regularizers, "reduction_plan", lambda *args: pytest.fail("unused reduction plan")
+    )
+    torch.testing.assert_close(GroupLasso((group,), coefficients=(2,))(), 2 * model.weight.norm())
+    torch.testing.assert_close(Sum((group,))(), model.weight.sum())
 
 
 def test_cached_regularizer_indices_keep_live_gradients_and_freshness(

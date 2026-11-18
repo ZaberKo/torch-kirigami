@@ -615,6 +615,24 @@ def test_paper_taylor_formula_aliases_joint_regions_and_public_plan(execution_de
     torch.testing.assert_close(restored(x), model(x))
 
 
+def test_family_quota_counts_equivalent_composite_requests_once(execution_device):
+    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 4), nn.Linear(4, 2)).eval()
+    x = torch.randn(2, 3)
+    expected = model(x).detach()
+    graph = DependencyGraph.build(model, args=(x,))
+    weight = graph.parameter("1.weight")
+    row, column = (weight.axis(dim).select([1]) for dim in (0, 1))
+    candidates = (Candidate("a", (row, column)), Candidate("b", (column, row)))
+    space = CandidateSpace(candidates, (weight.axis(0), weight.axis(1)))
+    strategy = workflow.Isomorphic(Magnitude(), ratio=0.5)
+    pruner = Pruner(model, graph=graph)
+    plan = pruner.plan(space, budget=ParameterBudget(1000), strategy=strategy)
+    assert [(family["actions"], family["quota"]) for family in strategy.families] == [(1, 0)]
+    assert plan.selected == ()
+    pruner.apply(plan)
+    torch.testing.assert_close(model(x), expected)
+
+
 def test_isomorphic_bias_seed_with_downstream_channel_axis(execution_device):
     model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 2)).eval()
     x = torch.ones(2, 3)

@@ -11,12 +11,61 @@ from torch.nn import functional as F
 
 from torch_kirigami import DependencyGraph
 from torch_kirigami.pruning import (
+    ChannelRatio,
+    DynamicGreedy,
+    Greedy,
+    Magnitude,
     PlanningError,
     Pruner,
     PruningPlan,
     load_checkpoint,
     save_checkpoint,
 )
+
+
+@pytest.mark.parametrize("strategy", [Greedy, DynamicGreedy])
+def test_zero_compact_split_size_excludes_only_its_branch(strategy, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.sizer = nn.Linear(4, 4)
+            self.hidden = nn.Linear(4, 4)
+            self.head = nn.Linear(4, 2)
+
+        def forward(self, x):
+            sections = self.sizer(x).shape[-1] // 4
+            return x.split(sections, -1), self.head(self.hidden(x))
+
+    model = Model().eval()
+    x = torch.randn(2, 4)
+    with torch.no_grad():
+        # The invalid candidates rank first. Hidden row 0 is the cheapest valid choice.
+        model.sizer.weight.zero_()
+        model.sizer.bias.zero_()
+        model.hidden.weight.copy_(torch.arange(1, 5)[:, None].expand(4, 4))
+        model.hidden.bias.zero_()
+        model.head.weight.fill_(1)
+    original = copy.deepcopy(model)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    with pytest.raises(PlanningError, match="split size becomes 0"):
+        pruner.plan_remove((graph.parameter("sizer.weight").axis(0).select([0]),))
+    torch.testing.assert_close(model.state_dict(), original.state_dict())
+
+    space = pruner.discover_candidates(targets=("sizer", "hidden"))
+    plan = pruner.plan(
+        space, budget=ChannelRatio(0.125, scope="global"), strategy=strategy(Magnitude())
+    )
+    assert len(plan.selected) == 1
+    assert any("split size becomes 0" in reason for _, reason in plan.selection_report.exclusions)
+    pruner.apply(plan)
+    assert model.sizer.out_features == 4 and model.hidden.out_features == 3
+    parts, prediction = model(x)
+    torch.testing.assert_close(parts, x.split(1, -1))
+    torch.testing.assert_close(
+        prediction,
+        F.linear(original.hidden(x)[:, 1:], original.head.weight[:, 1:], original.head.bias),
+    )
 
 
 @pytest.mark.parametrize(

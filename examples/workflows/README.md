@@ -419,7 +419,7 @@ It calls `torch_kirigami.pruning.unique_groups` before constructing the regulari
 Groups with the same parameter regions then contribute one penalty.
 It compares retained channel indices with mean per-axis Jaccard similarity.
 `--window 2` needs three selections for two adjacent comparisons.
-Search stops at `--threshold 0.99` or the configured check limit.
+Search stops at `--threshold 0.99` or the configured check limit. The example applies the plan from that final check.
 
 The maximum training duration is `(max_selection_checks - 1) * selection_interval_steps` updates.
 Defaults give 1,000 updates, with the earliest stability stop after 200.
@@ -500,7 +500,7 @@ python variance_pruning.py \
 
 The entry groups complete dependency impacts by ordered typed structural signatures.
 These signatures are conservative comparisons, not a general graph-isomorphism solver.
-Equivalent closures count once.
+Candidates that remove the same coordinates throughout the graph count as one action toward the family quota, even when their seeds appear in a different order.
 The entry inspects graph-declared domains under interface protections and execution checks.
 Proved identity components reuse per-position Taylor statistics, including ordinary
 CNN channel chains with full-tensor scopes. Partial partitions and nested extension

@@ -218,7 +218,10 @@ Each operation validates and prepares every value before it writes, and restores
 the original values if a write fails. Gradients and optimizer state are not
 touched. Momentum can therefore regrow zeroed weights. Apply the operation again
 after each step, or use a mask, if zeros must stay. Distinct tensors that share
-storage are rejected when an update could reach both.
+storage are rejected when an update could reach both. The operations also
+reject a selected parameter when two of its logical positions share a storage
+offset, as can happen with `expand` or overlapping `unfold` windows.
+Noncontiguous parameters with distinct storage offsets are supported.
 
 ## Iterative pruning with cumulative budgets
 

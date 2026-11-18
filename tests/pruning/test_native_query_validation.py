@@ -289,6 +289,52 @@ def test_native_group_extraction_keeps_batched_validation(monkeypatch):
         graph.validate()
 
 
+@pytest.mark.parametrize("transform", ["reshape", "cat"])
+def test_native_shape_calls_batch_checks_with_unused_custom_rule(transform, monkeypatch):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.hidden = nn.Linear(3, 16)
+            self.head = nn.Linear(32 if transform == "cat" else 16, 2)
+
+        def forward(self, x):
+            h = self.hidden(x)
+            h = torch.cat((h, h), dim=1) if transform == "cat" else h.reshape(h.shape)
+            return self.head(h)
+
+    class Unused(nn.Linear):
+        pass
+
+    model = Model().eval()
+    x = torch.randn(2, 3)
+    registry = OperatorRegistry.default()
+    registry.register(Unused, registry.modules[nn.Linear])
+    graph = DependencyGraph.build(model, args=(x,), operators=registry)
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("hidden",))
+    calls = []
+    original = graph_module.fingerprint
+
+    def measured(current):
+        calls.append(1)
+        return original(current)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(graph_module, "fingerprint", measured)
+        groups = pruner.parameter_groups(space.candidates)
+    assert len(groups) == 16 and 2 <= len(calls) <= 6
+    keep = list(range(1, 16))
+    columns = keep + [16 + i for i in keep] if transform == "cat" else keep
+    h = model.hidden(x)[:, keep]
+    expected = F.linear(
+        torch.cat((h, h), dim=1) if transform == "cat" else h,
+        model.head.weight[:, columns],
+        model.head.bias,
+    )
+    pruner.apply(pruner.plan_remove((graph.parameter("hidden.weight").axis(0).select([0]),)))
+    torch.testing.assert_close(model(x), expected)
+
+
 def test_functional_float_arguments_keep_batched_checks_and_exact_pruning(
     execution_device, monkeypatch
 ):

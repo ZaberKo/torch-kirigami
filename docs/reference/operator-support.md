@@ -92,7 +92,7 @@ limit. The default registry has the exact registrations.
 | Casts and storage calls | dtype and device conversion, `clone`, `detach`, `contiguous`. | Results that may alias input storage must pass alias checks. |
 | Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, `baddbmm`, `dot`, `vdot`, `mv`, `outer`, `ger`. Free and contracted axes. | Original ranks and broadcasting must stay valid. |
 | Einsum | String equations with explicit or implicit outputs, repeated labels, reductions, and ellipsis broadcasting. | No sublist format. Outputs may alias inputs. |
-| Concatenation and splitting | `cat`, `stack`, `split`, `chunk`, `unbind`. | Stack and unbind port counts stay fixed. |
+| Concatenation and splitting | `cat`, `stack`, `split`, `chunk`, `unbind`. | A scalar split size must stay positive after pruning. Split boundaries must preserve the retained positions in each output. Stack and unbind port counts stay fixed. |
 | Indexing | `...`, `None`, integers, and positive-step slices with known sizes. [Bracket indexing](#bracket-indexing) with one fixed vector or mask. | Indexing must keep its original coordinates. |
 | Shape transforms | `permute`, `transpose`, `movedim`, `reshape`, `view`, `flatten`, `unflatten`, `squeeze`, `unsqueeze`. | Incompatible sizes, changed ranks, or unproven view strides block the request. |
 | Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, `broadcast_to`. | Static positive repeat factors. `repeat_interleave` needs scalar repeats and an explicit axis. |

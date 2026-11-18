@@ -11,6 +11,7 @@ import torch
 from torch import nn
 
 from .contracts import (
+    ArgumentRef,
     AttributeBinding,
     AxisBarrier,
     Balanced,
@@ -41,6 +42,7 @@ from .relations import (
 from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
 
 _NATIVE_RECORD_TYPES = (
+    ArgumentRef,
     AttributeBinding,
     Requirement,
     AxisRef,
@@ -81,6 +83,10 @@ def has_native_semantics(value: object) -> bool:
         return True
     if type(value) is tuple:
         return all(has_native_semantics(item) for item in value)
+    if type(value) is slice:
+        return all(
+            item is None or type(item) is int for item in (value.start, value.stop, value.step)
+        )
     if type(value) in _NATIVE_RECORD_TYPES:
         return all(has_native_semantics(getattr(value, field.name)) for field in fields(value))
     return False
@@ -93,7 +99,7 @@ def has_native_query_semantics(
 
     This predicate inspects structural records (relations, constraints, shape
     expressions, and requirements), model accessors, captured arguments, and
-    operator registrations. The caller still validates snapshot freshness,
+    the rules matched by captured calls. The caller still validates snapshot freshness,
     registered tensor types, and its own scoring or filtering callbacks.
     """
     if not all(
@@ -109,17 +115,18 @@ def has_native_query_semantics(
         return False
     if not _has_standard_module_access(state.model):
         return False
-    if not all(
-        _has_native_arguments((operation.args, operation.kwargs))
-        for operation in state.operations.values()
-    ):
-        return False
     defaults = {target: type(rule) for target, rule, _ in default_rules()}
-    return all(
-        type(rule) is defaults.get(target) and is_native_rule(rule)
-        for table in (state.registry.modules, state.registry.functions, state.registry.methods)
-        for target, rule in table.items()
-    )
+    for operation in state.operations.values():
+        if not _has_native_arguments((operation.args, operation.kwargs)):
+            return False
+        rule = state.registry.lookup(operation.node, operation.module)
+        if rule is not None:
+            target = (
+                type(operation.module) if operation.module is not None else operation.node.target
+            )
+            if type(rule) is not defaults.get(target) or not is_native_rule(rule):
+                return False
+    return True
 
 
 def _has_native_arguments(value: object) -> bool:

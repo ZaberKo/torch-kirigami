@@ -129,6 +129,7 @@
             "tests/pruning/test_identity_axes.py::test_equivalent_seeds_keep_full_closure_with_nonidentity_relations",
             "tests/workflows/test_isomorphic_pruning.py::test_identity_family_reuse_matches_generic_plan_and_reduces_queries",
             "tests/workflows/test_isomorphic_pruning.py::test_isomorphic_bias_seed_with_downstream_channel_axis",
+            "tests/workflows/test_isomorphic_pruning.py::test_family_quota_counts_equivalent_composite_requests_once",
             "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring",
             "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine"
           ],
@@ -1638,6 +1639,7 @@
           "behavior": "原 Python 属性消费者、只读规划与独立路径；布尔算子完整捕获与梯度",
           "tests": [
             "tests/pruning/test_forward_contracts.py::test_attribute_barrier_preserves_independent_pruning_and_readonly_planning",
+            "tests/pruning/test_forward_contracts.py::test_zero_compact_split_size_excludes_only_its_branch",
             "tests/pruning/test_forward_contracts.py::test_python_boolean_operators_run_through_capture_plan_and_backward"
           ],
           "conditions": "CPU/CUDA；列示的跨层组合",
@@ -2462,6 +2464,7 @@
         {
           "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
           "tests": [
+            "tests/sparsity/test_parameter_writes.py::test_sparse_writes_do_not_silently_modify_aliased_logical_rows",
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
             "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
             "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error"
@@ -2479,6 +2482,8 @@
         {
           "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
           "tests": [
+            "tests/sparsity/test_parameter_writes.py::test_sparse_writes_validate_at_entry_and_before_commit",
+            "tests/sparsity/test_parameter_writes.py::test_sparse_writes_do_not_silently_modify_aliased_logical_rows",
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
             "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
             "tests/sparsity/test_projection.py::test_group_entry_points_reject_non_groups_with_type_error",
@@ -2497,6 +2502,7 @@
         {
           "behavior": "区域并集操作、目标范数与原子拒绝；置零可重新生长",
           "tests": [
+            "tests/sparsity/test_parameter_writes.py::test_sparse_writes_do_not_silently_modify_aliased_logical_rows",
             "tests/sparsity/test_projection.py::test_region_union_scaling_norm_targets_and_atomic_rejection",
             "tests/sparsity/test_projection.py::test_parameter_operations_reject_storage_aliases_atomically",
             "tests/sparsity/test_projection.py::test_norm_projection_of_nonzero_subnormals",

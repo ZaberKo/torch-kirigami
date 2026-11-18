@@ -77,7 +77,7 @@ from torch_kirigami import (
 )
 from torch_kirigami.dep_graph.eligibility import has_native_semantics
 from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
-from torch_kirigami.dep_graph.selection import gather_region
+from torch_kirigami.dep_graph.selection import canonical_boxes, gather_region, region_boxes
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -683,7 +683,7 @@ class Isomorphic:
                 axis, indices = origin
                 closure = tuple(
                     sorted(
-                        (member.tensor.id, member.select(indices).regions)
+                        (member.tensor.id, region_boxes(member.select(indices).regions))
                         for member in template.axes
                     )
                 )
@@ -720,7 +720,8 @@ class Isomorphic:
                 continue
             closure = tuple(
                 sorted(
-                    (ref_id, selection.regions) for ref_id, selection in impact.selections.items()
+                    (ref_id, canonical_boxes(region_boxes(selection.regions)))
+                    for ref_id, selection in impact.selections.items()
                 )
             )
             if closure in closures:

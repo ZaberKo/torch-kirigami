@@ -484,6 +484,11 @@ def check_forward(
                             binding.position,
                             target=op.node.target,
                         )
+                    if isinstance(sections, int) and sections <= 0:
+                        raise PlanningError(
+                            f"{op.name}: split size becomes {sections} after pruning; "
+                            f"compact width {len(kept)} requires a positive split size"
+                        )
                     sizes = (
                         [min(sections, len(kept) - i) for i in range(0, len(kept), sections)]
                         if isinstance(sections, int)

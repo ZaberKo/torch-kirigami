@@ -108,6 +108,10 @@ def test_pretrained_workflow(
             return groups + groups
 
         monkeypatch.setattr(Pruner, "parameter_groups", repeated_groups)
+        if recipe == "stability_pruning":
+            monkeypatch.setattr(
+                Pruner, "plan_remove", lambda *args: pytest.fail("Apply the final stability plan")
+            )
         if recipe == "group_sparsity":
             original_lasso = module.GroupLasso
 

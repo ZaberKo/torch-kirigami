@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import torch
 from torch.autograd.function import FunctionCtx, once_differentiable
 
-from ..dep_graph.selection import IndexSet, TensorRef, gather_region
+from ..dep_graph.selection import IndexSet, Selection, TensorRef, gather_region
 from ..pruning.groups import ParameterGroup, checked_groups
 
 
@@ -63,36 +63,40 @@ def group_bindings(
 
 
 def _gather_group(
-    group: ParameterGroup, bindings: Mapping[TensorRef, torch.Tensor], dtype: torch.dtype
+    selections: tuple[Selection, ...],
+    bindings: Mapping[TensorRef, torch.Tensor],
+    dtype: torch.dtype,
 ) -> torch.Tensor:
     """Read one group from bindings already validated for this operation."""
     return torch.cat(
         [
             gather_region(bindings[selection.tensor], region).reshape(-1).to(dtype)
-            for selection in group.selections
+            for selection in selections
             for region in selection.regions
         ]
     )
 
 
-def group_values(groups: tuple[ParameterGroup, ...]) -> tuple[torch.Tensor, ...]:
+def group_values(
+    groups: tuple[tuple[Selection, ...], ...],
+    bindings: Mapping[TensorRef, torch.Tensor],
+    dtype: torch.dtype,
+) -> tuple[torch.Tensor, ...]:
     """Gather the current selected values of each group, preserving autograd.
 
     Distributed or sharded parameters are unsupported.
 
     Args:
-        groups: Nonempty groups that share one dependency graph and device.
+        groups: Selections for each validated group in parameter order.
+        bindings: Live tensors returned by `group_bindings` for this operation.
+        dtype: Common computation dtype returned with the bindings.
 
     Returns:
         One flattened tensor per group, in the dtype chosen by `group_bindings`.
 
     Raises:
-        TypeError: An item of `groups` is not a `ParameterGroup`.
-        ValueError: The groups violate the `group_bindings` requirements, or a
-            selected value is nonfinite.
+        ValueError: A selected value is nonfinite.
     """
-    groups = tuple(groups)
-    bindings, dtype = group_bindings(groups)
     result = tuple(_gather_group(group, bindings, dtype) for group in groups)
     if not torch.stack([torch.isfinite(v).all() for v in result]).all():
         raise ValueError("Sparse operations require finite selected values")
@@ -336,7 +340,9 @@ class ReductionPlan:
     refs: tuple[TensorRef, ...]
 
 
-def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
+def reduction_plan(
+    groups: tuple[ParameterGroup, ...], bindings: Mapping[TensorRef, torch.Tensor]
+) -> ReductionPlan:
     """Plan batched penalty evaluation for groups.
 
     Groups made only of whole slices along one axis are batched: each
@@ -346,15 +352,11 @@ def reduction_plan(groups: tuple[ParameterGroup, ...]) -> ReductionPlan:
 
     Args:
         groups: Nonempty groups that share one dependency graph and device.
+        bindings: Live tensors returned by `group_bindings` for these groups.
 
     Returns:
         A plan for `group_penalty` with the same groups.
-
-    Raises:
-        TypeError: An item of `groups` is not a `ParameterGroup`.
-        ValueError: The groups violate the `group_bindings` requirements.
     """
-    bindings, _ = group_bindings(groups)
     batches: dict[tuple[TensorRef, int], list[tuple[int, int]]] = {}
     fallback: list[int] = []
     for number, group in enumerate(groups):
@@ -436,7 +438,7 @@ def group_penalty(
             reduced = values.sum(dim=dims) if dims else values
         contributions.append(reduced.index_select(0, contribution_indices))
     for number in plan.fallback:
-        values = _gather_group(groups[number], bindings, dtype)
+        values = _gather_group(groups[number].selections, bindings, dtype)
         if kind == "squared_l2":
             magnitude = values.detach().abs()
             tiny_squares.append(
@@ -455,7 +457,7 @@ def group_penalty(
     if tiny_squares and torch.stack(tiny_squares).any():
         # A sum can be representable although every individual square rounds
         # to zero. Reduce each original group magnitude before squaring it.
-        gathered = torch.cat([_gather_group(group, bindings, dtype) for group in groups])
+        gathered = torch.cat([_gather_group(group.selections, bindings, dtype) for group in groups])
         return squared_norm(gathered)
     if kind != "l2":
         return values.sum()
@@ -472,6 +474,6 @@ def group_penalty(
         # Recompute directly from original values, and
         # differentiate the direction rather than multiply/divide tiny scales.
         return torch.stack(
-            [stable_norm(_gather_group(group, bindings, dtype)) for group in groups]
+            [stable_norm(_gather_group(group.selections, bindings, dtype)) for group in groups]
         ).sum()
     return _SegmentNorm.apply(values, owner, len(groups)).sum()

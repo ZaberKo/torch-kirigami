@@ -8,6 +8,7 @@ from dataclasses import dataclass
 import torch
 
 from ..bindings import storage_key
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import Region, Selection, TensorRef, gather_region
 from ..pruning.groups import ParameterGroup, group_equivalence_classes
 from .values import group_bindings, group_values, scaled_product
@@ -35,20 +36,31 @@ def _write(
         tensor[index] = values
 
 
-def _proves_nonoverlap(tensor: torch.Tensor) -> bool:
-    """Return whether the strides prove that no two elements share memory; False is unproven."""
-    # Each stride must step past the address span of all smaller-stride axes.
-    # Failure is not proof of overlap. The caller retains full-copy preparation.
+def _has_internal_overlap(tensor: torch.Tensor) -> bool:
+    """Check whether distinct logical elements share a storage offset."""
+    # Dense, transposed and ordinary gapped layouts need only a stride check.
     extent = 1
+    separated = True
     for size, stride in sorted(
         zip(tensor.shape, tensor.stride(), strict=True), key=lambda item: item[1]
     ):
         if size <= 1:
             continue
+        if stride == 0:
+            return True
         if stride < extent:
-            return False
+            separated = False
         extent += (size - 1) * stride
-    return True
+    if separated:
+        return False
+    if tensor.numel() > extent:
+        return True
+    # Interleaved strides can still be disjoint. Inspect offsets on the CPU
+    # only for ambiguous layouts, with space proportional to the element count.
+    offsets = torch.zeros(1, dtype=torch.int64, device="cpu")
+    for size, stride in zip(tensor.shape, tensor.stride(), strict=True):
+        offsets = (offsets[:, None] + torch.arange(size, device="cpu") * stride).flatten()
+    return offsets.unique().numel() != tensor.numel()
 
 
 @dataclass(frozen=True, eq=False)
@@ -68,12 +80,13 @@ class _PreparedWrite:
     after: torch.Tensor
 
 
-def _prepare_writes(
-    groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]
-) -> list[_PreparedWrite]:
-    """Validate bindings and allocate every value and index without changing parameters."""
-    graph = groups[0].graph
-    bindings = dict(graph.tensor_bindings())
+def _commit_values(
+    graph: DependencyGraph,
+    bindings: dict[TensorRef, torch.Tensor],
+    groups: tuple[tuple[Selection, ...], ...],
+    vectors: tuple[torch.Tensor, ...],
+) -> None:
+    """Prepare all writes, revalidate the graph, then commit with rollback on failure."""
     storage = {}
     for tensor in bindings.values():
         key = storage_key(tensor)
@@ -81,23 +94,18 @@ def _prepare_writes(
             storage.setdefault(key, set()).add(id(tensor))
     # Even an unselected alias could be changed by committing a selected tensor.
     # Distinct registrations of the same Parameter remain supported.
-    if any(
-        len(storage.get(storage_key(bindings[s.tensor]), ())) > 1
-        for group in groups
-        for s in group.selections
-    ):
-        raise ValueError("Parameter operations do not support distinct tensors sharing storage")
+    for ref in {selection.tensor for group in groups for selection in group}:
+        parameter = bindings[ref]
+        if len(storage.get(storage_key(parameter), ())) > 1:
+            raise ValueError("Parameter operations do not support distinct tensors sharing storage")
+        if _has_internal_overlap(parameter):
+            raise ValueError(f"Parameter {ref.paths[0]} has overlapping storage positions")
     prepared: list[_PreparedWrite] = []
     finite = []
-    full_copies: dict[torch.Tensor, torch.Tensor] = {}
     for group, vector in zip(groups, vectors, strict=True):
         offset = 0
-        for selection in group.selections:
+        for selection in group:
             parameter = bindings[selection.tensor]
-            if not _proves_nonoverlap(parameter) and parameter not in full_copies:
-                original, edited = parameter.detach().clone(), parameter.detach().clone()
-                full_copies[parameter] = edited
-                prepared.append(_PreparedWrite(parameter, (), original, edited))
             for region in selection.regions:
                 shape = tuple(len(axis) for axis in region.axes)
                 count = math.prod(shape)
@@ -106,22 +114,10 @@ def _prepare_writes(
                 # Validate the final dtype, including overflow introduced by casting.
                 finite.append(torch.isfinite(values).all())
                 index = _region_index(parameter, region)
-                if parameter in full_copies:
-                    # Preserve the original full-copy behavior when sparse writes
-                    # cannot prove that other logical positions remain unchanged.
-                    _write(full_copies[parameter], index, values)
-                else:
-                    original = gather_region(parameter.detach(), region).clone()
-                    prepared.append(_PreparedWrite(parameter, index, original, values.clone()))
+                original = gather_region(parameter.detach(), region).clone()
+                prepared.append(_PreparedWrite(parameter, index, original, values.clone()))
     if finite and not torch.stack(finite).all():
         raise ValueError("Parameter operation would produce nonfinite values")
-    return prepared
-
-
-def _commit_values(groups: tuple[ParameterGroup, ...], vectors: tuple[torch.Tensor, ...]) -> None:
-    """Prepare all writes, revalidate the graph, then commit with rollback on failure."""
-    prepared = _prepare_writes(groups, vectors)
-    graph = groups[0].graph
     graph.validate()
     try:
         for edit in prepared:
@@ -199,7 +195,7 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
         ValueError: `factor` is invalid; `groups` is empty or spans several
             graphs or devices; a selected parameter is not a dense real
             floating-point tensor; a selected tensor shares storage with another
-            registered tensor, selected or not; or a selected or resulting value
+            registered tensor or has internal overlap; or a selected or resulting value
             is nonfinite.
     """
     if (
@@ -210,15 +206,17 @@ def scale_groups_(groups: tuple[ParameterGroup, ...], factor: int | float) -> No
     ):
         raise ValueError("factor must be finite and nonnegative")
     groups = tuple(groups)
+    bindings, dtype = group_bindings(groups)
     if len(groups) == 1:
-        # group_values validates this existing union before reading any values.
-        union = groups[0]
+        selections = groups[0].selections
     else:
-        # Validate the groups, graphs and devices before combining their coordinates.
-        group_bindings(groups)
-        union = ParameterGroup(groups[0].graph, tuple(s for g in groups for s in g.selections))
-    values = group_values((union,))[0]
-    _commit_values((union,), (values.to(torch.float64) * factor,))
+        union: dict[TensorRef, Selection] = {}
+        for group in groups:
+            for s in group.selections:
+                union[s.tensor] = union[s.tensor].union(s) if s.tensor in union else s
+        selections = tuple(union.values())
+    (values,) = group_values((selections,), bindings, dtype)
+    _commit_values(groups[0].graph, bindings, (selections,), (values.to(torch.float64) * factor,))
 
 
 def zero_groups_(groups: tuple[ParameterGroup, ...]) -> None:
@@ -274,7 +272,9 @@ def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | fl
         if len(set(values)) != 1:
             raise ValueError("Equivalent groups have conflicting targets")
         unique_targets.append(values[0])
-    values = group_values(unique)
+    bindings, dtype = group_bindings(unique)
+    selections = tuple(g.selections for g in unique)
+    values = group_values(selections, bindings, dtype)
     _require_disjoint(unique)
     projected = []
     for vector, target in zip(values, unique_targets, strict=True):
@@ -295,4 +295,4 @@ def set_group_norms_(groups: tuple[ParameterGroup, ...], targets: tuple[int | fl
                     divide=(scale, torch.linalg.vector_norm(direction)),
                 )
             )
-    _commit_values(unique, projected)
+    _commit_values(unique[0].graph, bindings, selections, tuple(projected))
