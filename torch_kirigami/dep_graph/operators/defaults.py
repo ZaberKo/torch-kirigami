@@ -1,4 +1,4 @@
-"""Explicit built-in registrations; no semantic callback wrapping."""
+"""Registration table for the built-in operator rules."""
 
 import builtins
 import operator
@@ -57,7 +57,20 @@ from .rules import (
 
 
 def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRule, bool], ...]:
-    """Return fresh registration entries for a local registry."""
+    """Return fresh built-in registration entries for a new registry.
+
+    The registry matches exact module classes, function objects, and Tensor
+    method names separately, so each spelling and each module subclass needs
+    its own entry.
+
+    Returns:
+        `(target, rule, opaque)` entries with new rule instances. `opaque` is
+        true for module classes, which FX keeps as leaves.
+
+    Raises:
+        ValueError: One function object is registered with two different
+            rules or freshness flags.
+    """
     entries: list[tuple[type[nn.Module] | Callable | str, OperatorRule, bool]] = []
     function_rules: dict[Callable, tuple[type[NativeRule], bool]] = {}
 
@@ -66,7 +79,7 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
         entries.extend((target, rule(fresh=fresh), True) for target in targets)
 
     def functions(targets: Sequence[Callable], rule: type[NativeRule], *, fresh: bool) -> None:
-        """Register native function targets without changing FX wrapping."""
+        """Register function objects once each, without FX leaf wrapping."""
         for target in targets:
             previous = function_rules.get(target)
             if previous is not None:

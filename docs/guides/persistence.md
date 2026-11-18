@@ -1,31 +1,29 @@
-# Plans, model checkpoints, and training state
+# Plans and checkpoints
 
-Plans apply a pruning decision. Model checkpoints restore saved model values. Training state restores the caller's progress.
-See the [checkpoint API reference](../apidocs/torch_kirigami/torch_kirigami.pruning.checkpoint.md) for the checkpoint functions.
+There are two artifacts you can save, and they answer different questions:
+
+- A **plan** answers "which coordinates should be removed from a model with this
+  structure?" It stores a decision, not weights.
+- A **model checkpoint** answers "what does the compact model look like, and what
+  are its values?" It stores the final structure and weights, but not the code
+  that builds the model.
 
 ```mermaid
 flowchart LR
-    Plan["Plan"] -- apply --> Model["Compact model"]
-    Checkpoint["Model checkpoint"] -- restore --> Model
-    Model --> Training["Training"]
-    State["Training state"] -- resume --> Training
-    classDef state fill:#eef2f7,stroke:#64748b,color:#172033
-    classDef restored fill:#eaf5ee,stroke:#98bba3,color:#213f2c
-    class Plan,Checkpoint,State state
-    class Model,Training restored
+    O["Original model<br/>(any weights)"] -->|"apply saved plan"| C1["Compact model<br/>with those weights"]
+    F["Freshly built<br/>original model"] -->|"load_checkpoint"| C2["Compact model<br/>with saved weights"]
 ```
-
-Plan application uses the receiving model's current values. Checkpoint restoration uses the saved compact values. Neither artifact restores training progress. The caller restores training state separately, after creating an optimizer for the restored parameters.
 
 | Artifact | Contains | Does not contain |
 | --- | --- | --- |
-| `PruningPlan` | Original-coordinate decision, recipes, reports, and before/after structure. | Weights, model code, graph, or scoring callbacks. |
-| Model checkpoint | Final registered tensors, supported configuration, and aliases. | Constructor code, pruning history, optimizer, or training progress. |
-| Training checkpoint | State selected by the training application. | An automatic guarantee that external state is complete. |
+| `PruningPlan` | Original-coordinate decision, tensor and attribute recipes, reports, and the expected structure before and after. | Weights, scores, model code, or a graph. |
+| Model checkpoint | Final registered tensors, their aliasing, supported module configuration, and extra state. | Model code, the original structure, pruning history, or optimizer state. |
+| Training state | Whatever your training loop saves. | Anything the library could check for completeness. |
 
 ## Save and replay a plan
 
-A plan can be serialized as basic data and loaded without importing the model class.
+A plan converts to basic Python data that `torch.load(weights_only=True)` accepts,
+and it loads without importing the model class:
 
 ```python
 import torch
@@ -42,18 +40,22 @@ def make_model() -> nn.Sequential:
 model = make_model()
 graph = DependencyGraph.build(model, args=(torch.randn(2, 8),))
 remove = graph.parameter("0.weight").axis(0).select([1, 3])
-plan = Pruner(model, graph=graph).plan_remove((remove,))
+plan = Pruner(model, graph=graph).plan_remove([remove])
 torch.save(plan.to_dict(), "decision.pt")
 
-portable = torch.load("decision.pt", weights_only=True)
-restored_plan = PruningPlan.from_dict(portable)
+restored_plan = PruningPlan.from_dict(torch.load("decision.pt", weights_only=True))
 other_model = make_model()
 other_model, result = Pruner(other_model).apply(restored_plan)
 ```
 
-The receiving model must match the plan's original structural preconditions, including supported configuration and guarded constants. Applying a nonempty plan to an already compact model normally fails those preconditions.
+`Pruner(model)` without a graph can only apply plans. `apply()` checks that the
+receiving model matches the plan's recorded `before` structure, including module
+configuration and guarded constants. A model that has already been pruned no
+longer matches, so a nonempty plan cannot be applied to it twice.
 
-A plan records coordinates, not the weights used for scoring. Replay uses the receiving model's current values. It does not recompute importance or restore the scoring weights. Use a model checkpoint when you need the saved compact values.
+Replay uses the receiving model's **current** weights. It does not restore the
+weights that were scored, and it does not score again. Use a plan to repeat a
+structural decision. Use a checkpoint to restore trained compact weights.
 
 ## Save and restore a model checkpoint
 
@@ -64,54 +66,78 @@ save_checkpoint(other_model, "compact.pt")
 restored = load_checkpoint(make_model(), "compact.pt", map_location="cpu")
 ```
 
-`save_checkpoint(model, path)` accepts an ordinary, pruned, or restored module. `load_checkpoint(model, path, map_location=None)` modifies and returns the supplied module. It needs no example input, graph, operator registry, or pruning history.
+`save_checkpoint(model, path)` accepts both original and pruned models that
+meet the registration and state requirements below.
+`load_checkpoint(model, path, map_location=None)` takes a newly constructed
+original model, gives it the saved compact shapes, attributes, and values, and
+returns the same object. It needs no example input, graph, or operator registry.
 
-The factory must create the original module classes and hierarchy. It must preserve module aliases, registered slots, and constructor configuration. Loading restores the final tensor shapes and library-managed structural attributes. It cannot create missing model code or repair a different module hierarchy.
+You supply the model code. The factory must create the same module classes,
+hierarchy, aliases, registered slots, and constructor configuration as the model
+that was saved, including custom modules and inserted gates. The loader cannot
+create missing modules or repair a different hierarchy.
 
-The checkpoint stores parameters, persistent buffers, and nonpersistent registered buffers. It preserves registered aliases, supported layouts, parameter `requires_grad`, module sharing, and saved module configuration, including training flags. `map_location` accepts no value, a destination device, or a source-to-destination device map. The loader does not support per-storage callable mappings.
+### What the checkpoint stores
 
-The checkpoint restores the final model structure. It does not save the original structure or the sequence of pruning rounds.
-It does not store the example inputs used to capture a graph.
-It does not store ordinary tensor constants that the model keeps outside registered slots.
-Create those constants with compatible values and devices in the factory.
+- Every registered parameter and buffer, persistent or not, with its final shape,
+  layout, and `requires_grad` flag.
+- Aliasing between registered tensors and between shared modules.
+- Module configuration that the library manages, such as `in_features`, and
+  module training flags.
+- The values returned by `get_extra_state()`, as described below.
 
-The format stores raw registered tensor slots. It does not call `state_dict`, `load_state_dict`, or their module overrides. The loader does not support registered state-dict hooks. It checks ordinary tensor constants as structural preconditions, but it does not save their values. Register a constant as a buffer when the checkpoint must own it.
+The format reads registered tensor slots directly. It does not call `state_dict()`
+or `load_state_dict()`, and it rejects modules with registered state-dict hooks.
+Tensor constants kept outside registered slots are checked as structural
+preconditions, but their values are not saved. Create them in the factory, or
+register them as buffers.
 
-## Extra state and transaction limits
+`map_location` accepts `None`, one device, or a dictionary from source to
+destination devices. Per-storage callables are not supported. Device mapping
+applies to saved tensors, including those in extra state, but not to constants
+that the factory creates.
 
-Paired `get_extra_state` and `set_extra_state` methods can save ordinary application data. A shared module has one canonical entry. Its getter and setter run once. The getter must be read-only. Getter side effects are not rolled back.
+### Extra state
 
-Extra state must be a bounded, acyclic tree of supported basic values, plain containers, and ordinary tensors accepted by weights-only loading. It cannot contain references or views into registered tensor storage. Save a basic representation or an independent tensor clone. Rebuild application objects in `set_extra_state`.
+Modules can implement `get_extra_state()` and `set_extra_state()`. The getter runs
+once per module, even if the module is shared, and must not change anything. Its
+result must be a bounded, acyclic tree of basic values, plain containers, and
+ordinary tensors that weights-only loading accepts. It cannot contain views into
+registered tensors. Save an independent clone instead.
 
-Load checks the payload and prepares tensor replacements before it changes the destination model. Extra-state setters run on isolated module shells. They may restore ordinary data. They must preserve registered module and tensor bindings, tensor values and layouts, buffer persistence, and runtime hooks. Load checks these conditions before commit. Arbitrary external side effects from callbacks remain outside the transaction guarantee.
+Setters run on isolated module shells before the loader commits. They may restore
+ordinary attributes, but they must not change registered modules or tensors,
+tensor values or layouts, buffer persistence, or hooks. The loader checks this.
+It cannot roll back other side effects of a setter.
 
-The loader disables inference mode while it reads and copies state. Restored parameters can participate in ordinary autograd.
-Device mapping applies to serialized storages, including tensors in extra state. It does not move constants created by the factory.
+### What loading rejects
 
-Loading rejects target tensors with gradient hooks because replacement would discard those hooks. Register hooks on the restored tensors.
-Pruning rejects hooks only on tensors it replaces.
-The API does not support custom parameter or tensor subclasses.
-It does not support distinct tensor objects that share storage.
+`load_checkpoint()` raises `ExecutionError`, and leaves the target's registered
+state unchanged, when:
 
-It does not support registered state-dict hooks or layouts whose non-overlap it cannot prove.
-The API supports aliases of the same ordinary Parameter or buffer.
+- the payload or format is invalid;
+- the model does not match the saved hierarchy, configuration, or aliasing;
+- a target tensor has gradient hooks (register them again after loading);
+- the model uses custom tensor subclasses, distinct tensors that share storage,
+  state-dict hooks, or layouts whose non-overlap cannot be proved.
 
-Payload errors and factory mismatches raise `ExecutionError` before the loader commits ordinary registered state.
-Checkpoint changes should include success and failure coverage for aliases, buffers, and saved values.
-Round-trip checks should compare outputs and sharing relationships, not only tensor shapes.
+Inference mode is disabled while the loader copies state, so restored parameters
+take part in ordinary autograd.
 
-## Training state is caller-owned
+## Training state is yours to save
 
-A model checkpoint restores a model. It does not resume sparse training. Save training state at a clear boundary outside an in-flight backward graph. Include the state required by the algorithm:
+A model checkpoint does not resume training. Save these items yourself when you
+need to continue a run:
 
-- Optimizer state and AMP gradient-scaler state.
-- Epoch, optimizer-step, and schedule-position counters.
-- `CumulativeChannelBudget.state_dict()` and `SelectionWindow.state_dict()` when used.
-- Algorithm selections, original group norms, decay progress, and stage flags.
-- RNG state and needed sampler or data-loader progress.
+- optimizer and AMP gradient-scaler state, for an optimizer created on the
+  restored parameters;
+- epoch, step, and schedule positions (schedules themselves are stateless);
+- `CumulativeChannelBudget.state_dict()` and `SelectionWindow.state_dict()`;
+- algorithm state, such as selections, original group norms, decay progress, or
+  stage flags;
+- random-number generator and data-loader state.
 
-Pure schedules such as `Linear` and `Polynomial` do not track a step. Save their configuration and the caller's position. A parameter operation does not manage momentum. Save the optimizer policy used by the algorithm.
-
-Do not use live `AxisRef`, `ParameterGroup`, or `GateBinding` objects instead of rebinding. Graph references belong to one graph snapshot. After restore or pruning, create fresh bindings and check saved component state against them. `CumulativeChannelBudget.load_state_dict(state, graph, space)` checks the candidate domain and structure before changing state. `SelectionWindow.load_state_dict(state)` checks window compatibility and stored similarities. Reset the window when coordinates change.
-
-Plan replay and checkpoint restoration have different value expectations. Plan replay uses the receiving model's current weights. Checkpoint loading restores saved values. Review both success and failure paths when changing these contracts.
+Do not save graph-bound objects such as `AxisRef`, `ParameterGroup`, or
+`GateBinding`. After restoring or pruning, build a new graph and new bindings.
+`CumulativeChannelBudget.load_state_dict(state, graph, space)` checks the saved
+state against the new graph before it changes anything.

@@ -1,176 +1,179 @@
-# Operator support and extension
+# Operator support
 
-Support applies to one captured call, its arguments, the requested axes, and the resulting compact execution. A rule may not support every overload or requested removal.
+An operator rule tells the dependency graph how one kind of call connects tensor
+coordinates. Support is decided **per captured call**, for its actual arguments
+and the axes a request touches. One rule may support some overloads and
+some axes of an operation, but not others.
 
-Rules match exact module classes, function objects, and Tensor method names. A custom subclass does not inherit a base module's rule. An opaque registration keeps a callable boundary where FX supports it. The rule author then owns that boundary's semantics.
-The [operator API reference](../apidocs/torch_kirigami/torch_kirigami.dep_graph.operation.md) documents rule and effect contracts.
+This page lists the built-in coverage and explains how to add a rule. The
+[operator API reference](../apidocs/torch_kirigami/torch_kirigami.dep_graph.operation.md)
+documents the rule and effect classes.
 
-## Module, function, and Tensor method forms
+## How a call finds its rule
 
-All three forms use the same `OperatorRule` contract.
-The registry matches the target that FX records, not equivalent mathematical expressions.
-
-| Call form | Registration | Match |
-| --- | --- | --- |
-| `SomeModule(...)` | `registry.register(SomeModule, rule)` | Exact module class. |
-| `F.some_function(...)`, `torch.some_function(...)`, or a custom function | `registry.register(function, rule)` | Function object. |
-| `tensor.some_method(...)` | `registry.register_method("some_method", rule)` | Tensor method name. |
-
-`F` denotes `torch.nn.functional`.
-Built-in registrations cover functions such as `F.linear`, `F.conv2d`, and `F.scaled_dot_product_attention`.
-Support for one spelling does not imply support for every function alias or Tensor method.
-
-Built-in equivalent spellings share their existing semantic rule.
-Examples include function/method `detach`, `numel`, `masked_fill`, `broadcast_to`, and `relu_`.
-PReLU supports its module, function, and Tensor method forms.
-LayerNorm and RMSNorm support their module, functional, and direct `torch` forms.
-The direct `torch` forms still require FX-compatible arguments.
-Older PyTorch native argument parsers can reject Proxy-valued normalization sizes before registration applies. Use the functional form in that case.
-Pointwise aliases include `absolute`, `negative`, `multiply`, `subtract`, `divide`, `clip`, and comparison aliases.
-These names retain the corresponding canonical operation's constraints and effect checks.
-Function `torch.numel` also preserves dimension provenance. Using its result as a semantic scalar still guards that value.
-
-Independent spelling tests complement the registered-entry tests.
-Neither enumeration nor registration proves support for every overload.
-See the [verification guide](../development/verification.md) for test levels and inventory checks.
-
-Equal names alone do not establish equivalent semantics.
-For example, Tensor `unfold` returns window views along one axis, while functional `unfold` extracts and flattens two-dimensional image patches.
-Those operations use separate coordinate rules.
-
-FX can expand a custom Python function into supported operations without a custom rule.
-Use `opaque=True` to request a separate function call through FX's public wrapping mechanism.
-The function must still satisfy FX capture requirements.
-For function and Tensor method calls, `Operation.module` is `None`.
-Rules obtain weights and other operands through `Operation.argument()` rather than module bindings.
-
-## Support stages
-
-A call can pass capture and still lack a structural rule. A rule can propagate coordinates while a constraint rejects the requested change. A valid dependency result can still lack a safe model edit.
-
-Capture records the call. Analysis follows coordinate changes. Execution checks establish whether the library supports the proposed compact structure. See [dependency graph](dependency-graph.md) for shared records and [model support](../guides/model-support.md) for lifecycle limits.
+`OperatorRegistry` keeps three separate tables, one for each kind of call target
+that FX records:
 
 ```mermaid
 flowchart LR
-    Capture["Capture"] --> Analyze["Analyze"]
-    Analyze --> Compile["Check execution"]
-    Compile --> Ready["Compact execution"]
-    classDef gate fill:#eef2f7,stroke:#64748b,color:#172033
-    classDef result fill:#e8f3ec,stroke:#62836b,color:#172033
-    class Capture,Analyze,Compile gate
-    class Ready result
+    N["Captured call"] --> K{"Call kind"}
+    K -->|"module call"| M["Exact module class"]
+    K -->|"function call"| F["Function object"]
+    K -->|"Tensor method"| T["Method name"]
+    M --> R["OperatorRule"]
+    F --> R
+    T --> R
+    K -.->|"no match"| U["Barrier"]
 ```
 
-Support applies to one captured call and one requested change. Passing one gate does not prove that later gates can accept the change.
-
-## Built-in families
-
-This table lists the main structural behavior and the primary boundary for each family. Exact registrations live in the built-in registry.
-
-| Family | Structural behavior | Main boundary |
+| Call form | Registration | Matches |
 | --- | --- | --- |
-| Linear | Module and functional input/output features, weight rows/columns, and bias. Functional rank-one weights have a supported rule. | Exact registered spelling. Original call arguments must remain valid. |
-| Convolution | Conv and ConvTranspose 1D–3D, including ordinary, grouped, and depthwise channels. Partitioned weights compact by group and retain group order. | Spatial and kernel axes stay fixed. Group constraints apply. |
-| Normalization | BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, local response normalization, PReLU, and `normalize`. Affine parameters and statistics follow feature axes. | GroupNorm keeps its group count and balances retained channels. Normalization uses the compact domain. |
-| Embedding | Module and functional feature width and downstream consumers. | Vocabulary rows stay fixed. With `max_norm`, capture warns and permits native updates to directly bound parameter values. |
-| Pooling and interpolation | Batch/channel correspondence. Supported max-pooling values and indices remain paired. | Spatial coordinates stay fixed. |
-| Padding | Coordinate correspondence on axes that padding does not change. | Padded or cropped axes stay fixed, even if output size matches input size. |
-| Elementwise operations | Registered arithmetic, comparisons, activations, broadcasting, `where`, and `masked_fill`. Python augmented arithmetic preserves native Tensor semantics. | In-place operations require a proof of safe storage use. |
-| Casts and storage calls | Coordinate correspondence for dtype/device conversion, clone, detach, and contiguous. | A call can alias input storage. View and copy behavior must satisfy alias checks. |
-| Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, `baddbmm`, `dot`, `vdot`, `mv`, `outer`, and `ger` map free and contracted axes. | Original ranks, broadcasting, and call semantics must remain valid. |
-| Einsum | String equations with explicit or implicit outputs, repeated input labels, reductions, and supported ellipsis broadcasting. Repeated axes retain matching original positions. | Rules require string equations, not the sublist format. Outputs can share input storage. In-place consumers and subsequent views require alias and stride checks. |
-| Concatenation and partitioning | `cat`, `stack`, `split`, `chunk`, and `unbind` map offsets and captured ports. | Stack/unbind port counts stay fixed. Other call arguments must preserve retained coordinates. |
-| Indexing | Basic indexing supports `...`, `None`, integers, and positive-step slices with known size expressions. [Bracket indexing](#bracket-indexing) also supports one fixed integer vector or boolean mask. | The call must retain original coordinates. |
-| Shape transforms | Permute, transpose, movedim/moveaxis, reshape/view, flatten/unflatten, squeeze/unsqueeze, and supported shape provenance. | Incompatible sizes, changed rank, or unproved view strides reject affected requests. |
-| Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, and `broadcast_to` map repeated blocks or broadcast fibers. | Repeat factors must be positive static integers. `repeat_interleave` needs scalar repeats and an explicit axis. `expand_as` depends on the template shape. |
-| Tensor window views | `Tensor.unfold` maps all axes except the unfolded axis, including features in time-series patch inputs. Its result shares input storage. | Positive integer size and step. The input window axis, output window count, and appended window axis stay fixed. In-place consumers need alias checks. |
-| Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle/Unshuffle, and batched 2D Unfold/Fold. | Shuffle patterns must be compatible. ChannelShuffle can share input storage. Pixel and Unfold/Fold spatial or kernel positions stay fixed. |
-| Reductions and softmax | Sum, mean, product, extrema, logsumexp, softmax, and log_softmax distinguish reduced from retained axes. | The operation recomputes on the compact domain. Position-index outputs are not generally covered. |
-| Fourier operations | FFT, inverse and real/Hermitian transforms, and frequency shifts map axes outside the transform. | Transform and frequency axes stay fixed. Layout remains unknown when backend behavior determines strides. |
-| Scaled dot-product attention | Q/K contractions, V width, batch/head broadcasting, masks, and supported grouped-query attention changes. | Head axes must be explicit. Causal Q/K token axes stay fixed. |
-| Native `MultiheadAttention` | Packed or separate projections with balanced embedding-width changes. | Head count, batch/token axes, masks, and attention-weight axes stay fixed. The rule does not delete whole heads at unchanged external width. |
-| `ChannelGate` extension | An explicitly registered activation axis, trainable scale, and fixed mask shrink together. | Call `register_gate_operators()`. Gates do not add a default budget domain. |
+| `SomeModule(...)` | `registry.register(SomeModule, rule)` | The exact module class. Subclasses do not inherit the rule. |
+| `F.some_function(...)`, `torch.some_function(...)`, or your function | `registry.register(function, rule)` | The function object. |
+| `tensor.some_method(...)` | `registry.register_method("some_method", rule)` | The Tensor method name. |
+
+`F` is `torch.nn.functional`. The registry matches the call target, not
+mathematical equivalence. Supporting one spelling does not imply support for
+other aliases. Built-in equivalent spellings, such as the function and method
+forms of `detach`, `masked_fill`, or `relu_`, share one rule. Equal names do not
+guarantee equal semantics. Tensor `unfold` returns windows along one axis,
+while functional `unfold` extracts image patches, so the two use different rules.
+
+A call without a rule usually does not fail the build. It becomes a barrier that
+blocks the requests that reach it, as described in
+[model support](../guides/model-support.md#how-failures-are-scoped). The
+exception is capture safety: the library cannot know whether an unregistered call
+writes its inputs, so the build fails if such a call receives a parameter or
+another tensor that capture does not isolate.
+
+### Subclasses and wrappers
+
+A subclass of `nn.Linear` with a custom `forward` might compute something else,
+so it gets no rule automatically. If the subclass only changes initialization or
+naming, register the base rule for it explicitly. The same applies to any module
+whose rule you reuse: you take responsibility for its coordinate semantics.
+
+FX traces through an ordinary Python function and records the operations inside
+it, so a helper built from supported operations needs no rule. Register a function
+with `opaque=True` to keep it as a single call. The function must still be
+FX-compatible. For function and method calls, `Operation.module` is `None`, and
+the rule reads weights and other operands through `Operation.argument()`.
+
+## Three stages of support
+
+A call can pass one stage and fail the next:
+
+```mermaid
+flowchart LR
+    C["Capture<br/>call is recorded"] --> A["Analysis<br/>coordinates propagate"]
+    A --> E["Execution checks<br/>compact call is valid"]
+```
+
+Capture records the call and its storage effects. Analysis maps coordinates
+through relations and checks constraints. Execution checks prove that the compact
+call runs with the original arguments and produces the expected output. A rule that
+propagates coordinates may still meet a constraint that rejects the request, and a
+valid impact may still lack a safe model edit.
+
+## Built-in coverage
+
+The table summarizes the main structural behavior of each family and its main
+limit. The default registry has the exact registrations.
+
+| Family | Structural behavior | Main limit |
+| --- | --- | --- |
+| Linear | Input and output features, weight rows and columns, bias. Module and functional forms. | Exact registered spelling. Original call arguments must stay valid. |
+| Convolution | Conv and ConvTranspose 1D–3D: ordinary, grouped, and depthwise channels. Grouped weights compact per group and keep group order. | Spatial and kernel axes stay fixed. Group balance applies. |
+| Normalization | BatchNorm, LayerNorm, GroupNorm, InstanceNorm, RMSNorm, local response normalization, PReLU, and `normalize`. Affine parameters and statistics follow the feature axis. | GroupNorm keeps its group count and balances channels. Statistics recompute over the smaller domain. |
+| Embedding | Embedding width and its consumers, module and functional. | Vocabulary rows stay fixed. With `max_norm`, capture warns and lets native updates persist. |
+| Pooling and interpolation | Batch and channel correspondence. Max-pooling values and indices stay paired. | Spatial coordinates stay fixed. |
+| Padding | Axes that padding does not change. | Padded or cropped axes stay fixed. |
+| Elementwise | Arithmetic, comparisons, activations, broadcasting, `where`, `masked_fill`, and augmented assignment. | In-place forms need a proof of safe storage use. |
+| Casts and storage calls | dtype and device conversion, `clone`, `detach`, `contiguous`. | Results that may alias input storage must pass alias checks. |
+| Matrix operations | `matmul`, `mm`, `bmm`, `addmm`, `baddbmm`, `dot`, `vdot`, `mv`, `outer`, `ger`. Free and contracted axes. | Original ranks and broadcasting must stay valid. |
+| Einsum | String equations with explicit or implicit outputs, repeated labels, reductions, and ellipsis broadcasting. | No sublist format. Outputs may alias inputs. |
+| Concatenation and splitting | `cat`, `stack`, `split`, `chunk`, `unbind`. | Stack and unbind port counts stay fixed. |
+| Indexing | `...`, `None`, integers, and positive-step slices with known sizes. [Bracket indexing](#bracket-indexing) with one fixed vector or mask. | Indexing must keep its original coordinates. |
+| Shape transforms | `permute`, `transpose`, `movedim`, `reshape`, `view`, `flatten`, `unflatten`, `squeeze`, `unsqueeze`. | Incompatible sizes, changed ranks, or unproven view strides block the request. |
+| Repeat and expand | `repeat`, `tile`, `repeat_interleave`, `expand`, `expand_as`, `broadcast_to`. | Static positive repeat factors. `repeat_interleave` needs scalar repeats and an explicit axis. |
+| Tensor windows | `Tensor.unfold` maps every axis except the unfolded one. | Positive integer size and step. Window axes stay fixed. The result is a view. |
+| Grouped coordinate transforms | GLU, ChannelShuffle, PixelShuffle and PixelUnshuffle, 2D Unfold and Fold. | Compatible shuffle patterns. Spatial and kernel positions stay fixed. |
+| Reductions and softmax | Sum, mean, product, extrema, `any`, `all`, logsumexp, softmax, and log_softmax. | Results recompute over the smaller domain. An explicit empty dimension list or tuple in `any` and `all` preserves every axis. Most index-returning reductions are unsupported. |
+| Fourier transforms | FFT variants and frequency shifts, for axes outside the transform. | Transform axes stay fixed. |
+| Scaled dot-product attention | Q/K contraction, V width, batch and head broadcasting, masks, grouped-query attention. | Head axes must be explicit. Causal Q/K token axes stay fixed. |
+| `nn.MultiheadAttention` | Packed or separate projections with balanced embedding-width changes. | Head count stays fixed. The rule does not remove whole heads at a fixed external width. |
+| `ChannelGate` | Activation axis, scale, and mask shrink together. | Only after `register_gate_operators()`. |
+
+There is no general support for tensor-dependent control flow, dynamic index
+remapping, quantized or sparse storage, RNNs and `PackedSequence`, mixture-of-experts
+routing, matrix decompositions, losses, or coordinate transforms such as `roll`,
+`flip`, diagonals, and general `tensor_split`. Requests that reach these calls are
+blocked unless you supply a rule.
 
 ### Bracket indexing
 
-`x[..., [0, 2]]` selects positions 0 and 2 on the last axis and keeps all positions on the other axes.
-When one axis uses a vector or mask, every other axis must use a full slice.
-Kirigami supports `x[:, [0, 2]]`. The rule excludes `x[1:, [0, 2]]` and `x[0, [0, 2]]`.
+`x[..., [0, 2]]` keeps positions 0 and 2 of the last axis and all positions of the
+other axes. When one axis uses an index vector or mask, every other axis must be a
+full slice. `x[:, [0, 2]]` is supported. `x[1:, [0, 2]]` and `x[0, [0, 2]]` are not.
 
-To use a Tensor as an index, bind it as a model buffer or parameter. Use a buffer for ordinary indices.
-For example, call `self.register_buffer("indices", torch.tensor([0, 2], dtype=torch.long))`, then use `x[..., self.indices]`.
-Use a one-dimensional `int32` or `int64` Tensor for positions. The graph and saved plan check the index values.
+The index may be:
 
-Use a one-dimensional `bool` Tensor or a literal boolean list for a fixed mask.
-For example, `x[..., [True, False, True]]` selects positions 0 and 2 on an axis of width 3.
-The indexed axis keeps its original width. Pruning can still reduce other axes.
+- a literal list of integers or booleans;
+- a fixed one-dimensional tensor with dtype `int32`, `int64`, or `bool`,
+  registered as a buffer or a non-trainable parameter. For example, use
+  `self.register_buffer("indices", torch.tensor([0, 2]))` with `x[..., self.indices]`.
 
-Scalar boolean indices such as `x[True]` insert an axis. The rule excludes them.
-Scalar and higher-rank index Tensors, runtime indices, legacy `uint8` masks, and multiple index vectors block affected requests.
-The rule also excludes indexed writes. Keep their affected dimensions fixed.
-A valid slice can still block a request when the same expression selects different original positions after compaction.
-The error identifies the axis and reports a coordinate or length mismatch.
-If the index fails on the example input, capture reports the PyTorch error.
-See [capture and planning results](../guides/model-support.md#failure-scope) for where to read each diagnostic.
+The graph and saved plans guard registered index values. A boolean mask fixes
+the width of its indexed axis because the mask must still match that width.
+An integer vector can allow the axis to shrink if the same indices still refer
+to the same original positions. For example, with indices `[0, 2]` on a
+four-channel input, removing channel 3 leaves both reads unchanged.
+
+Scalar booleans such as `x[True]`, scalar or multi-dimensional index Tensors,
+runtime-computed indices, `uint8` masks, several index vectors, and indexed writes
+block the affected requests. A slice can also block a request when, after
+compaction, it would select different original positions.
+
+### Native and explicit attention
+
+`nn.MultiheadAttention` ties the output projection to the query and output width
+and to its packed or separate input projections. It keeps the head count and
+balances retained features across head partitions.
+
+An explicit scaled-dot-product graph exposes head axes. Rules can describe
+removing whole key-value groups or changing the query-head multiplier. With
+`is_causal=True`, Q/K token positions stay fixed, because removing tokens would
+change the implicit triangular mask. KV-cache handling is outside this library.
 
 ## Default candidate axes
 
-Dependency rules and candidate discovery are separate contracts. The default registry declares candidate axes for these module types:
+Dependency rules decide what a removal implies. Separately, some rules nominate
+axes for automatic [candidate discovery](../guides/pruning.md#discover-default-candidates).
+The default registry nominates these:
 
-| Module | Default entry axis | Candidate unit |
+| Module | Candidate axis | One candidate |
 | --- | --- | --- |
 | `Linear` | Output features, weight axis 0 | One feature |
-| Ordinary or grouped Conv1d/2d/3d | Output channels, weight axis 0 | One channel. A valid request may need a balanced group of candidates. |
-| ConvTranspose1d/2d/3d | Logical output-channel axis | One channel, subject to group constraints |
-| Depthwise convolution | Logical output-channel axis | One complete output block for an input channel |
+| Conv1d/2d/3d, ordinary or grouped | Output channels, weight axis 0 | One channel. A valid request may need a balanced set. |
+| ConvTranspose1d/2d/3d | Logical output channels | One channel, subject to group balance |
+| Depthwise convolution | Logical output channels | The output block of one input channel |
 | `Embedding` | Embedding width, weight axis 1 | One feature |
-| Native `MultiheadAttention` | Embedding width, output-projection weight axis 0 | One feature. Fixed heads require balanced changes. |
+| `MultiheadAttention` | Embedding width, output projection axis 0 | One feature. The fixed head count requires balanced changes. |
 
-Functional calls and most coordinate or normalization rules provide dependencies without a default candidate axis. For example, propagation from an upstream output can select Linear input axes. A custom rule can declare another axis with `CandidateAxis`.
+Functional calls and most coordinate or normalization rules propagate
+dependencies without nominating an axis. A `Linear` input axis, for example, is
+reached by propagation from the layer upstream. A custom rule can nominate an axis
+with `CandidateAxis`.
 
-Candidate size describes how discovery forms requests. Relations and constraints determine whether combined requests are valid. Native MHA does not generate whole-head deletion candidates. Grouped ConvTranspose uses the full logical output width as its budget domain, even though its physical weight dimension stores a per-group width.
+## Write an operator rule
 
-## Attention domains
+Write a rule when a model uses a call that has no rule, or whose built-in rule does
+not fit a custom subclass. Prefer a small declarative `OperatorSpec` built from
+existing relations and constraints.
 
-Native MHA width pruning and explicit-head attention pruning use different contracts.
-
-Native MHA ties the output projection to query/output width and to packed or separate projections. It keeps the head count fixed and balances retained features across original head partitions. It does not delete internal heads while keeping external embedding width unchanged.
-
-An explicit SDPA graph exposes head axes. Rules can describe full KV-group removal or valid changes to the query-head multiplier. With `is_causal=True`, Q/K token positions stay fixed because token deletion changes the implicit triangular mask. KV-cache maintenance is outside this library.
-
-## Structural validity and numerical references
-
-For a linear hidden channel followed by a compatible elementwise operation, a dense masked model can provide an independent reference for physical removal.
-
-Place the mask where it represents contributions from every selected channel.
-
-Normalization, softmax, reductions, and attention can recompute statistics or probabilities over a smaller domain. A dense masked output is generally not an equivalent reference. Use a compact reference model or a formula evaluated on retained coordinates.
-
-Unknown operators and unsupported axes block requests that reach them. They do not invalidate every independent branch. Tensor-dependent Python control flow, dynamic index remapping, quantized or sparse storage compaction, RNN/PackedSequence, MoE routing, and optimizer-state migration have no general built-in support.
-
-General matrix decompositions, solves, determinants, losses, and distance operations need additional structural semantics.
-Coordinate transforms such as standalone diagonals, `roll`, `flip`, and general `tensor_split` also need rules for retained coordinates.
-FX can expand some Python wrappers into supported calls. Otherwise, affected requests require a custom rule.
-
-Capture safety is a separate prerequisite.
-An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.
-In that case, graph construction fails before sample execution.
-
-BatchNorm and InstanceNorm can update running statistics.
-Registered buffers execute on isolated copies.
-When statistics are directly bound Parameters, capture warns and permits their declared native updates.
-The same declaration does not permit writes through an unproved parameter view.
-
-A truthful read-only rule can permit capture while its `build_spec()` raises `UnsupportedOperation`.
-The resulting structural barrier blocks only related pruning requests.
-Other rule exceptions, including `ValueError`, fail construction.
-Use `UnsupportedOperation` for an unsupported case, rather than hiding rule defects behind a barrier.
-
-## Implementing an operator rule
-
-Prefer a small declarative `OperatorSpec`. Reuse existing relations, constraints, requirements, candidate axes, and layouts. Keep third-party-specific definitions outside the dependency core.
-
-This example registers a module that multiplies each input coordinate by a fixed scalar. The rule preserves coordinate identity and declares fresh output storage. It has no attributes or parameters to rewrite.
+This module multiplies each element by a constant. Its rule says that output
+position `i` corresponds to input position `i`, and that the output is fresh
+storage:
 
 ```python
 import torch
@@ -215,10 +218,12 @@ assert model[0].out_features == model[2].in_features == 6
 assert model(x).shape == (2, 2)
 ```
 
-The rule relies on `Half` multiplying each coordinate independently and allocating new output storage.
-Equal input/output shapes do not prove coordinate independence, alias behavior, or reduction semantics for another operation.
+`ReshapeRelation` between equal shapes is the identity mapping. The rule is
+correct only because `Half` treats each element independently and allocates new
+output. Equal input and output shapes alone prove neither.
 
-The same rule also describes this function because its coordinate and storage behavior matches `Half`:
+The same rule describes a function with the same behavior. `opaque=True` keeps the
+function as one call:
 
 ```python
 def half(input: torch.Tensor) -> torch.Tensor:
@@ -246,107 +251,89 @@ pruner.apply(plan)
 assert model.fc.out_features == model.out.in_features == 6
 ```
 
-### Unflatten dimensions
+### Rule lifecycle
 
-`nn.Unflatten`, `torch.unflatten`, and `Tensor.unflatten` share the existing reshape coordinate relation.
-Function and method forms accept proven dimension expressions and one inferred `-1` factor.
-
-These expressions must first pass the installed PyTorch version's FX tracer.
-PyTorch 2.6 rejects proxy factors inside `torch.unflatten(..., sizes=...)` during tracing.
-The equivalent Tensor method supports those factors in the tested cases.
-
-Planning evaluates the original call with compact metadata and checks its output shape.
-Splitting one axis does not require proof that the input is contiguous.
-
-Fixed factors remain fixed in function and method calls.
-For example, `x.unflatten(-1, (self.num_heads, 64))` does not authorize an automatic update to `self.num_heads`.
-Use an explicit owner rule with `AttributeBinding` when pruning must change that attribute.
-The `nn.Unflatten` rule already declares a binding for its own `unflattened_size` attribute.
-Named dimensions remain unsupported.
-
-### Rule contract
-
-Subclass `OperatorRule` and implement `build_spec()`.
-The other methods have default implementations.
-
-The registry selects a rule for each captured call.
-An `Operation` supplies that call's arguments and metadata.
-The rule returns an `OperatorSpec`, which the graph uses for structural analysis.
+A registry selects one rule per captured call. One rule instance can serve many
+calls. The library calls the rule's methods at different times:
 
 ```mermaid
-flowchart TD
-    Registry["OperatorRegistry"] -- selects --> Rule["OperatorRule"]
-    Operation["Operation"] -- call facts --> Rule
-    Rule -- returns --> Spec["OperatorSpec"]
-    Spec -- structural facts --> Graph["DependencyGraph"]
-    classDef input fill:#edf3fd,stroke:#97afd0,color:#20364d
-    classDef semantics fill:#f1edfa,stroke:#b4a2d0,color:#38284f
-    classDef analysis fill:#eaf5ee,stroke:#98bba3,color:#213f2c
-    class Registry,Operation input
-    class Rule,Spec semantics
-    class Graph analysis
+flowchart LR
+    subgraph Capture
+        V["validate_capture"] --> E["tensor_effects"]
+    end
+    subgraph Analysis
+        S["build_spec"]
+    end
+    subgraph Planning
+        P["build_recipe"]
+    end
+    Capture --> Analysis --> Planning
 ```
 
-One rule instance can serve several calls.
-Each captured call has its own `Operation`.
-The rule supplies structural facts separately for each call.
-The arrows show information flow, not inheritance or the order of every rule method.
-
-| Part | Contract |
+| Method | Purpose |
 | --- | --- |
-| `validate_capture(node, module)` | Reject recognized unsafe calls before metadata execution. |
-| `tensor_effects(node, module)` | Declare input writes and output storage sources before sample execution. |
-| `build_spec(operation)` | Return pure structural facts in an `OperatorSpec`. |
-| `build_recipe(operation, spec, impact)` | Return special edits or `None`. The compiler combines these edits with standard edits and checks all obligations. Do not mutate the model. |
+| `validate_capture(node, module)` | Reject recognized unsafe calls before the metadata run. |
+| `tensor_effects(node, module)` | Declare which inputs the call writes and whether outputs are fresh or alias an input. |
+| `build_spec(operation)` | Return the call's structural facts as an `OperatorSpec`. Required. |
+| `build_recipe(operation, spec, impact)` | Return special edits as an `OperatorRecipe`, or `None`. Called only during planning, never during propagation. |
 
-Capture calls `validate_capture()` and `tensor_effects()` before metadata execution.
-After metadata execution, analysis supplies an `Operation` to `build_spec()`.
-Planning calls `build_recipe()` with the joint `Impact` when it compiles affected operations.
-Dependency propagation does not call `build_recipe()`.
+The default `tensor_effects()` declares read-only inputs but does not promise
+fresh outputs. Override it when the call writes an input, identifying the input
+with `ArgumentRef`. Alias checks for in-place operations apply in all cases.
 
-Set `evaluate_on_meta=True` to permit compact-call checks on metadata tensors.
-Third-party rules use declared output facts by default.
-Rules inherit `False` defaults for `evaluate_on_meta` and `cache_meta_output`, including rules with their own constructors.
-Call `super().__init__(...)` to configure different values in a custom constructor.
-Set `cache_meta_output=True` only when evaluation depends on argument metadata and captured module configuration alone.
-Cache reuse also requires fresh output storage and no input writes.
+An `OperatorSpec` can hold relations, constraints, requirements, candidate axes,
+partitioned layouts, an `OutputContract`, a shape expression, and guarded constants.
+The records are described in the [dependency graph reference](dependency-graph.md).
 
-The inherited `tensor_effects()` declares read-only inputs without promising fresh output storage.
-Override it for writes, using `ArgumentRef` argument locations.
-Capture records these effects once, and planning reuses them.
-In-place alias checks apply even with `evaluate_on_meta=False`.
+`build_spec()` raises `UnsupportedOperation` for a case the rule cannot analyze.
+The graph turns that into a barrier over the related requests. Any other
+exception fails the build, so programming errors are not hidden behind a barrier.
 
-A declared reshape, slice, index, or partition validation requirement needs `evaluate_on_meta=True`.
-A successful custom recipe cannot bypass that check.
+### Execution flags
 
-An operator spec can include relations, constraints, requirements, candidates, partitioned layouts, an output contract, a shape expression, and registered constants. Register structural index Tensors as buffers so the graph can guard their values.
+Two constructor flags control the execution checks:
 
-A custom constraint can declare `Diagnostic(..., severity="conflict", irreversible=True)` when every superset of the current removals retains the violation. Candidate filtering trusts this declaration. Ordinary conflicts and missing proofs must keep the default `irreversible=False`. For example, a difference between two widths can change after one deletion and recover after another. See [query results](dependency-graph.md#query-results) for the distinction between current validity, completeness, and irreversibility.
+- `evaluate_on_meta=True` lets the planner run the compact call on metadata
+  tensors to check its output. Declared reshape, slice, index, and partition
+  requirements need it. Otherwise the planner relies on declared output facts.
+- `cache_meta_output=True` lets the planner reuse that result. Set it only when
+  the result depends on argument metadata and module configuration alone. Reuse
+  also requires fresh outputs and no input writes.
 
-For a parameterized affine module, relate input features to weight columns and output features to weight rows and bias positions. Add an `AttributeBinding` with a `ShapeExpr` when the module stores width in an attribute. Use scopes and `PartitionedLayout` for packed or grouped storage. Use a stable candidate key for a logical channel domain. Add a registered binding when repeated calls share that logical coordinate system.
+Both default to `False`. A rule with its own constructor must call
+`super().__init__(...)` to change them.
 
-Supply an alignment axis when a physical candidate axis uses partitioned packing and cannot determine retained logical width. The alignment axis must belong to the graph and match the seed's original width. Relations must couple both axes.
+### Parameterized modules
 
-Implement `build_recipe()` only when shared descriptors cannot express a required edit.
-Return an `OperatorRecipe` from `torch_kirigami.operator_recipes`.
-Ordinary cuts and declared attributes or layouts need no override.
-The compiler must implement or reject every activated requirement.
-See [pruning](../guides/pruning.md#recipe-validation-and-application) for recipe compilation and plan behavior.
+For an affine module, relate input features to weight columns, and output
+features to weight rows and bias entries. If the module stores a width in an
+attribute, add an `AttributeBinding` with a `ShapeExpr`. Use scoped ports and a
+`PartitionedLayout` for packed or grouped storage. Give a logical channel domain a
+stable candidate key. If a physical candidate axis is packed and cannot show the
+retained logical width, supply an alignment axis that relations couple to it.
 
-### Proof obligations
+Override `build_recipe()` only when the shared descriptors cannot express an edit.
+Ordinary cuts and declared attributes or layouts need no recipe. The planner
+implements or rejects every requirement, and it checks the result in every case.
 
-| Area | Rule author must establish |
+### What the rule author must prove
+
+| Area | Obligation |
 | --- | --- |
 | Coordinates | Relations map original positions in both directions, including complete blocks and broadcast fibers. |
 | Constraints | Unsupported axes, balance, and nonempty conditions are explicit. |
-| Effects | Reject recognized writes before execution. Match allocation declarations to actual storage behavior. |
-| Shape provenance | Permitted argument changes use exact argument locations. Other semantic parameters remain unchanged. |
+| Effects | Recognized writes are rejected before execution. Declared allocation matches actual storage behavior. |
+| Shape provenance | Permitted argument changes name exact argument positions. Other semantic arguments stay fixed. |
 | Bindings | Parameters and buffers use registered references. Structural constants have value guards. |
-| Lowering | Implement or reject every activated requirement. Preserve the original call semantics. |
-| Persistence | A compatible model factory and the same extension definitions can restore the compact model. |
+| Irreversibility | A custom conflict sets `irreversible=True` only when every larger request keeps it. |
+| Persistence | The same model factory and rule definitions restore the compact model. |
 
-## Validation
+### Testing a rule
 
-Direct rule tests check coordinate mappings. They do not prove capture or physical execution. New built-in rules need independent expected-coordinate cases and family tests for meaningful alternatives and boundaries.
-
-Cross-layer changes need public `DependencyGraph.build()` → `Pruner.plan()` → `Pruner.apply()` coverage, including post-pruning forward and backward behavior. Add save/load coverage when a rule adds persistent structure. Rejected requests must preserve parameter values, identities, attributes, and relevant state.
+Direct tests of `build_spec()` check coordinate mappings, but they prove neither
+capture nor physical execution. Test the public path as well:
+`DependencyGraph.build()`, `Pruner.plan()`, `Pruner.apply()`, then a forward and
+backward pass on the compact model. Include a request that the rule should reject,
+and check that the model is unchanged afterward. Add a save-and-load test when the
+rule introduces persistent structure. The [verification guide](../development/verification.md)
+describes the test levels.

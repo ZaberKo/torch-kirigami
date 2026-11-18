@@ -1,4 +1,4 @@
-"""Dimension provenance and dependencies shared by operator contracts."""
+"""Shape-expression provenance for dimension values and the scalar-argument guard."""
 
 from __future__ import annotations
 
@@ -20,11 +20,15 @@ from .effects import AUGMENTED_BINARY
 
 
 class _PendingLayout(Exception):
-    """Known structure whose partition counts still need a legal completion."""
+    """Signal that a partitioned compact shape is not yet resolved by the selections."""
 
 
 def shape_expression(operation: Operation, value: object) -> ShapeExpr:
-    """Resolve dimension provenance without guessing from numeric equality."""
+    """Build the shape expression of a raw argument without guessing from equal values.
+
+    FX nodes use their recorded expressions; integer literals are constants,
+    with `-1` marked as an inferred size. Anything else has unknown provenance.
+    """
     if isinstance(value, fx.Node):
         return operation.expressions.get(value, ShapeExpr("unknown", value.name))
     if isinstance(value, (tuple, list)):
@@ -40,7 +44,15 @@ def has_known_provenance(expr: ShapeExpr) -> bool:
 
 
 def expression_for(operation: Operation) -> ShapeExpr | None:
-    """Recognize public dimension reads and scalar integer arithmetic."""
+    """Recognize public dimension reads and scalar integer arithmetic.
+
+    Returns:
+        The call's shape expression, or None when the call is neither.
+
+    Raises:
+        torch_kirigami.UnsupportedOperation: A dimension selector comes from an
+            FX value with unknown provenance.
+    """
     node = operation.node
     x = operation.args[0] if operation.args else None
     expression = None
@@ -100,7 +112,11 @@ def expression_for(operation: Operation) -> ShapeExpr | None:
 def evaluate(
     expr: ShapeExpr, shape: Callable[[TensorRef], tuple[int, ...]]
 ) -> int | tuple[int, ...]:
-    """Evaluate supported integer provenance using supplied compact shapes."""
+    """Evaluate a shape expression using the supplied compact shapes.
+
+    Raises:
+        ValueError: The arithmetic is invalid or the expression kind is unknown.
+    """
     if expr.kind in ("constant", "infer"):
         return expr.value
     if expr.kind == "tuple":
@@ -135,7 +151,10 @@ def reevaluate(
     expressions: Mapping[fx.Node, ShapeExpr],
     shape: Callable[[TensorRef], tuple[int, ...]],
 ) -> Any:
-    """Recompute only captured dimension expressions in an argument tree."""
+    """Recompute the captured dimension expressions in an argument tree.
+
+    Leaves without a recorded expression keep their normalized value.
+    """
     if isinstance(raw, fx.Node):
         expression = expressions.get(raw)
         return evaluate(expression, shape) if expression is not None else normalized
@@ -168,17 +187,25 @@ def dependencies(operation: Operation) -> tuple[TensorRef, ...]:
 
 @dataclass(frozen=True)
 class CallArgumentConstraint:
-    """Check immutable scalar provenance independently of removal propagation.
+    """Constraint that rejects compaction that changes a call's scalar arguments.
 
-    Expressions, observed values, layouts, and an optional conditional hint are
-    retained. No FX node, model, or mutable Operation escapes through graph
-    and impact constraint inspection. The hint is displayed only on a violation.
+    Each scalar argument derived from tensor dimensions is stored with its
+    captured value. `check` re-evaluates the expressions under proposed
+    selections, independently of removal propagation. The constraint holds
+    only immutable data, so no FX node, model, or `Operation` escapes through
+    constraint inspection.
 
     Attributes:
         node: FX node name used to identify a diagnostic.
         arguments: Shape expressions paired with their values at capture time.
+            List values are converted to tuples.
         layouts: Partitioned layouts used to resolve compact shapes.
-        hint: Additional guidance shown when a semantic argument changes.
+        hint: Additional guidance appended to the diagnostic when an argument
+            changes.
+
+    Raises:
+        TypeError: An argument is not a `ShapeExpr` paired with an integer or
+            integer tuple, or `hint` is not a string.
     """
 
     node: str
@@ -206,7 +233,16 @@ class CallArgumentConstraint:
     def from_operation(
         cls, context: Operation, *, checked_arguments: tuple[ArgumentRef, ...] = ()
     ) -> CallArgumentConstraint:
-        """Detach the used shape expressions and observed values from capture."""
+        """Collect a call's dimension-derived arguments and their captured values.
+
+        Args:
+            context: Captured call to inspect.
+            checked_arguments: Arguments to skip because another contract
+                already checks them.
+
+        Returns:
+            A constraint with no layouts and no hint.
+        """
         arguments = []
 
         def visit(raw: object, observed: Any) -> None:
@@ -250,11 +286,20 @@ class CallArgumentConstraint:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return tensors whose sizes feed this call's scalar arguments."""
+        """Tensors whose sizes feed this call's scalar arguments."""
         return tuple(dict.fromkeys(ref for expr, _ in self.arguments for ref in expr.refs))
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Reject changed semantic arguments while permitting declared shape contracts."""
+        """Report a diagnostic if the proposed selections change any guarded argument.
+
+        Args:
+            selections: Proposed removals indexed by tensor reference ID.
+
+        Returns:
+            None when no guarded argument changes. Otherwise a diagnostic for a
+            changed argument, an unresolved partitioned layout, or an
+            expression that cannot be re-evaluated.
+        """
         if not any(r.id in selections for r in self.refs):
             return None
 
@@ -306,7 +351,16 @@ class CallArgumentConstraint:
 
 
 def scalar_spec(operation: Operation) -> OperatorSpec | None:
-    """Describe scalar dimension reads and arithmetic before Tensor overload handling."""
+    """Describe a scalar dimension read or arithmetic call, if this call is one.
+
+    Rules call this before handling Tensor overloads. A single-dimension read
+    also guards any of its other arguments, such as the dimension selector,
+    that are themselves derived from tensor dimensions.
+
+    Returns:
+        A spec carrying the shape expression, or None when the call has tensor
+        outputs or no recognized expression.
+    """
     expression = expression_for(operation)
     if expression is None or operation.outputs:
         return None

@@ -17,17 +17,27 @@ from .dep_graph.selection import Region, Selection, TensorRef, concatenated_shap
 
 @dataclass(frozen=True)
 class TensorRecipe:
-    """Gather Cartesian retained segments and concatenate in original group order.
+    """A static recipe that builds a compact tensor from retained original regions.
 
-    Segments are disjoint regions in the original tensor. Concatenation defines
-    the old-to-new coordinate mapping without allocating an elementwise map.
+    Execution gathers each Cartesian segment from the original tensor and
+    concatenates the segments in order along `concat_dim`. The segments should
+    be disjoint. Their order defines the old-to-new coordinate mapping, so no
+    elementwise index map is allocated.
 
     Attributes:
         tensor: Original tensor reference and its captured metadata.
-        segments: Retained source regions in concatenation order.
-        concat_dim: Dimension along which the regions are concatenated.
-        memory_format: Layout used for the compact tensor.
-        shape: Compact tensor shape after applying the segments.
+        segments: Nonempty retained source regions in concatenation order.
+        concat_dim: Dimension along which the segments are concatenated. A
+            scalar tensor uses dimension zero.
+        memory_format: Layout of the compact tensor: `"contiguous"`,
+            `"channels_last"` for rank-4 tensors, or `"channels_last_3d"` for
+            rank-5 tensors.
+
+    Raises:
+        ValueError: The tensor or segments are missing, a segment is empty or
+            has the wrong rank, `concat_dim` or `memory_format` is invalid for
+            the tensor rank, or the segments cannot be concatenated.
+        IndexError: A segment lies outside the tensor shape.
     """
 
     tensor: TensorRef
@@ -62,18 +72,28 @@ class TensorRecipe:
 
     @property
     def shape(self) -> tuple[int, ...]:
-        """Return the resulting tensor shape without allocating tensor data."""
+        """Compact tensor shape produced by the segments, computed without tensor data."""
         return concatenated_shape(self.segments, self.concat_dim)
 
 
 @dataclass(frozen=True)
 class AttributeRecipe:
-    """Assign a verified attribute; lists use detached FrozenList configuration.
+    """A static module-attribute assignment guarded by the attribute's captured value.
+
+    Construction stores `old` and `new` as frozen configuration, so later edits
+    to the caller's lists or dictionaries do not change the recipe. Execution
+    checks that the attribute still equals `old` before it assigns `new`.
 
     Attributes:
         path: Qualified path to the module attribute.
-        old: Captured value required before the edit.
-        new: Value to assign after validation.
+        old: Value that the attribute must have before the edit.
+        new: Value to assign. Both values may be `None`, Python scalars, tuples
+            of such values, or `torch.Size`, list, and dictionary configuration
+            accepted by `torch_kirigami.configuration.freeze`.
+
+    Raises:
+        ValueError: `path` is empty or not a string, or a value is not
+            supported configuration.
     """
 
     path: str
@@ -99,16 +119,25 @@ class AttributeRecipe:
 
 @dataclass(frozen=True)
 class OperatorRecipe:
-    """Static per-call edits and declared compact-output facts.
+    """Static edits for one operator call and declared facts about its compact outputs.
 
-    Custom rules are responsible for proving original-forward compatibility.
-    Output strides can be supplied when proved, allowing downstream view checks.
+    A custom rule returns this record from `build_recipe` and is responsible
+    for proving that the edited call stays compatible with the original forward
+    computation. A rule can declare output strides that it has proved, so that
+    downstream view checks can use them.
 
     Attributes:
         tensors: Tensor recipes for this call.
         attributes: Module attribute recipes for this call.
-        notes: Explanatory notes emitted with the compiled plan.
-        output_strides: Optional proved output strides keyed by tensor reference.
+        notes: Explanatory notes copied into the compiled plan.
+        output_strides: Proved strides of compact outputs, as pairs of a tensor
+            reference and one nonnegative stride per dimension. Each tensor
+            appears at most once.
+
+    Raises:
+        TypeError: An entry of `tensors`, `attributes`, or `notes` has the wrong type.
+        ValueError: A stride declaration has the wrong rank, a negative or
+            non-integer stride, or a duplicate tensor reference.
     """
 
     tensors: tuple[TensorRecipe, ...] = ()

@@ -1,4 +1,4 @@
-"""Shared immutable guards for recognizable Python module configuration."""
+"""Immutable snapshots of recognizable module configuration, used as structural guards."""
 
 from __future__ import annotations
 
@@ -17,11 +17,16 @@ STRUCTURE_ATTRIBUTE = "_kirigami_structure"
 
 @dataclass(frozen=True)
 class FrozenScalar:
-    """An exact scalar type/value guard; floating NaNs have stable equality.
+    """A frozen scalar that compares equal only to the same exact type and value.
+
+    Floats are stored as hexadecimal strings, so NaN guards compare equal and
+    `0.0` differs from `-0.0`.
 
     Attributes:
-        kind: Exact scalar type name.
-        value: Captured scalar value.
+        kind: Exact type name, such as `"int"`, `"float"`, `"size"`, `"device"`,
+            or `"dtype"`.
+        value: Captured value. Floats are hexadecimal strings, sizes are tuples,
+            and devices and PyTorch constants are their string names.
     """
 
     kind: str
@@ -30,7 +35,7 @@ class FrozenScalar:
 
 @dataclass(frozen=True)
 class FrozenList:
-    """Preserve the list container type without retaining mutable configuration.
+    """A frozen list that stays distinct from an equal tuple.
 
     Attributes:
         items: Frozen values in list order.
@@ -41,7 +46,7 @@ class FrozenList:
 
 @dataclass(frozen=True)
 class FrozenDict:
-    """Preserve insertion order and exact key/value types in static configuration.
+    """A frozen dictionary that keeps insertion order and exact key and value types.
 
     Attributes:
         items: Frozen key/value pairs in insertion order.
@@ -51,7 +56,7 @@ class FrozenDict:
 
 
 def slot_names(cls: type) -> tuple[str, ...]:
-    """List slot descriptors in the same base-to-derived order as attribute reads."""
+    """Return the names of slot descriptors in `cls`, from the root base to `cls`."""
     return tuple(
         name
         for base in reversed(cls.__mro__)
@@ -61,11 +66,16 @@ def slot_names(cls: type) -> tuple[str, ...]:
 
 
 def object_attributes(value: object, *, slots: tuple[str, ...] | None = None) -> dict[str, object]:
-    """Read instance dictionary and initialized slots, optionally reusing slot names.
+    """Return the instance dictionary merged with every initialized slot.
 
-    Supplied slot names must describe the current exact type. Callers may reuse
-    them within one inspection, but must not cache mutable class state across
-    model freshness checks.
+    Args:
+        value: Object to inspect.
+        slots: Precomputed `slot_names(type(value))`. Callers may reuse the
+            names within one inspection, but must not cache them across model
+            freshness checks because class state can change.
+
+    Returns:
+        A new dictionary of attribute names and values. Unset slots are omitted.
     """
     result = dict(vars(value))
     for name in slot_names(type(value)) if slots is None else slots:
@@ -75,7 +85,24 @@ def object_attributes(value: object, *, slots: tuple[str, ...] | None = None) ->
 
 
 def freeze(value: object, *, _depth: int = 0) -> object:
-    """Freeze scalars and nested list/tuple/dict configuration, rejecting other objects."""
+    """Convert recognizable configuration into an immutable, comparable value.
+
+    Accepted values are `None`, `str`, `int`, `float`, `bool`, `torch.Size`,
+    `torch.device`, `torch.dtype`, `torch.layout`, `torch.memory_format`, and
+    nested plain tuples, lists, and dictionaries of these values. Subclasses
+    of these types are rejected.
+
+    Args:
+        value: Configuration value to freeze.
+
+    Returns:
+        `None`, a `FrozenScalar`, a `FrozenList`, a `FrozenDict`, or a tuple of
+        frozen values.
+
+    Raises:
+        TypeError: The value contains an unrecognized object, or its nesting
+            exceeds `config.max_container_depth` (which includes cycles).
+    """
     if _depth > config.max_container_depth:
         raise TypeError("Configuration is cyclic or too deeply nested")
     if value is None:
@@ -104,7 +131,18 @@ def freeze(value: object, *, _depth: int = 0) -> object:
 
 
 def thaw(value: object) -> object:
-    """Restore independently owned list/tuple/dict configuration from a frozen guard."""
+    """Rebuild new, independently owned configuration from a frozen value.
+
+    Args:
+        value: Value produced by `freeze`.
+
+    Returns:
+        The configuration value with fresh lists and dictionaries. Values that
+        are not frozen records are returned unchanged.
+
+    Raises:
+        ValueError: A frozen PyTorch constant does not name a valid constant.
+    """
     if type(value) is torch.Size:
         return value
     if isinstance(value, FrozenScalar):
@@ -130,7 +168,19 @@ def thaw(value: object) -> object:
 def attributes(
     module: torch.nn.Module, *, raw_attributes: Mapping[str, object] | None = None
 ) -> tuple[tuple[str, object], ...]:
-    """Freeze module configuration, optionally sharing a current attribute readout."""
+    """Freeze every recognizable attribute of one module, sorted by name.
+
+    Attributes that `freeze` rejects, such as submodules, tensors, and custom
+    objects, are skipped, as is the library's structure attribute.
+
+    Args:
+        module: Module to inspect.
+        raw_attributes: Current `object_attributes(module)`, if the caller has
+            already read them during the same check.
+
+    Returns:
+        Pairs of attribute name and frozen value.
+    """
     result = []
     values = object_attributes(module) if raw_attributes is None else raw_attributes
     for name, value in sorted(values.items()):
@@ -144,7 +194,13 @@ def attributes(
 
 
 def forward_hook_paths(model: torch.nn.Module) -> tuple[str, ...]:
-    """Find unmodeled module call hooks, including expanded root/parent boundaries."""
+    """Return the locations of forward and forward-pre hooks, which analysis does not model.
+
+    Returns:
+        `"<global>"` when a process-wide module hook is registered, followed by
+        the path of every module with its own hook. The root module is
+        reported as `"<root>"`.
+    """
     # PyTorch has public global-hook registration but no public inspection API.
     # Keep its stable registry access localized here and test both supported versions.
     global_hooks = (
@@ -160,10 +216,12 @@ def forward_hook_paths(model: torch.nn.Module) -> tuple[str, ...]:
 
 
 def has_registration_hooks() -> bool:
-    """Detect registration callbacks whose substitutions cannot preserve a transaction.
+    """Return whether process-wide parameter, buffer, or module registration hooks exist.
 
-    PyTorch exposes registration but no public inspection API; keep access to
-    these process-wide registries alongside the forward-hook compatibility check.
+    Such hooks can substitute the registered objects, so the library cannot
+    guarantee a transactional model edit while they are installed. PyTorch
+    exposes registration but no public inspection API; keep access to these
+    process-wide registries alongside the forward-hook compatibility check.
     """
     return bool(
         module_runtime._global_parameter_registration_hooks

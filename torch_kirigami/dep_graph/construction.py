@@ -69,7 +69,11 @@ class _Analyzer:
         self._module_paths: defaultdict[int, list[str]] = defaultdict(list)
 
     def build(self, args: tuple[object, ...], kwargs: dict[str, object]) -> DependencyGraphState:
-        """Populate one analysis; publish only on success and release scratch state."""
+        """Populate one analysis, mark it complete on success, and release scratch state.
+
+        Raises:
+            RuntimeError: This analyzer has already started a build.
+        """
         if self._started:
             raise RuntimeError("An analyzer can only build once")
         self._started = True
@@ -278,7 +282,7 @@ class _Analyzer:
             self.data.literal_values[ref.id] = tuple(value.detach().cpu().reshape(-1).tolist())
 
     def _complete_constraints(self) -> list[Constraint]:
-        """Combine call rules with cross-call layout and tensor usage constraints."""
+        """Add per-tensor layout and usage constraints, then attach layouts to call checks."""
         ports = defaultdict(list)
         for relation in self.data.relations:
             if isinstance(relation, AxisRelation):
@@ -410,8 +414,8 @@ class _Analyzer:
             lambda item: self._values[item] if isinstance(item, fx.Node) else item, value
         )
 
-    def _ancestor_refs(self, node: fx.Node) -> tuple[TensorRef, ...]:
-        """Collect upstream tensor references for conservative scalar barriers."""
+    def _ancestor_refs(self, node: fx.Node) -> list[TensorRef]:
+        """Collect upstream tensor references for conservative unsupported-call barriers."""
         pending = [*node.all_input_nodes, *self.data.write_dependencies.get(node, ())]
         visited, result = set(), []
         while pending:

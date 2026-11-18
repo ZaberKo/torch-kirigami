@@ -1,4 +1,7 @@
-"""Structural semantics expressed through the same interface as external rules."""
+"""Spec builders for core native operators, written against the public rule interface.
+
+Each builder raises `UnsupportedOperation` for a call it cannot describe.
+"""
 
 from __future__ import annotations
 
@@ -60,7 +63,12 @@ def requirement(
     *,
     position: int | None = None,
 ) -> Requirement | AttributeBinding:
-    """Bind an axis change to a module attribute or functional operator argument."""
+    """Bind an axis size to a module attribute or a functional call argument.
+
+    Module calls produce an `AttributeBinding` for `name` on the module.
+    Function and method calls produce an `operator_argument` requirement that
+    names the argument only when `position` is given.
+    """
     target = (
         f"{operation.module_path}.{name}".lstrip(".")
         if operation.module is not None
@@ -100,7 +108,11 @@ def _identity(operation: Operation) -> OperatorSpec:
 
 
 def pointwise(operation: Operation) -> OperatorSpec:
-    """Connect broadcast-compatible inputs to an elementwise output."""
+    """Connect broadcast-compatible inputs to an elementwise output.
+
+    Scalar dimension arithmetic is delegated to `scalar_spec`. `contiguous`
+    calls also establish a contiguous output layout.
+    """
     scalar = scalar_spec(operation)
     if scalar is not None:
         return scalar
@@ -127,7 +139,7 @@ def layout(
 
 
 def affine_layouts(operation: Operation) -> tuple[LayoutConstraint, ...]:
-    """Require ordinary axis compaction for each input and bound affine tensor."""
+    """Require ordinary axis compaction for each input and bound module tensor."""
     return tuple(
         layout(operation, ref)
         for ref in dict.fromkeys((*operation.inputs, *operation.bindings.values()))
@@ -135,7 +147,10 @@ def affine_layouts(operation: Operation) -> tuple[LayoutConstraint, ...]:
 
 
 def linear(operation: Operation) -> OperatorSpec:
-    """Connect Linear feature axes, batch dimensions, weight, and bias."""
+    """Connect linear feature axes, batch dimensions, weight, and bias.
+
+    Only module calls offer default candidates and attribute bindings.
+    """
     x, y = one(operation.argument("input", 0)), one(operation.result)
     w, b = one(bind(operation, "weight", 1)), bind(operation, "bias", 2)
     if len(w.shape) not in (1, 2):
@@ -165,7 +180,13 @@ def linear(operation: Operation) -> OperatorSpec:
 
 
 def convolution(operation: Operation) -> OperatorSpec:
-    """Describe ordinary/transposed groups once for mapping, channel counting, and packing."""
+    """Map ordinary and transposed convolution channels, groups, weight, and bias.
+
+    One group description drives the channel relations, group balance, weight
+    packing layout, and attribute updates. Depthwise calls tie each input
+    channel to its block of output channels. Spatial and kernel axes stay
+    fixed.
+    """
     x, y = one(operation.argument("input", 0)), one(operation.result)
     w, b = one(bind(operation, "weight", 1)), bind(operation, "bias", 2)
     transposed = type(operation.module) in (
@@ -323,7 +344,7 @@ def batch_norm(operation: Operation) -> OperatorSpec:
 
 
 def layer_norm(operation: Operation) -> OperatorSpec:
-    """Connect normalized axes and record normalized-shape attribute changes."""
+    """Connect layer-norm or RMS-norm axes and record normalized-shape updates."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     normalized = (
         operation.module.normalized_shape
@@ -669,7 +690,7 @@ def reduction(operation: Operation) -> OperatorSpec:
 
 
 def getattr_rule(operation: Operation) -> OperatorSpec:
-    """Handle supported tensor attributes and the transpose property."""
+    """Map Tensor attribute reads: transpose properties, `real`/`imag`, and metadata."""
     scalar = scalar_spec(operation)
     if scalar is not None:
         return scalar
@@ -699,7 +720,7 @@ def shape_only(operation: Operation) -> OperatorSpec:
 
 
 def softmax(operation: Operation) -> OperatorSpec:
-    """Preserve coordinates and record changes to the normalization domain."""
+    """Preserve softmax-family coordinates and record the normalized axis."""
     result = pointwise(operation)
     x = one(operation.argument("input", 0))
     if type(operation.module) is nn.Softmax2d:

@@ -14,8 +14,9 @@ from .operators.defaults import default_rules
 class OperatorRegistry:
     """A local registry matching exact module types, functions, and Tensor methods.
 
-    Builds copy the registry tables, while retaining the same rule callables.
-    Rules must be deterministic and must not mutate the model or shared state.
+    `DependencyGraph.build` copies the registration tables but shares the rule
+    objects. Rules must be deterministic and must not mutate the model or
+    shared state.
     """
 
     def __init__(self) -> None:
@@ -27,32 +28,39 @@ class OperatorRegistry:
 
     @property
     def modules(self) -> Mapping[type[nn.Module], OperatorRule]:
-        """Inspect exact module registrations without bypassing duplicate checks."""
+        """Read-only view of rules keyed by exact module type.
+
+        Use `register` to add entries, so duplicate registrations are rejected.
+        """
         return MappingProxyType(self._modules)
 
     @property
     def functions(self) -> Mapping[Callable, OperatorRule]:
-        """Inspect registered function objects."""
+        """Read-only view of rules keyed by function object."""
         return MappingProxyType(self._functions)
 
     @property
     def methods(self) -> Mapping[str, OperatorRule]:
-        """Inspect registered Tensor method names."""
+        """Read-only view of rules keyed by Tensor method name."""
         return MappingProxyType(self._methods)
 
     @property
     def opaque_modules(self) -> frozenset[type[nn.Module]]:
-        """Return module types captured as FX leaves."""
+        """Module types that FX capture keeps as leaves."""
         return frozenset(self._opaque_modules)
 
     @property
     def opaque_functions(self) -> frozenset[Callable]:
-        """Return function objects captured as FX leaves."""
+        """Function objects that FX capture keeps as leaves."""
         return frozenset(self._opaque_functions)
 
     @classmethod
     def default(cls) -> OperatorRegistry:
-        """Create a fresh registry containing the built-in operation rules."""
+        """Create a fresh registry containing the built-in operator rules.
+
+        Returns:
+            A new registry that the caller can extend.
+        """
         registry = cls()
         for target, rule, opaque in default_rules():
             if isinstance(target, str):
@@ -62,7 +70,11 @@ class OperatorRegistry:
         return registry
 
     def copy(self) -> OperatorRegistry:
-        """Copy registration tables and leaf sets without cloning rule callables."""
+        """Copy registration tables and leaf sets without cloning rule objects.
+
+        Returns:
+            An independent registry that shares this registry's rules.
+        """
         result = OperatorRegistry()
         result._modules = self._modules.copy()
         result._functions = self._functions.copy()
@@ -77,16 +89,17 @@ class OperatorRegistry:
         """Register semantics for an exact module type or function.
 
         Args:
-            target: An nn.Module class or a function object.
-            rule: Unified OperatorRule instance.
+            target: An `nn.Module` subclass or a function object.
+            rule: `OperatorRule` instance implementing structural semantics.
             opaque: Whether FX should preserve the target as a leaf where supported.
 
         Returns:
             This registry, allowing registrations to be chained.
 
         Raises:
-            TypeError: target is neither a module class nor a callable.
-            ValueError: A rule is already registered for target.
+            TypeError: `rule` is not an `OperatorRule`, or `target` is neither a
+                module class nor a callable.
+            ValueError: A rule is already registered for `target`.
         """
         if not isinstance(rule, OperatorRule):
             raise TypeError("Register an OperatorRule instance")
@@ -110,15 +123,15 @@ class OperatorRegistry:
         """Register semantics for a captured Tensor method.
 
         Args:
-            name: Method name, such as reshape.
-            rule: Unified OperatorRule instance implementing structural semantics.
+            name: Method name, such as `reshape`.
+            rule: `OperatorRule` instance implementing structural semantics.
 
         Returns:
-            This registry.
+            This registry, allowing registrations to be chained.
 
         Raises:
+            TypeError: `rule` is not an `OperatorRule` instance.
             ValueError: The method already has a rule.
-            TypeError: rule is not an OperatorRule instance.
         """
         if not isinstance(rule, OperatorRule):
             raise TypeError("Register an OperatorRule instance")
@@ -128,7 +141,17 @@ class OperatorRegistry:
         return self
 
     def lookup(self, node: fx.Node, module: nn.Module | None) -> OperatorRule | None:
-        """Return the exact matching rule for a captured operation, or None."""
+        """Return the exact matching rule for a captured operation.
+
+        Args:
+            node: Captured FX node.
+            module: Called module for `call_module` nodes; ignored otherwise.
+
+        Returns:
+            The rule registered for the module's exact type, the function
+            object, or the Tensor method name, or None if there is no match or
+            the node is not a call.
+        """
         if node.op == "call_module":
             return self._modules.get(type(module))
         if node.op == "call_function":

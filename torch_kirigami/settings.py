@@ -1,37 +1,57 @@
-"""Process-wide resource configuration for analysis and pruning."""
+"""Process-wide resource limits and cache sizes for analysis and pruning."""
 
 from dataclasses import dataclass, field, fields
 
 
 @dataclass
 class Config:
-    """Validated global resource settings, updated between library operations.
+    """Validated resource limits and cache sizes shared by the whole process.
 
-    Use the exported `config` instance. `update()` validates all changes before
-    committing them; unknown names, booleans, and invalid sizes are rejected.
-    Attribute assignments use the same validation. Updates during an operation
-    or concurrent library use are unsupported. Settings are not saved in plans.
+    Use the exported `config` instance rather than creating new instances; the
+    library reads only that instance. `update()` validates every change before
+    it commits any of them, and plain attribute assignment uses the same
+    validation. Unknown names, booleans, non-integers, and values below a
+    field's minimum are rejected. Change settings only between library
+    operations: updates during an operation or concurrent use from several
+    threads are unsupported. Settings are not saved in plans.
+
+    The structural `max_*` limits are recorded when a `DependencyGraph` is
+    built. If they differ when the graph is used later, the graph raises
+    `torch_kirigami.StaleGraphError` and must be rebuilt. Cache sizes and `score_batch_size`
+    can change between operations without rebuilding a graph.
 
     Attributes:
-        max_parts: Compressed interval/region and identity-proof expansion bound.
-        max_literal_elements: Integer tensor elements retained as structural literals.
-        max_shuffle_channels: Channels expanded by ChannelShuffle analysis.
-        max_container_depth: Configuration, requirement, and extra-state nesting bound.
-        max_record_depth: Static and encoded pruning-record nesting bound.
-        score_batch_size: Generic scoring batch size; custom strategies may batch explicitly.
-        impact_cache_size: Maximum retained planning impact queries; zero disables retention.
-        candidate_cache_size: Minimum bound of each proof cache in a candidate
-            filter. A filter with a known candidate count raises the bound to
-            twice that count, so a full rescan by `DynamicGreedy` reuses its
-            proofs. Zero disables these caches and reuse of the latest filtered
-            candidate space.
-        recipe_cache_size: Maximum retained compiled recipe sets.
-        attribute_cache_size: Maximum retained attribute-validation results.
-        normalization_cache_size: Maximum GroupMagnitude normalization entries.
-        taylor_cache_size: Maximum WeightTaylor axis-statistic vectors.
-        taylor_cache_positions: Maximum scalar positions across Taylor vectors.
-        taylor_chunk_elements: Taylor statistics chunk bound; oversized slices
-            use ordinary region scoring. Zero disables axis statistics.
+        max_parts: Maximum number of intervals or regions in a compressed
+            selection, and the expansion bound for identity proofs.
+        max_literal_elements: Maximum number of integer tensor elements that
+            analysis retains as structural literals, such as index tensors.
+        max_shuffle_channels: Maximum channel count that channel-shuffle
+            analysis expands into an explicit permutation.
+        max_container_depth: Maximum nesting depth for module configuration,
+            requirements, and checkpoint extra state.
+        max_record_depth: Maximum nesting depth for static and encoded pruning
+            records.
+        score_batch_size: Number of candidates per batch in generic scoring.
+            Custom strategies can choose their own batching.
+        impact_cache_size: Maximum number of retained planning impact queries.
+            Zero disables retention.
+        candidate_cache_size: Base capacity of each proof cache in a candidate
+            filter. When enabled, each cache holds up to the larger of this
+            setting and twice the known candidate count. This allows
+            `DynamicGreedy` to reuse proofs across scans. Zero disables these
+            caches and reuse of the latest filtered candidate space.
+        recipe_cache_size: Maximum number of retained compiled recipe sets.
+        attribute_cache_size: Maximum number of retained attribute-validation
+            results.
+        normalization_cache_size: Maximum number of `GroupMagnitude`
+            normalization entries.
+        taylor_cache_size: Maximum number of `WeightTaylor` per-axis statistic
+            vectors.
+        taylor_cache_positions: Maximum total number of scalar positions across
+            the cached Taylor statistic vectors.
+        taylor_chunk_elements: Maximum number of elements per chunk when Taylor
+            statistics are computed. Larger slices fall back to ordinary region
+            scoring. Zero disables per-axis statistics.
     """
 
     max_parts: int = field(default=4096, metadata={"minimum": 1})
@@ -53,7 +73,19 @@ class Config:
         self.update(**{name: value})
 
     def update(self, **changes: int) -> None:
-        """Validate every supplied field, then apply the changes together."""
+        """Validate every supplied setting, then apply all changes together.
+
+        Args:
+            **changes: New values keyed by field name. Each value must be a
+                Python `int` (not `bool`) at or above the field's minimum,
+                which is one for limits and the scoring batch size and zero
+                for cache sizes.
+
+        Raises:
+            TypeError: A name is not a configuration field.
+            ValueError: A value is not an integer or is below its minimum.
+                No setting changes when an error is raised.
+        """
         definitions = {item.name: item for item in fields(self)}
         for name, value in changes.items():
             if name not in definitions:
@@ -64,15 +96,28 @@ class Config:
         self.__dict__.update(changes)
 
     def reset(self) -> None:
-        """Restore all declared defaults; call only between library operations."""
+        """Restore every setting to its declared default.
+
+        Call this only between library operations.
+        """
         self.update(**{item.name: item.default for item in fields(self)})
 
     def as_dict(self) -> dict[str, int]:
-        """Return an independent copy for inspection or later restoration."""
+        """Return the current settings as a new dictionary.
+
+        Returns:
+            A copy keyed by field name. Pass it to `update(**settings)` to
+            restore these settings later.
+        """
         return {item.name: getattr(self, item.name) for item in fields(self)}
 
     def analysis_key(self) -> tuple[int, ...]:
-        """Identify the settings that require rebuilding structural analysis."""
+        """Return the settings that a dependency graph records when it is built.
+
+        Returns:
+            The structural `max_*` limits in declaration order. A graph whose
+            recorded key differs from the current key must be rebuilt.
+        """
         return (
             self.max_parts,
             self.max_literal_elements,
@@ -83,4 +128,4 @@ class Config:
 
 
 config = Config()
-"""Process-wide resource configuration for analysis and pruning."""
+"""Process-wide resource settings for dependency analysis and pruning."""

@@ -1,4 +1,4 @@
-"""Shared original/compact coordinate normalization for operator contracts."""
+"""Coordinate and index normalization shared by operator rules."""
 
 from __future__ import annotations
 
@@ -13,8 +13,15 @@ def retained_indices(impact: Impact, axis: AxisRef) -> IndexSet:
     )
 
 
-def expand_index(index: object, rank: int) -> tuple:
-    """Expand ellipsis and trailing slices for indices that consume one axis each."""
+def expand_index(index: object, rank: int) -> tuple[object, ...]:
+    """Expand an ellipsis and append trailing full slices to a bracket index.
+
+    Every item other than None and an ellipsis consumes one axis.
+
+    Raises:
+        ValueError: The index has more than one ellipsis or consumes more axes
+            than `rank`.
+    """
     items = index if isinstance(index, tuple) else (index,)
     missing = rank - sum(item is not None and item is not Ellipsis for item in items)
     ellipses = sum(item is Ellipsis for item in items)
@@ -29,7 +36,11 @@ def expand_index(index: object, rank: int) -> tuple:
 
 
 def narrow_index(shape: tuple[int, ...], dim: int, start: int, length: int) -> tuple[slice, ...]:
-    """Convert narrow's signed start into an equivalent positive Python slice."""
+    """Convert `narrow` arguments into an equivalent index with a nonnegative slice.
+
+    Raises:
+        ValueError: The interval lies outside the axis.
+    """
     dim %= len(shape)
     if start < 0:
         start += shape[dim]

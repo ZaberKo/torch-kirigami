@@ -13,17 +13,30 @@ from .types import PlanningError
 
 @dataclass(frozen=True)
 class Granularity:
-    """Require retained logical widths to be multiples of configured factors.
+    """Require retained logical channel widths to be multiples of configured factors.
 
-    Mappings are copied and frozen. Requirements also apply to unchanged axes and
-    manual requests; alignment never permits exceeding the channel budget.
+    `Pruner` turns each factor into a `Divisible` constraint on the logical
+    channel axes that the module's operator rules declare. The constraints also
+    apply to axes left unchanged and to manual requests. Alignment never permits
+    exceeding a channel budget, so it can force a larger reduction. The
+    mappings are copied and frozen.
 
     Attributes:
-        default: Positive factor used when no override applies. One adds no
-            alignment constraint and does not disable operator constraints.
-        by_type: Positive factors keyed by exact module types; subclasses do not match.
-        by_path: Positive factors keyed by exact original paths; empty means root.
-            Prefixes and wildcards are unsupported.
+        default: Positive factor used when no override applies. A factor of 1
+            adds no alignment constraint; it does not disable constraints that
+            operator rules declare themselves.
+        by_type: Positive factors keyed by exact module type; subclasses do not
+            match.
+        by_path: Positive factors keyed by exact original module path; the empty
+            string is the root module. Matching is exact: prefixes and wildcard
+            patterns are not supported. A path override takes precedence over a
+            type override. Unknown paths, and paths of modules that declare no
+            channel axes, make `Pruner` raise `PlanningError`.
+
+    Raises:
+        TypeError: A `by_type` key is not an `nn.Module` subclass.
+        ValueError: A `by_path` key is not a string or contains wildcard
+            characters, or a factor is not a positive integer.
     """
 
     default: int = 1
@@ -47,7 +60,11 @@ class Granularity:
 def alignment_constraints(
     graph: DependencyGraph, config: Granularity
 ) -> tuple[tuple[Divisible, ...], tuple[str, ...]]:
-    """Resolve aliases before deduplication; return constraints and readable notes."""
+    """Resolve granularity factors to `Divisible` constraints and readable notes.
+
+    Module aliases are resolved before deduplication, so one module object
+    receives one factor.
+    """
     if not isinstance(config, Granularity):
         raise TypeError("Expected a Granularity configuration")
     modules = dict(graph.model.named_modules(remove_duplicate=False))

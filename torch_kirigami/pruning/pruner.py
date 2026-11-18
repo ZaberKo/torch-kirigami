@@ -1,4 +1,4 @@
-"""One public plan/apply flow for automatic and manual structural pruning."""
+"""The `Pruner` plan/apply entry point for automatic and manual structural pruning."""
 
 from __future__ import annotations
 
@@ -78,16 +78,38 @@ _DEFAULT_GRANULARITY = Granularity()
 
 
 class Pruner:
-    """Plan and physically compact the original Module using a dependency snapshot.
+    """Plan and apply structural pruning on the original module.
+
+    Queries and planning methods read a fixed `DependencyGraph` snapshot and never
+    change the model. Planning returns a static, checked `PruningPlan`. Only
+    `apply()` mutates the model: it keeps the identity of every module, replaces
+    each affected Parameter or buffer with a new tensor object, and does not
+    migrate optimizer state. Rebuild the graph before another pruning round.
+
+    Methods that need the graph raise `PlanningError` when no graph was supplied
+    and `torch_kirigami.StaleGraphError` when the model structure changed after
+    capture.
 
     Args:
-        model: The original module, identical to graph.model.
-        graph: A fresh DependencyGraph for plan/prune. May be omitted when
-            applying a saved plan. Rebuild explicitly after each pruning round.
-        preserve_io: Protect every external input/output axis with Fixed constraints.
-        constraints: Extra constraints shared by queries and both planning methods.
-        granularity: Immutable module alignment settings, resolved to Divisible
-            constraints using the operator rules' declared logical channel axes.
+        model: The original module. When `graph` is supplied, it must be
+            `graph.model`.
+        graph: A fresh `DependencyGraph` of `model`. Queries and planning require
+            it. It can be omitted when the pruner only applies a saved plan.
+        preserve_io: Whether to protect every axis of the model's external inputs
+            and outputs with `Fixed` constraints. Default: `True`.
+        constraints: Extra constraints shared by all queries and planning methods.
+        granularity: Module alignment settings. They resolve to `Divisible`
+            constraints on the logical channel axes that operator rules declare.
+
+    Raises:
+        TypeError: `preserve_io` is not a `bool`, or `granularity` is not a
+            `Granularity`.
+        ValueError: `graph` belongs to another model, or `constraints`, a
+            non-default `granularity`, or `preserve_io=False` is supplied
+            without a graph.
+        torch_kirigami.pruning.PlanningError: A `granularity.by_path` entry does
+            not exist or declares no logical channel axes.
+        torch_kirigami.StaleGraphError: `graph` no longer matches the model.
     """
 
     def __init__(
@@ -142,7 +164,7 @@ class Pruner:
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
-        """Return the common interface, caller, and alignment requirements."""
+        """Interface, caller-supplied, and alignment constraints used by every query and plan."""
         return self._constraints
 
     def _validate_graph(self) -> DependencyGraph:
@@ -153,44 +175,59 @@ class Pruner:
         return self.graph
 
     def discover_candidates(self, *, targets: Iterable[str] | None = None) -> CandidateSpace:
-        """Discover declared candidates explicitly, optionally by module path patterns.
+        """Build a candidate space from the channel axes that operator rules declare.
 
-        Targets filter candidate entry points, not the dependency closure. Only
-        requests proved irreversibly conflicting are excluded. Entire excluded
-        domains are removed before freezing the discovered channel baseline.
-        Patterns use `fnmatchcase`: `*` can match across path separators (`.`).
+        `targets` selects the modules whose declared axes become candidates; it
+        does not limit the dependency closure of those candidates. Discovery
+        excludes only candidates with a proven irreversible conflict. A domain
+        whose candidates are all excluded moves to `excluded_channel_axes` and
+        does not count toward channel budgets.
 
         Args:
-            targets: Optional patterns matched against module paths. None considers
-                every supported candidate entry point.
+            targets: Optional patterns matched against every registered path of a
+                module with `fnmatchcase`, so `*` also matches across `.`
+                separators. `None` considers every module that declares axes.
 
         Returns:
-            The discovered candidates, their channel axes, and any exclusions.
+            The candidates, the logical channel axes used by channel budgets, the
+            fully excluded axes, and the rejection reasons.
+
+        Raises:
+            TypeError: `targets` is a bare string or contains non-string patterns.
+            torch_kirigami.pruning.PlanningError: No graph is available, a
+                pattern matches no module that declares channel axes, or
+                operator declarations conflict.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         return self._remember_filtered(graph, discover_candidates(graph, self.constraints, targets))
 
     def filter_candidates(self, space: CandidateSpace) -> CandidateSpace:
-        """Remove proven irreversible requests from an explicit candidate space.
+        """Remove candidates with a proven irreversible conflict from a candidate space.
 
-        Keep candidate order and all declared budget axes. Record rejected keys
-        and reasons in `exclusions`. Other conflicts, incomplete influence and
-        unresolved conditions remain for the caller's algorithm to inspect.
-        This does not compile recipes or prove that retained candidates can execute.
-        Use this query before sparse training with custom candidates. Automatic
-        planning also applies it before invoking the strategy.
+        Only diagnostics marked irreversible exclude a candidate. Repairable
+        conflicts, incomplete influence, and unresolved conditions remain for the
+        strategy to handle. Candidate order and all channel axes are kept, so the
+        channel-budget baseline does not shrink. Rejected keys and reasons are
+        recorded in `exclusions`. Filtering does not compile recipes or prove
+        that the retained candidates can be pruned. `plan()` applies this filter
+        before it calls the strategy; call it directly to prepare custom
+        candidates, for example before sparse training.
 
         Args:
-            space: Explicit candidates and their frozen channel accounting axes.
+            space: Candidates and the logical channel axes used by channel budgets.
 
         Returns:
-            A space containing retained candidates and rejection diagnostics.
-            The latest native filtered space can be returned unchanged after
-            freshness validation. The input space and model remain unchanged.
+            A space with the retained candidates and the rejection reasons. When
+            caching is enabled, the pruner can reuse its latest filtered native
+            space after checking freshness. Filtering leaves the input space
+            and model unchanged.
 
         Raises:
-            TypeError: The argument is not a CandidateSpace.
-            ValueError: A supplied axis, selection or constraint belongs to another graph.
+            TypeError: `space` is not a `CandidateSpace`.
+            ValueError: An axis, selection, or constraint belongs to another graph.
+            torch_kirigami.pruning.PlanningError: No graph is available.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         previous = self._filtered_space
@@ -207,14 +244,21 @@ class Pruner:
         return self._remember_filtered(graph, filter_candidates(graph, self.constraints, space))
 
     def impact(self, candidates: Iterable[Candidate]) -> Impact:
-        """Analyze a joint candidate batch under this pruner's fixed constraints.
+        """Analyze the joint removal of several candidates under this pruner's constraints.
 
         Args:
-            candidates: Hypothetical removals to analyze together.
+            candidates: Hypothetical removals to analyze together as one request.
 
         Returns:
-            Their combined dependency impact. This does not modify the model or
-            prove that the removals can be executed.
+            The combined dependency impact. The model is not modified, and a
+            resolved impact does not prove that the removal can be executed.
+
+        Raises:
+            ValueError: A selection belongs to another graph.
+            torch_kirigami.pruning.PlanningError: No graph is available.
+            torch_kirigami.AnalysisLimitError: Merging the requested selections
+                exceeds the region limit.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         return graph.propagate(
@@ -230,29 +274,34 @@ class Pruner:
     ) -> tuple[ParameterGroup, ...]:
         """Extract one parameter group per candidate, in input order.
 
-        Analyze candidates separately. Equal groups remain separate entries with
-        their candidate keys. To count equivalent groups once in sparse training,
-        pass the result to `torch_kirigami.pruning.unique_groups`.
-        This query does not select candidates, produce a plan, or change weights.
-        Use `Pruner.impact(candidates)` for joint dependency analysis instead.
+        Each candidate is analyzed separately. Equal groups remain separate
+        entries with their own candidate keys; pass the result to
+        `torch_kirigami.pruning.unique_groups` to count equivalent groups once,
+        for example in sparse training. This query does not select candidates,
+        produce a plan, or change weights. Use `Pruner.impact()` for joint
+        dependency analysis.
 
         Args:
             candidates: Hypothetical removal requests to analyze individually.
             parameter_filter: Optional callable `(TensorRef, nn.Parameter) -> bool`.
-                Keep a parameter's affected regions when it returns `True`.
+                A parameter's affected regions are kept when it returns `True`.
                 `None` keeps all affected parameters. Buffers are always excluded.
-                This filter affects these groups, not metric scores or which
+                The filter changes only these groups, not metric scores or which
                 parameters can be physically pruned.
 
         Returns:
-            One `ParameterGroup` per candidate, with the candidate's key, in input
-            order. An empty iterable returns an empty tuple. Complete analysis
-            is required, but constraint satisfaction and execution support are
-            not checked. A group alone is not proof that a request can be applied.
+            One `ParameterGroup` per candidate, keyed by the candidate key, in
+            input order. An empty iterable returns an empty tuple. Extraction
+            requires complete dependency influence. A complete impact can
+            violate a constraint and still yield a group. Extraction does not
+            compile execution recipes.
 
         Raises:
-            torch_kirigami.pruning.PlanningError: A candidate has incomplete influence or no parameter
-                regions after extraction and filtering. No candidate is skipped.
+            torch_kirigami.pruning.PlanningError: No graph is available, or a
+                candidate has incomplete influence or no parameter regions after
+                filtering. Candidates are never skipped.
+            ValueError: A selection belongs to another graph.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         return parameter_groups(graph, candidates, self.constraints, parameter_filter)
@@ -264,29 +313,55 @@ class Pruner:
         budget: ChannelCount | ChannelRatio | ParameterBudget,
         strategy: Strategy[PlanningContext],
     ) -> tuple[nn.Module, PruningResult]:
-        """Plan and apply one automatic round with an explicit candidate space.
+        """Plan and apply one automatic pruning round.
+
+        This is equivalent to `self.apply(self.plan(space, budget=budget,
+        strategy=strategy))`. See `plan()` and `apply()` for details.
 
         Args:
-            space: Candidate universe for this round.
-            budget: Final parameter or channel limits.
+            space: Candidates and logical channel axes for this round.
+            budget: Final parameter cap or final channel-width caps.
             strategy: Selection strategy for the supplied candidates.
 
         Returns:
-            The original model and its pruning result.
+            The same model object, now pruned, and its `PruningResult`.
+
+        Raises:
+            TypeError: `space`, `strategy`, or the strategy result has the wrong
+                type.
+            ValueError: A `ChannelCount` budget does not use the space's channel
+                axes in order.
+            torch_kirigami.pruning.PlanningError: No graph is available, or no
+                plan meets the budget and passes verification.
+            torch_kirigami.pruning.ExecutionError: Tracked tensors changed during
+                planning, or applying the plan failed.
         """
         return self.apply(self.plan(space, budget=budget, strategy=strategy))
 
     def plan_remove(self, remove: Iterable[Selection]) -> PruningPlan:
-        """Plan exact manual selections, without supplementing or dropping seeds.
+        """Plan exactly the requested manual removal.
+
+        The selections are analyzed as one joint request together with their
+        dependency closure. Seeds are never dropped and no candidates are added
+        to repair constraints: if the exact request is invalid, planning fails.
 
         Args:
-            remove: Original-coordinate selections to apply as one request.
+            remove: Selections in original coordinates, removed as one request.
 
         Returns:
-            A portable plan for the requested selections.
+            A static, checked plan for the requested removal. The model is not
+            modified.
 
         Raises:
-            torch_kirigami.pruning.PlanningError: Influence is incomplete or has no verified recipe.
+            torch_kirigami.pruning.PlanningError: No graph is available, or the
+                analysis is unresolved, conflicts with a constraint, or has no
+                verified execution recipe.
+            torch_kirigami.pruning.ExecutionError: Tracked tensor bindings,
+                values, or gradient flags changed during planning.
+            ValueError: A selection belongs to another graph.
+            torch_kirigami.AnalysisLimitError: Merging the requested selections
+                exceeds the region limit.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         before = snapshot(self.model, guarded=graph.constant_guards())
@@ -304,25 +379,40 @@ class Pruner:
         budget: ChannelCount | ChannelRatio | ParameterBudget,
         strategy: Strategy[PlanningContext],
     ) -> PruningPlan:
-        """Plan an explicit candidate space without allocating compact weights.
+        """Select candidates automatically and plan their joint removal.
 
-        The strategy receives candidates after irreversible-conflict filtering.
-        The space's declared budget axes and normalization domains do not shrink.
-        Final joint analysis and recipe compilation still validate its choices.
+        Nothing is implicit: the caller supplies the candidate space, the budget,
+        and the strategy, which owns its metric. The strategy receives the
+        candidates that remain after `filter_candidates()`; the channel axes of
+        the space are kept, so the channel-budget baseline does not shrink. The
+        planner then independently repeats the joint analysis, compiles the
+        execution recipes, and measures the budget. The result either meets the
+        budget or planning raises `PlanningError`; partial plans are never
+        returned. No compact weights are allocated and the model is not modified.
 
         Args:
-            space: Explicit CandidateSpace, constructed manually or discovered.
-            budget: ParameterBudget for a final whole-model cap, or ChannelRatio /
-                ChannelCount for upper bounds on final channel widths.
-            strategy: Implements `select(context)` returning a StrategyResult;
-                owns its scoring metric and any selection-specific settings.
+            space: Candidates and logical channel axes, built by hand or by
+                `discover_candidates()`.
+            budget: `ParameterBudget` for a cap on the final whole-model parameter
+                count, or `ChannelRatio` / `ChannelCount` for caps on final logical
+                channel widths.
+            strategy: Object whose `select(context)` returns a `StrategyResult`.
 
         Returns:
-            A portable static plan. No discovery, metric, or strategy is implicit.
+            A static, checked plan that meets the budget.
 
         Raises:
-            torch_kirigami.pruning.PlanningError: The strategy result misses its target or cannot be executed.
-            TypeError: The candidate space or strategy result has the wrong type.
+            TypeError: `space` is not a `CandidateSpace`, `strategy` has no
+                `select` method, or it returns something other than a
+                `StrategyResult`.
+            ValueError: A `ChannelCount` budget does not use the space's channel
+                axes in order, or a reference belongs to another graph.
+            torch_kirigami.pruning.PlanningError: No graph is available, the
+                strategy returns an unknown key, or the selection misses the
+                budget or fails verification.
+            torch_kirigami.pruning.ExecutionError: Tracked tensor bindings,
+                values, or gradient flags changed during planning.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         graph = self._validate_graph()
         if not isinstance(space, CandidateSpace):
@@ -434,19 +524,31 @@ class Pruner:
                 raise ExecutionError("Tensor bindings or tracked values changed since planning")
 
     def apply(self, plan: PruningPlan) -> tuple[nn.Module, PruningResult]:
-        """Validate and execute static recipes without scoring, tracing, or forward.
+        """Physically prune the model by executing a plan's static recipes.
 
-        All allocations precede binding changes. A portable decision is reusable
-        on compatible original structures, independently of the originating Pruner.
+        This is the only method that mutates the model. It does not score,
+        trace, or run forward. Every compact tensor is gathered from the model's
+        current weights and allocated before any binding changes; the commit is
+        then checked and rolled back on failure. Module objects keep their
+        identity, while each affected Parameter or buffer is replaced with a new
+        tensor object. Optimizer state is not migrated: recreate the optimizer,
+        and rebuild the graph before another round. A plan stores structural
+        decisions, not weights, so any pruner whose model matches the plan's
+        recorded original structure can apply it; the weights come from that
+        receiving model.
 
         Args:
-            plan: Validated portable plan for a compatible original model.
+            plan: Plan for a model whose current structure matches `plan.before`.
 
         Returns:
-            The original model and execution details.
+            The same model object, now pruned, and a `PruningResult` with the
+            parameter replacement map and coordinate mappings.
 
         Raises:
-            torch_kirigami.pruning.ExecutionError: The plan is invalid, the model changed, or commit failed.
+            torch_kirigami.pruning.ExecutionError: `plan` is not a valid
+                `PruningPlan`, the model structure differs from the plan's
+                preconditions, a replaced tensor has gradient hooks, or the
+                commit failed and was rolled back.
         """
         if not isinstance(plan, PruningPlan):
             raise ExecutionError("Expected a PruningPlan")

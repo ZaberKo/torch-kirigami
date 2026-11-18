@@ -91,9 +91,10 @@ def has_native_query_semantics(
 ) -> bool:
     """Prove that structural queries cannot invoke extension behavior.
 
-    This predicate inspects model accessors, captured arguments and operator
-    registrations. The caller still validates snapshot freshness, registered
-    tensor types, and its own scoring or filtering callbacks.
+    This predicate inspects structural records (relations, constraints, shape
+    expressions, and requirements), model accessors, captured arguments, and
+    operator registrations. The caller still validates snapshot freshness,
+    registered tensor types, and its own scoring or filtering callbacks.
     """
     if not all(
         has_native_semantics(value)

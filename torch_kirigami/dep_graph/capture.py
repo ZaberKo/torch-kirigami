@@ -1,4 +1,13 @@
-"""The fixed public FX capture pipeline and metadata execution boundary."""
+"""FX capture, state isolation, and metadata execution for dependency analysis.
+
+Capture traces `forward` symbolically with `torch.fx`, checks declared tensor
+effects, and then runs the graph on isolated copies of the example inputs and
+registered buffers to record tensor metadata. Example inputs serve only that
+execution; they do not choose data-dependent Python branches. Tensor reads
+that would decide a branch are rejected where they can be detected, but FX can
+silently take one branch for some Python tests on proxies, such as identity
+checks, `isinstance`, or `x.grad is None`.
+"""
 
 from __future__ import annotations
 
@@ -51,7 +60,16 @@ from .registry import OperatorRegistry
 
 
 def tree_map(fn: Callable[[Any], Any], value: Any) -> Any:
-    """Apply a function to leaves of containers and slice arguments."""
+    """Apply a function to the leaves of a nested argument tree.
+
+    Args:
+        fn: Function applied to each leaf.
+        value: Tree of tuples, lists, dictionaries, and slices. Slice bounds
+            and step are traversed as leaves.
+
+    Returns:
+        A tree of the same container types with each leaf replaced by `fn(leaf)`.
+    """
     if isinstance(value, tuple):
         return tuple(tree_map(fn, item) for item in value)
     if isinstance(value, list):
@@ -64,14 +82,25 @@ def tree_map(fn: Callable[[Any], Any], value: Any) -> Any:
 
 
 def tensor_leaves(value: object) -> list[torch.Tensor]:
-    """Collect tensor leaves from supported input containers."""
+    """Collect tensor leaves of a `tree_map` tree in traversal order."""
     result = []
     tree_map(lambda item: result.append(item) if isinstance(item, torch.Tensor) else None, value)
     return result
 
 
 def validate_isolated_tensors(originals: list[torch.Tensor], memo: dict[int, Any]) -> None:
-    """Reject copies that change lazy view flags or storage sharing."""
+    """Check that deep copies preserve lazy view flags and storage sharing.
+
+    Args:
+        originals: Tensors that were copied.
+        memo: `copy.deepcopy` memo mapping original object IDs to copies.
+
+    Raises:
+        torch_kirigami.CaptureError: A copy is missing or is not a tensor, a
+            conjugate or negative view flag changed, a nonempty copy shares
+            storage with its original, or storage sharing among copies differs
+            from sharing among the originals.
+    """
     storage_copies: dict[object, object] = {}
     storage_sources: dict[object, object] = {}
     for original in originals:
@@ -101,8 +130,9 @@ def fingerprint(model: nn.Module) -> tuple[object, ...]:
         model: Source model to inspect.
 
     Returns:
-        Registered tensor identities/layouts and recognizable module configuration.
-        This is not a complete guard for arbitrary Python or external state.
+        Identities and layouts of registered tensors, module configuration,
+        forward hook paths, and references to ordinary tensor attributes. This
+        is not a complete guard for arbitrary Python or external state.
     """
     tensor_state = tuple(
         (
@@ -161,23 +191,33 @@ def isolated_execution(
     None,
     None,
 ]:
-    """Isolate example inputs and buffers while preserving supported shared storage.
+    """Run a block with copied example inputs and registered buffers.
+
+    Inputs, registered buffers, and ordinary tensor attributes that share
+    their identity or storage are deep-copied together, so storage sharing
+    among them is preserved. While the block runs, the model's buffer tables
+    and those tensor attributes refer to the copies.
 
     Args:
-        model: Source model; parameter storage is not copied.
+        model: Source model. Parameters are not copied.
         args: Example positional arguments.
         kwargs: Example keyword arguments.
 
     Yields:
-        Copied args, copied kwargs, and clone-ID-to-original-buffer bindings.
+        Copied positional arguments, copied keyword arguments, and a mapping
+        from the object ID of each buffer copy to its original buffer.
 
     Raises:
-        torch_kirigami.CaptureError: Inputs cannot be copied or alias parameter storage.
+        torch_kirigami.CaptureError: Module registration hooks are active, an
+            ordinary attribute holds an unsupported tensor reference, an input
+            or buffer aliases parameter storage, or the copies cannot preserve
+            tensor flags or storage sharing.
 
     Notes:
-        Restores buffer bindings, training flags, and CPU/initialized CUDA RNG
-        state on both success and failure. Arbitrary forward side effects and
-        concurrent use of the same model are outside this contract.
+        Restores buffer registrations, tensor attributes, training flags, and
+        CPU and initialized CUDA RNG state on both success and failure.
+        Arbitrary forward side effects and concurrent use of the same model
+        are outside this contract.
     """
     if has_registration_hooks():
         raise CaptureError("Module registration callbacks are unsupported during capture")
@@ -279,12 +319,20 @@ def isolated_execution(
 
 
 def _metadata_fact(
-    func: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any], result: Any
+    func: Callable[..., object],
+    args: tuple[object, ...],
+    kwargs: dict[str, object],
+    result: object,
 ) -> tuple[str, object, object]:
-    """Normalize an eager metadata observation into immutable read-specific facts.
+    """Normalize one eager metadata read into an immutable guard record.
 
-    Size and stride dimensions remain explicit. Reading a complete shape cannot
-    reveal which tuple item Python later uses, so the whole result is guarded.
+    A read of one size or stride dimension keeps that dimension. Reading a
+    complete shape cannot reveal which item Python later uses, so the whole
+    result is guarded.
+
+    Returns:
+        The read kind, its argument such as a dimension index, and the observed
+        value. Values other than `bool`, `int`, and tuples are stored as strings.
     """
     name = getattr(func, "__name__", "")
     if name == "__get__":
@@ -313,28 +361,41 @@ def _metadata_fact(
 
 
 class _TraceDataGuard(TorchFunctionMode):
-    """Reject eager tensor-data decisions that FX would omit from its graph.
+    """Reject eager tensor operations during tracing that FX would not record.
 
-    Shape/type queries on original tensors have structural fingerprint guards.
-    Data extraction, and metadata read from eager tensor computations, lack an
-    FX provenance and cannot silently select Python control flow.
+    Calls on FX proxies pass through unchanged. Calls on concrete tensors, such
+    as registered parameters and buffers, run eagerly and leave no graph node.
+    Metadata reads of registered tensors are recorded as static guards. Data
+    reads, writes, `out=` calls, and metadata reads of eagerly computed tensors
+    raise `CaptureError` because they could silently select Python control
+    flow.
+
+    Args:
+        registered: Object IDs of registered parameters and buffers mapped to
+            their model paths.
     """
 
     def __init__(self, registered: dict[int, str]) -> None:
         super().__init__()
         self.computed: dict[int, torch.Tensor] = {}
         self.registered = registered
-        self.metadata_reads: set[tuple[Any, ...]] = set()
+        self.metadata_reads: set[tuple[object, ...]] = set()
 
     def __torch_function__(
         self,
-        func: Callable[..., Any],
+        func: Callable[..., object],
         types: tuple[type, ...],
         args: tuple[object, ...] = (),
         kwargs: dict[str, object] | None = None,
     ) -> object:
-        """Record tensor metadata and reject data-dependent eager decisions."""
-        leaves: list[Any] = []
+        """Run one torch call, recording registered metadata reads or rejecting it.
+
+        Raises:
+            torch_kirigami.CaptureError: An eager call reads tensor data or
+                unsupported runtime state, writes a tensor, uses `out=`, or reads
+                metadata of an eagerly computed tensor.
+        """
+        leaves: list[object] = []
         tree_map(leaves.append, (args, kwargs or {}))
         if any(isinstance(value, fx.Proxy) for value in leaves):
             # FX records this call; normal graph effect validation owns it.
@@ -408,7 +469,11 @@ class _TraceDataGuard(TorchFunctionMode):
 
 
 class _MutationProxy(fx.Proxy):
-    """Preserve Python writes that FX's default Proxy omits."""
+    """FX proxy that records or rejects Python writes the default proxy omits.
+
+    Item assignment and augmented assignment become graph nodes. Attribute
+    assignment, attribute deletion, and item deletion raise `CaptureError`.
+    """
 
     # FX must find the tracer in both ordinary proxies and lazy attributes.
     __torch_function__ = fx.Proxy.__torch_function__
@@ -433,11 +498,13 @@ class _MutationProxy(fx.Proxy):
 
 
 class _MutationAttribute(Attribute, _MutationProxy):
-    """Retain FX's lazy attribute handling for writes to values such as x.T."""
+    """Lazy FX attribute proxy that also records writes to values such as `x.T`."""
 
 
-def _augmented_method(target: Callable) -> Callable:
-    """Create an FX recorder for one Python augmented binary operator."""
+def _augmented_method(
+    target: Callable[[object, object], object],
+) -> Callable[[fx.Proxy, object], fx.Proxy]:
+    """Create a proxy method that records one Python augmented binary operator."""
 
     def record(self: fx.Proxy, other: object) -> fx.Proxy:
         return self.tracer.create_proxy("call_function", target, (self, other), {})
@@ -450,25 +517,36 @@ for _target in AUGMENTED_BINARY:
 
 
 class _LeafTracer(fx.Tracer):
-    """Use public FX hooks for leaf calls and Python write syntax."""
+    """FX tracer that keeps registered opaque targets as leaves and records writes.
+
+    Registered opaque modules join FX's standard leaf modules, and registered
+    opaque functions are autowrapped. Proxies are `_MutationProxy` instances.
+
+    Args:
+        registry: Registry that supplies the opaque modules and functions.
+    """
 
     def __init__(self, registry: OperatorRegistry) -> None:
         super().__init__(autowrap_functions=tuple(registry.opaque_functions))
         self.registry = registry
 
     def is_leaf_module(self, module: nn.Module, module_qualified_name: str) -> bool:
-        """Preserve explicitly registered opaque modules and standard FX leaves."""
+        """Treat exact registered opaque module classes and standard FX leaves as leaves."""
         return type(module) in self.registry.opaque_modules or super().is_leaf_module(
             module, module_qualified_name
         )
 
     def proxy(self, node: fx.Node) -> fx.Proxy:
-        """Use the standard FX proxy with additional Python write methods."""
+        """Create a proxy that also records Python write syntax."""
         return _MutationProxy(node, self)
 
 
 def _root_graph(model: nn.Module, signature: inspect.Signature) -> fx.GraphModule:
-    """Represent an opaque root through a single public FX call_module node."""
+    """Build a graph that calls an opaque root module through one `call_module` node.
+
+    Raises:
+        torch_kirigami.CaptureError: The forward signature has `*args` or `**kwargs`.
+    """
     graph = fx.Graph()
     args, kwargs = [], {}
     for parameter in signature.parameters.values():
@@ -485,7 +563,7 @@ def _root_graph(model: nn.Module, signature: inspect.Signature) -> fx.GraphModul
 
 
 def _tensor_version(tensor: torch.Tensor) -> int | None:
-    """Return a mutation counter where PyTorch exposes one."""
+    """Return the tensor's version counter, or None where PyTorch exposes none."""
     try:
         return tensor._version
     except RuntimeError:
@@ -510,7 +588,28 @@ def _same_tensor_values(left: torch.Tensor, right: torch.Tensor) -> bool:
 def trace_module(
     model: nn.Module, registry: OperatorRegistry, *, buffer_sources: dict[int, torch.Tensor]
 ) -> fx.GraphModule:
-    """Trace without leaking generated constants or silently executing buffer writes."""
+    """Trace a model symbolically while rejecting writes and eager constants.
+
+    An opaque root module becomes a single `call_module` graph. Otherwise the
+    model is traced under `_TraceDataGuard`, and buffer registrations,
+    bindings, layouts, version counters, and values must remain unchanged.
+    Module attributes that FX adds during tracing are removed afterwards.
+
+    Args:
+        model: Model to trace, normally with isolated buffers installed.
+        registry: Registry that supplies opaque modules and functions.
+        buffer_sources: Object IDs of the installed buffers mapped to the
+            original buffers whose values they must still equal.
+
+    Returns:
+        The traced graph module. Placeholder defaults are cleared, and
+        `meta["kirigami_static_metadata"]` holds the guarded metadata reads.
+
+    Raises:
+        torch_kirigami.CaptureError: Tracing writes or registers a buffer, reads
+            tensor data eagerly, or folds an eager tensor computation into a
+            graph constant.
+    """
     tracer = _LeafTracer(registry)
     if tracer.is_leaf_module(model, ""):
         return _root_graph(model, inspect.signature(model.forward))
@@ -582,10 +681,19 @@ def trace_module(
 
 
 def capture_signature(gm: fx.GraphModule, model: nn.Module) -> tuple[object, ...]:
-    """Record computation and actual binding facts, ignoring FX-generated names.
+    """Encode a traced computation and its tensor bindings, ignoring FX node names.
 
-    Registered tensors use aliases and metadata. Only unregistered constants are
-    copied by value; no parameter snapshots or intermediate activations are held.
+    Registered tensors are encoded by kind, every alias path, and metadata.
+    Only unregistered tensor constants are copied by value; no parameter
+    snapshots or intermediate activations are held.
+
+    Args:
+        gm: Traced graph module.
+        model: Model whose registered parameters and buffers identify bindings.
+
+    Returns:
+        One record per graph node with its opcode, target, and arguments,
+        followed by the static metadata guards recorded during tracing.
     """
     bindings: dict[int, tuple[str, list[str]]] = {}
     for kind, entries in (
@@ -633,10 +741,22 @@ def validate_attribute_changes(
 ) -> None:
     """Reject attribute edits that change the captured Python computation.
 
-    Trace an isolated configuration copy with proposed attributes, sharing the
-    original parameters without allocating compact weights or running ShapeProp.
-    A changed constant, operator, edge or output is not justified by old metadata.
-    Opaque leaf internals remain governed by their declared operator contracts.
+    The proposed attributes are applied to a copy of the module configuration
+    that shares the original parameters and buffers. The copy is traced
+    without allocating compact weights or running metadata execution. Any
+    changed constant, operator, edge, or output invalidates the captured
+    metadata. The internals of opaque leaves remain governed by their declared
+    operator rules.
+
+    Args:
+        model: Original model; it is not modified.
+        registry: Registry used for the original capture.
+        original_signature: `capture_signature` result of the original capture.
+        updates: Attribute paths and their proposed values.
+
+    Raises:
+        torch_kirigami.CaptureError: The updates change the traced computation,
+            or isolation, copying, or tracing of the revised model fails.
     """
     if not updates:
         return
@@ -795,7 +915,12 @@ def _check_tensor_effects(
 
 
 class _MetadataPropagator(ShapeProp):
-    """Execute ShapeProp while retaining facts instead of intermediate activations."""
+    """ShapeProp interpreter that keeps metadata facts instead of activations.
+
+    Args:
+        module: Traced graph module to execute.
+        bound: Forward parameter names mapped to the isolated example values.
+    """
 
     def __init__(self, module: fx.GraphModule, bound: dict[str, object]) -> None:
         super().__init__(module)
@@ -812,7 +937,14 @@ class _MetadataPropagator(ShapeProp):
         return self.bound[name]
 
     def run_node(self, node: fx.Node) -> object:
-        """Execute one node and save only supported metadata leaves."""
+        """Execute one node and record its result as detached metadata facts.
+
+        Raises:
+            torch_kirigami.CaptureError: A Python assignment targets an
+                unsupported receiver, an index operation fails on the example
+                input, a result tensor is empty, or a result leaf has an
+                unsupported type.
+        """
         if node.op == "call_function" and (
             node.target is operator.setitem or node.target in AUGMENTED_BINARY
         ):
@@ -863,22 +995,25 @@ class CaptureResult:
     """Captured FX graph, execution metadata, bindings, and mutation facts.
 
     Attributes:
-        module: FX GraphModule produced by the fixed capture path.
-        facts: Result metadata indexed by FX nodes.
-        buffer_aliases: Isolated buffer object IDs mapped to original buffers.
-            Parameters are not copied and have no entries in this mapping.
-        signature: Captured computation and binding facts before metadata execution.
+        module: Traced FX graph module.
+        facts: Result metadata trees indexed by FX node. Tensor leaves are
+            `TensorFacts`; other leaves are scalars, strings, dtypes, devices,
+            or None.
+        buffer_aliases: Object IDs of the isolated buffer copies mapped to the
+            original buffers. Parameters are not copied and have no entries.
+        signature: `capture_signature` result, recorded before metadata execution.
         mutable_storages: Parameter and buffer storage keys that cannot supply
-            structural constants. Includes declared writes, even if the sample
-            leaves values unchanged, and observed buffer mutations. Also includes
-            original storage keys for isolated buffers.
-        effects: Per-node write and storage declarations used during capture.
+            structural constants. They cover declared writes, even if the
+            example leaves values unchanged, and observed buffer mutations.
+            For an isolated buffer, both the copy's and the original's storage
+            keys are included.
+        effects: Per-node tensor effects used during capture.
     """
 
     module: fx.GraphModule
     facts: dict[fx.Node, Any]
     buffer_aliases: dict[int, torch.Tensor]
-    signature: tuple
+    signature: tuple[object, ...]
     mutable_storages: frozenset[tuple[str, int]]
     effects: dict[fx.Node, TensorEffects]
 
@@ -889,25 +1024,37 @@ def capture(
     kwargs: dict[str, object],
     registry: OperatorRegistry,
 ) -> CaptureResult:
-    """Trace and execute metadata under the library's state-isolation contract.
+    """Trace a model and record tensor metadata under the state-isolation contract.
+
+    Tracing is symbolic. The example inputs are used only to execute the
+    traced graph and record metadata; they do not choose data-dependent Python
+    branches.
 
     Args:
         model: Source module.
         args: Example positional arguments.
         kwargs: Example keyword arguments.
-        registry: Local operation and leaf registrations.
+        registry: Operator rules and opaque leaf registrations.
 
     Returns:
-        The FX graph, result metadata, original buffer bindings, captured
-        signature, mutable storage keys, and per-node effect declarations.
+        The traced graph, result metadata, original buffer bindings, captured
+        signature, mutable storage keys, and per-node tensor effects.
 
     Raises:
-        torch_kirigami.CaptureError: Argument binding, tracing, write checks, or execution fail.
+        torch_kirigami.CaptureError: The model has forward hooks, or argument
+            binding, isolation, tracing, effect checks, or metadata execution
+            fail.
+
+    Warns:
+        UserWarning: Emitted before metadata execution when a call declares
+            parameter updates through `TensorEffects.mutable_parameters`.
 
     Notes:
-        Example inputs and buffers are isolated. Declared parameter value
-        updates modify the original parameters and produce a warning before
-        execution. These updates are not restored if capture fails.
+        Example inputs and registered buffers are isolated; parameters are not
+        copied. Declared parameter value updates therefore modify the original
+        parameters and are not restored if capture later fails. FX can
+        silently take one branch for some Python tests on proxies, such as
+        identity checks, `isinstance`, or `x.grad is None`.
     """
     hooks = forward_hook_paths(model)
     if hooks:

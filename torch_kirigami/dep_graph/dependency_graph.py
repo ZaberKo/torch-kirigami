@@ -31,9 +31,12 @@ from .solver import DependencySolver
 class DependencyGraph:
     """An FX-backed structural analysis snapshot.
 
-    Use `build()` to capture a model. Construction accepts only completed internal
-    records, so no empty or partly initialized graph can be queried. Queries do
-    not modify weights. Rebuild after changes to structure or capture assumptions.
+    The graph analyzes structure only; it does not choose what to prune. Use
+    `DependencyGraph.build` to capture a model. The constructor accepts only
+    completed internal records, so no empty or partly initialized graph can be
+    queried. Queries do not modify weights, and all selections use the original
+    captured coordinates. Rebuild after changes to structure or capture
+    assumptions.
     """
 
     def __init__(self, data: DependencyGraphState) -> None:
@@ -76,12 +79,12 @@ class DependencyGraph:
 
     @property
     def id(self) -> str:
-        """Return this snapshot's identity for reference and impact ownership."""
+        """Identity of this snapshot, used to check reference and impact ownership."""
         return self._data.id
 
     @property
     def context(self) -> Mapping[str, object]:
-        """Return captured execution assumptions and the local rule identities."""
+        """Read-only execution assumptions and rule identities recorded at build time."""
         return self._data.context
 
     @classmethod
@@ -97,27 +100,33 @@ class DependencyGraph:
 
         Args:
             model: Source module whose registered tensors and aliases will be tracked.
-            args: Example positional arguments for forward.
-            kwargs: Example keyword arguments for forward.
-            operators: Local semantics registry. Defaults to the built-in rules.
+            args: Example positional arguments for `forward`.
+            kwargs: Example keyword arguments for `forward`.
+            operators: Local semantics registry, copied for this build. Defaults
+                to a registry with the built-in rules.
 
         Returns:
             A snapshot containing tensor references, relations, and constraints.
             Unsupported captured operators remain visible in diagnostics.
 
         Raises:
-            TypeError: model is not an nn.Module.
-            torch_kirigami.CaptureError: Arguments, tracing, or isolated metadata execution fail.
-            torch_kirigami.StaleGraphError: A tracked structural property changes during construction.
+            TypeError: `model` is not an `nn.Module`, or an operator rule does not
+                return an `OperatorSpec`.
+            ValueError: An operator spec refers to a tensor outside the snapshot.
+            torch_kirigami.CaptureError: Arguments, tracing, or isolated metadata
+                execution fail.
+            torch_kirigami.StaleGraphError: A tracked structural property changes
+                during construction.
 
         Notes:
             Examples provide metadata; they do not specialize dynamic Python branches.
             Inputs and registered buffers are isolated. Explicitly declared
             parameter value updates execute with a warning and are not rolled
             back. Other parameter writes and external side effects are unsupported.
-            Tensor identity/type tests and runtime-state Python decisions (e.g.
-            x.grad is None) are outside the capture contract. FX can silently omit
-            them; successful construction does not prove their absence or correctness.
+            Tensor identity and type tests, and Python decisions based on runtime
+            state (such as `x.grad is None`), are outside the capture contract.
+            FX can silently omit them; successful construction does not prove
+            their absence or correctness.
         """
         if not isinstance(model, nn.Module):
             raise TypeError("model must be an nn.Module")
@@ -126,7 +135,7 @@ class DependencyGraph:
 
     @property
     def fx_graph(self) -> fx.Graph:
-        """Return an inspection copy of the captured FX graph."""
+        """Deep copy of the captured FX graph, for inspection."""
         assert self._data.fx_graph is not None
         return copy.deepcopy(self._data.fx_graph)
 
@@ -163,7 +172,7 @@ class DependencyGraph:
             path: Registered parameter path, including any original alias.
 
         Returns:
-            The shared TensorRef for that parameter object.
+            The `TensorRef` shared by every alias of that parameter object.
 
         Raises:
             KeyError: The path was not registered when the graph was built.
@@ -171,7 +180,17 @@ class DependencyGraph:
         return self._data.parameters[path]
 
     def buffer(self, path: str) -> TensorRef:
-        """Return the buffer reference for an original path, or raise KeyError."""
+        """Find a registered buffer using an original model path.
+
+        Args:
+            path: Registered buffer path, including any original alias.
+
+        Returns:
+            The `TensorRef` shared by every alias of that buffer object.
+
+        Raises:
+            KeyError: The path was not registered when the graph was built.
+        """
         return self._data.buffers[path]
 
     def metadata(self, tensor: TensorRef) -> TensorFacts:
@@ -184,33 +203,41 @@ class DependencyGraph:
             Shape, strides, dtype, and device recorded during capture.
 
         Raises:
-            ValueError: The tensor reference belongs to another graph.
+            ValueError: The tensor reference belongs to another graph or has
+                altered metadata.
         """
         validate_reference(self._data.refs, tensor)
         return self._data.tensor_facts[tensor.id]
 
     def values(self) -> tuple[TensorRef, ...]:
-        """Return all parameter, buffer, and captured value references."""
+        """Return every tensor reference in this snapshot.
+
+        Returns:
+            Parameter, buffer, input, and captured intermediate value references.
+        """
         return tuple(self._data.refs.values())
 
     @property
     def model(self) -> nn.Module:
-        """Return the original module owning this snapshot."""
+        """Original module analyzed by this snapshot."""
         return self._data.model
 
     def validate_attribute_changes(self, updates: Iterable[tuple[str, object]]) -> None:
-        """Check (path, value) edits against the captured Python computation.
+        """Check proposed module attribute edits against the captured computation.
+
+        The edits are applied to an isolated configuration copy, which is traced
+        again and compared with the original capture. This method does not
+        modify the model or its weights, and it does not choose removals. Opaque
+        leaf internals remain the responsibility of their declared operator rules.
 
         Args:
-            updates: Iterable of attribute paths and proposed configuration values.
+            updates: Pairs of dotted attribute paths and proposed values.
 
         Raises:
-            torch_kirigami.CaptureError: Configuration cannot be isolated or re-tracing changes
-                the captured structure or constants.
-            torch_kirigami.StaleGraphError: The source no longer matches this snapshot.
-
-        This checks edits without modifying weights or choosing removals. Opaque
-        leaf internals remain the responsibility of their declared operator rules.
+            torch_kirigami.CaptureError: The configuration cannot be isolated or
+                traced, or retracing changes the captured structure or constants.
+            torch_kirigami.StaleGraphError: The model no longer matches this
+                snapshot, before or after the check.
         """
         # Retracing executes the caller's Python forward, even for a graph whose
         # captured operators are all native. Never reuse a check across that code.
@@ -220,13 +247,26 @@ class DependencyGraph:
             )
 
     def validate(self, model: nn.Module | None = None) -> None:
-        """Check snapshot freshness and optional model ownership."""
+        """Check that this snapshot is fresh and, optionally, owns a model.
+
+        Args:
+            model: Module expected to be the analyzed model, or None to check
+                only freshness.
+
+        Raises:
+            ValueError: `model` is not the module analyzed by this snapshot.
+            torch_kirigami.StaleGraphError: Analysis settings, model structure,
+                modes, or guarded constants changed, or the snapshot was invalidated.
+        """
         if model is not None and model is not self._data.model:
             raise ValueError("Graph belongs to a different model")
         self._check_fresh()
 
     def invalidate(self) -> None:
-        """Invalidate this snapshot after an external structural mutation."""
+        """Mark this snapshot stale after an external structural mutation.
+
+        Later freshness checks raise `torch_kirigami.StaleGraphError`.
+        """
         self._valid = False
 
     def interfaces(self) -> tuple[TensorRef, ...]:
@@ -234,7 +274,19 @@ class DependencyGraph:
         return tuple(ref for ref in self._data.refs.values() if ref.id in self._data.interfaces)
 
     def tensor(self, ref: TensorRef) -> torch.Tensor:
-        """Return the original registered tensor for a parameter or buffer reference."""
+        """Return the live registered tensor for a parameter or buffer reference.
+
+        Args:
+            ref: Parameter or buffer reference belonging to this graph.
+
+        Returns:
+            The tensor currently bound at the reference's first registered path.
+
+        Raises:
+            torch_kirigami.StaleGraphError: The model no longer matches this snapshot.
+            ValueError: The reference belongs to another graph, has altered
+                metadata, or is not a parameter or buffer.
+        """
         self._check_fresh()
         self.metadata(ref)
         if ref.kind not in ("parameter", "buffer"):
@@ -242,10 +294,16 @@ class DependencyGraph:
         return resolve_attribute(self._data.model, ref.paths[0])
 
     def tensor_bindings(self) -> tuple[tuple[TensorRef, torch.Tensor], ...]:
-        """Validate once and return all registered (reference, tensor) bindings.
+        """Check freshness once and return all registered tensor bindings.
 
         The caller must revalidate after user callbacks or other possible model
         changes; the returned objects are live and do not confer a read lock.
+
+        Returns:
+            Pairs of parameter or buffer references and their live tensors.
+
+        Raises:
+            torch_kirigami.StaleGraphError: The model no longer matches this snapshot.
         """
         self._check_fresh()
         return tuple(
@@ -255,7 +313,20 @@ class DependencyGraph:
         )
 
     def bindings(self, ref: TensorRef) -> tuple[tuple[nn.Module, str], ...]:
-        """Return unique registered (owner module, attribute name) binding slots."""
+        """Return the module attribute slots that hold a registered tensor.
+
+        Args:
+            ref: Parameter or buffer reference belonging to this graph.
+
+        Returns:
+            Unique `(owner module, attribute name)` pairs, one per distinct slot
+            among the reference's registered paths.
+
+        Raises:
+            torch_kirigami.StaleGraphError: The model no longer matches this snapshot.
+            ValueError: The reference belongs to another graph, has altered
+                metadata, or is not a parameter or buffer.
+        """
         self.tensor(ref)
         result = []
         seen = set()
@@ -268,20 +339,48 @@ class DependencyGraph:
         return tuple(result)
 
     def constants(self) -> tuple[tuple[TensorRef, str], ...]:
-        """Return (reference, FX attribute path) pairs without original registered bindings.
+        """Return captured tensor constants that are not registered parameters or buffers.
 
         FX can lift ordinary tensor attributes or closed-over tensors into its
         GraphModule. Their FX paths do not prove writable original-model bindings.
+
+        Returns:
+            Pairs of tensor references and their FX attribute paths.
         """
         return self._data.constants
 
     def operator_spec(self, operation: Operation) -> OperatorSpec | None:
-        """Return shared structural descriptors for a captured operation."""
+        """Return the structural specification recorded for a captured operation.
+
+        Args:
+            operation: An operation context from this graph, such as one
+                returned by `operations`.
+
+        Returns:
+            The recorded specification, or None if the operation is unsupported.
+
+        Raises:
+            ValueError: The operation belongs to another graph or its captured
+                call identity was altered.
+        """
         operation = self._canonical_operation(operation)
         return self._data.specs.get(operation.node.name)
 
     def operator_rule(self, operation: Operation) -> OperatorRule | None:
-        """Return the exact operator definition used during capture."""
+        """Return the operator rule that matched a captured operation during capture.
+
+        Args:
+            operation: An operation context from this graph, such as one
+                returned by `operations`.
+
+        Returns:
+            The matching rule from the graph's registry copy, or None if no rule
+            matches.
+
+        Raises:
+            ValueError: The operation belongs to another graph or its captured
+                call identity was altered.
+        """
         operation = self._canonical_operation(operation)
         return self._data.registry.lookup(operation.node, operation.module)
 
@@ -337,6 +436,14 @@ class DependencyGraph:
 
         Module and tensor bindings refer to the original model. No activations are
         retained. Editing the returned argument containers cannot change analysis.
+
+        Args:
+            module_path: Module path used to filter operations, or None for all
+                operations. An operation matches if the path is one of the
+                registered paths of its called module.
+
+        Returns:
+            Operation contexts in capture order.
         """
         nodes = {node.name: node for node in self.fx_graph.nodes}
         expressions = MappingProxyType(
@@ -379,7 +486,11 @@ class DependencyGraph:
     def propagate(
         self, *, remove: Iterable[Selection], constraints: Iterable[Constraint] = ()
     ) -> Impact:
-        """Compute the structural closure of joint removal requests.
+        """Compute the structural closure of a joint removal request.
+
+        Propagation follows relations to a fixed point, then checks graph and
+        caller constraints against the closure. Constraints only report
+        diagnostics; they never add removals.
 
         Args:
             remove: Selections in this snapshot's original coordinate system.
@@ -401,18 +512,25 @@ class DependencyGraph:
         return self._solver.propagate(remove=remove, constraints=constraints)
 
     def validate_impact(self, impact: Impact) -> None:
-        """Reject analysis results from another snapshot without executing the model."""
+        """Reject analysis results from another snapshot without executing the model.
+
+        Args:
+            impact: Result to check.
+
+        Raises:
+            ValueError: `impact` is not an `Impact` produced by this graph.
+        """
         if not isinstance(impact, Impact) or impact.graph_id != self.id:
             raise ValueError("Impact belongs to another graph")
 
     def explain(self, impact: Impact) -> str:
-        """Format the selected regions, propagation reasons, and remaining requirements.
+        """Format an impact's status, selections, provenance, diagnostics, and requirements.
 
         Args:
             impact: A result produced by this graph.
 
         Returns:
-            A human-readable explanation without executing the model.
+            A multi-line, human-readable explanation. The model is not executed.
 
         Raises:
             ValueError: The impact belongs to another graph.

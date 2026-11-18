@@ -24,20 +24,29 @@ from .types import (
 
 @dataclass(frozen=True)
 class PruningPlan:
-    """Portable structural decision; contains no model, graph, or live tensor.
+    """A static, checked structural pruning decision.
 
-    A recipe may be replayed on a compatible original model. Weights may change
-    after scoring; applying a saved decision never recalculates its importance.
+    A plan stores structural decisions, not weights, and holds no model, graph,
+    or live tensor. Only `Pruner.apply()` executes it. A plan can be applied to
+    any model whose structure matches `before`; replay gathers the receiving
+    model's current weights and never rescores candidates. Construction checks
+    field types only; `from_dict()` and `Pruner.apply()` also check that the
+    recipes, structures, and report agree.
 
     Attributes:
         analysis: Frozen dependency analysis for the requested removal.
         recipes: Tensor replacement recipes for physical compaction.
         attributes: Module attribute edits required by the compact structure.
-        selected: Candidate keys selected by an automatic strategy, if any.
-        selection_report: Measured budget outcome or manual-selection details.
+        selected: Candidate keys selected by an automatic strategy, in acceptance
+            order. Empty for manual plans.
+        selection_report: Measured budget outcome, or an empty manual report.
         notes: Explanatory notes attached to the plan.
         before: Structural preconditions for applying the plan.
         after: Expected structure after applying the plan.
+
+    Raises:
+        TypeError: A field has the wrong record type.
+        ValueError: `selected` contains duplicate keys.
     """
 
     analysis: AnalysisSummary
@@ -72,10 +81,13 @@ class PruningPlan:
             raise ValueError("Duplicate selected candidate keys")
 
     def to_dict(self) -> dict[str, object]:
-        """Export basic data suitable for weights-only torch loading.
+        """Encode the plan as basic Python data.
+
+        The result contains only dictionaries, lists, and scalars, so it can be
+        stored with `torch.save` and read back with `torch.load(weights_only=True)`.
 
         Returns:
-            A dictionary containing the plan's closed record schema.
+            A dictionary with a `format` tag and the encoded `plan` records.
         """
         return {
             "format": "torch-kirigami.plan",
@@ -84,16 +96,20 @@ class PruningPlan:
 
     @classmethod
     def from_dict(cls, data: object) -> PruningPlan:
-        """Load and validate a portable plan without importing model classes.
+        """Decode and validate a plan produced by `to_dict()`.
+
+        Only the closed set of plan record types is reconstructed; no model
+        classes are imported.
 
         Args:
             data: Dictionary returned by `to_dict()`.
 
         Returns:
-            A validated portable plan.
+            A validated plan.
 
         Raises:
-            ValueError: The envelope, schema, or plan records are invalid.
+            ValueError: The envelope, schema, or plan records are invalid, or the
+                recipes, structures, and report disagree.
         """
         if not isinstance(data, dict) or set(data) != {"format", "plan"}:
             raise ValueError("Invalid plan envelope")
@@ -109,10 +125,10 @@ class PruningPlan:
         return result
 
     def explain(self) -> str:
-        """Describe the joint decision, budget, and physical modifications.
+        """Describe the decision, the budget outcome, and the physical modifications.
 
         Returns:
-            Human-readable plan details.
+            Human-readable, multi-line plan details.
         """
         lines = [f"Pruning plan: {self.analysis.status}; {len(self.recipes)} tensor replacements"]
         if isinstance(self.selection_report, ParameterReport):
@@ -141,14 +157,18 @@ class PruningPlan:
 
 @dataclass(frozen=True)
 class PruningResult:
-    """Execution details returned separately from the original model.
+    """Details of one `Pruner.apply()` call, returned alongside the pruned model.
 
     Attributes:
-        plan: Portable plan that produced this result.
+        plan: The plan that was applied.
         structure: Model structure after application.
-        parameter_map: Mapping from replaced parameters to their compact versions.
-        coordinate_maps: Original-to-compact region mappings for replaced tensors.
-        report: Execution notes, including optimizer and graph rebuild requirements.
+        parameter_map: Read-only mapping from each replaced `nn.Parameter` object
+            to its new compact `nn.Parameter`. Use it to rebuild optimizers;
+            optimizer state is not migrated.
+        coordinate_maps: Original-to-compact region mappings for every replaced
+            tensor, keyed by tensor reference.
+        report: Execution notes, including the optimizer and graph rebuild
+            reminders.
     """
 
     plan: PruningPlan

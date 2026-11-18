@@ -1,4 +1,4 @@
-"""Capture-time call effects, also used by compact-forward validation."""
+"""Tensor-effect helpers for native calls, shared by capture and compact validation."""
 
 from __future__ import annotations
 
@@ -48,14 +48,17 @@ INPUT = ArgumentRef("input", 0)
 
 
 def inplace_name(name: str) -> bool:
-    """Recognize mutating method names."""
+    """Return whether a name denotes an in-place call, such as `add_` or `__iadd__`.
+
+    The `operator` function names `and_`, `or_`, and `not_` are not in-place.
+    """
     return name in _MUTATOR_DUNDERS or (
         name not in ("and_", "or_", "not_") and name.endswith("_") and not name.endswith("__")
     )
 
 
 def named_inplace(node: fx.Node) -> bool:
-    """Recognize mutating call targets without confusing Python keyword escapes."""
+    """Return whether an FX function or method call has an in-place target."""
     return node.op in ("call_function", "call_method") and (
         node.target in _MUTATORS or inplace_name(getattr(node.target, "__name__", str(node.target)))
     )
@@ -91,7 +94,20 @@ def native_effects(
     fresh_output: bool,
     returns_written_input: bool = False,
 ) -> TensorEffects:
-    """Declare public in-place arguments and guaranteed allocations in one place."""
+    """Derive effects from in-place target names and `inplace` arguments.
+
+    Args:
+        node: Captured FX call.
+        module: Called module, whose `inplace` attribute is honored, or None.
+        fresh_output: Whether a nonmutating call allocates fresh output storage.
+        returns_written_input: Whether an in-place call returns the input it
+            writes.
+
+    Returns:
+        Read-only effects for a nonmutating call. An in-place call writes its
+        first argument, receives no fresh-storage guarantee, and, if
+        `returns_written_input` is set, aliases that argument.
+    """
     target = node.target
     inplace = named_inplace(node) or bool(getattr(module, "inplace", False))
     if node.op == "call_function":
@@ -124,11 +140,13 @@ def to_copy(args: tuple[object, ...], kwargs: dict[str, object]) -> object:
 def normalization_effects(
     node: fx.Node, module: nn.Module | None, *, instance: bool
 ) -> TensorEffects:
-    """Declare native running-statistic updates without treating inputs as writable.
+    """Declare native running-statistic updates of a normalization call.
 
-    Registered buffers remain isolated by capture. Directly bound parameters
-    used as statistics receive the same explicit permission and warning as
-    other declared native parameter updates. A view does not receive permission.
+    The normalized input is never declared as written. Registered buffers need
+    no permission because capture isolates them. Running statistics that are
+    `nn.Parameter` objects receive the same explicit permission and warning
+    as other declared native parameter updates. A view of a parameter does
+    not receive permission.
     """
     names = ("running_mean", "running_var")
     if module is not None:
@@ -158,7 +176,7 @@ def normalization_effects(
 
 
 def written_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
-    """Resolve declared writes using the existing canonical argument locator.
+    """Return the FX input nodes that a call's declared writes can modify.
 
     Container arguments conservatively include every FX-valued leaf. Unknown
     writes include all inputs; they are never silently treated as read-only.
@@ -169,7 +187,7 @@ def written_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
 
 
 def returned_input(node: fx.Node, effects: TensorEffects) -> fx.Node | None:
-    """Return the FX argument that the call returns as the same Tensor."""
+    """Return the FX argument that the call returns as the same Tensor, if any."""
     ref = effects.aliases_input
     if not effects.returns_input or ref is None:
         return None
@@ -180,7 +198,11 @@ def returned_input(node: fx.Node, effects: TensorEffects) -> fx.Node | None:
 def argument_nodes(
     node: fx.Node, refs: tuple[ArgumentRef, ...], *, required: bool = False
 ) -> set[fx.Node]:
-    """Return the FX values in the specified argument locations."""
+    """Return the FX nodes found in the given argument locations.
+
+    Raises:
+        torch_kirigami.CaptureError: `required` is set and an argument is missing.
+    """
     result = set()
     for ref in refs:
         locations = argument_locations(
@@ -200,7 +222,7 @@ def argument_nodes(
 
 
 def mutable_parameter_inputs(node: fx.Node, effects: TensorEffects) -> set[fx.Node]:
-    """Resolve arguments permitted to update direct registered parameters.
+    """Return the FX input nodes permitted to update registered parameters.
 
     Callers must check that each source is a direct parameter binding. The
     declaration does not permit mutation through an unproven alias or view.

@@ -37,32 +37,32 @@ class _PlanContract(Protocol):
 
     @property
     def before(self) -> ModelStructure:
-        """Return original structural preconditions."""
+        """Original structural preconditions."""
         ...
 
     @property
     def after(self) -> ModelStructure:
-        """Return expected compact structure."""
+        """Expected compact structure."""
         ...
 
     @property
     def analysis(self) -> AnalysisSummary:
-        """Return the portable dependency analysis."""
+        """Portable dependency analysis."""
         ...
 
     @property
     def recipes(self) -> tuple[TensorRecipe, ...]:
-        """Return tensor replacement descriptions."""
+        """Tensor replacement descriptions."""
         ...
 
     @property
     def attributes(self) -> tuple[AttributeRecipe, ...]:
-        """Return attribute replacement descriptions."""
+        """Attribute replacement descriptions."""
         ...
 
     @property
     def selection_report(self) -> SelectionReport | ParameterReport:
-        """Return the completed selection and budget report."""
+        """Completed selection and budget report."""
         ...
 
 
@@ -256,14 +256,21 @@ def commit(
     *,
     expected: ModelStructure,
 ) -> None:
-    """Commit prepared tensor bindings and attributes, restoring ordinary failures.
+    """Commit prepared tensor bindings and attributes, rolling back on failure.
 
     Args:
         model: Original module to modify.
-        replacements: Tuples of TensorState, original tensor, and prepared tensor.
-        attributes: Validated AttributeRecipe objects.
-        record: Pure structural metadata to attach only on successful application.
+        replacements: Tuples of `TensorState`, original tensor, and prepared tensor.
+        attributes: Validated `AttributeRecipe` objects or explicit `AttributeEdit`
+            final-state edits; explicit edits override implicit reference edits.
+        record: Structural metadata stored on the model; it remains only when the
+            commit succeeds.
         expected: Final structural postcondition, checked inside the transaction.
+
+    Raises:
+        torch_kirigami.pruning.ExecutionError: Global registration hooks are
+            installed, or the commit fails or misses `expected`. In the second
+            case, bindings, attributes, and metadata are restored before raising.
     """
     if has_registration_hooks():
         raise ExecutionError("Global registration hooks are unsupported during structural commit")

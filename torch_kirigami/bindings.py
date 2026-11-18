@@ -1,4 +1,10 @@
-"""Registered tensor references in supported ordinary Python containers."""
+"""Tensor references held in ordinary module attributes and plain Python containers.
+
+Modules can keep registered parameters, buffers, or submodules in ordinary
+attributes, lists, tuples, and dictionaries. These helpers find such
+references, record them as structural guards, and prepare rebinding edits
+when pruning replaces the referenced objects.
+"""
 
 from __future__ import annotations
 
@@ -17,13 +23,13 @@ _MODULE_FIELDS = frozenset(vars(nn.Module())) | {STRUCTURE_ATTRIBUTE}
 
 
 def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:
-    """Identify nonempty dense storage for conservative alias checks.
+    """Identify the storage of a nonempty dense tensor for conservative alias checks.
 
     Args:
         tensor: Tensor whose storage should be inspected.
 
     Returns:
-        A device/pointer pair, or None for an empty tensor.
+        The device name and storage data pointer, or `None` for an empty tensor.
 
     Raises:
         torch_kirigami.CaptureError: The tensor is quantized or does not have strided layout.
@@ -34,13 +40,17 @@ def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:
 
 
 def has_tensor_hooks(tensor: torch.Tensor) -> bool:
-    """Report Tensor hooks that would be silently lost by physical replacement."""
+    """Return whether a tensor has hooks that physical replacement would silently drop.
+
+    Both backward hooks and post-accumulate-grad hooks are checked.
+    """
+    # PyTorch can register tensor hooks publicly but has no public inspection API.
     return bool(tensor._backward_hooks or tensor._post_accumulate_grad_hooks)
 
 
 @dataclass(frozen=True)
 class AttributeEdit:
-    """An internal object-state assignment or deletion, prepared before commit.
+    """An internal attribute assignment or deletion, prepared before the model edit commits.
 
     Attributes:
         path: Qualified path to the object attribute.
@@ -56,13 +66,29 @@ class AttributeEdit:
 def ordinary_attributes(
     module: nn.Module, *, raw_attributes: Mapping[str, object] | None = None
 ) -> Iterator[tuple[str, object]]:
-    """Yield user-owned attributes, optionally sharing a current attribute readout."""
+    """Yield attributes set by user code rather than by `nn.Module` itself.
+
+    Args:
+        module: Module to inspect.
+        raw_attributes: Current `object_attributes(module)`, if the caller has
+            already read them during the same check.
+
+    Returns:
+        Name and value pairs, excluding the default `nn.Module` fields and the
+        library's structure attribute.
+    """
     values = object_attributes(module) if raw_attributes is None else raw_attributes
     return ((k, v) for k, v in values.items() if k not in _MODULE_FIELDS)
 
 
 def copy_module_state(original: nn.Module, shell: nn.Module, memo: dict[int, object]) -> None:
-    """Copy dictionary and slot state into a preallocated, memoized module shell."""
+    """Deep-copy instance dictionary and slot state into a preallocated module shell.
+
+    Args:
+        original: Module whose state is copied.
+        shell: Uninitialized module object that receives the copy.
+        memo: `copy.deepcopy` memo shared across the whole model copy.
+    """
     object.__setattr__(shell, "__dict__", copy.deepcopy(vars(original), memo))
     for name, value in object_attributes(original).items():
         if name not in vars(original):
@@ -72,7 +98,7 @@ def copy_module_state(original: nn.Module, shell: nn.Module, memo: dict[int, obj
 def _reference_nodes(
     value: object, seen: set[int] | None = None, *, include_containers: bool = False
 ) -> Iterator[object]:
-    """Yield supported objects, stopping cycles within each container path."""
+    """Yield tensors, and optionally containers, stopping at cycles along each path."""
     if isinstance(value, torch.Tensor):
         yield value
     elif type(value) in (tuple, list, dict):
@@ -98,12 +124,24 @@ def _reference_nodes(
 
 
 def reference_nodes(value: object) -> tuple[object, ...]:
-    """Return supported Tensor and container objects, including empty containers."""
+    """Return every tensor and plain container reachable from a value.
+
+    Only plain `tuple`, `list`, and `dict` containers are traversed. Empty
+    containers are included.
+
+    Raises:
+        torch_kirigami.CaptureError: A traversed dictionary has a key that
+            `freeze` does not accept.
+    """
     return tuple(_reference_nodes(value, include_containers=True))
 
 
 def ordinary_tensors(model: nn.Module) -> Iterator[torch.Tensor]:
-    """Yield Tensor leaves of supported ordinary model attributes."""
+    """Yield tensors held in ordinary attributes and plain containers of every module.
+
+    Raises:
+        torch_kirigami.CaptureError: A traversed dictionary has an unsupported key.
+    """
     for module in model.modules():
         for _, value in ordinary_attributes(module):
             yield from _reference_nodes(value)
@@ -112,12 +150,28 @@ def ordinary_tensors(model: nn.Module) -> Iterator[torch.Tensor]:
 def reference_signature(
     model: nn.Module, *, module_attributes: Mapping[int, Mapping[str, object]] | None = None
 ) -> tuple[object, ...]:
-    """Record tensor aliases and ordinary-constant premises; reject storage views.
+    """Describe how ordinary module attributes refer to tensors and modules.
 
-    Plain lists, tuples, dictionaries, and direct Tensor attributes are supported.
-    Arbitrary custom objects are not traversed and must not hide tensor bindings.
-    A caller inspecting configuration in the same check may supply freshly read
-    module attributes keyed by identity; no attributes persist between checks.
+    Plain lists, tuples, dictionaries, and direct tensor attributes are
+    traversed. Custom objects are not traversed and must not hide tensor
+    bindings. References to registered tensors and modules are recorded by
+    path. Unregistered constant tensors are recorded by type, shape, stride,
+    dtype, device, and flags, but not by value.
+
+    Args:
+        model: Model to inspect.
+        module_attributes: Current `object_attributes()` of every module, keyed
+            by module identity, if the caller has already read them during the
+            same check. Nothing is retained between checks.
+
+    Returns:
+        One `(module_path, attribute_name, description)` entry for each
+        attribute that contains a tensor or module reference.
+
+    Raises:
+        torch_kirigami.CaptureError: An attribute holds a separate view of
+            registered storage, or a container with references has a key that
+            `freeze` does not accept.
     """
     registered = {id(t): (p, t) for p, t in (*model.named_parameters(), *model.named_buffers())}
     storages = {
@@ -195,7 +249,20 @@ def reference_signature(
 
 
 def reference_edits(model: nn.Module, replacements: dict[int, object]) -> tuple[AttributeEdit, ...]:
-    """Prepare container rebinding with one memo, preserving shared containers."""
+    """Prepare edits that rebind ordinary attributes to replacement objects.
+
+    One deep-copy memo is shared by every edit, so containers shared between
+    attributes stay shared. Modules, registered tensors, and unrelated constant
+    tensors keep their identity.
+
+    Args:
+        model: Model whose ordinary attributes are rebound.
+        replacements: Replacement objects keyed by the identity of the objects
+            they replace.
+
+    Returns:
+        One assignment for each attribute that references a replaced object.
+    """
     memo = {id(m): m for m in model.modules()}
     memo.update((id(t), t) for t in (*model.parameters(), *model.buffers()))
     memo.update(replacements)
@@ -220,11 +287,21 @@ def reference_edits(model: nn.Module, replacements: dict[int, object]) -> tuple[
 
 
 def final_state_edits(model: nn.Module, prepared: nn.Module) -> tuple[AttributeEdit, ...]:
-    """Transfer ordinary data from validated shells without replacing modules.
+    """Prepare edits that copy ordinary attributes from a prepared model into `model`.
 
-    Checkpoint preparation has already verified that every registered module and
-    tensor keeps its prepared identity. Remap shell references to original modules
-    while preserving restored tensor aliases and shared ordinary containers.
+    Checkpoint preparation has already verified that every registered module
+    and tensor keeps its prepared identity. References to prepared modules are
+    remapped to the corresponding original modules, while restored tensor
+    aliases and shared ordinary containers are preserved. Modules themselves
+    are not replaced.
+
+    Args:
+        model: Live model that receives the attributes.
+        prepared: Validated model copy with the same module paths.
+
+    Returns:
+        Deletions for attributes missing from `prepared`, followed by
+        assignments for every ordinary attribute of `prepared`.
     """
     memo = {id(prepared.get_submodule(path)): module for path, module in model.named_modules()}
     memo.update((id(t), t) for t in (*prepared.parameters(), *prepared.buffers()))
@@ -244,7 +321,17 @@ def final_state_edits(model: nn.Module, prepared: nn.Module) -> tuple[AttributeE
 
 
 def reference_devices_match(expected: object, actual: object, devices: dict[str, str]) -> bool:
-    """Compare ordinary references under a deterministic source/device mapping."""
+    """Compare two reference descriptions, allowing constant tensors to change device.
+
+    Args:
+        expected: Description recorded by `reference_signature`.
+        actual: Description of the current model.
+        devices: Mapping from recorded device names to current device names.
+            Devices without an entry must match exactly.
+
+    Returns:
+        Whether the descriptions are equal after mapping constant-tensor devices.
+    """
     if isinstance(expected, tuple) and isinstance(actual, tuple):
         if len(expected) != len(actual):
             return False

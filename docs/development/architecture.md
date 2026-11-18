@@ -1,119 +1,91 @@
 # Architecture
 
-torch-kirigami separates dependency analysis, pruning decisions, and model changes.
-A workflow combines these components with training, calibration, and task evaluation.
-Use the [API reference](../api/index.md) for public signatures and the guides for usage examples.
+This page is for contributors. It describes how the package is layered, which
+module owns which responsibility, and which internal optimizations exist and why
+they are safe. The [core concepts](../concepts.md) page covers the same design
+from a user's point of view.
 
-## From a model to a compact model
+## Package layers
 
-The diagram shows the three main stages of pruning.
-Analysis finds structural dependencies. Planning selects removals and checks them.
-Application changes the model and returns a compact model.
+Imports flow in one direction. Lower layers define shared records, and higher
+layers consume them:
+
+```mermaid
+flowchart BT
+    Base["Shared records<br/>settings, errors,<br/>bindings, configuration"]
+    Dep["dep_graph<br/>capture, coordinates, rules, closure"]
+    Prune["pruning<br/>candidates, planning, execution, persistence"]
+    Sparse["sparsity<br/>regularizers, gates, cumulative budgets"]
+    Work["examples/workflows"]
+    Dep --> Base
+    Prune --> Dep
+    Sparse --> Prune
+    Work --> Sparse
+```
+
+- `dep_graph` never imports pruning policy or sparse training.
+- `pruning` consumes dependency contracts but owns no operator semantics.
+- `sparsity` consumes graph and pruning records.
+- Library modules never import workflow examples.
+
+Shared records live below their consumers. `operator_recipes.py` builds on
+`dep_graph.selection` and defines static edit records, so operator rules can
+describe edits without importing the pruning executor. Model-binding and module-configuration helpers stay outside
+`dep_graph`, because capture, execution, and persistence all use them. Do not
+hide a reverse dependency with a local import or `TYPE_CHECKING`.
+
+`dep_graph/__init__.py` performs no eager imports. Internal code imports concrete
+submodules. Users import public names from `torch_kirigami`,
+`torch_kirigami.pruning`, and `torch_kirigami.sparsity`.
+
+## Dependency analysis
 
 ```mermaid
 flowchart LR
-    model["Model"] --> analysis["Analyze"] --> planning["Plan"] --> changes["Apply"] --> compact["Compact model"]
-    classDef analysis fill:#edf3fd,stroke:#97afd0,color:#20364d
-    classDef planning fill:#f1edfa,stroke:#b4a2d0,color:#38284f
-    classDef mutation fill:#eaf5ee,stroke:#98bba3,color:#213f2c
-    class model,analysis analysis
-    class planning planning
-    class changes,compact mutation
+    B["DependencyGraph.build"] --> A["_Analyzer<br/>(construction)"]
+    A -->|"fills once"| S["DependencyGraphState"]
+    S --> G["DependencyGraph<br/>(queries)"]
+    S --> V["DependencySolver<br/>(closure)"]
+    G --> V
 ```
 
-Operator rules define structural effects during analysis. Metrics and strategies guide planning.
-Planning checks the final selection. Only application replaces model tensors.
-
-The caller discovers a `CandidateSpace` before automatic planning.
-The space contains allowed removal proposals and the axes used for channel budgets.
-Manual planning accepts exact tensor selections instead.
-Both paths use the same dependency analysis and execution checks.
-
-## Responsibilities
-
-### Dependency analysis
-
-`DependencyGraph.build()` captures the model's forward with PyTorch FX and example metadata.
-Operator rules describe structural relationships between tensor coordinates.
-Propagation adds all removals that those relationships require.
-Constraints check the complete selection.
-Requirements describe changes that execution must handle.
-
-Analysis does not rank candidates or change weights.
-An `Impact` reports the removals, constraints, requirements, and diagnostics.
-A resolved impact does not guarantee an executable plan or unchanged model outputs.
-
-The `torch_kirigami.dep_graph` package owns capture, coordinates, relations, constraints, operator semantics, and graph queries.
-Construction and repeated queries have separate responsibilities:
-
-| Component | Responsibility and lifetime |
+| Component | Responsibility |
 | --- | --- |
-| `_Analyzer` in `construction.py` | Collect original aliases, capture with FX, apply operator rules, and populate one `DependencyGraphState`. Release temporary value and alias tables on success or failure. |
-| `DependencyGraphState` in `graph_state.py` | Own structural tables throughout construction and subsequent queries. It contains neither construction scratch tables nor solver caches. |
-| `DependencySolver` in `solver.py` | Own relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
-| `DependencyGraph` in `dependency_graph.py` | Accept complete records. Provide public queries, inspection copies, model freshness checks, and invalidation. |
+| `capture.py` | FX tracing, input and buffer isolation, declared write effects, and the metadata run. |
+| `_Analyzer` in `construction.py` | Collects aliases, runs capture, applies operator rules, and fills one `DependencyGraphState`. Releases its temporary tables on success or failure and cannot run twice. |
+| `DependencyGraphState` in `graph_state.py` | Owns the structural tables for construction and later queries. Holds no scratch tables and no solver caches. |
+| `DependencySolver` in `solver.py` | Owns relation and constraint indexes, bounded relation caches, and exact joint propagation for one graph. |
+| `DependencyGraph` in `dependency_graph.py` | Public queries, inspection copies, freshness checks, and invalidation. |
+| `selection.py`, `relations.py`, `contracts.py` | Coordinates and regions, index mappings, constraints and analysis results. |
+| `operation.py`, `registry.py`, `operators/` | The rule contract, registration tables, and built-in rules. |
+| `eligibility.py` | Checks that records are native before an optimization reuses structural work. |
 
-`DependencyGraph.build()` is the public construction entry.
-The other components import shared records without importing the public graph.
-The analyzer creates one `DependencyGraphState` and returns that same object after construction.
-It releases temporary tables on success or failure and cannot run again.
+Public queries return tuples, read-only views, or copies. The state references the
+original model and records the structural settings. It is neither a weight backup
+nor a checkpoint.
 
-Public queries expose tuples, read-only views, or inspection copies.
-The state references the original model and records structural resource settings.
-It is neither a weight backup nor a checkpoint.
+Each build copies the registry tables. There is no global registration singleton.
+Rule instances and model objects keep their identities. Read-only containers do
+not make the objects inside them immutable.
 
-`Operation` describes one captured call and supplies its inputs to a rule.
-`OperatorRule` defines reusable operator semantics.
-`OperatorSpec` contains the structural facts that the rule returns for that call.
-`AttributeBinding` uses `ShapeExpr` to describe structural attributes.
-`TensorEffects` uses `ArgumentRef` to identify input writes.
-The [operator guide](../reference/operator-support.md#rule-contract) shows how these records connect.
+## Planning and execution
 
-`operator_recipes.py` defines static records for physical edits.
-Dependency analysis can import these records without importing the pruning executor.
+| Component | Responsibility |
+| --- | --- |
+| `Pruner` in `pruner.py` | The entry point. Discovers and filters candidates, extracts parameter groups, plans, and applies. |
+| `candidates.py`, `candidate_checks.py` | Candidate spaces and the shared proofs that exclude irreversible requests. |
+| `PlanningContext` in `planner.py` | The read-only services a strategy uses: impacts, scoring, budget measurement, and recipe compilation. |
+| `metrics.py`, `strategies.py`, `ranking.py` | Built-in scores and selection, and exact reuse of `Magnitude` and `GroupMagnitude` scores. |
+| `budget.py`, `granularity.py` | Final-size targets and their measurement, and alignment constraints. |
+| `rewrite.py`, `recipes.py`, `validation.py`, `layouts.py` | Recipe compilation, coordinate and layout checks, and original-call validation. |
+| `state.py`, `plan.py`, `serialization.py` | Structural preconditions, atomic binding updates, portable plans, and closed codecs. |
+| `checkpoint.py` | Compact model checkpoints. |
 
-Within this package, `selection.py` defines coordinates, region unions, and region
-shape/gather operations. `relations.py` defines index mappings. `contracts.py` defines constraints
-and analysis results. `operation.py`, `registry.py`, and `operators/` define and
-register operation semantics. Pruning and sparsity consume these contracts.
+`Pruner.plan()` checks a strategy's final selection independently of the
+strategy. `Pruner.apply()` prepares every replacement tensor before it rebinds any
+of them. Only `apply()` and `load_checkpoint()` change model structure.
 
-`eligibility.py` checks native records, including nested fields, before an optimization reuses structural computations.
-Propagation and planning share this check.
-The same module checks model accessors, captured arguments, and registrations before graph queries share freshness validation.
-`DependencyGraph` owns the validation scope, including entry, exit, and exception handling.
-Extensions that fail this optimization check still use ordinary analysis.
-The helper does not import the solver or pruning code.
-
-`settings.py` exports one process-global `config` for resource limits, scoring batches, and cache bounds.
-Library operations read settings when work starts.
-Do not change settings during an operation.
-See [global configuration](../guides/pruning.md#global-resource-configuration) for validation and invalidation rules.
-
-Package initialization in `dep_graph/__init__.py` performs no eager imports.
-Internal consumers import concrete submodules. Public imports such as
-`from torch_kirigami import DependencyGraph, Selection` remain available from the
-root package. Shared model binding and configuration utilities remain outside
-`dep_graph` because capture, physical execution, and persistence all use them.
-
-Each build copies its operator registry tables.
-There is no global registration singleton.
-Rule instances and original model objects retain their identities.
-Read-only record containers do not make those objects immutable.
-
-### Pruning policy and planning
-
-A `Metric` returns importance scores for candidates.
-A `Strategy` chooses candidates under a budget.
-`Pruner.plan()` checks the strategy's final choice independently.
-It returns a `PruningPlan` only when dependencies, execution checks, and the budget pass.
-
-`Greedy` ranks candidates once during a planning call.
-`DynamicGreedy` scores the remaining candidates after each accepted addition.
-Neither strategy trains the model or collects calibration data.
-The caller supplies gradients or activation statistics before planning when a metric needs them.
-
-`CandidateFilter` shares native closure and constraint checks between filtering and parameter-group extraction.
-Filtering uses irreversible conflicts. Raw group extraction requires complete influence and preserves complete constraint conflicts.
+### Structural reuse
 
 Planning analyzes many overlapping requests, so it reuses structural work. Every
 reuse rests on an exact proof, never on an approximation:
@@ -183,74 +155,41 @@ reuse rests on an exact proof, never on an approximation:
   the normalization population. Extension relations use ordinary propagation;
   extension constraints receive the full closure.
 
-A parameter budget limits the final parameter count.
-A channel budget limits final logical widths.
-These budgets share the same final-size comparison.
-Their counting rules differ.
+The planner caches structural results. Built-in metrics can also cache numerical
+statistics, such as the normalization energies for `GroupMagnitude` and
+per-axis Taylor sums. Their sizes come from
+[configuration](../reference/configuration.md).
 
-### Model changes and persistence
+### Callback safety
 
-`Pruner.apply()` prepares replacement tensors before it changes model bindings.
-It applies the plan to the original module hierarchy.
-It returns that model and a `PruningResult` with parameter and coordinate maps.
-Supported changes can update registered tensors and structural module attributes.
+The planner checks graph freshness around user callbacks. After selection it also
+checks the identities, version counters, and `requires_grad` flags of tracked
+tensors. A detected change raises an error. These checks cannot undo arbitrary
+side effects of a callback.
 
-A plan stores a decision, not the weights used to score it.
-A model checkpoint stores the final compact structure and values.
-The caller supplies compatible model code when restoring a checkpoint.
+`attempt()` counts joint verification calls, including cache hits. Scoring and
+ordinary `impact()` queries are not counted. `max_trials` therefore bounds
+structural attempts, not runtime.
 
-### Training and measurement
+## Sparse training
 
-The sparsity package supplies differentiable penalties, explicit gates, and parameter operations.
-The caller owns the task loss, optimizer, training loop, and phase transitions.
-Research workflows also own bias correction and weight reconstruction.
-Save their corrected or reconstructed values in the final model checkpoint.
+The sparsity package provides losses, gates, and parameter operations. The caller
+owns the task loss, optimizer, training loop, and phase changes.
 
-Sparse parameter operations separate preparation from commit and rollback.
-An internal `_PreparedWrite` records each assignment's coordinates and copied values before and after the change.
-Preparation completes before any assignment changes the model.
-Preparation combines finite-value checks after conversion to each destination dtype.
-Passing one existing union avoids reconstructing and validating another group.
-Live reads and write preparation still check the complete snapshot.
-Commit checks the snapshot again.
-Regularizer calls still inspect the live graph and current parameter values.
+Parameter operations prepare every write before they change anything. An internal
+`_PreparedWrite` records each assignment's coordinates and the values before and
+after. Preparation checks that values stay finite after conversion to each
+destination dtype. The commit step checks the snapshot again.
 
-Torch Prisma supplies parameter counts, theoretical FLOPs and MACs, and inference latency.
-The pruning package uses its parameter counter for ratio-based parameter budgets.
-The workflow adapter selects evaluation mode and restores each module's previous mode.
-Measurement forward calls can change inputs, buffers, weights, and random-number state.
-See the [measurement guide](../guides/measurement.md) for ownership and execution contracts.
-Task accuracy requires separate evaluation with task data.
-Fewer parameters or MACs do not guarantee lower latency or preserved accuracy.
+## Extension points
 
-## Object lifetimes
+| To change | Extend |
+| --- | --- |
+| How an operation connects coordinates | An `OperatorRule`, described in [operator support](../reference/operator-support.md#write-an-operator-rule). |
+| How candidates are scored | A metric with a `score()` method. |
+| How candidates are chosen | A strategy with a `select()` method. |
+| An externally solved selection | `Pruner.plan_remove()` with exact selections. |
 
-A dependency graph records structural assumptions from capture.
-Changes to structure, module modes, tracked configuration, or guarded constants can invalidate it.
-Ordinary weight updates can preserve the graph when those assumptions remain valid.
-
-After physical pruning:
-
-1. Build a new graph before another planning call.
-2. Discover candidates and construct parameter groups from that graph.
-3. Construct a new optimizer for the replacement parameters.
-
-The library does not transfer optimizer state automatically.
-A saved plan has no live graph binding.
-It can apply the same coordinates to another model with compatible structure.
-
-## Extension boundary
-
-One `OperatorRule` defines structural facts, candidate axes, tensor effects, and any special edits for an operator family.
-The dependency core does not import pruning policy or sparse-training algorithms.
-The pruning layer consumes the dependency contracts.
-Sparse-training components consume graph and pruning contracts.
-Library modules do not import workflow examples.
-
-Add a rule when an operation needs new structural semantics.
-Add a metric when an algorithm needs a different score.
-Add a strategy when an algorithm needs a different selection procedure.
-A solver with exact selections can submit them through `plan_remove()`.
-
-The [dependency guide](../reference/dependency-graph.md) defines analysis records and propagation.
-The [pruning guide](../guides/pruning.md) defines planning and application contracts.
+One rule owns the structural facts, candidate axes, tensor effects, and special
+edits of an operator family. The dependency core never learns about pruning
+policy, and the pruning layer never learns about specific operators.

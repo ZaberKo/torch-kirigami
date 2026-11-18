@@ -1,4 +1,4 @@
-"""Final-structure checkpoints, independent of graph capture and pruning history."""
+"""Checkpoints of compact structure and weights, independent of graph capture and history."""
 
 from __future__ import annotations
 
@@ -212,17 +212,26 @@ def _validate_payload(
 
 
 def save_checkpoint(model: nn.Module, path: str | PathLike[str] | IO[bytes]) -> None:
-    """Save final structure and current values, without retaining pruning history.
+    """Save a model's compact structure and current weights.
+
+    The checkpoint stores the final structure and tensor values but no pruning
+    history, plan, or graph. Raw registered tensors, including nonpersistent
+    buffers, are saved directly; `state_dict` methods and custom codecs are not
+    called. The checkpoint does not contain model code: loading it requires
+    code that constructs a compatible original model. Custom `get_extra_state`
+    methods must be read-only; their side effects are not isolated or rolled
+    back.
 
     Args:
-        model: A pruned, restored, or ordinary Module. Do not mutate it concurrently.
-        path: Filename or file-like object accepted by torch.save.
+        model: A pruned, restored, or ordinary module. Do not mutate it while
+            saving.
+        path: Filename or binary file-like object accepted by `torch.save`.
 
-    Raw registered tensors and nonpersistent buffers are included explicitly;
-    state_dict methods and custom codecs are not invoked. Model code and its
-    original constructor configuration remain the caller's responsibility.
-    Custom get_extra_state methods must be read-only; arbitrary getter side
-    effects are not isolated or rolled back.
+    Raises:
+        torch_kirigami.pruning.ExecutionError: The model uses unsupported state
+            hooks, extra state, custom tensor subclasses, distinct tensors that
+            share storage, or overlapping layouts, or its managed structure
+            changed outside pruning.
     """
     _check_state_contract(model)
     structure = snapshot(model)
@@ -267,27 +276,34 @@ def load_checkpoint(
     *,
     map_location: str | torch.device | dict[str, str | torch.device] | None = None,
 ) -> nn.Module:
-    """Restore final tensor sizes, sharing, configuration, and values into a skeleton.
+    """Restore a checkpoint's compact structure and weights into a newly built model.
+
+    The caller's code must construct a compatible original model; the
+    checkpoint supplies only structure and values. Tensor sizes, sharing,
+    managed configuration, and values are restored without an example input,
+    operator registry, or FX graph. All registered state is prepared before the
+    commit, and an ordinary failure leaves the model unchanged.
+    `set_extra_state` runs on an isolated module shell; its external side
+    effects are outside this transaction. Extra state may restore ordinary data
+    but cannot change registered module or tensor bindings. Registered tensor
+    values are restored directly, without calling `load_state_dict` methods or
+    custom codecs, and registered `state_dict` hooks are not supported.
 
     Args:
-        model: Newly constructed compatible original Module; returned unchanged
-            in identity. No example input, operator registry, or FX graph is needed.
-        path: Filename or file-like object accepted by torch.load.
-        map_location: None, one destination device, or a source/destination device
-            dictionary. Per-storage callable relocation is unsupported.
+        model: Newly constructed, compatible original module. The same object is
+            returned.
+        path: Filename or binary file-like object accepted by `torch.load`.
+        map_location: `None`, one destination device, or a dictionary from
+            source to destination devices. Callable relocation is not supported.
 
     Returns:
-        The supplied model with its final pruned structure and checkpoint values.
+        The supplied model with the checkpoint's compact structure and values.
 
     Raises:
-        torch_kirigami.pruning.ExecutionError: The schema, skeleton, aliases, or state payload is incompatible.
-
-    Ordinary registered state is prepared before committing. set_extra_state
-    runs on an isolated module shell; external side effects remain outside the
-    transaction contract. Extra state may restore ordinary data, but cannot change
-    registered module or tensor bindings. Registered tensor values are restored
-    directly, without calling load_state_dict methods or custom codecs. Registered
-    state_dict hooks are explicitly unsupported.
+        torch_kirigami.pruning.ExecutionError: The schema, module skeleton,
+            aliases, configuration, or state payload is incompatible,
+            `map_location` is invalid, a tensor has gradient hooks, or extra
+            state fails or changes registered structure.
     """
     _check_state_contract(model)
     if any(has_tensor_hooks(t) for t in (*model.parameters(), *model.buffers())):

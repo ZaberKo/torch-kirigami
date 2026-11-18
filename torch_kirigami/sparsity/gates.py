@@ -1,4 +1,4 @@
-"""Explicit activation gates and their structural/importance adapters."""
+"""Explicit activation gates, their operator rule, and gate-based importance scores."""
 
 from __future__ import annotations
 
@@ -18,22 +18,32 @@ from ..pruning.types import Candidate, MetricContext
 
 
 class ChannelGate(nn.Module):
-    """Scale an explicitly chosen activation axis with one parameter per position.
+    """Multiply one activation axis by a learnable scale per position.
+
+    The output is `x * weight * mask`, broadcast along `axis`. Both `weight`
+    and `mask` start at one. `set_mask()` installs a fixed binary mask; it
+    does not prune the model physically. Physical pruning keeps the remaining
+    gate weights, so they need not equal one after compaction.
+
+    Call `register_gate_operators` on the operator registry before building a
+    dependency graph for a model that contains gates. The gate rule adds no
+    candidate axis of its own, so gates follow the candidates of neighboring
+    layers.
 
     Args:
         size: Positive width of the gated axis.
-        axis: Activation dimension, including negative dimensions.
-        trainable: Whether gate weights receive gradients.
-
-    Weight and mask start at one. set_mask() installs a fixed binary mask, not
-    physical pruning. Retained weights need not equal one after compaction.
-    Register gate operators explicitly before building a dependency graph.
+        axis: Activation dimension to scale. Negative values count from the end.
+        trainable: Whether `weight` requires gradients.
 
     Attributes:
         size: Number of activation positions scaled by the gate.
         axis: Activation dimension scaled by the gate.
-        weight: Trainable or fixed scale for each position.
-        mask: Nontrainable binary multiplier for each position.
+        weight: Scale parameter for each position, trainable or frozen.
+        mask: Binary buffer that multiplies each position. It is never trained.
+
+    Raises:
+        ValueError: `size` is not a positive integer or `axis` is not an integer.
+        TypeError: `trainable` is not a boolean.
     """
 
     def __init__(self, size: int, axis: int, trainable: bool = True) -> None:
@@ -47,7 +57,18 @@ class ChannelGate(nn.Module):
         self.register_buffer("mask", torch.ones(size))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Apply the scale without changing rank or choosing a pruning policy."""
+        """Scale the gated axis of an activation.
+
+        Args:
+            x: Activation whose dimension `axis` has width `size`.
+
+        Returns:
+            A new tensor with the same shape as `x`.
+
+        Raises:
+            ValueError: `x` has no dimension `axis`, or that dimension does
+                not have width `size`.
+        """
         if not -x.ndim <= self.axis < x.ndim or x.shape[self.axis] != self.size:
             raise ValueError("Gate activation axis has an incompatible width")
         shape = [1] * x.ndim
@@ -56,7 +77,19 @@ class ChannelGate(nn.Module):
 
     @torch.no_grad()
     def set_mask(self, mask: torch.Tensor) -> None:
-        """Validate and replace the binary mask outside a live backward graph."""
+        """Replace the binary mask in place.
+
+        The copy runs under `torch.no_grad()`. Call it outside a live forward and
+        backward pass, because an autograd graph may have saved the old mask.
+
+        Args:
+            mask: Tensor-like value with one entry per gate position, each zero
+                or one.
+
+        Raises:
+            ValueError: The mask has the wrong shape or a value other than zero
+                or one.
+        """
         value = torch.as_tensor(mask, device=self.mask.device)
         if value.shape != self.mask.shape or not ((value == 0) | (value == 1)).all():
             raise ValueError("Expected one binary mask value per gate position")
@@ -64,7 +97,7 @@ class ChannelGate(nn.Module):
 
 
 def _gate_rule(operation: Operation) -> OperatorSpec:
-    """Describe coordinate and width requirements for a ChannelGate call."""
+    """Relate gate input, output, weight, and mask axes and bind the `size` attribute."""
     x, y = operation.inputs[0], operation.outputs[0]
     weight, mask = operation.bindings.get("weight"), operation.bindings.get("mask")
     relations = [AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape))]
@@ -94,31 +127,53 @@ def _gate_effects(node: fx.Node, module: nn.Module | None) -> TensorEffects:
 
 
 class ChannelGateRule(OperatorRule):
-    """Declare gate coordinates, width binding and independent output storage."""
+    """Operator rule for `ChannelGate` calls.
+
+    The rule relates the gate's input, output, weight, and mask coordinates,
+    keeps the module's `size` attribute equal to the compact width, and declares
+    that the output never aliases the input. It declares no candidate axis.
+    """
 
     build_spec = staticmethod(_gate_rule)
     tensor_effects = staticmethod(_gate_effects)
 
 
 def register_gate_operators(operators: OperatorRegistry) -> OperatorRegistry:
-    """Register ChannelGate as an explicit leaf without adding a logical candidate axis.
+    """Register `ChannelGate` as a leaf module with its own operator rule.
+
+    Call this before building a dependency graph for a model that contains
+    gates. The rule adds no candidate axis, so a gate is pruned only through
+    candidates declared by other operators.
 
     Args:
         operators: Registry to extend.
 
     Returns:
-        The registry with the ChannelGate rule registered.
+        The same registry, allowing registrations to be chained.
+
+    Raises:
+        ValueError: `operators` already has a rule for `ChannelGate`.
     """
     return operators.register(ChannelGate, ChannelGateRule())
 
 
 @dataclass(frozen=True)
 class GateBinding:
-    """Bind a named gate to candidates through actual dependency propagation.
+    """Associate one `ChannelGate` in a dependency graph with the candidates that prune it.
+
+    The association is computed by dependency propagation, not by module names.
 
     Attributes:
-        graph: Snapshot built with `register_gate_operators`.
-        path: Registered path of a `ChannelGate`; empty denotes the root.
+        graph: Dependency graph built with a registry passed through
+            `register_gate_operators`.
+        path: Module path of the `ChannelGate`. An empty path means the root
+            module is the gate.
+
+    Raises:
+        AttributeError: The model has no module at `path`.
+        ValueError: The module at `path` is not exactly a `ChannelGate`.
+        KeyError: The graph does not track the gate's weight.
+        torch_kirigami.StaleGraphError: The graph no longer matches its model.
     """
 
     graph: DependencyGraph
@@ -133,17 +188,18 @@ class GateBinding:
     def candidates(
         self, pruner: Pruner, candidates: tuple[Candidate, ...]
     ) -> tuple[Candidate, ...]:
-        """Return candidates whose closure removes at least one gate parameter.
+        """Return the candidates whose removal would remove at least one gate weight.
 
         Args:
-            pruner: Pruner using the graph bound to this gate.
-            candidates: Candidate requests to inspect.
+            pruner: Pruner that uses this binding's graph.
+            candidates: Candidates to inspect.
 
         Returns:
-            Requests whose complete dependency closure includes gate weights.
+            The matching candidates in input order.
 
         Raises:
-            ValueError: The pruner uses another graph or influence is incomplete.
+            ValueError: The pruner uses a different graph, or the dependency
+                impact of a candidate is incomplete.
         """
         if pruner.graph is not self.graph:
             raise ValueError("Gate and candidate space belong to different graphs")
@@ -159,17 +215,26 @@ class GateBinding:
 
 
 class GateMagnitude:
-    """Score newly affected effective gate scales using sum(abs(weight*mask)).
+    """Score candidates by the effective gate scales that their removal would add.
 
-    Aliases sharing both weight and mask count once. Distinct masks paired with
-    a shared weight contribute separately, independently of binding order.
-    Already selected gate regions contribute zero. Gate statistics remain those
-    supplied by the caller; scoring does not train or recalibrate them.
-    Effective scales are prepared once per score batch and never cached across calls.
+    A candidate's score is `sum(abs(weight * mask))` over the gate positions
+    that its removal selects and that the already accepted removals do not.
+    Positions already selected therefore contribute zero. Bindings that share
+    both weight and mask count once. Distinct masks paired with a shared weight
+    contribute separately, regardless of binding order. Scoring reads the
+    current gate values supplied by the caller and does not train or
+    recalibrate them. Effective scales are read once per `score()` call and
+    are never cached between calls.
 
     Args:
-        bindings: Explicit GateBindings from the planning graph. Ungated
-            candidates are rejected rather than silently receiving score zero.
+        bindings: Nonempty `GateBinding` objects for the planning graph.
+            Duplicate bindings are ignored.
+
+    Attributes:
+        bindings: Distinct bindings in first-occurrence order.
+
+    Raises:
+        ValueError: `bindings` is empty or contains a non-`GateBinding` object.
     """
 
     def __init__(self, bindings: tuple[GateBinding, ...]) -> None:
@@ -185,7 +250,9 @@ class GateMagnitude:
         *,
         accepted_impact: Impact,
     ) -> list[float]:
-        """Evaluate additions to a complete, possibly constrained selection.
+        """Score each candidate as an addition to the already accepted removals.
+
+        Candidates are scored independently of each other.
 
         Args:
             context: Planner access to the graph and dependency impacts.

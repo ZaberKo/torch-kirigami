@@ -1,60 +1,51 @@
 # Structural pruning
 
-Structural pruning changes tensor shapes and module attributes in an existing PyTorch model. The graph finds coupled coordinates. A planner checks a joint removal and creates static recipes. Apply executes those recipes on the original module.
+This guide covers the `Pruner` workflow in detail: manual requests, candidate
+spaces, budgets, metrics, strategies, plans, and application. It assumes you have
+read [core concepts](../concepts.md). The
+[pruning API reference](../apidocs/torch_kirigami/torch_kirigami.pruning.pruner.md)
+lists every argument.
 
-Read the [dependency graph guide](../reference/dependency-graph.md) for coordinate propagation and constraints. Read [operator support](../reference/operator-support.md) for registered rules and supported operations.
-The [pruning API reference](../apidocs/torch_kirigami/torch_kirigami.pruning.pruner.md) lists arguments and return values from the source docstrings.
-
-## Lifecycle and ownership
-
-Build a fresh `DependencyGraph` for each pruning round. Pass the original model and graph to `Pruner`. Planning does not compact weights or mutate the model.
-
-`plan_remove(remove)` plans the exact manual request. It does not add, remove, or replace seeds. An invalid request raises `PlanningError`.
-
-`plan(space, budget=..., strategy=...)` selects from an explicit `CandidateSpace`. `prune(...)` calls `plan(...)` and then `apply(...)`. Neither method discovers candidates unless the caller first calls `discover_candidates()`.
-
-`PruningPlan` stores portable analysis facts, selected keys, budget results, tensor recipes, attribute recipes, and before/after structure. It stores no model, live graph, scoring callback, or tensor values. `apply(plan)` checks the target model, prepares replacements, and then commits them. It returns `(model, result)`, where `model` is the supplied module and `result` is a `PruningResult`. Replaced parameters are new `Parameter` objects.
-
-After a nonempty apply, rebuild the graph, candidate space, and graph-bound groups. Recreate the optimizer. The optimizer still refers to old parameter objects. The library does not migrate optimizer state.
+## One pruning round
 
 ```mermaid
 flowchart LR
-    Inputs["Candidates + budget"] --> Strategy["Strategy proposal"]
-    Strategy --> Planner["Planner check"]
-    Planner --> Plan["Pruning plan"]
-    classDef source fill:#eef2f7,stroke:#64748b,color:#172033
-    classDef check fill:#f1edfa,stroke:#b4a2d0,color:#38284f
-    classDef result fill:#e8f3ec,stroke:#62836b,color:#172033
-    class Inputs,Strategy source
-    class Planner check
-    class Plan result
+    G["Build graph"] --> P["Pruner(model, graph)"]
+    P --> M["plan_remove(selections)"]
+    P --> A["plan(space, budget, strategy)"]
+    M --> Plan["PruningPlan"]
+    A --> Plan
+    Plan --> Ap["apply(plan)"]
+    Ap --> R["Rebuild graph<br/>and optimizer"]
 ```
 
-The strategy proposes candidate keys. The planner independently checks their joint effects, recipes, and final sizes against the budget. The strategy's proposal still requires this independent check.
+Each round needs a fresh `DependencyGraph` for the current model. `Pruner` takes
+the model and its graph, and it holds the constraints shared by every query and
+plan of that round:
 
-Apply uses a transaction that separates preparation from commit.
-
-```mermaid
-flowchart LR
-    Plan["Plan"] --> Prepare["Prepare"]
-    subgraph Transaction["Transaction"]
-        direction LR
-        Prepare --> Commit["Commit"]
-    end
-    Commit --> Model["Updated model"]
-    classDef source fill:#eef2f7,stroke:#64748b,color:#172033
-    classDef action fill:#f1edfa,stroke:#b4a2d0,color:#38284f
-    classDef result fill:#e8f3ec,stroke:#62836b,color:#172033
-    class Plan source
-    class Prepare,Commit action
-    class Model result
+```python
+pruner = Pruner(
+    model,
+    graph=graph,
+    preserve_io=True,  # default: protect every external input and output axis
+    constraints=(),  # extra constraints, for example Fixed(axis)
+    granularity=Granularity(),  # retained-width alignment, see below
+)
 ```
 
-Apply checks the plan and target before allocation. It prepares every replacement before it changes model bindings. If commit fails, it restores tracked bindings, attributes, and structural metadata. The transaction does not cover concurrent mutation or arbitrary callback side effects.
+With `preserve_io=True`, every axis of every model input and output gets a
+`Fixed` constraint, so a plan cannot change the model's interface. Set it to
+`False` only if you also control the code that produces the inputs and consumes
+the outputs. Operator constraints, such as grouped-convolution balance, stay
+active either way.
 
-## Manual and automatic selection
+Planning never changes the model. `pruner.prune(space, budget=..., strategy=...)`
+is a shortcut for `pruner.apply(pruner.plan(...))`.
 
-This example removes two hidden features from a small model. The request uses coordinates from the fresh graph.
+## Manual requests
+
+`plan_remove(selections)` plans exactly the original-coordinate selections you
+pass, as one joint request:
 
 ```python
 import torch
@@ -67,444 +58,479 @@ model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
 inputs = torch.randn(2, 8)
 graph = DependencyGraph.build(model, args=(inputs,))
 pruner = Pruner(model, graph=graph)
+
 remove = graph.parameter("0.weight").axis(0).select([1, 3])
-plan = pruner.plan_remove((remove,))
+plan = pruner.plan_remove([remove])
 model, result = pruner.apply(plan)
 ```
 
-The default `preserve_io=True` protects every external input and output axis with `Fixed` constraints. Use `preserve_io=False` only when you control the resulting interfaces. Additional constraints apply to manual and automatic requests.
+The planner never adds, drops, or replaces a seed. If the request is incomplete,
+violates a constraint, or cannot be compiled into a safe edit, `plan_remove()`
+raises `PlanningError`. If the seeds themselves cannot be merged within
+`config.max_parts`, the direct request raises `AnalysisLimitError`. Use this
+method when your own algorithm, such as a solver
+or a reconstruction method, already knows the exact removal.
 
-## Candidate space and discovery
+## Candidate spaces
 
-### Default candidate entry axes
+Automatic planning chooses among the entries of a `CandidateSpace`:
 
-`discover_candidates(targets=None)` explicitly finds entry axes declared by captured operator rules. It does not enumerate every tensor axis.
+- `candidates`: named `Candidate(key, remove, axis)` records. Each one is a batch
+  of original-coordinate seeds that a strategy may accept or reject as a unit.
+- `channel_axes`: the logical axes that channel budgets count. Their original
+  widths form the budget's denominator.
+- `excluded_channel_axes` and `exclusions`: diagnostics from discovery and
+  filtering.
 
-Discovery performs these steps:
+A candidate space is a menu of requests. It is not the set of every dependency
+group in the model, and it keeps no reference to the model or graph.
 
-1. Read candidate domains from captured operator rules.
-2. Optionally filter entry points by module path patterns in `targets`.
-3. Deduplicate matching logical domains.
-4. Create one candidate per declared block.
-5. Exclude candidates with a proven irreversible conflict under graph, interface, and caller-supplied constraints.
+### Discover default candidates
 
-A target filters entry points. It does not limit dependency propagation or constraints. An unmatched pattern raises `PlanningError`.
+```mermaid
+flowchart LR
+    R["Operator rules<br/>declare candidate axes"] --> T["Filter by targets<br/>(optional)"]
+    T --> C["One candidate<br/>per block"]
+    C --> F["Drop proven<br/>irreversible conflicts"]
+    F --> S["CandidateSpace"]
+```
 
-Patterns use Python `fnmatchcase` on the complete module path. `*` matches across dots: `blocks.*.mlp*` can select both MLP input and output Linear modules. Use `blocks.*.mlp.0` to select only that entry.
+`pruner.discover_candidates(targets=None)` asks the captured operator rules which
+axes they declare as candidate domains, and creates one candidate per block on
+each axis. The built-in rules declare, among others:
 
-Discovery records excluded candidate keys and reasons in `exclusions`. If it excludes every declared candidate in a domain, it records a `domain:` reason, adds the axis to `excluded_channel_axes`, and omits that axis from `channel_axes`. Discovery then freezes the channel-ratio baseline. If it excludes only some candidates, the axis retains its complete original width. Whole-model parameter budgets still count all registered parameters.
+| Module | Default candidate axis |
+| --- | --- |
+| `Linear` | Output features |
+| Ordinary, grouped, and transposed convolution | Output channels |
+| Depthwise convolution | One output block per input channel |
+| `Embedding` | Embedding features |
+| Native `MultiheadAttention` | Embedding features |
 
-An unresolved or conflicting individual impact does not by itself exclude a candidate. A diagnostic must explicitly declare `irreversible=True`. Balance and divisibility can require joint choices. Incomplete analysis and unproved execution support are not evidence of an irreversible conflict. Native identity-axis proofs avoid repeated propagation when their assumptions hold. Other mappings and custom constraints use ordinary analysis.
+The full list is in [operator support](../reference/operator-support.md#default-candidate-axes).
+Discovery does not enumerate every axis that can take part in dependency
+propagation. A `Linear` input axis can still shrink when an upstream producer
+loses a channel, but discovery does not offer it as a starting point. To prune
+from another supported axis, build your own candidates or use `plan_remove()`.
 
-Linear and ordinary convolution rules declare output-feature or output-channel axes. For `Linear(4, 6) → ReLU → Linear(6, 3)`, default discovery offers the six hidden features. With interface protection, it excludes the final three output features. Selecting one hidden feature also removes the matching consumer input column.
+`targets` restricts the *entry points* of discovery to modules whose path
+matches one of the patterns. Matching uses Python's `fnmatchcase` on the full
+module path, so `*` also matches dots: `blocks.*.mlp*` matches both
+`blocks.0.mlp.0` and `blocks.0.mlp.2`. Use `blocks.*.mlp.0` to match only the
+first one. Targets do not limit how far propagation reaches. A pattern that
+matches no module with candidate axes raises `PlanningError`.
 
-Convolutions with `groups=1` offer independent output-channel candidates, including layers with one input channel.
-The same rule applies to transposed convolutions.
-Default depthwise blocks apply when `groups == in_channels` and `groups > 1`.
+Discovery removes only candidates whose impact contains an **irreversible**
+conflict, such as an axis protected by `Fixed`. For the example above, the
+output features of the final layer are excluded because `preserve_io` protects
+them. If every candidate of a domain is excluded, the axis moves to
+`excluded_channel_axes` and does not count toward channel budgets. If only some
+are excluded, the axis keeps its full original width as the denominator.
 
-Distinct declared domains can have overlapping effects. Propagation finds those effects jointly. Use custom candidates or `plan_remove` to request another supported entry axis.
+Discovery does **not** remove candidates that are merely unresolved, incomplete,
+or in conflict for a reason that more removals could fix. A single output
+channel of a grouped convolution leaves the groups unbalanced, but two
+channels together can be valid. Removing such candidates would hide valid joint
+choices.
 
-`CandidateSpace` contains explicit candidates, counted channel axes, and optional discovery exclusions. It retains no graph or model. Candidate order matches score order. Channel-axis order matches local budget order. Packaging candidates into blocks does not change the budget denominator.
+### Build a custom space
 
-For custom candidates, `pruner.filter_candidates(space)` returns a new space without irreversibly conflicting candidates. It preserves order, `channel_axes`, `excluded_channel_axes`, and the input object. Rejected keys and reasons enter `exclusions`. Explicit budget axes never disappear automatically, even when no candidates remain on an axis. A resulting channel target can therefore be unreachable.
-
-`Pruner.plan()` applies the same filter before invoking any strategy. Both built-in greedy strategies also check additions against the accepted removal closure before scoring or spending a trial on a proven irreversible conflict. Static selection retains its original scores. Dynamic selection still recalculates scores after each accepted complete request. Filtering does not change GroupMagnitude's normalization population or formula.
-
-Outside the native identity-axis proof, filtering runs ordinary propagation per candidate. Pre-strategy filtering can therefore add a full pass of dependency queries. The strategy's subsequent checks share its bounded impact cache. Separate discovery and filter calls do not retain impacts between calls.
-
-With unmodified `Magnitude` or `GroupMagnitude`, built-in greedy selection can share freshness checks within a batch of native queries.
-The graph checks its full snapshot at batch entry and exit, including exceptional exits.
-Custom metrics, registrations, structural records, tensor subclasses, and binding accessors retain the ordinary checks.
-Only inert call arguments can enter such a batch.
-Attribute validation always suspends reuse because retracing executes the model's Python `forward`.
-Independent public queries continue to check freshness.
-
-`Candidate(key, remove, axis=None)` names one batch of original-coordinate seeds. Its `axis` describes a logical domain. It does not make the candidate an indivisible structural block. Relations and constraints define required coupling.
-
-`Pruner.impact(candidates)` analyzes a joint candidate batch.
-`Pruner.parameter_groups(candidates)` analyzes candidates separately and returns one parameter group per candidate, in input order.
-Both queries require explicit candidates and leave model values unchanged.
-Use `torch_kirigami.pruning.unique_groups` if equivalent groups should contribute only once to sparse training.
-See [parameter groups](sparse-training.md#live-parameter-groups) for keys, filtering, deduplication, and joint effects.
-
-You can also construct a candidate space directly. Use this when the operator rules do not declare the entry axis that your policy needs.
+Construct a `CandidateSpace` yourself when the default axes do not match your
+policy:
 
 ```python
 from torch_kirigami.pruning import Candidate, CandidateSpace
 
-model = nn.Sequential(nn.Linear(8, 12), nn.ReLU(), nn.Linear(12, 4))
-graph = DependencyGraph.build(model, args=(torch.randn(2, 8),))
+graph = DependencyGraph.build(model, args=(inputs,))
 pruner = Pruner(model, graph=graph)
 axis = graph.parameter("0.weight").axis(0)
 candidates = tuple(
     Candidate(f"hidden:{position}", (axis.select([position]),), axis)
     for position in range(axis.tensor.shape[axis.dim])
 )
-space = CandidateSpace(candidates, channel_axes=(axis,))
+space = pruner.filter_candidates(CandidateSpace(candidates, channel_axes=(axis,)))
 ```
 
-Explicit axes remain in the budget even when their candidates overlap or when a constraint protects an axis. A candidate's selections and axis must refer to tensors in the graph supplied to `Pruner`.
+A candidate's `axis` names the logical domain it belongs to. Metrics such as
+`GroupMagnitude` use it for normalization. It does not turn the candidate into an
+indivisible block. Relations and constraints decide what must be removed
+together. All selections and axes must come from the graph given to `Pruner`.
+
+`pruner.filter_candidates(space)` applies the same irreversible-conflict filter
+to a custom space and records rejected keys in `exclusions`. It keeps the
+candidate order and every explicit `channel_axes` entry, even if no candidate
+remains on an axis. `plan()` runs this filter before it calls the strategy.
+
+### Inspect candidates without planning
+
+- `pruner.impact(candidates)` analyzes the candidates **jointly** and returns one
+  `Impact`.
+- `pruner.parameter_groups(candidates)` analyzes each candidate **separately**
+  and returns one `ParameterGroup` per candidate, in order. It requires complete
+  influence. A candidate that violates `Fixed` can still yield a group ready
+  for a training penalty. To check whether you can physically remove its
+  coordinates, use `plan_remove()`. See [sparse training](sparse-training.md#parameter-groups).
 
 ## Budgets
 
-A budget is an upper bound on final size. The planner measures the final joint closure. It does not add independent candidate costs.
+A budget is an upper bound on a final size. The planner measures the final joint
+closure. It does not add per-candidate costs, so overlapping effects count once.
 
-### Whole-model parameter budget
-
-`ParameterBudget(max_params)` caps the final number of elements in unique registered parameters. Frozen and protected parameters count. Buffers do not count. A shared parameter counts once. Joint row and column removals count through the resulting tensor shape.
-
-```python
-from torch_kirigami.pruning import Greedy, Magnitude, ParameterBudget
-
-plan = pruner.plan(
-    space,
-    budget=ParameterBudget(max_params=120),
-    strategy=Greedy(Magnitude()),
-)
-```
-
-Planning measures verified recipe shapes. It does not allocate compact weights. `ParameterBudget.from_ratio(model, pruning_ratio)` converts a whole-model reduction fraction into an absolute cap using the initial unique parameter count. The finite ratio must be in `[0, 1)`. Its decimal representation defines the rounded-down target. Reuse absolute caps from one initial count across multiple rounds.
-
-### Logical channel budgets
-
-`ChannelRatio(ratio, scope="local")` and `ChannelCount(max_channels, channel_axes, scope="local")` cap final widths on explicit logical axes.
-
-| Budget | Local scope | Global scope |
+| Budget | Caps | Counted over |
 | --- | --- | --- |
-| `ChannelRatio` | One rounded-down final-width cap per axis. | One rounded-down cap on the sum of widths. |
-| `ChannelCount` | One nonnegative cap per axis, in axis order. | One nonnegative cap on the sum of widths. |
+| `ParameterBudget(max_params)` | Final number of parameter elements. | All unique registered `nn.Parameter` objects in the model. |
+| `ChannelRatio(ratio, scope="local")` | Final widths, computed as `floor(width * (1 - ratio))`. | `CandidateSpace.channel_axes`. |
+| `ChannelCount(max_channels, channel_axes, scope="local")` | Final widths, given as integers. | The listed axes, which must match the space's `channel_axes` in order. |
 
-The ratio must be finite and in `[0, 1)`. The supplied decimal value defines exact integer rounding. For example, a ratio of `0.29` and a width of 100 gives a cap of 71. A global budget adds no local caps.
+Channel budgets and parameter budgets measure different things. In
+`Linear(4, 8) → ReLU → Linear(8, 3)`, removing 2 of 8 hidden features is a 25%
+channel reduction, but it reduces the parameter count from 67 to 51, which is
+about 24%. In deeper models the two ratios can differ much more, because a
+channel's parameter cost depends on its neighbors.
 
-The channel denominator uses the original widths in `CandidateSpace.channel_axes`. The planner counts actual removed positions in the joint closure. Overlapping effects count once on one axis. A removal that changes two counted axes contributes to both widths. Protected axes are not silently removed from an explicit denominator.
+### Parameter budgets
 
-For local scope, `ChannelCount` needs one integer cap per axis. Its order must match `channel_axes`. For global scope, it needs one integer cap for the sum. `ChannelRatio` computes an equivalent integer cap from original widths. Ratios are not allowances that the planner subtracts from already-pruned widths.
+`ParameterBudget` counts every element of every unique parameter, including
+frozen and protected parameters. Buffers do not count. A shared parameter counts
+once. `ParameterBudget.from_ratio(model, 0.3)` converts a reduction fraction of
+the current model into an absolute cap. When you prune over several rounds,
+compute absolute caps from the initial count yourself so that the ratio is not
+applied to an already smaller model.
 
-A target above the current size needs no additional removal. A zero target can be structurally impossible. Empty dimensions remain invalid when a constraint requires them to be nonempty.
+### Channel budgets
 
-All automatic plans must meet their target. If search ends above the cap, planning raises `PlanningError` and returns no plan. The model remains unchanged. A trial limit or exhausted greedy search does not prove infeasibility. A channel `SelectionReport` records original widths, targets, actual removals, scope, trials, and exclusions. A parameter budget uses `ParameterReport` with exact before and after counts.
+With `scope="local"`, every axis gets its own cap. With `scope="global"`, one cap
+applies to the sum of widths, and individual axes can shrink by different
+amounts. The ratio must be in `[0, 1)`. Its decimal value is used exactly, so
+`ChannelRatio(0.29)` on width 100 gives a cap of 71, not 70.
 
-`ChannelRatio` measures channels. It does not measure parameters, MACs, latency, or accuracy. `ParameterBudget` measures parameters only. Hardware-dependent latency needs isolated measurements outside this planner.
+The denominator is always the original width of each axis in `channel_axes`.
+Removals count as complete axis positions in the joint closure. A removal that
+shrinks two counted axes counts on both. `ChannelRatio` does not measure
+parameters, MACs, latency, or accuracy.
+
+### Unmet targets
+
+If the strategy cannot bring every final size within its cap, planning raises
+`PlanningError` and returns no plan. The model is unchanged. A strategy that
+stops at its trial limit has not proven that the target is impossible. A cap
+above the current size needs no removal. A cap of zero is accepted but is
+usually impossible, because `NonEmpty` constraints keep at least one position
+on every used axis.
 
 ## Retained-width alignment
 
-`Granularity` adds ordinary `Divisible` constraints on widths declared by operator rules. It does not change candidate blocks, scores, or budget denominators.
+`Granularity` requires retained widths to be multiples of a factor, for example
+to match hardware tile sizes:
 
 ```python
 from torch_kirigami.pruning import Granularity
 
-alignment = Granularity(
-    default=1,
-    by_type={nn.Conv2d: 8, nn.Linear: 8},
-    by_path={"2": 1},
-)
+graph = DependencyGraph.build(model, args=(inputs,))
+alignment = Granularity(default=1, by_type={nn.Linear: 8}, by_path={"2": 1})
 pruner = Pruner(model, graph=graph, granularity=alignment)
 ```
 
-Factors must be positive integers. Type matching uses exact module types. Path matching uses exact original module paths. Paths do not support wildcards or prefixes. The empty path names the root module.
+`by_type` matches exact module types. Subclasses do not match. `by_path` matches
+exact module paths, and the empty string names the root module. It does not
+accept wildcards or prefixes. A path override must name a captured module whose
+rule declares candidate axes. When aliases of the same module receive different
+factors, construction raises an error.
 
-A path override must name a captured module whose rule declares candidate axes. An override on one alias configures the shared module object. Conflicting overrides on aliases raise an error. A factor of one adds no constraint and cannot cancel an operator constraint.
+Alignment adds ordinary `Divisible` constraints to the axes declared by operator
+rules. It applies to every request, including manual requests and unchanged
+axes, so it can force more removals than the budget asks for. A width of 10 with
+factor 4 must lose at least two positions. A factor of 1 adds nothing, and it
+cannot cancel an operator's own constraints.
 
-Alignment applies to changed and unchanged widths, including manual requests and protected axes. It can require more pruning than the budget requests. A width of 10 with factor 4 needs at least two removals. The final width is 8. Planning raises if it cannot both meet the budget and satisfy alignment.
+Because every used axis also keeps at least one position, an axis that retains
+fewer positions than its factor cannot become aligned again. With factor 8, an
+axis that keeps between 1 and 7 positions can only reach zero, which `NonEmpty`
+rejects. Such a request is an irreversible `unreachable_alignment` conflict, so
+discovery and strategies exclude candidates that would reach it. Axes tied by
+identity relations, such as producer rows and consumer columns, share one
+retained width. Their factors combine: factors 4 and 6 on the two sides of one
+channel act as factor 12. Grouped convolutions, group normalization and
+attention heads add balanced partitions to the same check. With three groups and
+factor 8, each group must keep a multiple of 8 channels, so a request that leaves
+three channels in one 16-channel group is also excluded before trials.
 
-## Scoring and strategy contracts
+## Metrics
 
-A metric implements `score(context, candidates, *, accepted_impact)`. It returns one finite real score per candidate. The planner prefers lower scores. Metric batches are a computation detail. A candidate's score must not depend on batch size, order, or other batch members. A single `Candidate` may contain multiple selections for a joint score.
-
-`accepted_impact` is the complete dependency closure of accepted removal requests. It includes effects such as consumer input columns removed by producer output channels. Built-in metrics combine accepted seeds with the candidate seeds, then subtract parameter regions already removed. Do not subtract two total scores. Joint requests can activate effects absent from isolated requests.
-
-Custom metrics can call `parameter_regions(context, candidate, accepted_impact=accepted_impact)` from `torch_kirigami.pruning`.
-This function performs the joint analysis and subtracts accepted regions.
-It returns nonempty `Selection` objects in original coordinates, one per affected Parameter.
-Shared parameters and overlapping regions count once. The function excludes buffers.
-Resolve values through `context.graph.tensor_bindings()`.
-Incomplete influence raises an error. Constraint violations do not prevent this coordinate query, which does not certify executable pruning.
-An empty result carries no score. The metric defines whether missing evidence is valid for its algorithm.
+A metric scores candidates. The built-in greedy strategies try lower scores first.
 
 | Metric | Score |
 | --- | --- |
-| `Magnitude(p=1)` | Sum of absolute values in affected parameter regions. |
-| `Magnitude(p=2)` | L2 norm of affected parameter values, including the square root. |
-| `GroupMagnitude(p=1 or 2)` | Affected parameter energy divided by mean single-position energy on the declared axis. |
-| `WeightTaylor("elementwise_abs")` | Sum of `abs(weight * gradient)` over affected parameter regions. |
-| `WeightTaylor("joint_abs")` | Absolute value of the signed `weight * gradient` sum over the joint influence. |
+| `Magnitude(p=1)` | Sum of absolute values over the affected parameter regions. |
+| `Magnitude(p=2)` | L2 norm of the affected parameter regions, treated as one vector. |
+| `GroupMagnitude(p=1 or 2)` | Affected energy divided by the mean single-position energy on the candidate's axis. |
+| `WeightTaylor("elementwise_abs")` | Sum of `abs(weight * grad)` over the affected regions. |
+| `WeightTaylor("joint_abs")` | `abs` of the signed sum of `weight * grad` over the affected regions. |
 
-All three metrics include affected Parameters, including biases, normalization parameters, and custom operator parameters.
-They exclude buffers and count shared parameters and overlapping regions once.
-They have no parameter filter or module whitelist.
-A new request without parameter effects raises `PlanningError`.
-Actual zero-valued parameters and requests whose parameter effects are already covered can score zero.
+The three metrics above use the same parameter regions: every parameter that the
+candidate's dependency closure touches. These regions include biases,
+normalization parameters, and parameters of custom operators. Buffers are
+excluded, and shared parameters or overlapping regions count once. There is no
+module filter.
 
-Use a custom Metric for a different scoring basis or formula.
-For example, [BN-guided pruning](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/bn_guided_pruning.py) uses `BNScaleMagnitude` with explicit BN scale references.
-It uses `parameter_regions` to find the affected scales, then sums their absolute values.
-Other parameter effects still participate in dependency analysis and physical pruning.
-The metric rejects a new request without associated scales instead of assigning zero importance.
-`Pruner.parameter_groups(candidates, parameter_filter=...)` selects parameters for sparse regularization.
-It does not filter built-in metric scores or restrict physical pruning.
+### Magnitude
 
-`Magnitude` treats the affected parameter union as one vector.
-For L2, it sums squared magnitudes across all affected parameters, then takes one square root.
-It does not sum per-module L2 norms.
+`Magnitude` concatenates all affected parameter values into one vector and takes
+its L1 or L2 norm. For L2, it sums squares across all parameters and takes one
+square root. It does **not** compute a norm per module and add the norms.
 
-`GroupMagnitude` requires complete slices of `candidate.axis`. It computes the following score:
+### GroupMagnitude
+
+`GroupMagnitude` normalizes by the candidate's axis, so that axes with large
+weights do not dominate a global ranking:
 
 ```text
-energy = sum(abs(parameter_element) ** p) over the affected parameter union
-score = candidate energy / mean energy of single-position requests on candidate.axis
+energy(request) = sum(|value| ** p) over the request's affected parameter regions
+score(candidate) = energy(candidate) / mean(energy(single position) for each position on candidate.axis)
 ```
 
-With no accepted removals, the denominator includes all axis positions, including the current candidate positions. It does not depend on the candidate subset or scoring batch. A multi-position candidate uses its joint region union as the numerator. The score does not divide by the candidate's position count. For single-position energies `[2, 4, 6, 8]`, the denominator is `5`. Deleting positions `[0, 2]` gives `8 / 5` if their effects are disjoint and joint propagation adds no further parameter regions.
+Before any removal is accepted, the denominator uses every position on the axis,
+including positions missing from the candidate space. After a step,
+`DynamicGreedy` averages over the positions still present. Both numerator and
+denominator then count only parameter coordinates that the new removal adds.
+For initial energies `[2, 4, 6, 8]` the mean is 5. A candidate made of
+positions 0 and 2, with disjoint effects, scores `(2 + 6) / 5 = 1.6`. The score
+is not divided by the number of positions. For `p=2` there is no square root,
+unlike `Magnitude(p=2)`. Each candidate must select complete slices of its
+declared `axis`.
 
-Conditional scoring subtracts parameter regions already in `accepted_impact`. Its denominator uses all axis positions not already removed. It still includes the positions currently under evaluation. A request without parameter effects raises `PlanningError`. Actual zero-valued parameters and requests whose effects are already covered can score zero. A nonzero joint score with a zero single-position baseline requires a custom metric.
+This metric is inspired by
+[DepGraph (CVPR 2023), Section 3.3](https://arxiv.org/abs/2301.12900) and the
+[Torch-Pruning implementation](https://github.com/VainF/Torch-Pruning/blob/master/torch_pruning/pruner/importance.py).
+It uses mean normalization and region deduplication. It does not implement the
+paper's sparse training or Top-N normalization, so it is not a reproduction of
+that method.
 
-This metric draws on [DepGraph (CVPR 2023), Section 3.3](https://arxiv.org/abs/2301.12900), and [Torch-Pruning's implementation](https://github.com/VainF/Torch-Pruning/blob/master/torch_pruning/pruner/importance.py). It uses mean normalization and parameter-region deduplication. It does not implement the paper's sparse training or Top-N normalization. The score is a heuristic, not a task-loss estimate. Parameter scales, activation statistics, and interactions can affect ranking quality.
+### WeightTaylor
 
-Use candidate discovery `targets` or an explicit `CandidateSpace` to restrict deletion entry points. Use `Fixed` constraints to protect axes from dependent changes. These controls do not guarantee that magnitude scores predict accuracy loss.
+`WeightTaylor` reads the `.grad` that is already stored on each parameter. The
+library never calls `backward()`. You choose the loss, its reduction, the
+accumulation over batches, and the model mode, and under AMP you must unscale the
+gradients before planning. Every affected parameter needs a dense, real gradient.
+`joint_abs` lets positive and negative products cancel. That cancellation is
+part of its definition.
 
-`WeightTaylor` reads current real parameters and dense gradients. The caller owns loss reduction, accumulation, and AMP unscaling. The metric does not call `backward()` or estimate per-example Fisher information. `elementwise_abs` sums absolute products. `joint_abs` applies the absolute value after summing signed products, so cancellation is part of its definition.
+### Scores are not accuracy guarantees
 
-Incomplete influence raises an error. The metric does not treat unsupported regions as having zero importance. Metrics and strategies must not mutate the model or fixed planning constraints.
+All built-in scores are heuristics. Parameter scales, activation statistics, and
+interactions between layers affect how well a score predicts accuracy loss. Use
+`targets`, a custom candidate space, or `Fixed` constraints to limit what can be
+removed. These controls do not make a score more predictive.
 
-## Static and dynamic greedy search
+### Write a custom metric
 
-`Greedy(metric, max_trials=10_000)` computes scores once against the empty request. It visits candidates by `(score, key)` order. It accepts only complete joint requests that satisfy constraints, compile into executable recipes, and lower the unmet budget deficit.
-
-`DynamicGreedy(metric, max_trials=10_000)` uses the same checks. It rescores unselected candidates after each accepted complete commitment. It scores against the accepted joint impact. It does not physically compact or recalibrate the model during planning. Dynamic rescoring can cost more and does not guarantee better accuracy.
-
-For built-in `GroupMagnitude`, proved independent axis components use batched parameter statistics on the parameters' devices.
-Dynamic selection recomputes normalization over the surviving positions after each commitment.
-Ordinary convolution scopes that cover an entire tensor qualify.
-Partial group partitions do not.
-
-Nested extension objects in mappings, constraints, or candidate selections use ordinary analysis and scoring.
-A failed optimization proof does not make the model unsupported.
-Every accepted combination still requires joint execution checks.
-
-Cross-axis or last-position changes invalidate only the affected cached component.
-Other proved components retain their statistics.
-The strategy reuses immutable candidate coordinates and sparse axis summaries within one selection call.
-It still updates scores and ranking after every dynamic commitment.
-Metric or tracked tensor changes invalidate the entire statistics snapshot.
-
-A commitment can contain several candidates to satisfy a grouping constraint. Their scores come from before that full commitment. A candidate's score does not need to predict whether its joint combination is valid. The strategy checks the combination before acceptance.
-
-The trial limit bounds joint verification attempts. Score queries and projected checks do not count. A limit reached before the target causes `PlanningError`, not a partial plan. `StrategyResult` contains selected candidate keys, a stop reason, and optional exclusions. The planner independently checks keys, final budget, recipes, and execution requirements. A strategy cannot assert that a budget is met.
-
-The planner passes a `PlanningContext` to the strategy. It exposes the fixed graph, candidates, budget, channel axes, and constraints. It also provides impact, score, compile, budget, and report queries. Ordinary callers receive it through `Strategy.select(context)`.
-
-### PlanningContext queries
-
-The context fixes the graph snapshot and policy inputs for one planning round. A strategy must not change those premises.
-
-| Query | Contract |
-| --- | --- |
-| `impact(remove)` | Analyze the joint original-coordinate selections. |
-| `attempt(remove)` | Analyze one trial and increment the trial counter. |
-| `require_complete(impact)` | Reject an influence range that the graph cannot fully determine. |
-| `score(metric, candidates, accepted_impact=None)` | Return aligned finite scores. The default baseline is the empty request. |
-| `remaining(impact)` | Measure final resource sizes in budget order. |
-| `deficit(impact)` | Measure the remaining reduction needed. Local excesses do not cancel. |
-| `within_budget(impact)` | Check every final-size cap. |
-| `require_budget(impact)` | Raise `PlanningError` when a final cap is not met. |
-| `compile(impact)` | Check tensor and attribute recipes without allocating compact weights. |
-| `report(impact, result)` | Build a report from measured sizes and strategy diagnostics. |
-
-`attempt()` counts joint verification calls, including cache hits. Scoring and ordinary `impact()` queries do not count. A strategy's `max_trials` therefore limits structural attempts, not total runtime or metric work.
-
-The planner checks graph freshness around user callbacks. It also checks tracked tensor identities, version counters, and `requires_grad` flags after selection. A detected change raises an error. These checks do not undo arbitrary callback side effects.
-
-### Exact reuse of candidate analysis
-
-Native bidirectional identity relations can prove that two axis selections imply each other.
-For example, several residual producers can request deletion of the same trunk channel.
-Their candidate keys and budget axes remain separate.
-Each candidate still receives its own metric score.
-
-Filtering retains bounded rejection diagnostics for these equivalent requests.
-Planning reuses complete impacts through its bounded impact cache.
-Returned impacts retain the original requests and explain their relation to the cached seeds.
-Incomplete impacts require ordinary propagation from the original requests.
-Extension records and custom constraints do not use these proofs.
-
-`Pruner` also remembers its latest native filtered space.
-Planning with that same immutable object avoids repeating its filtering pass.
-`Pruner` checks graph freshness before reuse.
-A different space, graph, or constraint set requires filtering again.
-These caches contain structural analysis, not parameter values or custom metric scores.
-
-Built-in magnitude scoring analyzes equivalent seeds together to improve bounded cache reuse.
-Final ordering remains `(score, key)`.
-Dynamic selection still updates scores after each accepted addition.
-The optimization does not approximate those updates.
-
-### Global resource configuration
-
-Use the single process-global `config` object.
-All library consumers read the same object.
-Graph, pruner, and metric constructors do not accept separate configuration objects.
+A metric is any object with this method:
 
 ```python
-from torch_kirigami import config
-
-config.update(score_batch_size=64, impact_cache_size=64, max_literal_elements=8192)
-config.normalization_cache_size = 64  # Assignment uses the same validation.
-settings = config.as_dict()  # Independent dictionary for inspection.
-# Build, plan, and apply normally.
-config.reset()  # Restore declared defaults when finished.
+def score(self, context, candidates, *, accepted_impact) -> Sequence[float] | torch.Tensor: ...
 ```
 
-`update()` checks every supplied name and value before committing any change.
-It rejects unknown names, booleans, non-integers, and out-of-range values.
-`as_dict()` and `update(**settings)` allow explicit saving and restoration of
-configuration in application code. Settings are not included in saved plans.
+It must return one finite real score per candidate, in order. A candidate's score
+must not depend on which other candidates share its batch or on their order. To
+score a joint removal, put several selections into one `Candidate`. When a batch
+raises `PlanningError` or `AnalysisLimitError`, the built-in strategies score each candidate alone and
+exclude only the ones that fail. If none fails alone, the batch error is raised.
 
-| Setting | Default | Purpose |
-| --- | ---: | --- |
-| `max_parts` | 4,096 | Compressed index intervals, intermediate region parts, and identity-proof axis expansion. |
-| `max_literal_elements` | 4,096 | Integer tensor elements retained as structural literals. |
-| `max_shuffle_channels` | 4,096 | Channels explicitly mapped by ChannelShuffle analysis. |
-| `max_container_depth` | 50 | Configuration, requirement payload, and checkpoint extra-state nesting. |
-| `max_record_depth` | 100 | Static pruning-record and encoded-record nesting. |
-| `score_batch_size` | 32 | Generic metric batch size. |
-| `impact_cache_size` | 32 | Retained joint planning queries. |
-| `candidate_cache_size` | 4,096 | Minimum bound per candidate proof cache. With a known candidate count the bound is at least twice that count. Zero disables proof caches and reuse of the latest filtered space. |
-| `recipe_cache_size` | 4 | Retained compiled recipe sets. |
-| `attribute_cache_size` | 32 | Retained attribute-validation results. |
-| `normalization_cache_size` | 32 | GroupMagnitude normalization entries. |
-| `taylor_cache_size` | 128 | WeightTaylor axis-statistic vectors. |
-| `taylor_cache_positions` | 262,144 | Scalar positions across Taylor vectors. |
-| `taylor_chunk_elements` | 1,048,576 | Elements per Taylor statistics chunk. |
+`accepted_impact` is the complete closure of the removals that the strategy has
+already accepted. Score only what the candidate adds *on top of* that closure.
+Do not subtract two independent totals, because a joint request can affect
+regions that neither part affects alone. `parameter_regions()` computes exactly
+these additional regions:
 
-The first six fields require positive Python integers.
-Cache capacities accept zero to disable retention.
-Zero Taylor position/chunk limits use ordinary region scoring.
+```python
+import math
 
-Generic batching does not constrain native vectorized scoring or a custom strategy's explicit calls to `context.score()`.
-Custom metrics must remain independent of batching.
-Taylor chunking bounds statistics work, not memory used by ordinary region scoring.
-Different reduction chunks can change floating-point rounding.
-Near-tied rankings can therefore differ between chunk sizes.
+import torch
 
-Change settings **between library operations**.
-All threads share the object.
-Do not update settings concurrently or from operator or metric callbacks.
-Existing contexts and metrics discard affected caches on their next use after cache settings change.
+from torch_kirigami.pruning import PlanningError, parameter_regions
 
-Graph construction records structural settings, which are the five `max_*` fields.
-Queries and planning reject a graph while these differ from its build settings, including on cache hits.
-Rebuild under the desired settings.
-Captured metadata remains available for inspection.
-An update does not recheck existing coordinate records.
 
-An oversized literal has no captured values.
-Operations requiring those values report unsupported semantics. Other structural limits raise errors or produce
-analysis diagnostics at the affected operation. Raising a limit permits more
-work, but adds no operator support and guarantees no memory or stack capacity.
-Plan/checkpoint restoration uses current settings and never overrides them.
+class VectorMagnitude:
+    """Score a candidate by the L1 norm of the one-dimensional parameters it removes."""
 
-`Greedy.max_trials` and `DynamicGreedy.max_trials` remain explicit algorithm
-parameters. Operator/type tables and codec schemas stay with their semantic
-owners. They are definitions, not resource settings.
+    def score(self, context, candidates, *, accepted_impact):
+        values = {ref: tensor.detach() for ref, tensor in context.graph.tensor_bindings()}
+        scores = []
+        for candidate in candidates:
+            regions = parameter_regions(context, candidate, accepted_impact=accepted_impact)
+            vectors = [s for s in regions if len(s.tensor.shape) == 1]
+            if not vectors:
+                raise PlanningError(f"{candidate.key!r} removes no one-dimensional parameter")
+            scores.append(
+                math.fsum(
+                    values[s.tensor][list(region.axes[0])].abs().sum(dtype=torch.float64).item()
+                    for s in vectors
+                    for region in s.regions
+                )
+            )
+        return scores
+```
 
-### Custom metrics
+Here, `parameter_regions()` returns one nonempty `Selection` per affected
+parameter, in original coordinates. It raises `PlanningError` if the influence is
+incomplete. Constructing the additional regions can also raise `AnalysisLimitError`
+if their representation exceeds `max_parts`. Complete constraint violations
+alone do not prevent extraction, because a strategy may
+still repair them. The example raises when a candidate removes no vector
+parameter, rather than scoring it as unimportant. The
+[BN-guided workflow](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/bn_guided_pruning.py)
+uses the same pattern with explicit BatchNorm scales.
 
-A custom metric can use the `MetricContext` protocol. It provides the graph and the impact queries needed to score candidates. A metric does not need to import `PlanningContext`.
+A metric owns any statistics it collects, and it must not change the model or
+run training. Unknown influence must never be scored as zero importance.
 
-Import `parameter_regions` from `torch_kirigami.pruning` to query additional parameter regions for one candidate.
-Pass `accepted_impact` from the metric call. The helper combines accepted and candidate requests before propagation, then subtracts accepted parameter regions.
-It returns coordinates, not scores or sparse-loss groups. The custom metric chooses how to reduce their values.
-Use `context.impact(...)` directly when an algorithm needs other parts of the complete dependency result.
+## Strategies
 
-The score result must contain exactly one value per candidate. Values must be finite real numbers. A tensor result must be one-dimensional and real. The planner checks the result after every call.
+A strategy chooses which candidate keys to accept. The library provides two
+greedy strategies:
 
-Metrics own any statistics that they collect. They must not run training or change model values. Calibration data, loss reduction, and gradient scaling remain caller responsibilities.
+```mermaid
+flowchart TD
+    S["Score remaining candidates"] --> V["Take the next candidate<br/>in (score, key) order"]
+    V --> T["Try accepted + candidate<br/>(+ partners for balance)"]
+    T -->|"invalid, or no budget progress"| V
+    T -->|"valid and closer to target"| A["Accept"]
+    A -->|"target met"| D["Done"]
+    A -->|"Greedy"| V
+    A -->|"DynamicGreedy"| S
+```
 
-An extension metric can define a different relevance score. It must still use complete influence. It must document whether it includes bias, buffers, or shared roles. It must also state how it treats accepted removals and batch independence.
+- `Greedy(metric, max_trials=10_000)` scores every candidate once, against an
+  empty accepted set, and visits them in `(score, key)` order.
+- `DynamicGreedy(metric, max_trials=10_000)` scores the remaining candidates
+  again after every accepted step, against the new accepted closure.
 
-### Strategy results and reports
+Both strategies accept a step only if the joint request is complete, satisfies
+its constraints, compiles into recipes, and lowers the unmet part of the budget.
+When a candidate alone would leave a `Balanced` or `Divisible` constraint
+unresolved, the strategy tries to add low-scoring partners in the same step. All
+candidates of one step use scores from before that step.
 
-`StrategyResult.keys` contains distinct registered candidate keys in accepted order. The planner rejects unknown keys and duplicate keys. A key cannot appear in both `keys` and `exclusions`.
+`DynamicGreedy` rescoring happens on the same model. It does not physically
+prune, retrain, or recollect gradients or activations between steps. Rescoring
+costs more and does not guarantee better accuracy. Each rescan also checks
+every remaining candidate against the new accepted set. Proofs that the change
+does not affect can be reused from the candidate filter cache. See
+[Scoring and caches](../reference/configuration.md#scoring-and-caches).
 
-`stop_reason` describes the strategy's search. It can be `target_reached`, `exhausted`, or `trial_limit`. It does not prove that a target is feasible. The planner measures the final result independently.
+`max_trials` limits joint verification attempts, not score queries. When a
+strategy reaches the limit before the target, planning raises `PlanningError`.
 
-For channel budgets, `SelectionReport` records axes, original widths, removed counts, final caps, scope, trials, and exclusions. Its `remaining` property gives final widths in axis order. Its `shortfall` reports excess final channels. A valid automatic plan has zero shortfall.
+### Write a custom strategy
 
-For parameter budgets, `ParameterReport` records the original and final counts, cap, trials, limit status, and exclusions. `target_met` compares the measured final count with the cap.
+A strategy implements `select(context) -> StrategyResult`. The `PlanningContext`
+fixes the graph, candidates, budget, and constraints for one call, and provides
+queries:
 
-Exclusions explain why the strategy did not select a key. They can report incomplete influence, a failed constraint, an execution restriction, or a search limit. They are diagnostics, not an exhaustive trace of every attempted combination.
+| Query | Purpose |
+| --- | --- |
+| `impact(remove)` | Analyze a joint request. |
+| `attempt(remove)` | Same as `impact`, and increments `trials`. Use it to count your own work. |
+| `require_complete(impact)` | Raise `PlanningError` for incomplete influence. |
+| `score(metric, candidates, accepted_impact=None)` | Validated scores. The default baseline is the empty request. |
+| `compile(impact)` | Compile recipes without allocating weights. Raises `PlanningError` if execution is not supported. |
+| `remaining(impact)`, `deficit(impact)`, `within_budget(impact)` | Measure the final sizes against the budget. Local excesses do not cancel. |
+| `require_budget(impact)` | Raise `PlanningError` if a cap is missed. |
 
-## Plan records and explanations
+`StrategyResult(keys, stop_reason, exclusions)` lists accepted keys in order, a
+stop reason (`target_reached`, `exhausted`, or `trial_limit`), and optional
+reasons for rejected keys. The planner treats this result as a proposal. It
+rejects unknown or duplicated keys, recomputes the final joint impact, compiles
+it, and measures the budget itself. A strategy cannot declare that a target was
+met.
 
-`plan.analysis` stores the resolved original-coordinate request and propagated selections. It also stores reasons and a portable tensor catalog. `analysis.selection(ref)` rejects references that do not belong to that catalog.
+The planner also checks that the strategy did not change the graph, tensor
+bindings, version counters, or `requires_grad` flags. It raises an error if they
+changed, but it cannot undo other side effects of user code.
 
-`plan.selected` stores the automatic candidate keys. Manual plans have no selected keys. `plan.selection_report` stores measured final sizes and search diagnostics.
+## Plans
 
-`plan.recipes` lists tensor replacements. `plan.attributes` lists verified attribute assignments. `plan.before` and `plan.after` describe the model structures that apply expects before and after the change.
+A `PruningPlan` is an immutable, portable record:
 
-`plan.notes` contains configuration notes and execution guidance. `plan.explain()` formats the analysis status, measured target, replacements, attributes, notes, and exclusions for review.
+| Field | Content |
+| --- | --- |
+| `analysis` | The request, the propagated selections, and diagnostic reasons, in original coordinates. |
+| `selected` | Accepted candidate keys. Empty for manual plans. |
+| `selection_report` | `SelectionReport` for channel budgets, `ParameterReport` for parameter budgets: original sizes, caps, measured results, trials, and exclusions. |
+| `recipes`, `attributes` | Tensor replacements and module attribute assignments. |
+| `before`, `after` | The model structure that `apply()` expects and produces. |
+| `notes` | Configuration notes and execution guidance. |
 
-`PruningPlan.to_dict()` exports basic data. `PruningPlan.from_dict(data)` checks the envelope and recipe consistency without loading model code. Apply repeats structural checks against its target model.
+`plan.explain()` formats these fields for review. A plan contains no weights, no
+model, no graph, and no scores. Training the model after planning does not change
+which coordinates the plan removes. To decide again with new weights, build a new
+graph and plan again. To save a plan, see [plans and checkpoints](persistence.md).
 
-`PruningResult` returns the applied plan, final structure, parameter replacements, coordinate maps, and report messages. It does not include optimizer state or a dependency graph.
+## Applying a plan
 
-The plan is a fixed decision. Changes to weights after planning do not change its selected coordinates. If you need new scores or a new decision after training, build a fresh graph and plan again.
+```mermaid
+flowchart LR
+    P["Plan"] --> C1["Check model<br/>against plan.before"]
+    C1 --> Pr["Prepare every<br/>replacement tensor"]
+    Pr --> C2["Check again"]
+    C2 --> Co["Commit tensors<br/>and attributes"]
+    Co --> R["Model + PruningResult"]
+```
 
-## Failure behavior
+`apply(plan)` does not trace, score, or run `forward`. It validates the plan,
+checks that the model still matches `plan.before`, prepares every replacement
+tensor, checks again, and then commits tensors and attributes. If the commit
+fails, it restores the bindings, attributes, and structural metadata that it
+tracks. It cannot undo concurrent changes or side effects of other code.
 
-`PlanningError` means that the planner could not establish a valid executable request under the current constraints and budget. Read the diagnostic before changing a policy.
+The structure check covers module types, aliases, registered slots,
+configuration, tensor shapes and layouts, and guarded constants. Weight values are
+not part of it, so a plan can be applied to a compatible model whose weights have
+changed since planning. The receiving model's current weights are used as they
+are.
 
-An incomplete impact means the graph cannot determine all affected coordinates. Do not treat missing influence as an empty selection. Add supported operator semantics or choose a different request.
+After application:
 
-A complete impact can still fail constraints or recipe compilation. Examples include an empty required dimension, an incompatible partition layout, a changed static index, or a forward operation that cannot be proved valid after compaction.
+- The module object is the same, but each replaced parameter is a new
+  `nn.Parameter`. `result.parameter_map` maps old parameters to new ones.
+  `result.coordinate_maps` maps original regions to compact regions.
+- Aliases of one registered parameter stay aliases. Distinct tensors that share
+  storage are not supported when pruning must replace them.
+- Gradient hooks are not transferred. `apply()` rejects a tensor with hooks that
+  it needs to replace, so remove the hooks first and register them again on the
+  new tensors.
+- The graph is invalidated. Build a new graph and a new optimizer. Optimizer state
+  is not migrated.
 
-Manual planning raises when the exact request fails. Automatic planning raises when the target remains unmet. Neither path returns a partially valid plan.
+## Execution checks
 
-If the starting model already meets its target, the strategy can return an empty plan. The planner still checks the empty request, constraints, and execution requirements.
+A complete, resolved impact is necessary but not sufficient for physical pruning.
+The forward code is not rewritten, so planning must prove that the original
+`forward` still runs correctly on the compact tensors. It checks:
 
-The plan separates analysis from execution. It does not promise that arbitrary user code has no external side effects. Extension callbacks must avoid model mutation and manage their own external effects.
+- tensor layouts and partitioned storage, such as grouped convolution weights;
+- module attributes, such as `in_features`, and that shared modules receive
+  consistent values;
+- static call arguments, such as slice bounds, index tensors, and reshape sizes,
+  which must still select the same original coordinates;
+- view and stride requirements, which are treated conservatively when strides
+  are unknown;
+- shared bindings and storage aliases.
 
-`ExecutionError` reports a plan precondition, allocation, commit, or state validation failure. Application restores tracked bindings and attributes after ordinary commit failures. It cannot restore concurrent changes or arbitrary external effects.
+Any failure raises `PlanningError` with a diagnostic. `reshape`, `contiguous()`,
+or a small change to the model sometimes makes a rejected request valid, but
+these changes can also change behavior. See
+[model support](model-support.md#adapting-a-model).
 
-## Recipe validation and application
+## Errors
 
-Complete dependency analysis is necessary but not sufficient for execution. Planning also checks tensor layouts, attributes, static arguments, shared bindings, and the affected original forward. Unsupported execution cases raise `PlanningError` with a diagnostic.
+| Error | Raised when |
+| --- | --- |
+| `PlanningError` | The request is incomplete, violates a constraint, has no verified recipe, or misses its budget. No plan is produced and the model is unchanged. |
+| `AnalysisLimitError` | A direct request, such as `plan_remove()`, cannot merge its seeds within the selection limit. |
+| `ExecutionError` | `apply()` received an invalid plan, the model does not match the plan's structure, a tensor to replace has hooks, or the commit failed. |
+| `StaleGraphError` | The graph no longer matches the model, or it was invalidated by a previous `apply()`. |
 
-An operator rule can implement `build_recipe(operation, spec, impact)` and return an `OperatorRecipe`.
-These static records live in `torch_kirigami.operator_recipes`.
-Both dependency analysis and pruning execution import the records.
-
-The compiler handles `AttributeBinding` expressions and `PartitionedLayout` descriptors centrally. Ordinary rectangular removals also need no custom recipe. Custom recipes supply only special tensor edits, attribute assignments, notes, or proved output strides. The compiler merges them with standard edits and checks coordinate mappings, shared bindings, attribute preconditions, and original-call requirements. A custom recipe cannot bypass an unknown requirement or contradict a declared partition.
-
-An attribute binding that evaluates to its old value still participates in shared-owner consistency checks.
-Output-stride declarations must refer to the declaring operation's outputs.
-The compiler rejects original-call shape or index requirements when the rule disables their required meta evaluation.
-
-`build_recipe()` returns `None` when it adds no special edits.
-It raises `UnsupportedOperation` when it cannot support the request.
-The compiler translates rejection into a planning diagnostic instead of trying a different recipe.
-Automatic strategies can try other candidates.
-Custom hooks must be pure.
-Dependency propagation never invokes this method.
-
-Planning checks the affected original forward with compact metadata where the rule declares that evaluation. It checks static indices and slices against original coordinates. It rejects a static argument when compaction would make it select different values.
-
-Planning treats unknown stride behavior conservatively. A shape proof alone does not prove that a view can merge non-singleton axes. Use `reshape` or an explicit contiguous conversion when copying is acceptable, then rebuild the graph.
-
-A `TensorRecipe` describes retained regions in original coordinates. It may concatenate ordered regions to express a partitioned layout. Planning verifies the mapping against the joint impact. A plan contains no compact tensor data.
-
-Application checks plan consistency and the model's original structure. It allocates all replacements before committing bindings and attributes. It preserves aliases of the same registered Parameter. It does not support distinct tensor objects that share storage when pruning requires their replacement.
-
-The commit restores tracked bindings, attributes, and structure after ordinary failures. It is not a transaction for concurrent mutation or arbitrary callback side effects. Rebuild the graph and optimizer after apply. The result exposes parameter and coordinate maps for caller-owned integrations.
-
-`apply()` checks the plan schema and before/after structures independently of the graph that issued the plan. It checks the target module before allocation and again before commit.
-
-The plan's before-state includes module types, aliases, registered slots, configuration, and tensor shapes and layouts. Ordinary weight updates do not invalidate that structure. Guarded constants retain values as structural preconditions.
-
-Application preserves the module object's identity. It does not preserve identity for replaced parameters. The returned `parameter_map` connects each replaced parameter to its new parameter. `coordinate_maps` describe retained source regions and their compact destinations.
-
-Remove tensor gradient hooks before replacing a parameter or buffer. Application rejects a hooked tensor that it needs to replace. Register the hook on the new tensor after apply.
-
-Unsupported relationships raise an error before commit when the planner cannot prove a safe replacement. Examples include unsupported tensor subclasses, conflicting recipes for shared bindings, and storage relationships that cannot be preserved.
-
-A plan can run on a compatible original structure whose weights changed after scoring. Apply uses the receiving model's current weights. It does not recalculate importance. See [persistence](persistence.md) for plan replay and model checkpoint behavior.
+If the model already meets the budget, a strategy can return an empty selection.
+The planner still checks the empty request, constraints, and execution
+requirements.

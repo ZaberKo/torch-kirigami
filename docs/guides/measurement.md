@@ -1,13 +1,9 @@
-# Complexity and latency measurement
+# Measurement
 
-Torch Kirigami uses [Torch Prisma](https://github.com/ZaberKo/torch-prisma) to measure parameter counts, MACs, FLOPs, and inference latency. Measurement does not require a dependency graph or select a pruning policy.
-
-Torch Prisma is a runtime dependency and installs with Torch Kirigami.
-Import measurement APIs directly from `torch_prisma`.
-Torch Kirigami no longer provides the `torch_kirigami.measurement` package.
-`ParameterBudget.from_ratio()` uses Prisma's parameter counter without executing a forward.
-
-## Basic use
+Torch Kirigami uses [Torch Prisma](https://github.com/ZaberKo/torch-prisma) to
+count parameters, MACs, and FLOPs, and to time inference. Torch Prisma installs
+with Torch Kirigami. Import measurement functions from `torch_prisma` directly.
+Measurement needs no dependency graph and has no role in choosing what to prune.
 
 ```python
 import torch
@@ -25,47 +21,49 @@ print(complexity.uncovered_ops)
 print(f"Batch latency: {latency.median_ms:.3f} ms")
 ```
 
-## API and execution contracts
+## How to measure
 
-Prepare the model mode and place the model and inputs on the execution device before measurement.
-`calculate_model_complexity()` takes no `device` argument.
-The latency function's required `device` argument selects the timing device. It does not transfer the model or inputs.
-Both functions accept `input_kwargs` for keyword arguments.
-Use `(items,)` to pass a list as one positional argument.
+Set the model mode and move the model and inputs to the target device before you
+measure. Neither function changes the mode or moves tensors. The `device`
+argument of `measure_module_latency()` only selects the timing device. Both
+functions accept `input_kwargs` for keyword arguments. Pass `(items,)` to give a
+list as one positional argument.
 
-`measure_module_latency()` returns `LatencyStats`, rather than a scalar duration.
-Read `median_ms` for median batch latency in milliseconds.
-Compilation defaults to `True`. Pass `compile=False` for eager timing, as in the example.
-Compilation preparation and warmup do not contribute to the timed samples.
-Counting always executes an eager forward without gradients. Latency forwards run in inference mode.
+- Counting runs one eager forward without gradients.
+- Latency runs in inference mode and returns `LatencyStats`. Read `median_ms` for
+  the median batch latency. Compilation is on by default. Pass `compile=False` for
+  eager timing. Compilation and warmup are not timed.
 
-Neither API automatically selects evaluation mode or isolates inputs and model state.
-Forward changes to inputs, buffers, parameters, and random-number state persist, including changes made before an exception.
-Use separate model and input instances when measurement must preserve the originals.
-Do not train or change the model concurrently with measurement.
-These measurement contracts do not change dependency capture's separate isolation contract.
+Measurement runs your `forward` on your tensors. Anything `forward` changes, such
+as inputs, buffers, parameters, or random-number state, stays changed, even if an
+exception occurs. Use copies when the originals must stay untouched. This is
+unlike graph capture, which isolates inputs and buffers.
 
-## Results and workflow integration
+## Reading the results
 
-`count_parameters(model)` counts unique registered parameter objects without a forward pass.
-It includes frozen and unused parameters, excludes buffers, and counts distinct objects separately even when they share storage.
-Parameter, MAC, and FLOP counts are Python integers.
-MACs and FLOPs describe the supplied batch and executed path.
-Each total includes only work with an established count.
-Neither total estimates uncounted work.
+- `count_parameters(model)` counts unique registered parameters without a forward
+  pass. It includes frozen and unused parameters and excludes buffers. It counts
+  distinct parameter objects separately, even if they share storage.
+  `ParameterBudget.from_ratio()` uses this function.
+- MACs and FLOPs are Python integers for the given batch and the executed path.
+  They include only work whose count is known, and they do not estimate the rest.
+- `uncovered_ops["macs"]` and `uncovered_ops["flops"]` list operations that ran
+  without a complete count under that convention. Work outside a convention, such
+  as bias additions for MACs, is not listed. These lists describe counting
+  coverage, not pruning support.
 
-`uncovered_ops` contains `macs` and `flops` keys with sorted tuples of unique operation names.
-Each tuple lists observed operations without a complete count under that convention.
-Work outside a convention does not produce an entry solely because of that exclusion.
-For example, bias additions contribute no dense MACs and do not create a MAC coverage entry.
-These diagnostics describe counting coverage, not pruning support.
+The [Torch Prisma documentation](https://github.com/ZaberKo/torch-prisma/blob/main/docs/measurement.md)
+describes the formulas, latency statistics, and device support.
 
-See the [Torch Prisma measurement API](https://github.com/ZaberKo/torch-prisma/blob/main/docs/measurement.md) for formulas, latency statistics, and device support.
+## Comparing models
 
-The [workflow examples](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md) report complexity and median latency for a batch of one image.
-Their `model_metrics.measure_model()` adapter temporarily selects evaluation mode and restores each module's previous mode after success or failure.
-Other forward side effects persist. The adapter does not copy model weights, buffers, or inputs.
-The CLI's `--compile_latency` flag controls timing compilation explicitly, independently of Prisma's default.
-Training, accuracy evaluation, and complexity counting remain eager.
-Compare baseline and compact models using the same input shape, dtype, device, and timing settings.
-Lower parameter counts or MACs do not guarantee lower latency.
+Compare the original and compact models with the same input shape, dtype, device,
+and timing settings. Fewer parameters or MACs do not guarantee lower latency,
+because memory layout, kernel selection, and hardware utilization also matter.
+Accuracy needs a separate evaluation on task data.
+
+The [workflow examples](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/README.md)
+report complexity and median latency for one image. Their `model_metrics.py`
+adapter switches the model to evaluation mode for the measurement and restores
+each module's previous mode, even after a failure. It does not copy weights,
+buffers, or inputs. The `--compile_latency` flag controls compilation explicitly.

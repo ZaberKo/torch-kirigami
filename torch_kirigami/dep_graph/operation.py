@@ -1,4 +1,10 @@
-"""Shared operation facts and rule contracts, independent of orchestration."""
+"""Captured operation records and the public operator-rule extension contract.
+
+An `OperatorRule` turns one captured `Operation` into an `OperatorSpec` that
+describes the call's structural semantics. `TensorEffects` separately declares
+which inputs the call can write, which input its result can alias, and whether
+its results use fresh storage.
+"""
 
 from __future__ import annotations
 
@@ -53,19 +59,22 @@ def argument_locations(
     target: object = None,
     variadic: bool = False,
 ) -> tuple[tuple[str, str | int], ...]:
-    """Locate an argument by name or positional slot without comparing its value.
+    """Locate an argument by keyword or positional slot without reading its value.
 
     Args:
         args: Positional call arguments.
         kwargs: Keyword call arguments.
         name: Canonical argument name.
         position: Zero-based positional slot, including a method's receiver.
-        target: Function or method name used to identify native keyword aliases.
+        target: Call target. Native keyword aliases such as `axis` for `dim`
+            apply only when it is a Tensor method name or an object defined in
+            a `torch` module.
         variadic: Include all positional slots from `position` onward.
 
     Returns:
-        Pairs of argument container name and key or index. Missing arguments
-        produce an empty tuple. An explicit keyword takes precedence.
+        Location pairs `("kwargs", name)` or `("args", index)`. A supplied
+        keyword yields only its own location. A missing argument yields an
+        empty tuple.
 
     Raises:
         ValueError: More than one spelling of a native keyword was supplied.
@@ -94,11 +103,12 @@ def argument(
     target: object = None,
     variadic: bool = False,
 ) -> object:
-    """Resolve canonical names, native aliases, and variadic positional arguments.
+    """Resolve one call argument from its keyword, native alias, or positional slot.
 
-    Native Tensor methods and torch functions share accepted keyword aliases.
-    Module and third-party function keywords retain their own semantics.
-    This resolver does not validate the complete call signature.
+    Native Tensor methods and torch functions accept NumPy-style keyword
+    aliases, such as `axis` for `dim` and `keepdims` for `keepdim`. Keywords
+    of modules and third-party functions keep their own meaning. This resolver does not validate the complete call
+    signature.
 
     Args:
         args: Positional call arguments.
@@ -106,13 +116,15 @@ def argument(
         name: Canonical argument name.
         position: Zero-based positional slot, including a method's receiver.
         default: Result for a missing nonvariadic argument.
-        target: Function or method name used to identify native keyword aliases.
+        target: Call target. Native keyword aliases apply only when it is a
+            Tensor method name or an object defined in a `torch` module.
         variadic: Collect remaining positional arguments instead of one value.
 
     Returns:
-        The supplied value, with an explicit keyword taking precedence. Variadic
-        positional arguments form a tuple. Variadic keyword containers remain
-        containers, and noncontainer keyword values other than FX nodes are wrapped.
+        The supplied value. A keyword takes precedence over positional slots.
+        In variadic mode, positional arguments form a possibly empty tuple; a
+        keyword tuple, list, or FX node is returned unchanged, and any other
+        keyword value is wrapped in a one-item tuple.
 
     Raises:
         ValueError: More than one spelling of a native keyword was supplied.
@@ -133,7 +145,8 @@ def tensors(value: object) -> Iterator[TensorRef]:
         value: A normalized argument or result tree.
 
     Yields:
-        TensorRef leaves in deterministic container traversal order.
+        `TensorRef` leaves in container order; dictionaries yield their values
+        in insertion order.
     """
     if isinstance(value, TensorRef):
         yield value
@@ -147,7 +160,7 @@ def tensors(value: object) -> Iterator[TensorRef]:
 
 @dataclass(frozen=True)
 class Operation:
-    """Inputs and capture facts provided to an operation semantics rule.
+    """One captured call, as presented to `OperatorRule.build_spec`.
 
     Attributes:
         node: Original FX operation node.
@@ -155,13 +168,19 @@ class Operation:
         kwargs: Keyword arguments with tensor values replaced by references.
         result: Result tree containing references and scalar metadata.
         module: Called module, or None for functions and methods.
-        module_paths: Original aliases; an empty string denotes the root module.
-        bindings: Module-local parameter and buffer paths mapped to references.
-        expressions: Read-only shape-expression table shared by inspection contexts.
+        module_paths: Every path at which the called module is registered in the
+            original model. The empty string denotes the root module. Function
+            and method calls have an empty tuple.
+        bindings: The called module's parameters and buffers, keyed by
+            module-local path. Function and method calls have no bindings.
+        expressions: Read-only map from FX nodes to the shape expressions that
+            produced their dimension values.
         metadata: Captured tensor facts indexed by reference ID.
-        constants: Small captured integer and boolean tensors with declared value guards.
-        graph_id: Owning snapshot identity, preserved by inspection copies.
-        effects: Write and storage declaration captured before metadata execution.
+        constants: Flattened values of small captured integer and boolean
+            tensors, indexed by reference ID. A rule must list a reference in
+            `OperatorSpec.constants` to guard its values.
+        graph_id: Identity of the owning dependency-graph snapshot.
+        effects: Tensor effects that the rule declared before metadata execution.
     """
 
     node: fx.Node
@@ -179,32 +198,38 @@ class Operation:
 
     @property
     def name(self) -> str:
-        """Return the FX call identity within this graph."""
+        """FX node name that identifies this call within its graph."""
         return self.node.name
 
     @property
     def inputs(self) -> tuple[TensorRef, ...]:
-        """Return tensor arguments in flattened container traversal order."""
+        """Tensor references in `args` and then `kwargs`, in container order."""
         return tuple(tensors((self.args, self.kwargs)))
 
     @property
     def outputs(self) -> tuple[TensorRef, ...]:
-        """Return tensor results in flattened container traversal order."""
+        """Tensor references in `result`, in container order."""
         return tuple(tensors(self.result))
 
     def argument(
         self, name: str, position: int, default: object = None, *, variadic: bool = False
     ) -> object:
-        """Resolve an argument supplied by keyword or position.
+        """Resolve a normalized argument supplied by keyword or position.
+
+        Native keyword aliases apply only to function and Tensor method calls.
 
         Args:
             name: Canonical keyword name.
-            position: Corresponding positional argument index.
+            position: Zero-based positional slot, including a method's receiver.
             default: Value to use if neither spelling was supplied.
             variadic: Collect remaining positional arguments, such as view sizes.
 
         Returns:
-            The normalized argument, preferring an explicitly supplied keyword.
+            The normalized argument, with tensors replaced by references. A
+            supplied keyword takes precedence over positional slots.
+
+        Raises:
+            ValueError: More than one spelling of a native keyword was supplied.
         """
         return argument(
             self.args,
@@ -219,7 +244,7 @@ class Operation:
     def raw_argument(
         self, name: str, position: int, default: object = None, *, variadic: bool = False
     ) -> object:
-        """Resolve an original FX operand instead of a normalized tensor reference.
+        """Resolve the original FX operand instead of a normalized value.
 
         Args:
             name: Canonical argument name.
@@ -228,8 +253,11 @@ class Operation:
             variadic: Collect all remaining positional arguments.
 
         Returns:
-            The original operand or container, using the same aliases and
-            keyword precedence as `argument`.
+            The original operand or container from `node.args` or `node.kwargs`,
+            resolved with the same aliases and keyword precedence as `argument`.
+
+        Raises:
+            ValueError: More than one spelling of a native keyword was supplied.
         """
         return argument(
             self.node.args,
@@ -243,26 +271,32 @@ class Operation:
 
     @property
     def module_path(self) -> str | None:
-        """Return the canonical original module path, retaining all aliases separately."""
+        """First entry of `module_paths`, or None for function and method calls."""
         return self.module_paths[0] if self.module_paths else None
 
 
 @dataclass(frozen=True)
 class CandidateAxis:
-    """Declare a logical channel axis and its default contiguous removal blocks.
+    """Logical channel axis offered for default candidate discovery.
 
-    Registered relations map selections on the logical axis to parameter regions.
+    Default discovery splits the axis into contiguous blocks. The spec's
+    relations map selections on the axis to parameter regions.
 
     Attributes:
-        key: Stable structural domain name, independent of FX call identity.
+        key: Nonempty structural domain name, independent of FX call identity.
         axis: Logical axis on which candidate selections start.
-        block_size: Number of consecutive coordinates per default candidate.
-        binding: Registered tensor that identifies shared coordinates across calls.
-            Repeated keys with this binding describe the same logical domain.
+        block_size: Positive number of consecutive coordinates per default
+            candidate.
+        binding: Optional parameter or buffer reference that identifies shared
+            coordinates across calls. Repeated keys with this binding describe
+            the same logical domain.
         alignment_axis: Optional axis used to check retained-width granularity.
             It must have the same original width as `axis`, with relations that
             couple both axes. Use it when partitioned packing hides the logical
             width of the seed tensor.
+
+    Raises:
+        ValueError: A field violates one of the requirements above.
     """
 
     key: str
@@ -295,15 +329,22 @@ class CandidateAxis:
 
 @dataclass(frozen=True)
 class PartitionedLayout:
-    """Compact disjoint original partitions, then concatenate in declared order.
+    """Tensor layout made of disjoint partitions that are compacted separately.
 
-    Dependency constraints and physical compaction share this description.
-    Retained regions preserve the original order on each axis.
+    Compaction shrinks each original partition independently and then
+    concatenates the results in declared order. Dependency constraints and
+    physical compaction share this description. Retained regions preserve the
+    original order on each axis.
 
     Attributes:
         tensor: Tensor whose storage coordinates define the partitions.
         partitions: Nonempty, disjoint regions in concatenation order.
-        concat_dim: Axis along which compact partitions concatenate.
+        concat_dim: Axis along which compact partitions concatenate. A negative
+            value is normalized to a nonnegative axis index.
+
+    Raises:
+        ValueError: No partitions are given, or a partition is empty or overlaps
+            an earlier partition.
     """
 
     tensor: TensorRef
@@ -325,14 +366,16 @@ class PartitionedLayout:
         object.__setattr__(self, "concat_dim", dim)
 
     def retained_regions(self, selection: Selection) -> tuple[Region, ...]:
-        """Return each nonempty partition after complete axis sections are removed.
+        """Shrink each partition by the axis indices that a selection fully removes.
 
         Args:
             selection: Removed original coordinates on this layout's tensor.
 
         Returns:
-            Retained Cartesian regions in partition order. Partial axis sections
-            do not remove an axis index. No tensor data is allocated.
+            Retained Cartesian regions in partition order. An axis index is
+            removed from a partition only when the selection covers its whole
+            section within that partition. Partitions that lose every index on
+            some axis are omitted. No tensor data is allocated.
 
         Raises:
             ValueError: The selection refers to another tensor.
@@ -352,18 +395,25 @@ class PartitionedLayout:
 
 @dataclass(frozen=True)
 class OutputContract:
-    """Declare layout facts for original-call validation.
+    """Output-layout facts used when the original call is replayed on meta tensors.
 
     Native meta execution can check shapes but cannot prove backend strides.
     Shape argument permissions are described separately by requirements.
 
     Attributes:
-        output_layout: `backend_dependent` always leaves output strides unknown;
-            `unknown` propagates input uncertainty through meta execution.
-            `contiguous` establishes layout independently of input strides;
-            `cast` additionally normalizes conversion arguments.
-        copy_output: A cast explicitly requests a new tensor even without a dtype
-            change. Conversion rules normalize the public overloads into this fact.
+        output_layout: How replay treats output strides. `unknown` marks the
+            outputs uncertain when any input layout is uncertain. `contiguous`
+            establishes a known output layout regardless of input strides.
+            `cast` replays the call as a `Tensor.to` conversion to the captured
+            output dtype and otherwise behaves like `unknown`.
+            `backend_dependent` always marks output strides as uncertain.
+        copy_output: Whether a `cast` explicitly requests a new tensor even when
+            dtype and device are unchanged. Conversion rules normalize the
+            public `Tensor.to` overloads into this flag.
+
+    Raises:
+        TypeError: `copy_output` is not a `bool`.
+        ValueError: `output_layout` is not one of the listed values.
     """
 
     output_layout: Literal[
@@ -388,17 +438,28 @@ class OutputContract:
 
 @dataclass(frozen=True)
 class OperatorSpec:
-    """Structural facts emitted by a pure operation rule.
+    """Structural semantics of one call, as returned by `OperatorRule.build_spec`.
+
+    Sequence fields are converted to tuples.
 
     Attributes:
         relations: Deterministic index correspondences to propagate.
         constraints: Conditions that must hold for a proposed change.
-        requirements: Descriptions of later model edits; never surgery callbacks.
+        requirements: Declarative descriptions of later model edits, never
+            surgery callbacks.
         candidates: Logical axes and block sizes for optional default discovery.
-        layouts: Shared physical partitions used by generic compaction lowering.
-        contract: Optional original-call argument/layout behavior.
-        expression: Scalar dimension provenance for a dimension-producing call.
-        constants: Integer references whose values must remain unchanged.
+        layouts: Physical partitions used by generic compaction.
+        contract: Optional output-layout facts for original-call replay.
+        expression: Scalar dimension provenance for a call that produces a
+            dimension value.
+        constants: Tensor references whose captured values must remain
+            unchanged. Graph construction treats the call as unsupported
+            unless each reference is a registered parameter or buffer.
+
+    Raises:
+        TypeError: A field contains a descriptor of the wrong type, or a
+            relation or constraint lacks `refs` or its `propagate` or `check`
+            method.
     """
 
     relations: tuple[Relation, ...] = ()
@@ -442,9 +503,10 @@ class OperatorSpec:
 
 @dataclass(frozen=True)
 class TensorEffects:
-    """Declare writes and allocation guarantees, before metadata execution.
+    """Write, aliasing, and fresh-storage declarations for one call.
 
-    Declarations must hold throughout the rule's supported compact shapes.
+    Rules return these declarations before metadata execution. They must hold
+    for every original and compact shape that the rule supports.
 
     Attributes:
         writes_inputs: Arguments that the call can modify, identified by
@@ -466,10 +528,18 @@ class TensorEffects:
             `aliases_input`, with unchanged storage, shape, strides, dtype, and
             device. Set this only for a single Tensor result.
 
+    Raises:
+        TypeError: A field has the wrong type.
+        ValueError: `aliases_input` is variadic or combined with fresh outputs,
+            `returns_input` is set without `aliases_input`, a parameter path is
+            empty, or a parameter `ArgumentRef` is missing from `writes_inputs`.
+
     Notes:
-        Capture warns before permitted parameter updates. These changes remain
-        in the original model, including when capture fails. Capture isolates
-        buffers separately. `writes_inputs` describes writes to buffer arguments.
+        Capture does not copy parameters. It warns before metadata execution
+        when a call declares parameter updates, and the updated values remain
+        in the original model even if capture later fails. Capture isolates
+        registered buffers, so buffer writes need no `mutable_parameters`
+        entry; declare writes to buffer arguments in `writes_inputs`.
     """
 
     writes_inputs: tuple[ArgumentRef, ...] | None = None
@@ -511,18 +581,22 @@ class TensorEffects:
 
 
 class OperatorRule(ABC):
-    """Define one operator family without retaining per-call or planning state.
+    """Base class for the semantics of one operator family.
 
-    Implement `build_spec`; other hooks are optional. Inheriting `tensor_effects`
-    declares that the operator does not modify its inputs. Rules that do modify
-    inputs must override it. This is an extension contract, not an automatic
-    proof of arbitrary Python behavior. All hooks must leave model state intact.
+    A rule describes each call's structural semantics through `build_spec` and
+    its tensor effects through `tensor_effects`. It must not retain per-call or
+    planning state. Subclasses must implement `build_spec`; the other hooks are
+    optional. The inherited `tensor_effects` declares read-only inputs, so
+    rules for operators that modify inputs must override it. The library
+    trusts these declarations; they are an extension contract, not an
+    automatic proof of arbitrary Python behavior. No hook may modify model
+    state.
 
     Args:
         evaluate_on_meta: Permit compact-call validation on metadata tensors.
-        cache_meta_output: Declare metadata evaluation depends only on argument
-            metadata and captured configuration. Allocation and mutation checks
-            remain mandatory even when this flag is true.
+        cache_meta_output: Declare that metadata evaluation depends only on
+            argument metadata and captured configuration. Allocation and
+            mutation checks still run when this flag is true.
     """
 
     # Defaults also apply when an extension initializes only its own configuration.
@@ -535,7 +609,7 @@ class OperatorRule(ABC):
 
     @abstractmethod
     def build_spec(self, operation: Operation) -> OperatorSpec:
-        """Describe coordinates, constraints and bound attributes for one call.
+        """Describe the coordinates, constraints, and bound attributes of one call.
 
         Args:
             operation: Captured call with normalized values and tensor metadata.
@@ -544,29 +618,36 @@ class OperatorRule(ABC):
             Structural facts independent of scoring and model mutation.
 
         Raises:
-            torch_kirigami.UnsupportedOperation: The rule cannot analyze this call. Analysis
-                retains a diagnostic and blocks affected dependency requests.
+            torch_kirigami.UnsupportedOperation: The rule cannot analyze this call.
+                Graph construction records a diagnostic and places a barrier on
+                the call's tensors and data ancestors. Any other exception
+                propagates and stops graph construction.
         """
         raise NotImplementedError
 
     def validate_capture(self, node: fx.Node, module: nn.Module | None) -> None:
-        """Check a call before sample metadata execution.
+        """Check a call before metadata execution on the example inputs.
+
+        The default accepts every call.
 
         Args:
             node: Captured FX call.
             module: Called module, or None for a function or Tensor method.
 
         Raises:
-            torch_kirigami.CaptureError: The call cannot execute under the capture contract.
-                This stops graph construction, rather than creating a local barrier.
+            torch_kirigami.CaptureError: The call cannot execute under the capture
+                contract. This stops graph construction instead of creating a
+                local barrier.
         """
         return None
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
         """Declare writes and output storage guarantees for one call.
 
+        Capture calls this hook before metadata execution.
+
         Args:
-            node: Captured FX call, before sample metadata execution.
+            node: Captured FX call.
             module: Called module, or None for a function or Tensor method.
 
         Returns:
@@ -578,7 +659,7 @@ class OperatorRule(ABC):
     def build_recipe(
         self, operation: Operation, spec: OperatorSpec, impact: Impact
     ) -> OperatorRecipe | None:
-        """Supply special edits while retaining the shared compiler checks.
+        """Supply operator-specific edits; the shared compiler checks still apply.
 
         Args:
             operation: Captured call and original bindings.

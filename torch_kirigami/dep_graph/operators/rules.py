@@ -1,4 +1,4 @@
-"""Concrete built-in operator rules, sharing existing semantic implementations."""
+"""Built-in operator rule classes that pair spec builders with tensor effects."""
 
 import operator
 
@@ -55,7 +55,10 @@ from .spectral import fourier
 
 
 class NativeRule(OperatorRule):
-    """Share metadata execution and native write declarations.
+    """Base class for built-in rules with meta evaluation and native effects.
+
+    Built-in rules enable meta evaluation with cached outputs. By default they
+    derive tensor effects from in-place method names and `inplace` arguments.
 
     Args:
         fresh: Whether nonmutating calls guarantee independent output storage.
@@ -72,7 +75,7 @@ class NativeRule(OperatorRule):
 
 
 class IdentityRule(NativeRule):
-    """Provide identity structural semantics."""
+    """Pass coordinates through `nn.Identity` and return the input Tensor itself."""
 
     build_spec = staticmethod(_identity)
 
@@ -82,13 +85,13 @@ class IdentityRule(NativeRule):
 
 
 class AddmmRule(NativeRule):
-    """Provide addmm structural semantics."""
+    """Map `addmm` and `baddbmm` as a matrix product plus a broadcast additive input."""
 
     build_spec = staticmethod(addmm)
 
 
 class BatchNormRule(NativeRule):
-    """Provide batch norm structural semantics."""
+    """Map batch-norm channels to affine parameters and running statistics."""
 
     build_spec = staticmethod(batch_norm)
 
@@ -98,12 +101,15 @@ class BatchNormRule(NativeRule):
 
 
 class CastRule(NativeRule):
-    """Provide cast structural semantics."""
+    """Preserve coordinates through dtype, device, and `Tensor.to` conversions."""
 
     build_spec = staticmethod(cast)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """A conversion can share only the receiver's storage."""
+        """Declare that a conversion can share only the receiver's storage.
+
+        `Tensor.to(..., copy=True)` instead guarantees fresh output storage.
+        """
         copy = node.target == "to" and to_copy(node.args, node.kwargs) is True
         return TensorEffects(
             writes_inputs=(), outputs_are_fresh=copy, aliases_input=None if copy else INPUT
@@ -111,35 +117,35 @@ class CastRule(NativeRule):
 
 
 class ChannelOperatorRule(NativeRule):
-    """Provide channel operator structural semantics."""
+    """Map batch and channel axes of pooling, unpooling, and interpolation; spatial axes stay fixed."""
 
     build_spec = staticmethod(channel_operator)
 
 
 class ChannelShuffleRule(NativeRule):
-    """Provide channel shuffle structural semantics."""
+    """Map channel shuffle as a fixed permutation with tied group-local removals."""
 
     build_spec = staticmethod(channel_shuffle)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Allow a degenerate shuffle to share its input storage."""
+        """Declare read-only inputs and allow a degenerate shuffle to alias its input."""
         return TensorEffects(writes_inputs=(), aliases_input=INPUT)
 
 
 class ChunkRule(NativeRule):
-    """Provide chunk structural semantics."""
+    """Map captured `chunk` outputs to the input partitions they cover."""
 
     build_spec = staticmethod(chunk)
 
 
 class ConcatenateRule(NativeRule):
-    """Provide concatenate structural semantics."""
+    """Map each concatenated input to its offset region in the output."""
 
     build_spec = staticmethod(concatenate)
 
 
 class ConvolutionRule(NativeRule):
-    """Provide convolution structural semantics."""
+    """Map ordinary and transposed convolution channels and groups; spatial and kernel axes stay fixed."""
 
     build_spec = staticmethod(convolution)
 
@@ -150,7 +156,14 @@ class DropoutRule(NativeRule):
     build_spec = staticmethod(pointwise)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Account for inactive dropout and the unbatched spatial wrappers."""
+        """Declare effects that depend on the dropout mode and probability.
+
+        Inactive `nn.Dropout`, alpha dropout, and direct dropout functions
+        return their input Tensor. Active training dropout with `0 < p <= 1`
+        allocates a fresh output unless it writes in place. Every other case,
+        including the inactive `dropout1d`, `dropout2d`, and `dropout3d`
+        wrappers, can alias the input.
+        """
         native = module is None and getattr(node.target, "__module__", None) == "torch"
         direct_function = native or node.target in (
             F.dropout,
@@ -184,7 +197,7 @@ class DropoutRule(NativeRule):
 
 
 class EinsumRule(NativeRule):
-    """Provide einsum structural semantics."""
+    """Map einsum operands and result through their shared labels."""
 
     build_spec = staticmethod(einsum)
 
@@ -202,12 +215,12 @@ class EinsumRule(NativeRule):
 
 
 class EmbeddingRule(NativeRule):
-    """Provide embedding structural semantics."""
+    """Map the embedding feature axis; vocabulary rows stay fixed."""
 
     build_spec = staticmethod(embedding)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Declare native max_norm renormalization without changing its behavior."""
+        """Declare the weight update performed by native `max_norm` renormalization."""
         if node.target is torch.embedding:
             # Unlike F.embedding, this weight-first primitive has no max_norm.
             return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
@@ -229,18 +242,18 @@ class EmbeddingRule(NativeRule):
 
 
 class AttributeReadRule(NativeRule):
-    """Provide getattr rule structural semantics."""
+    """Map Tensor attribute reads: transposes, `real`/`imag`, and shape queries."""
 
     build_spec = staticmethod(getattr_rule)
 
 
 class IndexRule(NativeRule):
-    """Provide getitem structural semantics."""
+    """Map bracket indexing with basic slices, one fixed vector or mask, or container keys."""
 
     build_spec = staticmethod(getitem)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Separate native list-index copies from possible views."""
+        """Guarantee fresh storage for integer or boolean list indices; others may view."""
         index = node.args[1]
         items = index if isinstance(index, tuple) else (index,)
         if any(
@@ -255,25 +268,25 @@ class IndexRule(NativeRule):
 
 
 class GluRule(NativeRule):
-    """Provide glu structural semantics."""
+    """Tie both GLU input halves to the same output positions."""
 
     build_spec = staticmethod(glu)
 
 
 class GroupNormRule(NativeRule):
-    """Provide group norm structural semantics."""
+    """Map group-norm channels to affine parameters and keep the groups balanced."""
 
     build_spec = staticmethod(group_norm)
 
 
 class IndexSelectRule(NativeRule):
-    """Provide index select structural semantics."""
+    """Map `index_select` through a fixed index registered as a buffer."""
 
     build_spec = staticmethod(index_select)
 
 
 class InstanceNormRule(NativeRule):
-    """Provide instance norm structural semantics."""
+    """Map instance-norm channels to affine parameters and running statistics."""
 
     build_spec = staticmethod(instance_norm)
 
@@ -283,133 +296,133 @@ class InstanceNormRule(NativeRule):
 
 
 class LayerNormRule(NativeRule):
-    """Provide layer norm structural semantics."""
+    """Map layer-norm and RMS-norm normalized axes to their affine parameters."""
 
     build_spec = staticmethod(layer_norm)
 
 
 class LinearRule(NativeRule):
-    """Provide linear structural semantics."""
+    """Map linear input and output features to the weight and bias axes."""
 
     build_spec = staticmethod(linear)
 
 
 class MatmulRule(NativeRule):
-    """Provide matmul structural semantics."""
+    """Map contracting, free, and broadcast batch axes of matrix and vector products."""
 
     build_spec = staticmethod(matmul)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Use Python's non-mutating matmul fallback for native Tensors."""
+        """Treat `@=` as Python's non-mutating fallback when Tensor lacks `__imatmul__`."""
         if node.target is operator.imatmul and not hasattr(torch.Tensor, "__imatmul__"):
             return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
         return super().tensor_effects(node, module)
 
 
 class MultiheadAttentionRule(NativeRule):
-    """Provide multihead attention structural semantics."""
+    """Shrink the embedding width of `nn.MultiheadAttention` with a fixed head count."""
 
     build_spec = staticmethod(multihead_attention)
 
 
 class NarrowRule(NativeRule):
-    """Provide narrow structural semantics."""
+    """Map a fixed `narrow` interval back to the input."""
 
     build_spec = staticmethod(narrow)
 
 
 class NormalizeRule(NativeRule):
-    """Provide normalize structural semantics."""
+    """Preserve coordinates of norm-based normalization over a recomputed domain."""
 
     build_spec = staticmethod(normalize)
 
 
 class PaddingRule(NativeRule):
-    """Provide padding structural semantics."""
+    """Map axes that padding leaves unchanged; padded or cropped axes stay fixed."""
 
     build_spec = staticmethod(padding)
 
 
 class PermuteRule(NativeRule):
-    """Provide permute structural semantics."""
+    """Map transposes, permutations, and moved dimensions."""
 
     build_spec = staticmethod(permute)
 
 
 class PixelShuffleRule(NativeRule):
-    """Provide pixel shuffle structural semantics."""
+    """Map pixel shuffle and unshuffle channel blocks; spatial axes stay fixed."""
 
     build_spec = staticmethod(pixel_shuffle)
 
 
 class PointwiseRule(NativeRule):
-    """Provide pointwise structural semantics."""
+    """Map elementwise calls through broadcasting, including scalar dimension arithmetic."""
 
     build_spec = staticmethod(pointwise)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Record exact Tensor returns for unary plus and value-only writes."""
+        """Declare that unary plus and in-place calls return their input Tensor."""
         if node.target in (operator.pos, torch.positive, "positive"):
             return TensorEffects(writes_inputs=(), aliases_input=INPUT, returns_input=True)
         return native_effects(node, module, fresh_output=self.fresh, returns_written_input=True)
 
 
 class PreluRule(NativeRule):
-    """Provide prelu structural semantics."""
+    """Map per-channel PReLU weights; a single shared slope stays fixed."""
 
     build_spec = staticmethod(prelu)
 
 
 class ReductionRule(NativeRule):
-    """Provide reduction structural semantics."""
+    """Map the axes that a reduction keeps and record the reduced domain."""
 
     build_spec = staticmethod(reduction)
 
 
 class RepeatRule(NativeRule):
-    """Provide repeat structural semantics."""
+    """Map `repeat`, `tile`, `repeat_interleave`, and broadcast expansions."""
 
     build_spec = staticmethod(repeat)
 
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
-        """Expand can borrow the input's storage. Its shape template is read-only."""
+        """Let view-producing expansions alias the input; other arguments are read-only."""
         if not self.fresh:
             return TensorEffects(writes_inputs=(), aliases_input=INPUT)
         return super().tensor_effects(node, module)
 
 
 class ReshapeRule(NativeRule):
-    """Provide reshape structural semantics."""
+    """Map reshape, view, flatten, squeeze, unsqueeze, and unflatten coordinates."""
 
     build_spec = staticmethod(reshape)
 
 
 class AttentionRule(NativeRule):
-    """Provide sdpa structural semantics."""
+    """Map query, key, value, and mask axes of scaled dot-product attention."""
 
     build_spec = staticmethod(sdpa)
 
 
 class ShapeOnlyRule(NativeRule):
-    """Provide shape only structural semantics."""
+    """Describe dimension reads such as `size` and `numel`, which have no tensor relations."""
 
     build_spec = staticmethod(shape_only)
 
 
 class SoftmaxRule(NativeRule):
-    """Provide softmax structural semantics."""
+    """Preserve softmax-family coordinates and record the normalized axis."""
 
     build_spec = staticmethod(softmax)
 
 
 class SplitRule(NativeRule):
-    """Provide split structural semantics."""
+    """Map `split` and `unbind` outputs to their input partitions."""
 
     build_spec = staticmethod(split)
 
 
 class StackRule(NativeRule):
-    """Provide stack structural semantics."""
+    """Align stacked inputs; the new stack axis stays fixed."""
 
     build_spec = staticmethod(stack)
 
@@ -427,13 +440,13 @@ class FourierRule(NativeRule):
 
 
 class UnfoldFoldRule(NativeRule):
-    """Provide unfold fold structural semantics."""
+    """Map channel blocks of `nn.Unfold` and `nn.Fold`; spatial and kernel axes stay fixed."""
 
     build_spec = staticmethod(unfold_fold)
 
 
 class TensorUnfoldRule(NativeRule):
-    """Map nonwindow axes of Tensor.unfold and retain its view allocation contract."""
+    """Map nonwindow axes of `Tensor.unfold`, whose output can view the input."""
 
     build_spec = staticmethod(tensor_unfold)
 
@@ -484,7 +497,10 @@ NATIVE_RULE_TYPES = (
 
 
 def is_native_rule(rule: OperatorRule) -> bool:
-    """Recognize exact built-ins; subclasses and instance hook overrides are extensions."""
+    """Return whether a rule is an unmodified built-in.
+
+    Subclasses and instances that assign their own hooks count as extensions.
+    """
     return type(rule) in NATIVE_RULE_TYPES and not any(
         name in rule.__dict__
         for name in ("build_spec", "build_recipe", "validate_capture", "tensor_effects")

@@ -62,7 +62,12 @@ def _decimal_ratio(value: float, *, name: str = "ratio") -> Fraction:
 
 
 class PlanningError(KirigamiError):
-    """The request has no verified executable recipe under the current policy."""
+    """Planning could not produce a verified plan for the request.
+
+    Raised when analysis is incomplete or conflicting, no execution recipe can be
+    verified, or automatic selection misses its budget. A failed bounded search
+    is not a proof that no valid plan exists.
+    """
 
 
 class ExecutionError(KirigamiError):
@@ -71,12 +76,21 @@ class ExecutionError(KirigamiError):
 
 @dataclass(frozen=True)
 class Candidate:
-    """A named batch of original-coordinate seeds, not a global block constraint.
+    """A named removal request in original coordinates.
+
+    The selections are seeds: analysis adds their dependency closure. A candidate
+    is one request that a strategy may select; it does not constrain how other
+    candidates are grouped.
 
     Attributes:
-        key: Unique label within a candidate space.
-        remove: Nonempty selections to analyze as one candidate request.
-        axis: Optional logical channel axis represented by this candidate.
+        key: Label that is unique within a candidate space.
+        remove: Nonempty selections analyzed together as one request.
+        axis: Optional logical channel axis that this candidate removes positions
+            from. `GroupMagnitude` requires it.
+
+    Raises:
+        ValueError: `key` is empty or `remove` has no nonempty selections.
+        TypeError: `axis` is not an `AxisRef`.
     """
 
     key: str
@@ -95,15 +109,20 @@ class Candidate:
 
 @dataclass(frozen=True)
 class ParameterBudget:
-    """Upper bound on the final whole-model parameter count.
+    """Cap on the final whole-model parameter count.
 
-    All elements of each unique Parameter count, including frozen and protected
-    tensors; buffers do not. A strategy must reach this absolute target before a
-    plan can be returned. Structural granularity can make the final count fall below the cap.
+    Every element of each unique Parameter counts, including frozen and protected
+    Parameters; a Parameter shared by several modules counts once, and buffers
+    do not count. Unlike `ChannelRatio` and `ChannelCount`, this budget does not
+    limit individual channel widths. Automatic planning must meet the cap or it
+    raises `PlanningError`. Structural granularity can push the final count
+    below the cap.
 
     Attributes:
-        max_params: Maximum number of parameter elements after pruning. Shared
-            Parameter objects count once; buffers do not count.
+        max_params: Maximum number of parameter elements after pruning.
+
+    Raises:
+        ValueError: `max_params` is not a nonnegative integer.
     """
 
     max_params: int
@@ -116,14 +135,20 @@ class ParameterBudget:
     def from_ratio(cls, model: torch.nn.Module, pruning_ratio: float) -> ParameterBudget:
         """Convert a whole-model parameter reduction fraction to an absolute cap.
 
+        The model's unique parameter count is read once and the model is not
+        retained, so later model changes do not alter the cap.
+
         Args:
-            model: Original model supplying the unique-parameter baseline.
-            pruning_ratio: Finite fraction in [0, 1); this is not a channel ratio.
+            model: Model that supplies the original unique parameter count.
+            pruning_ratio: Fraction of parameters to remove, in `[0, 1)`. This is
+                a parameter fraction, not a channel ratio.
 
         Returns:
-            Budget with floor(original_count * (1 - pruning_ratio)) parameters.
-            The baseline is read once; later model changes do not alter the cap.
-            Granularity may require a greater reduction. No model is retained.
+            A budget of `floor(original_count * (1 - pruning_ratio))` parameters,
+            computed with the exact decimal value of `pruning_ratio`.
+
+        Raises:
+            ValueError: `pruning_ratio` is not a number in `[0, 1)`.
         """
         ratio = _decimal_ratio(pruning_ratio, name="pruning_ratio")
         count = count_parameters(model)
@@ -132,16 +157,21 @@ class ParameterBudget:
 
 @dataclass(frozen=True)
 class ChannelRatio:
-    """Reduction fraction converted to upper bounds on final channel widths.
+    """Caps on final logical channel widths, given as a reduction fraction.
 
-    The candidate space supplies the logical channel axes. Its decimal ratio
-    defines integer remaining-width targets, which round down. Use ChannelCount
-    for absolute caps.
+    The candidate space supplies the logical channel axes. Each cap is
+    `floor(width * (1 - ratio))`, computed with the exact decimal value of
+    `ratio`. These caps limit axis widths, not the parameter count; use
+    `ParameterBudget` for that and `ChannelCount` for absolute width caps.
 
     Attributes:
-        ratio: Fraction of original widths to remove, per axis for local scope or
-            from the summed widths for global scope.
-        scope: `local` for per-axis caps or `global` for one sum cap.
+        ratio: Fraction of the original width to remove, in `[0, 1)`. It applies
+            to each axis for local scope and to the summed width for global scope.
+        scope: `"local"` for one cap per axis or `"global"` for one cap on the
+            summed width.
+
+    Raises:
+        ValueError: `ratio` is not a number in `[0, 1)` or `scope` is unknown.
     """
 
     ratio: float
@@ -155,15 +185,22 @@ class ChannelRatio:
 
 @dataclass(frozen=True)
 class ChannelCount:
-    """Upper bounds on final logical channel widths.
+    """Absolute caps on final logical channel widths.
 
-    Targets may exceed current widths, meaning no further reduction is required.
-    A zero target is allowed as input but may be structurally unattainable.
+    These caps limit axis widths, not the parameter count. A cap may exceed the
+    current width, in which case that axis needs no reduction. A zero cap is
+    accepted but may be structurally unattainable.
 
     Attributes:
-        max_channels: Final per-axis caps, or one global sum cap.
-        channel_axes: Logical axes covered by the caps.
-        scope: Whether caps apply locally or to the global sum.
+        max_channels: One final-width cap per axis for local scope, or one cap on
+            the summed width for global scope.
+        channel_axes: Logical axes covered by the caps. Planning requires them
+            to equal the candidate space's `channel_axes`, in the same order.
+        scope: `"local"` for per-axis caps or `"global"` for one summed cap.
+
+    Raises:
+        ValueError: The axes are not unique `AxisRef` objects, `scope` is
+            unknown, or the caps are not nonnegative integers matching the scope.
     """
 
     max_channels: int | tuple[int, ...]
@@ -189,13 +226,16 @@ class ChannelCount:
 
 
 class Metric(Protocol):
-    """Score additional removals given the complete accepted dependency impact.
+    """Scoring protocol for candidate removals.
 
-    Lower finite scores are preferred. For the same model, statistics and
-    `accepted_impact`, a candidate's score must not depend on batch size, order or other
-    batch members. A batch is a computation convenience, not a joint removal;
-    use a multi-selection Candidate to request a joint score. Implementations
-    own calibration statistics and must not modify the model or run training.
+    A metric computes scores; a `Strategy` decides what to select. Lower finite
+    scores mean a candidate is preferred for removal. For the same model,
+    statistics, and `accepted_impact`, a candidate's score must not depend on the
+    batch size, the batch order, or the other batch members. A batch is a
+    computational convenience, not a joint removal; use a candidate with several
+    selections to score a joint removal. Implementations own any calibration
+    statistics and must not modify the model or run training. Scores are
+    heuristics, not accuracy guarantees.
     """
 
     def score(
@@ -205,19 +245,22 @@ class Metric(Protocol):
         *,
         accepted_impact: Impact,
     ) -> Sequence[float] | torch.Tensor:
-        """Score additions to accepted requests, using original graph coordinates.
+        """Score each candidate as an addition to the accepted removals.
 
-        `accepted_impact` may violate repairable constraints when the empty request is
-        initially infeasible. Scoring requires complete influence, not an
-        executable intermediate model. Conditional scores are metric-specific;
-        subtracting two whole-set scores is not a general implementation.
+        All coordinates are original graph coordinates. `accepted_impact` can
+        violate repairable constraints, for example when the empty request is
+        initially infeasible. Scoring requires complete dependency influence,
+        not an executable intermediate model. How a score is conditioned on
+        accepted removals is metric-specific; subtracting two whole-set scores
+        is not a general implementation.
 
         Args:
             context: Dependency queries and original model bindings.
             candidates: Requests to score separately; batching does not combine them.
-            accepted_impact: Joint dependency closure of already accepted removal
-                requests, including their coupled parameter regions. The original
-                model remains unchanged during planning.
+            accepted_impact: Joint dependency closure of the already accepted
+                removal requests, including their coupled parameter regions. The
+                model has not been pruned; accepted removals exist only in
+                this analysis.
 
         Returns:
             One finite real score per candidate, in the supplied order.
@@ -229,13 +272,22 @@ class Metric(Protocol):
 class StrategyResult:
     """Candidate keys and diagnostics returned by a selection strategy.
 
-    The planner independently verifies keys, joint dependencies, execution and
-    budgets. Resource measurements and query counts are not strategy assertions.
+    The planner independently verifies the keys, the joint dependency analysis,
+    execution support, and the budget. It measures resource sizes and counts
+    trials itself instead of trusting the strategy.
 
     Attributes:
-        keys: Selected candidate keys in acceptance order.
-        stop_reason: Why the strategy stopped selecting candidates.
-        exclusions: Rejected candidate keys and their reasons.
+        keys: Unique selected candidate keys, in acceptance order.
+        stop_reason: Why the strategy stopped: `"target_reached"`,
+            `"exhausted"`, or `"trial_limit"`.
+        exclusions: Rejected candidate keys and their reasons, as unique
+            `(key, reason)` pairs disjoint from `keys`.
+
+    Raises:
+        TypeError: `keys` or `exclusions` is a bare string, or an exclusion is a
+            string instead of a pair.
+        ValueError: Keys are empty or duplicated, `stop_reason` is unknown, or
+            exclusions are malformed, duplicated, or overlap `keys`.
     """
 
     keys: tuple[str, ...]
@@ -276,26 +328,31 @@ _StrategyContext = TypeVar("_StrategyContext", contravariant=True)
 
 
 class Strategy(Protocol[_StrategyContext]):
-    """Select registered candidate keys using a shared PlanningContext."""
+    """Selection protocol that chooses candidate keys from a planning context.
+
+    A strategy usually owns a `Metric` and uses it to rank candidates. It must
+    not modify the model.
+    """
 
     def select(self, context: _StrategyContext) -> StrategyResult:
         """Select candidates without modifying the model.
 
         Args:
-            context: Planning services and the registered candidate universe.
+            context: Planning services and the filtered candidates, usually a
+                `PlanningContext`.
 
         Returns:
-            Selected candidate keys and search diagnostics. The planner validates
-            the result before producing a plan.
+            Selected candidate keys and search diagnostics. The planner verifies
+            the result before it produces a plan.
         """
         ...
 
 
 class MetricContext(Protocol):
-    """Minimal planner contract required by scoring metrics."""
+    """Minimal planner interface that scoring metrics rely on."""
 
     def impact(self, remove: tuple[Selection, ...]) -> Impact:
-        """Analyze selections together using their original tensor coordinates.
+        """Analyze selections jointly in original tensor coordinates.
 
         Args:
             remove: Hypothetical selections to propagate jointly.
@@ -318,22 +375,29 @@ class MetricContext(Protocol):
 
     @property
     def candidates(self) -> tuple[Candidate, ...]:
-        """Return the original candidate universe, independent of scoring batches."""
+        """All candidates of this planning round, independent of scoring batches."""
         ...
 
     @property
     def graph(self) -> DependencyGraph:
-        """Return the dependency graph used for scoring."""
+        """Dependency graph used for scoring."""
         ...
 
 
 @dataclass(frozen=True)
 class CoordinateSegment:
-    """Map an old Cartesian region into a compact Cartesian region in order.
+    """Correspondence between an original Cartesian region and its compact region.
+
+    Positions map in ascending order along each axis, so both regions have the
+    same number of positions per axis.
 
     Attributes:
         source: Region in the original tensor coordinates.
         destination: Corresponding region in the compact tensor coordinates.
+
+    Raises:
+        ValueError: The regions are not `Region` objects or their per-axis sizes
+            differ.
     """
 
     source: Region
@@ -350,15 +414,22 @@ class CoordinateSegment:
 
 @dataclass(frozen=True)
 class ParameterReport:
-    """Exact parameter counts and search diagnostics, without live model state.
+    """Measured parameter counts and search diagnostics for a `ParameterBudget` plan.
+
+    The report holds no live model state.
 
     Attributes:
         before_params: Unique parameter elements before pruning.
         after_params: Unique parameter elements after pruning.
         max_params: Requested final parameter cap.
-        trials: Joint selection attempts made by the strategy.
-        limit_reached: Whether the strategy stopped at its attempt limit.
-        exclusions: Candidate keys and reasons for rejected choices.
+        trials: Joint selection attempts made through the planning context.
+        limit_reached: Whether the strategy stopped at its trial limit.
+        exclusions: Rejected candidate keys and their reasons.
+
+    Raises:
+        ValueError: A count is not a nonnegative integer, `after_params` exceeds
+            `before_params`, or an exclusion is not a pair of strings.
+        TypeError: `limit_reached` is not a `bool`.
     """
 
     before_params: int
@@ -393,17 +464,26 @@ class ParameterReport:
 
 @dataclass(frozen=True)
 class SelectionReport:
-    """Original widths, final-width limits and measured joint removals for this round.
+    """Channel widths, final-width caps, and measured removals for one round.
+
+    Channel-budget plans fill every field. Manual plans use the default empty
+    report with `"manual"` scope, which has no budget.
 
     Attributes:
         channel_axes: Logical axes counted by the report.
-        widths: Original widths aligned with `channel_axes`.
-        removed: Measured removals aligned with `channel_axes`.
-        targets: Final-width caps, empty for manual reports.
-        scope: `manual`, `local`, or `global` target scope.
-        trials: Joint selection attempts made by the strategy.
-        limit_reached: Whether the strategy stopped at its attempt limit.
-        exclusions: Candidate keys and reasons for rejected choices.
+        widths: Original widths, aligned with `channel_axes`.
+        removed: Measured removed positions, aligned with `channel_axes`.
+        targets: Final-width caps: one per axis for local scope, one summed cap
+            for global scope, and empty for manual reports.
+        scope: `"manual"`, `"local"`, or `"global"`.
+        trials: Joint selection attempts made through the planning context.
+        limit_reached: Whether the strategy stopped at its trial limit.
+        exclusions: Rejected candidate keys and their reasons.
+
+    Raises:
+        ValueError: The fields do not align, counts are invalid, widths disagree
+            with the axes, or exclusions are not pairs of strings.
+        TypeError: `limit_reached` is not a `bool`.
     """
 
     channel_axes: tuple[AxisRef, ...] = ()
@@ -452,7 +532,11 @@ class SelectionReport:
 
     @property
     def shortfall(self) -> int:
-        """Return excess final channels; local excesses cannot cancel each other."""
+        """Final channels above the caps; zero for manual reports.
+
+        For local scope, the excess of each axis is summed, so one axis below its
+        cap cannot offset another axis above its cap.
+        """
         if self.scope == "manual":
             return 0
         if self.scope == "global":
@@ -461,26 +545,33 @@ class SelectionReport:
 
     @property
     def remaining(self) -> tuple[int, ...]:
-        """Return final widths in channel_axes order."""
+        """Final widths, aligned with `channel_axes`."""
         return tuple(w - n for w, n in zip(self.widths, self.removed, strict=True))
 
     @property
     def target_met(self) -> bool:
-        """Whether every final-width limit is met; manual reports have no budget."""
+        """Whether every final-width cap is met; always true for manual reports."""
         return self.shortfall == 0
 
 
 @dataclass(frozen=True)
 class AnalysisSummary:
-    """Frozen original-coordinate analysis facts, independent of a live graph.
+    """Frozen dependency analysis in original coordinates, independent of a live graph.
 
     Attributes:
-        status: `resolved`, `unresolved`, or `conflict` analysis status.
-        requested: Original-coordinate requests submitted for analysis.
+        status: Analysis status: `"resolved"`, `"unresolved"`, or `"conflict"`.
+            Only resolved analyses can be executed.
+        requested: Removal requests submitted for analysis.
         selections: Propagated removal closure, including partial results when
             the analysis is unresolved or conflicts with constraints.
-        reasons: Diagnostic messages associated with the analysis.
-        tensors: Portable tensor-reference catalog for selections.
+        reasons: Unique provenance reasons recorded by the analysis.
+        tensors: Catalog of tensor references used to resolve selections.
+            Defaults to the tensors referenced by `requested` and `selections`.
+
+    Raises:
+        ValueError: `status` is unknown, catalog labels repeat, or a selection
+            refers to a tensor outside the catalog.
+        TypeError: A record has the wrong type.
     """
 
     status: str
@@ -514,7 +605,23 @@ class AnalysisSummary:
                 raise ValueError("Analysis selection is absent from the tensor catalog") from error
 
     def selection(self, tensor: TensorRef) -> Selection:
-        """Query compatible labels; unknown references raise instead of appearing empty."""
+        """Return the removed region of one tensor.
+
+        Args:
+            tensor: Live or portable reference that matches a catalog entry by
+                portable ID or by a shared registered path.
+
+        Returns:
+            The tensor's removed selection, or an empty selection when the
+            analysis removes nothing from it.
+
+        Raises:
+            KeyError: The tensor is not in the catalog. Unknown tensors raise
+                instead of returning an empty selection.
+            ValueError: A catalog entry matches but its shape, kind, or paths
+                differ.
+            TypeError: `tensor` is not a `TensorRef`.
+        """
         ref = resolve_reference(tensor, self.tensors)
         return next((s for s in self.selections if s.tensor == ref), Selection(ref))
 
@@ -615,17 +722,24 @@ class TensorState:
 
 @dataclass(frozen=True)
 class ModelStructure:
-    """Immutable structural state usable without an FX graph or model reference.
+    """Immutable structural state of a model, without an FX graph or model reference.
+
+    Weight values are not recorded, except the values of guarded structural
+    tensors, so ordinary training steps do not change the structure.
 
     Attributes:
         modules: Module type, configuration, alias, and slot records.
         tensors: Registered tensor metadata and structural guards.
-        references: Frozen ordinary references and alias relationships.
+        references: Frozen ordinary tensor references and alias relationships.
+
+    Raises:
+        TypeError: A record has the wrong type or contains non-static data.
+        ValueError: Paths repeat or the references are nested too deeply.
     """
 
     modules: tuple[ModuleState, ...]
     tensors: tuple[TensorState, ...]
-    references: tuple = ()
+    references: tuple[object, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "modules", tuple(self.modules))

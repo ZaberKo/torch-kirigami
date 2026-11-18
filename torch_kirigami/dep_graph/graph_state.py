@@ -15,7 +15,11 @@ from .selection import TensorRef
 
 
 def resolve_attribute(module: nn.Module, path: str) -> object:
-    """Resolve a dotted attribute path on the source model or captured module."""
+    """Resolve a dotted attribute path on the source model or captured module.
+
+    Raises:
+        AttributeError: A path component does not exist.
+    """
     value: object = module
     for component in path.split("."):
         value = getattr(value, component)
@@ -39,30 +43,32 @@ class DependencyGraphState:
 
     Attributes:
         model: Original module analyzed by the graph.
-        registry: Local operator registry snapshot used during capture.
+        registry: Copy of the operator registry used during capture.
         fingerprint: Structural fingerprint used to detect stale model state.
         context: Immutable execution assumptions recorded at build time.
         id: Unique identity for this analysis snapshot.
-        settings_key: Analysis settings recorded when construction starts.
+        settings_key: Analysis settings key recorded when this state is created.
         fx_graph: Captured FX graph, set only after construction succeeds.
         capture_signature: Structural signature used to validate configuration edits.
-        refs: Tensor references indexed by snapshot-qualified ID.
-        tensor_facts: Captured shape, stride, dtype, and device by tensor ID.
+        refs: Tensor references keyed by snapshot-qualified ID.
+        tensor_facts: Captured shape, stride, dtype, and device keyed by tensor ID.
         parameters: Original parameter paths mapped to tensor references.
         buffers: Original buffer paths mapped to tensor references.
-        expressions: Shape expressions indexed by captured FX nodes.
-        literal_values: Small integer or boolean tensor values used as structural constants.
+        expressions: Shape expressions keyed by captured FX node.
+        literal_values: Small integer or boolean tensor values keyed by tensor ID,
+            used as structural constants.
         relations: Structural selection relations between tensor references.
         constraints: Conditions checked after selection propagation.
-        requirements: Execution obligations declared by operator rules.
-        diagnostics: Build-time conflicts and unresolved analysis results.
-        operations: Captured operation contexts indexed by FX node name.
-        write_dependencies: Earlier writes read through exact Tensor aliases.
-        specs: Structural specifications indexed by FX node name.
-        constant_refs: Tensor references whose values guard the analysis.
+        requirements: Execution obligations declared during construction.
+        diagnostics: Build-time diagnostics, such as unsupported operations.
+        operations: Captured operation contexts keyed by FX node name.
+        write_dependencies: For each FX node, the earlier declared in-place
+            writes it reads through exact Tensor aliases.
+        specs: Structural specifications keyed by FX node name.
+        constant_refs: Registered tensor references whose values guard the analysis.
         interfaces: IDs of external input and output tensor references.
         constants: Non-registered tensor references and their FX attribute paths.
-        complete: Whether construction populated the retained graph state successfully.
+        complete: Whether construction finished and populated every table.
     """
 
     model: nn.Module

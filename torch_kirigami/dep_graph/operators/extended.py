@@ -1,4 +1,4 @@
-"""Common channel, normalization, embedding, and elementwise operator families."""
+"""Spec builders for common channel, normalization, embedding, and conversion operators."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from .native import (
 
 
 def channel_operator(operation: Operation) -> OperatorSpec:
-    """Preserve batch/channel coordinates while protecting spatial transformations."""
+    """Preserve batch and channel coordinates; spatial axes stay fixed."""
     x = one(operation.argument("input", 0))
     outputs = operation.outputs
     # Public pooling/padding/interpolation APIs place channels immediately before
@@ -68,7 +68,7 @@ def channel_operator(operation: Operation) -> OperatorSpec:
 
 
 def padding(operation: Operation) -> OperatorSpec:
-    """Preserve only axes untouched by padding, independently of their names/size."""
+    """Map axes with zero padding on both sides; padded or cropped axes stay fixed."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     pad = operation.module.padding if operation.module is not None else operation.argument("pad", 1)
     if isinstance(pad, int) and operation.module is not None:
@@ -93,7 +93,7 @@ def padding(operation: Operation) -> OperatorSpec:
 
 
 def instance_norm(operation: Operation) -> OperatorSpec:
-    """Bind affine/statistic channels for batched and unbatched InstanceNorm."""
+    """Bind affine and running-statistic channels for batched and unbatched InstanceNorm."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     if operation.module is None:
         channel = 1
@@ -121,7 +121,7 @@ def instance_norm(operation: Operation) -> OperatorSpec:
 
 
 def prelu(operation: Operation) -> OperatorSpec:
-    """Bind per-channel PReLU weights; leave the shared scalar slope unchanged."""
+    """Bind per-channel PReLU weights; a single shared slope stays fixed."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     weight = one(bind(operation, "weight", 1))
     relations = [ReshapeRelation(x, y, operation.node.name)]
@@ -184,7 +184,7 @@ def normalize(operation: Operation) -> OperatorSpec:
 
 
 def cast(operation: Operation) -> OperatorSpec:
-    """Preserve input coordinates; a dtype/device reference contributes no axes."""
+    """Preserve coordinates through a conversion; a reference tensor contributes no axes."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     copy_output = False
     if operation.node.target == "to":

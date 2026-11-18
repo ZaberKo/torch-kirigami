@@ -1,4 +1,4 @@
-"""Matrix contractions and attention expressed with reusable axis/block relations."""
+"""Spec builders for matrix contractions and attention, using axis and block relations."""
 
 from __future__ import annotations
 
@@ -186,11 +186,13 @@ def sdpa(operation: Operation) -> OperatorSpec:
 
 
 def multihead_attention(operation: Operation) -> OperatorSpec:
-    """Shrink native MHA width with fixed heads and explicitly tied projection axes.
+    """Shrink native multi-head attention width with a fixed head count.
 
-    Batch/sequence/token pruning is excluded. Packed and separate projections
-    retain their original representation; no Python forward or module replacement
-    is needed. Dense self- and cross-attention share the same width descriptor.
+    The embedding width ties the input, output, and projection axes. Batch,
+    sequence, token, mask, and attention-weight axes stay fixed. Packed and
+    separate projections keep their original representation, so neither the
+    Python forward nor the module needs replacement. Dense self-attention and
+    cross-attention share the same width descriptor.
     """
     module = operation.module
     q, k, v = (one(operation.argument(name, i)) for i, name in enumerate(("query", "key", "value")))

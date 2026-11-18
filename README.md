@@ -123,8 +123,11 @@ API references, and development instructions.
 ## Model support
 
 Support depends on the model's operator forms and the dimensions being pruned.
-The graph is captured with PyTorch FX; tensor-dependent Python control flow and
-unsupported structural transformations are reported explicitly. Consult the
+PyTorch FX traces `forward`. The library then executes the captured graph on
+example inputs to collect tensor metadata. A Python condition on a symbolic
+tensor value can stop tracing, while a Python identity or type check can
+silently select a different branch from eager execution. Within a captured
+graph, operations without a structural rule block requests that reach them. Consult the
 [model support contract](https://torch-kirigami.readthedocs.io/en/latest/guides/model-support.html) before adapting a new architecture.
 
 Pruning changes the model's computation. Evaluate the compact model on your task

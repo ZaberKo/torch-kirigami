@@ -1,4 +1,4 @@
-"""Cumulative channel accounting independent of round selection and training."""
+"""Cumulative channel budgets measured against original widths across pruning rounds."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from ..pruning.types import ChannelCount, ChannelRatio, ModelStructure
 
 
 def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None = None) -> tuple:
-    """Return stable parameter-domain descriptors for cumulative accounting."""
+    """Describe each channel axis by parameter paths, dimension, and declared candidates."""
     graph.validate()
     axes = space.channel_axes if axes is None else axes
     for axis in (*axes, *space.excluded_channel_axes):
@@ -30,16 +30,32 @@ def _domains(graph: DependencyGraph, space: CandidateSpace, axes: tuple | None =
 
 
 class CumulativeChannelBudget:
-    """Convert cumulative ratios to exact remaining integer caps.
+    """Convert a cumulative removal ratio into exact integer width caps for each round.
+
+    The budget records the original width of every channel axis in the initial
+    candidate space. `budget()` converts a ratio of those original widths into
+    absolute final-width limits for the current model, so repeated pruning
+    rounds approach the cumulative target instead of compounding ratios on
+    already compact widths. `budget()` does not change any state. After you
+    apply a plan, call `update()` with the result and a freshly rebuilt graph
+    and candidate space before you request the next budget. Only shape changes
+    observed in a successful result count as progress. Use `state_dict()` and
+    `load_state_dict()` to restore the budget for an equivalent restored model.
 
     Args:
-        graph: Dependency snapshot for the current model structure.
-        space: Initial CandidateSpace with the desired frozen logical domains.
-        scope: Local per-axis accounting or global accounting without local caps.
+        graph: Dependency graph for the current model structure.
+        space: Initial candidate space. Its channel axes define the tracked
+            domains and their original widths. Each axis must belong to a
+            named parameter.
+        scope: `"local"` gives every axis its own cap. `"global"` caps the
+            total width of all axes and sets no per-axis caps.
 
-    budget() is read-only. After an applied plan, call update(result, new_graph, new_space)
-    before requesting the next budget. Only observed successful shape changes
-    count as progress. State can be rebound to an equivalent restored model.
+    Attributes:
+        scope: Accounting scope, `"local"` or `"global"`.
+
+    Raises:
+        ValueError: `scope` is invalid, or a channel axis does not belong to a
+            named parameter.
     """
 
     def __init__(
@@ -62,7 +78,7 @@ class CumulativeChannelBudget:
         *,
         domains: tuple | None = None,
     ) -> tuple:
-        """Validate that a rebuilt graph preserves recorded domains and widths."""
+        """Resolve recorded domains in a rebuilt graph and check widths and structure."""
         domains = self._domains if domains is None else domains
         try:
             axes = tuple(graph.parameter(paths[0]).axis(dim) for paths, dim, _ in domains)
@@ -85,18 +101,23 @@ class CumulativeChannelBudget:
     def budget(
         self, graph: DependencyGraph, space: CandidateSpace, ratio: int | float
     ) -> ChannelCount:
-        """Return this round's cap for a cumulative ratio of original widths.
+        """Return this round's width caps for a cumulative ratio of the original widths.
 
         Args:
             graph: Fresh dependency graph for the current model structure.
             space: Candidate space rebuilt for that graph.
-            ratio: Cumulative fraction of original widths to remove.
+            ratio: Cumulative fraction of the original widths to remove, in
+                `[0, 1)`. Each limit is `floor(original_width * (1 - ratio))`.
 
         Returns:
-            Absolute final-width limits for the current round.
+            A `ChannelCount` with absolute final-width limits over the current
+            axes: one limit per axis for local scope, or one total for global
+            scope. An axis that is already narrower than its limit needs no
+            further removal.
 
         Raises:
-            ValueError: The graph, candidate domains, or observed widths changed.
+            ValueError: `ratio` is outside `[0, 1)`, or the graph, candidate domains,
+                structure, or observed widths differ from the recorded state.
         """
         targets = channel_targets(ChannelRatio(ratio, scope=self.scope), self._initial)
         axes = self._validate_space(graph, space, self._structure, self._current)
@@ -106,7 +127,9 @@ class CumulativeChannelBudget:
         return ChannelCount(targets[0] if self.scope == "global" else targets, axes, self.scope)
 
     def update(self, result: PruningResult, graph: DependencyGraph, space: CandidateSpace) -> None:
-        """Accept an applied result and rebuilt space; reject inconsistent transitions.
+        """Record the widths produced by an applied plan.
+
+        The state changes only after every check passes.
 
         Args:
             result: Result returned by applying the preceding plan.
@@ -114,7 +137,8 @@ class CumulativeChannelBudget:
             space: Candidate space rebuilt from that graph.
 
         Raises:
-            ValueError: The result or rebuilt structure does not match this budget.
+            ValueError: The result does not start from the recorded structure,
+                grows an axis, or does not match the rebuilt graph and space.
         """
         validate_plan(result.plan)
         if result.plan.before != self._structure or result.structure != result.plan.after:
@@ -127,7 +151,12 @@ class CumulativeChannelBudget:
         self._current, self._structure = expected, result.structure
 
     def state_dict(self) -> dict[str, object]:
-        """Return portable baseline, observed widths and structural preconditions."""
+        """Return the budget state as portable plain data.
+
+        Returns:
+            A dictionary with the scope, encoded domains, original and current
+            widths, and the encoded model structure that the next round requires.
+        """
         return {
             "scope": self.scope,
             "domains": encode(self._domains),
@@ -139,7 +168,10 @@ class CumulativeChannelBudget:
     def load_state_dict(
         self, state: dict[str, object], graph: DependencyGraph, space: CandidateSpace
     ) -> None:
-        """Restore against a fresh space, validating before changing any state.
+        """Restore saved state for a restored model.
+
+        All checks run before any state changes. The saved domains must include
+        every domain recorded by this budget.
 
         Args:
             state: Mapping returned by `state_dict()`.
@@ -147,7 +179,9 @@ class CumulativeChannelBudget:
             space: Candidate space rebuilt from that graph.
 
         Raises:
-            ValueError: The saved structure, domains, or widths do not match.
+            ValueError: The state has different keys or scope, invalid widths,
+                or domains, structure, or widths that do not match the graph
+                and space.
         """
         if (
             set(state) != {"scope", "domains", "initial", "current", "structure"}

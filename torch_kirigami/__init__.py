@@ -1,4 +1,14 @@
-"""Structural dependency analysis for PyTorch, independent of pruning policy."""
+"""Structural dependency analysis for PyTorch models, independent of pruning policy.
+
+The top-level package captures a model as a `DependencyGraph` that records which
+tensor axes must change together when channels, heads, or other coordinates are
+removed. It exports the graph, the `OperatorRegistry` and `OperatorRule` records
+used to describe custom operators, the axis relations and constraint contracts
+those rules produce, the `TensorRef`, `Selection`, and `Region` coordinate
+records, the library exceptions, and the process-wide `config` settings.
+Pruning planning and execution live in `torch_kirigami.pruning`, and
+sparse-training primitives live in `torch_kirigami.sparsity`.
+"""
 
 from .dep_graph.contracts import (
     ArgumentRef,

@@ -1,4 +1,4 @@
-"""Reusable operator families and the public extension interface."""
+"""Public interface for writing custom operator rules."""
 
 from ..operation import (
     CandidateAxis,

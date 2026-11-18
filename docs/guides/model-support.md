@@ -1,175 +1,207 @@
 # Model support
 
-Support depends on one captured call, its arguments, the requested original-coordinate selections, and the resulting compact execution. A model-family name alone does not establish support.
+Torch Kirigami does not support or reject model *families*. It supports a
+specific forward call, captured with specific example inputs, and a specific
+removal request on that call. A ResNet that uses only built-in operators may
+prune cleanly, while a small custom module with a hardcoded reshape may reject
+some requests. This page explains what capture can see, which side effects it
+has, how failures are scoped, and how to adapt a model that does not fit.
 
-Capture uses FX symbolic tracing and metadata execution. Operator rules describe dependencies. The pruning layer checks whether the resulting edits can run. Physical pruning keeps the module hierarchy and applies declarative tensor and attribute replacements. It does not rewrite Python `forward` code.
+## How capture works
 
-Examples provide metadata. They do not specialize tensor-dependent Python control flow. Capture isolates example inputs and registered buffers, then restores buffer bindings, module modes, and protected RNG state on success or failure. It does not copy parameters or roll back arbitrary external side effects. Concurrent model use during capture or application is outside the contract.
-
-## Support outcomes
-
-| Outcome | Meaning |
-| --- | --- |
-| Supported | Capture, analysis, constraints, and execution rules establish the requested transformation under their stated premises. |
-| Requires adaptation | A source change or explicit operator rule can represent the intended transformation. The model author must establish equivalence for that adaptation. |
-| Rejected | A stage cannot establish safe capture, complete influence, or executable compaction. The failure scope depends on the stage. |
-| Verification limit | Unsupported behavior may escape detection. Successful capture or planning alone does not establish correctness. |
-
-The scope of a failure depends on where it occurs:
+`DependencyGraph.build(model, args=..., kwargs=...)` captures one call in two
+passes:
 
 ```mermaid
-flowchart TD
-    Capture["Capture model"] -->|fails| NoGraph["No dependency graph"]
-    Capture -->|succeeds| Graph["Dependency graph"]
-    Graph -->|rule missing on affected path| Barrier["Affected requests blocked"]
-    Graph -->|unaffected path| Query["Analyze unaffected requests"]
-    Query --> Plan["Check a pruning plan"]
-    Plan -->|valid| Apply["Apply the plan"]
-    Plan -->|invalid| Rejected["Planning error"]
+flowchart LR
+    M["model.forward"] --> T["FX symbolic trace<br/>records operations"]
+    T --> R["Metadata run<br/>on example inputs"]
+    R --> G["DependencyGraph"]
 ```
 
-An operator barrier affects requests that depend on that operation.
-A capture failure prevents building the graph for that model invocation.
+1. **Symbolic tracing.** PyTorch FX runs `forward` with proxy objects and
+   records each operation. Python code that does not touch a tensor runs
+   normally and leaves no trace.
+2. **Metadata execution.** The recorded graph runs on the example inputs to
+   collect shapes, strides, dtypes, and small integer constants. The library
+   does not keep activation tensors.
 
-### Failure scope
+The example inputs supply metadata. They do **not** choose the branch of
+data-dependent Python control flow. FX traces the code path that its proxies
+take, and the example values do not influence that path.
 
-| Stage | Result |
-| --- | --- |
-| Capture or metadata execution | Capture raises `CaptureError` and returns no graph. |
-| Operator analysis | Missing semantics create barriers over affected dependencies. Read the reasons in `graph.diagnostics`. Independent subgraphs remain queryable. Unexpected extension errors propagate to the caller. |
-| Manual planning | The full request must be executable. Invalid requests raise `PlanningError`. Planning does not drop requested selections. |
-| Automatic planning | The default strategy keeps verified combinations and reports exclusions and search limits. An unmet target raises before mutation. Search limits do not prove mathematical infeasibility. |
-| Application | Application checks the model and plan again. It does not choose a new candidate set. |
+### Python decisions that FX cannot see
 
-Kirigami records structural barriers without emitting a warning.
-Use `graph.diagnostics` to inspect them even when the requested pruning stays in another branch.
-Use `plan.selection_report.exclusions` to inspect candidate exclusions from a successful automatic plan.
+A branch on a tensor *value*, such as `if x.sum() > 0:`, usually makes FX raise
+an error, and `build()` reports it as `CaptureError`. Some Python tests do not
+raise, because they run on the proxy object itself and produce an ordinary
+Python value:
 
-Unknown operations can use input values as indices or sizes. Their barriers can therefore reach data ancestors across branches. Shared parameters and residual joins can also connect branches. An unsupported operation is not a fixed box that permits unrestricted upstream pruning.
+```python
+def forward(self, x):
+    if isinstance(x, torch.Tensor):  # False for an FX proxy
+        return self.fast(x)
+    return self.slow(x)
+```
 
-A structural barrier requires successful capture first.
-An unregistered call with unknown write effects cannot execute on a parameter or an unisolated constant.
-Capture rejects that call before metadata execution.
-A rule can declare read-only inputs yet raise `UnsupportedOperation` from `build_spec()`.
-That case creates a barrier instead of failing capture.
+FX records the `slow` branch without warning, even though eager execution takes
+`fast`. Tensor identity tests (`x is y`), type tests, and runtime-state tests
+such as `x.grad is None` behave the same way. A successful build does not prove
+that the model contains no such decision, and the library has no fallback that
+detects them. Treat a model that makes such decisions in `forward` as outside
+the supported contract, or move the decision out of `forward`.
 
-## Capture and snapshot assumptions
+### Side effects of building a graph
 
-Capture supports FX-traceable modules with supported call signatures and metadata. It binds positional and keyword arguments using the forward signature and applies defaults. Supported nested containers are plain tuples, lists, and dictionaries with supported keys.
+Capture is designed to leave the model as it found it, but it is not free of
+side effects in every case.
 
-Metadata leaves can be tensors, `None`, `bool`, `int`, `float`, `str`, `torch.dtype`, or `torch.device` values. Capture rejects other metadata leaf types.
+- **Isolated.** Capture runs on copies of the example inputs and the registered
+  buffers. Afterwards, it restores buffer bindings, module training flags, and
+  the CPU and initialized CUDA random-number states. This happens on success
+  and on failure. BatchNorm running statistics, for example, are not updated.
+- **Not copied.** Parameters are not copied. An operation that would write to a
+  parameter without a declaration makes capture fail before the write happens.
+- **Declared parameter updates persist.** Some native operations update
+  parameters by design. `nn.Embedding(max_norm=...)` and `F.embedding` with
+  `max_norm` renormalize the weight rows that the example indexes. BatchNorm
+  and InstanceNorm update their running statistics when the model stores them
+  as parameters instead of buffers. Capture permits these declared updates, and
+  it issues a Python warning before it runs them. The updated values stay in
+  the original model, **even if capture later fails**. Existing gradients are
+  kept and may be stale. Magnitude metrics read the updated weights.
+  Recompute gradients before you use Taylor scores.
 
-Capture rejects empty tensor examples and results.
+The warning uses Python's `warnings` module. If you turn it into an error, for
+example with `warnings.simplefilter("error")`, capture stops before these
+updates execute.
 
-Capture rejects forward hooks, unsupported registration callbacks, undeclared parameter writes, unsupported storage, and metadata values that it cannot represent.
-It also rejects inputs or buffers that share storage with parameters.
+Do not use the model from another thread while the graph is being built.
 
-Capture preserves Tensor writes such as `x += y`, `x[idx] = y`, and `x[idx] += y`.
-Capture rejects Tensor attribute assignment and deletion.
-Indexed writes can execute on isolated data during capture.
-They create a structural barrier when compact coordinates have no rule.
+### What capture rejects
 
-Input and buffer isolation preserves lazy conjugate flags and supported shared storage.
-The current copy path rejects lazy negative views because it cannot preserve their flags and aliases.
-Use `resolve_neg()` only when forward does not depend on those flags or original alias relationships.
-Copies that change the supported storage relationships fail before metadata execution.
+`build()` raises `CaptureError` when it meets any of the following:
 
-`nn.Embedding` and `F.embedding` declare their native `max_norm` updates.
-Capture warns before execution and permits these updates on directly bound parameters.
-Embedding renormalizes only vocabulary rows used by the example.
-These changes remain in the original model, including when a later operation causes capture to fail.
-Capture preserves existing gradients, which may be stale.
-Magnitude metrics read the updated weights.
-Recompute gradients before Taylor scoring if the update invalidates prior calibration.
-Planning itself remains read-only.
-For `F.embedding` with a registered buffer as its weight, capture updates only the isolated buffer copy.
-Planning supports this form and does not change the original buffer.
-The parameter-update warning does not apply to isolated buffer writes or writes to fresh temporary tensors.
+- Forward hooks, or unsupported global hook registrations.
+- An unregistered call with unknown write effects that could reach a parameter
+  or an unisolated constant.
+- Undeclared parameter writes, Tensor attribute assignment or deletion, and
+  inputs or buffers that share storage with parameters.
+- Zero-element example tensors or results, unsupported tensor storage, and lazy
+  negative views. Use `resolve_neg()` only if `forward` does not depend on the
+  flag or on the original aliasing.
+- Metadata values other than tensors, `None`, `bool`, `int`, `float`, `str`,
+  `torch.dtype`, and `torch.device`, in plain tuples, lists, and dictionaries.
 
-BatchNorm and InstanceNorm normally keep running statistics in registered buffers.
-Capture isolates those buffers.
-If a model instead registers statistics as Parameters, the same declared-update warning applies when the call updates them.
-These native updates persist in the original Parameters.
-The declaration does not permit updates through unproved parameter aliases or views.
+Positional and keyword arguments are bound with the signature of `forward`,
+including default values.
 
-Warnings use Python's `warnings` module, not `print`.
-Callers can record, filter, or promote them to errors.
-Promoting the parameter-update warning to an error stops metadata execution before these updates occur.
+## How failures are scoped
 
-Some Python tests can run on FX proxies without leaving a graph node. Tensor identity checks, `isinstance(x, torch.Tensor)`, and runtime-state tests such as `x.grad is None` can silently select a branch. Capture does not guarantee an error for every such case. Treat models with these decisions as outside the current contract.
+Unsupported behavior has different consequences at each stage:
 
-The graph checks detectable structure, tensor identity and layout, module modes, recognized configuration, supported ordinary tensor references, and guarded structural constants. It does not hash ordinary weight values. Rebuild after structural or relevant configuration changes. Recreate optimizers after nonempty pruning because affected parameters become new objects. Optimizer-state migration is not implemented.
+| Stage | What happens | Scope |
+| --- | --- | --- |
+| Capture | `build()` raises `CaptureError`. | No graph for this call. |
+| Analysis | An operation without semantics becomes a *barrier*. Its reasons appear in `graph.diagnostics`. No warning is emitted. | Only requests that reach the barrier are blocked. |
+| Manual planning | `plan_remove()` raises `PlanningError` if any part of the request fails. | The whole request. Nothing is dropped silently. |
+| Automatic planning | Failing candidates are skipped and listed in `selection_report.exclusions`. An unmet budget raises `PlanningError`. | Individual candidates, then the whole plan if the target is missed. |
+| Application | `apply()` checks the model again and raises `ExecutionError` on a mismatch. | The plan. |
 
-## Structural support
+A barrier does not block only the one operation. An unknown operation might use
+its input values as indices or sizes, so the barrier also covers the data that
+feeds it. Shared parameters and residual additions can carry the barrier into
+other branches. In the model below, `torch.roll` has no built-in rule. A request
+on `a1` reaches it and its impact is incomplete. A request on `b1` stays
+complete and can be pruned.
 
-The [operator support page](../reference/operator-support.md) lists supported families and their main restrictions. This page states cross-cutting conditions.
+```mermaid
+flowchart LR
+    X["x"] --> A1["a1: Linear"] --> U["torch.roll<br/>no rule"] --> A2["a2: Linear"] --> S["+"]
+    X --> B1["b1: Linear"] --> R["relu"] --> B2["b2: Linear"] --> S
+    classDef blocked fill:#fde2e1,stroke:#c0504d,color:#5a1d1b
+    classDef free fill:#e3f1e6,stroke:#4f8a5b,color:#1d3d24
+    class A1,U,A2 blocked
+    class B1,R,B2 free
+```
 
-- Dependency support does not imply a default candidate axis. Default candidate domains come from selected module rules. Explicit requests can still use other supported dependency axes.
-- Interface preservation protects external input and output axes by default. Disabling it does not disable operator constraints.
-- Shared tensor objects retain their aliases. Distinct tensor objects that share storage are not treated as independently compactable tensors.
-- Group balance, divisibility, nonempty axes, layout support, and execution requirements remain active constraints.
-- A static plan can use current parameter values from a structurally compatible target without rescoring. Structural configuration and guarded constants must satisfy its preconditions.
+If the two branches added their hidden activations directly, the addition would
+couple `a1` and `b1`, and the barrier would block both.
 
-Normalization, softmax, reductions, and attention can recompute over a smaller domain. A dense zero mask is not a general numerical reference. Structural resolution does not establish numerical equivalence or task quality.
+An incomplete impact never authorizes scoring or pruning. The planner does not
+treat unknown influence as an empty selection.
 
-### Affected requests
+## Layouts and views
 
-The graph rejects only requests that reach unsupported behavior. It can still analyze an independent branch. Shared weights and residual joins can connect branches, so inspect diagnostics before you trust an impact.
+Compaction can change strides. Convolutions, normalization, padding, and other
+backend-dependent operations can return tensors whose compact strides are
+unknown. The sample strides seen during capture do not prove the compact
+strides, and the validator does not guess them from the device, dtype, or
+backend.
 
-Automatic planning can retain independent candidates that pass validation. Manual planning treats the submitted set as one request. It raises if any part of that set cannot execute.
+When strides are unknown, a later `view` is accepted only if it works for every
+legal input stride. Keeping the shape, inserting or removing singleton axes, and
+splitting one axis into consecutive factors all qualify. Merging distinct
+non-singleton axes does not. Use `reshape(...)` or `contiguous().view(...)` in
+that case. Both operations establish a valid layout, but neither fixes a size or
+coordinate mapping that is wrong after compaction. Copying can also change
+aliasing behavior, so check that nothing relies on the view sharing storage.
 
-An unresolved impact needs proof or additional choices. Its influence can be complete or incomplete. Check `impact.complete` separately from `impact.status`. Neither an unresolved result nor incomplete influence authorizes physical pruning.
+## Shapes in Python code
 
-## Layout and view conditions
-
-Convolution, normalization, padding, and other backend-dependent operations can leave output strides unknown. Captured sample strides do not prove compact output strides. The validator does not infer layouts from device, dtype, batch size, or backend settings.
-
-When strides are unknown, accept a view only if it works for every legal input stride. Shape identity, singleton-axis insertion or removal, and splitting one axis into consecutive factors can meet this condition. Merging distinct non-singleton axes requires a layout proof. `contiguous()` establishes the requested layout. `reshape()` can copy when required. Neither operation fixes invalid sizes or coordinate mappings.
-
-Use `size(dim)` when Python needs one changing dimension. A whole-shape read guards the full shape because later Python indexing is outside FX. Reshape and view arguments need supported dimension provenance, fixed algorithmic constants, or valid inferred dimensions. Shape inference alone does not prove axis identity.
+The graph records how sizes reach reshape, view, and slice arguments. Use
+`x.size(dim)` when Python needs one dimension that may shrink. Reading the
+whole shape, for example `b, c, h, w = x.shape`, guards every dimension, because
+the indexing happens outside FX. Hardcoded widths such as `x.view(b, 64, -1)`
+block requests that would change that width.
 
 ## In-place operations
 
-A value-only write can use a fresh temporary Tensor.
-The proof can follow calls that return that Tensor unchanged in storage and metadata.
-For example, a chain of `nn.Identity` calls can connect a convolution to `ReLU(inplace=True)`.
-Earlier data consumers and operations with uncertain storage sharing can prevent this proof.
-Earlier size reads and later uses of the same Tensor can pass.
-If the proof fails, the error names the value that the writer can reach.
-For an earlier consumer, the error also names that consumer.
+An in-place call is safe after compaction only if its writes cannot reach data
+that another consumer still reads. The planner accepts a value-only write to a
+fresh temporary tensor. It can follow calls that return their input unchanged,
+so `conv → Identity → ReLU(inplace=True)` passes. An earlier consumer of the
+same tensor, or an operation with uncertain storage sharing, prevents that
+proof. Size reads and uses of the same tensor after the write still pass. When
+the proof fails, the error names the value that the write can reach and, if
+present, the earlier consumer.
 
-## Adaptations
+## Adapting a model
 
-The model author makes an adaptation, then builds a new graph.
+Change the model, then build a new graph. You are responsible for making sure
+the adapted model computes what you intend.
 
-| Condition | Adaptation | Preserve this condition |
+| Problem | Adaptation | Keep in mind |
 | --- | --- | --- |
-| A view merges axes without a layout proof | Use `reshape(...)` or `contiguous().view(...)`. | Preserve shape and element order. Copying can change alias behavior. |
-| A reshape size encodes a changing feature width | Use `size(dim)`, supported integer arithmetic, or valid `-1` inference. | Keep algorithmic constants fixed. |
-| Python reads a whole shape but uses one changing dimension | Read that dimension with `size(dim)`. | Any Python decision that uses it must remain valid after compaction. |
-| In-place behavior lacks an alias and consumer proof | Use an out-of-place call when appropriate. | No consumer may depend on mutation through an alias. |
-| Bracket indexing or `index_select` uses an unregistered index Tensor | Register the index Tensor as a buffer. | Keep the index one-dimensional and its values fixed. See [bracket indexing](../reference/operator-support.md#bracket-indexing) for supported types. |
-| A hook supplies forward behavior | Represent that behavior in `forward` or a declared module boundary. | Preserve required computation and gradient behavior. |
+| A `view` merges axes without a layout proof. | Use `reshape(...)` or `contiguous().view(...)`. | Preserve shape and element order. Copies change aliasing. |
+| A reshape size hardcodes a width that should shrink. | Use `size(dim)`, supported integer arithmetic, or `-1`. | Keep true algorithmic constants fixed. |
+| Python reads the whole shape but needs one dimension. | Read `size(dim)` instead. | Any Python decision that uses the value must stay valid after pruning. |
+| An in-place call has no alias proof. | Use the out-of-place form. | Nothing may depend on mutation through an alias. |
+| Bracket indexing or `index_select` uses an unregistered index tensor. | Register it as a buffer. | Keep it one-dimensional with fixed values. See [bracket indexing](../reference/operator-support.md#bracket-indexing). |
+| A hook implements part of `forward`. | Move the behavior into `forward` or into a module with a rule. | Preserve the computation and the gradients. |
+| A third-party operation has no rule. | [Register a rule](../reference/operator-support.md#write-an-operator-rule). | The rule's author must prove its coordinates, effects, and lowering. |
 
-An explicit operator rule can describe a third-party operation. Opaque registration creates a capture boundary, but it does not prove internal mathematics, alias behavior, or output strides. The extension author must provide those proofs and the required lowering. See the [operator extension contract](../reference/operator-support.md#implementing-an-operator-rule).
+## Rebuilding and saving
 
-## Persistence and rebuilds
+The graph checks the model structure, tensor identities and layouts, module
+modes, recognized configuration, hooks, supported tensor references in plain
+containers, and guarded structural constants. It does not hash ordinary weight
+values, so training does not invalidate it. Rebuild after any structural change,
+mode change, or change to a guarded constant.
 
-A compact checkpoint restores the final model structure. The caller must provide a compatible model definition, including custom modules and gates. The checkpoint does not serialize arbitrary Python forward code.
+A compact checkpoint restores the final structure, but the caller supplies the
+model code. Tensor constants that the model keeps outside registered parameters
+and buffers are not saved. See [plans and checkpoints](persistence.md).
 
-Ordinary tensor constants keep structural premises but do not automatically save their numeric values. A constructor must restore those values, or the model must register or persist them. Optimizer state, random generators, and data-loader state belong to the training application.
+## Limits of verification
 
-## Verification limits
+Some behavior can escape the library's checks:
 
-| Limit | What can happen | Required premise |
+| Limit | What can happen | What you must ensure |
 | --- | --- | --- |
-| Python tests on proxies | Identity, type, or runtime-state checks can select a branch without a recorded graph node. | Do not prune models with these decisions under the current contract. |
-| Untracked Python state | Globals, closures, custom object internals, external resources, or callbacks can affect behavior outside the recorded graph. | Keep structural decisions and mutations inside supported model state or declare them through a valid boundary. |
-| Changed inputs or context | Example metadata does not cover every input shape, layout, AMP setting, or backend setting. | Recheck changed execution assumptions and rebuild when needed. |
-| Extension declarations | Structural checks cannot prove a third-party rule's mathematics or effects. | Test against an independent compact reference and public lifecycle behavior. |
-| Concurrent mutation | Other threads, callbacks, or processes can change a model during planning or application. | Do not mutate the model concurrently. |
-| Compact-domain changes | Normalization, softmax, attention, and reductions can produce different values on retained domains. | Measure numerical and task-level effects separately. |
-
-Unknown operations and unsupported axes must not authorize scoring from incomplete influence or physical execution. Automatic planning can keep independent verified candidates. Manual requests remain atomic at the planning boundary.
-
-Checkpoint admission has additional rules for hooks, custom state, aliases, and restoration. Ordinary tensor constants do not automatically save their numerical values. Constructors must restore them, or the model must register or persist them explicitly. See [persistence](persistence.md) for checkpoint behavior.
+| Python tests on proxies | Identity, type, or runtime-state tests choose a branch without a recorded node. | No such decision exists in `forward`. |
+| Untracked Python state | Globals, closures, custom object internals, or callbacks change behavior outside the graph. | Structural state lives in modules, parameters, buffers, or plain containers. |
+| Different inputs or context | Example metadata does not cover other shapes, layouts, AMP settings, or backends. | Rebuild when these execution assumptions change. |
+| Extension rules | The library cannot prove that a custom rule is mathematically true. | Test the rule against an independent compact reference. |
+| Concurrent mutation | Other threads or callbacks change the model during build, planning, or apply. | Nothing else mutates the model meanwhile. |
+| Smaller domains | Normalization, softmax, attention, and reductions give different values after pruning. | Measure numerical and task-level effects separately. |

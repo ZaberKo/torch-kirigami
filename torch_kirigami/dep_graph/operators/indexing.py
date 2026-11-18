@@ -1,4 +1,9 @@
-"""Axis, partition, and block-coordinate families without activation label tensors."""
+"""Spec builders for indexing, partitioning, repetition, and channel rearrangement.
+
+Coordinates are described by axis and block relations rather than by label
+tensors that mirror activations. Each builder raises `UnsupportedOperation`
+for a call it cannot describe.
+"""
 
 from __future__ import annotations
 
@@ -74,7 +79,7 @@ def stack(operation: Operation) -> OperatorSpec:
 
 
 def chunk(operation: Operation) -> OperatorSpec:
-    """Describe captured chunk ports and retain their original coordinate identity."""
+    """Map captured chunk outputs as a split by the first output's width."""
     x = one(operation.argument("input", 0))
     dim = operation.argument("dim", 2, 0) % len(x.shape)
     width = operation.outputs[0].shape[dim]
@@ -215,7 +220,12 @@ def repeat(operation: Operation) -> OperatorSpec:
 
 
 def getitem(operation: Operation) -> OperatorSpec:
-    """Map basic indices and one fixed vector or mask in original coordinates."""
+    """Map bracket indexing in original coordinates.
+
+    Tensors accept basic indices or one fixed integer vector or boolean mask
+    with full slices on every other axis. Containers accept static or
+    shape-derived keys.
+    """
     scalar = scalar_spec(operation)
     if scalar is not None:
         return scalar
@@ -327,7 +337,14 @@ def getitem(operation: Operation) -> OperatorSpec:
 def _static_tensor_index(
     operation: Operation, index: TensorRef, *, allow_mask: bool = False
 ) -> tuple[int, ...]:
-    """Read a fixed index Tensor with a guardable binding."""
+    """Read a fixed index vector from a registered buffer or parameter.
+
+    Raises:
+        torch_kirigami.UnsupportedOperation: The index is not one-dimensional,
+            has an unsupported dtype, is a runtime input or unregistered
+            tensor, exceeds `config.max_literal_elements`, or has no captured
+            value.
+    """
     if len(index.shape) != 1:
         raise UnsupportedOperation(
             f"Index Tensor must be one-dimensional. Got shape {index.shape}."
@@ -534,7 +551,7 @@ def pixel_shuffle(operation: Operation) -> OperatorSpec:
 
 
 def unfold_fold(operation: Operation) -> OperatorSpec:
-    """Connect complete im2col channel blocks; spatial/kernel coordinates stay fixed."""
+    """Connect complete im2col channel blocks; spatial and kernel axes stay fixed."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     fold = type(operation.module) is nn.Fold or operation.node.target is F.fold
     kernel = (

@@ -1,19 +1,30 @@
 # API reference
 
-Autodoc2 generates these pages from module source and docstrings.
-The reference includes internal modules as well as the public API.
-Import public objects from `torch_kirigami`, `torch_kirigami.pruning`, or `torch_kirigami.sparsity`.
-The object index includes both public import paths and defining module paths.
-The guides explain how to use these objects together.
+These pages are generated from the source docstrings. They cover internal modules
+as well as the public API. Import public objects from one of three packages:
+
+| Package | Contents |
+| --- | --- |
+| `torch_kirigami` | Dependency graph, coordinates, relations, constraints, operator rules, errors, and `config`. |
+| `torch_kirigami.pruning` | `Pruner`, candidates, budgets, metrics, strategies, plans, and checkpoints. |
+| `torch_kirigami.sparsity` | Regularizers, gates, parameter operations, cumulative budgets, and schedules. |
+
+The object index lists both the public import path and the defining module of
+each object. The guides explain how the objects work together.
+
+Good starting points:
 
 - [Dependency graph](../apidocs/torch_kirigami/torch_kirigami.dep_graph.dependency_graph.md)
-- [Constraints](../apidocs/torch_kirigami/torch_kirigami.dep_graph.contracts.md)
-- [Operators](../apidocs/torch_kirigami/torch_kirigami.dep_graph.operation.md)
+- [Constraints and impacts](../apidocs/torch_kirigami/torch_kirigami.dep_graph.contracts.md)
+- [Operator rules](../apidocs/torch_kirigami/torch_kirigami.dep_graph.operation.md)
 - [Pruner](../apidocs/torch_kirigami/torch_kirigami.pruning.pruner.md)
 - [Metrics](../apidocs/torch_kirigami/torch_kirigami.pruning.metrics.md)
-- [Sparse losses](../apidocs/torch_kirigami/torch_kirigami.sparsity.regularizers.md)
+- [Strategies](../apidocs/torch_kirigami/torch_kirigami.pruning.strategies.md)
+- [Regularizers](../apidocs/torch_kirigami/torch_kirigami.sparsity.regularizers.md)
+- [Configuration](../apidocs/torch_kirigami/torch_kirigami.settings.md)
 
-Torch Prisma owns the [measurement API](../guides/measurement.md).
+Measurement functions belong to Torch Prisma. See the
+[measurement guide](../guides/measurement.md).
 
 ```{toctree}
 :hidden:

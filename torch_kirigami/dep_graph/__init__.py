@@ -1,4 +1,4 @@
-"""Structural dependency analysis; import public classes from torch_kirigami.
+"""Structural dependency analysis; import the public classes from `torch_kirigami`.
 
 Internal consumers import concrete submodules to keep package initialization light.
 """
