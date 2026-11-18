@@ -496,16 +496,15 @@ def reshape(operation: Operation) -> OperatorSpec:
         dim = operation.module.dim
         if not isinstance(dim, int):
             raise UnsupportedOperation("Named unflatten dimensions are unsupported")
-        axes = tuple(
-            y.axis(dim % len(x.shape) + i) for i in range(len(operation.module.unflattened_size))
+        start = dim % len(x.shape)
+        factors = tuple(
+            ShapeExpr("infer", -1) if size == -1 else ShapeExpr("dimension", (y, start + i))
+            for i, size in enumerate(operation.module.unflattened_size)
         )
         requirement_ = AttributeBinding(
             f"{operation.module_path}.unflattened_size".lstrip("."),
-            ShapeExpr(
-                "tuple",
-                args=tuple(ShapeExpr("dimension", (axis.tensor, axis.dim)) for axis in axes),
-            ),
-            "Update explicitly bound unflatten factors from retained output dimensions",
+            ShapeExpr("tuple", args=factors),
+            "Update explicit unflatten factors and preserve inferred factors",
         )
         return OperatorSpec((relation,), requirements=(requirement_,))
     target = operation.node.target
@@ -637,7 +636,13 @@ def reduction(operation: Operation) -> OperatorSpec:
     """Connect retained axes while recording changes to the reduction domain."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     dims = operation.argument("dim", 1)
-    if dims is None or (isinstance(dims, (tuple, list)) and not dims):
+    if isinstance(dims, (tuple, list)) and not dims:
+        # Boolean reductions with an explicit empty dimension list convert
+        # each element to its truth value and preserve every coordinate.
+        if operation.node.target in (torch.any, torch.all, "any", "all"):
+            return _identity(operation)
+        dims = None
+    if dims is None:
         dims = tuple(range(len(x.shape)))
     elif isinstance(dims, int):
         dims = (dims,)

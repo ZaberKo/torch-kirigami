@@ -2614,6 +2614,7 @@
           "behavior": "Bind attributes through existing shape expressions; validate shared demands including unchanged values.",
           "tests": [
             "tests/dep_graph/operators/test_shapes.py::test_unflatten_has_explicit_attribute_binding",
+            "tests/dep_graph/operators/test_shapes.py::test_shared_unflatten_respects_each_call",
             "tests/dep_graph/operators/test_effect_declarations.py::test_partial_recipe_preserves_declarations_and_persistence",
             "tests/dep_graph/operators/test_effect_declarations.py::test_unchanged_attribute_declaration_conflicts_with_another_demand"
           ],

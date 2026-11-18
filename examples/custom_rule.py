@@ -45,12 +45,16 @@ class FusedProjectionRule(OperatorRule):
     def build_spec(self, operation: Operation) -> OperatorSpec:
         """Bind projection axes and the explicit output-width attribute."""
         x, y, weight = operation.inputs[0], operation.outputs[0], operation.bindings["weight"]
+        relations = [
+            AxisRelation.equal(x.axis(-1), weight.axis(1), "fused input"),
+            AxisRelation.equal(y.axis(-1), weight.axis(0), "fused output"),
+        ]
+        relations.extend(
+            AxisRelation.equal(x.axis(dim), y.axis(dim), "unchanged leading dimension")
+            for dim in range(len(x.shape) - 1)
+        )
         return OperatorSpec(
-            relations=(
-                AxisRelation.equal(x.axis(-1), weight.axis(1), "fused input"),
-                AxisRelation.equal(y.axis(-1), weight.axis(0), "fused output"),
-                AxisRelation.equal(x.axis(0), y.axis(0), "fused batch"),
-            ),
+            relations=tuple(relations),
             requirements=(
                 AttributeBinding(
                     f"{operation.module_path}.output_width".lstrip("."),
@@ -60,8 +64,9 @@ class FusedProjectionRule(OperatorRule):
         )
 
 
-rules = OperatorRegistry.default().register(FusedProjection, FusedProjectionRule())
-graph = DependencyGraph.build(FusedProjection(), args=(torch.randn(2, 4),), operators=rules)
-impact = graph.propagate(remove=[graph.parameter("weight").axis(0).select([1, 3])])
-assert impact.status == "resolved"
-print(graph.explain(impact))
+if __name__ == "__main__":
+    rules = OperatorRegistry.default().register(FusedProjection, FusedProjectionRule())
+    graph = DependencyGraph.build(FusedProjection(), args=(torch.randn(2, 4),), operators=rules)
+    impact = graph.propagate(remove=[graph.parameter("weight").axis(0).select([1, 3])])
+    assert impact.status == "resolved"
+    print(graph.explain(impact))

@@ -189,15 +189,20 @@ class GateMagnitude:
 
         Args:
             context: Planner access to the graph and dependency impacts.
-            candidates: Requests to score independently in the returned order.
-            accepted_impact: Complete dependency closure of prior removals.
+            candidates: Candidates to score.
+            accepted_impact: Complete dependency impact of the removals that
+                are already accepted.
 
         Returns:
-            One effective-scale score per candidate, in input order.
+            One real magnitude per candidate, in input order. Effective scales
+            retain complex components and use at least float32 precision.
 
         Raises:
-            ValueError: A binding uses a different graph or a candidate has no bound gate.
-            torch_kirigami.pruning.PlanningError: The accepted influence or candidate influence is incomplete.
+            ValueError: A binding uses a different graph, or a candidate does
+                not affect any bound gate. Ungated candidates are rejected
+                rather than scored as zero; restrict the candidates first.
+            torch_kirigami.pruning.PlanningError: The accepted impact or a
+                candidate impact is incomplete.
         """
         context.require_complete(accepted_impact)
         if not candidates:
@@ -214,7 +219,7 @@ class GateMagnitude:
                 continue
             seen.add(identity)
             gate = binding.graph.model.get_submodule(binding.path)
-            dtype = torch.float64 if gate.weight.dtype == torch.float64 else torch.float32
+            dtype = torch.promote_types(torch.result_type(gate.weight, gate.mask), torch.float32)
             # Statistics are shared only within this call. Training or mask changes
             # between score calls must immediately affect the next batch.
             prepared.append((ref, gate.weight.to(dtype) * gate.mask.to(dtype)))

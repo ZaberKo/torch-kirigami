@@ -460,19 +460,31 @@ class KeywordConsumer(nn.Module):
         return self.last(input=F.gelu(self.first(input=inputs)))
 
 
-@pytest.mark.parametrize("convolution", [False, True])
+@pytest.mark.parametrize(
+    ("convolution", "shape"), [(False, (3, 4, 3)), (True, (3, 3, 4, 4)), (True, (3, 4, 4))]
+)
 def test_discovered_keyword_consumer_calibrates_and_physically_reconstructs(
-    convolution, execution_device
+    convolution, shape, execution_device
 ):
     model = KeywordConsumer(convolution).double().eval()
     teacher = copy.deepcopy(model)
-    inputs = torch.randn((3, 3, 4, 4) if convolution else (3, 4, 3), dtype=torch.float64)
+    inputs = torch.randn(shape, dtype=torch.float64)
     graph = DependencyGraph.build(model, args=(inputs,))
     pairs, _ = workflow.discover_reconstruction_pairs(graph)
     assert pairs == {"first": "last"}
     moments = workflow.collect_reconstruction(
         model, teacher, "last", [(inputs, torch.zeros(3))], execution_device, 0, 100
     )
+    features = F.gelu(model.first(inputs))
+    targets = teacher(inputs)
+    if convolution:
+        features = features.movedim(-3, -1)
+        targets = targets.movedim(-3, -1)
+    features = features.reshape(-1, 6)
+    targets = targets.reshape(-1, 3) - model.last.bias
+    assert moments.count == len(features)
+    torch.testing.assert_close(moments.gram, features.T @ features)
+    torch.testing.assert_close(moments.cross, features.T @ targets)
     hessian, cross = moments.system(model.last.weight.flatten(1).T, 0.01)
     solution = workflow.solve_osscar(hessian, cross, 6, 4)
     workflow.apply_reconstruction(Pruner(model, graph=graph), "first", "last", solution)

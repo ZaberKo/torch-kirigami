@@ -28,7 +28,7 @@ classifiers = [
 
 [project.urls]
 Repository = "https://github.com/ZaberKo/torch-kirigami"
-Documentation = "https://github.com/ZaberKo/torch-kirigami/blob/main/docs/index.md"
+Documentation = "https://torch-kirigami.readthedocs.io/"
 Issues = "https://github.com/ZaberKo/torch-kirigami/issues"
 
 [dependency-groups]

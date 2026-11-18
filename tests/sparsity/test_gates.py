@@ -210,6 +210,36 @@ def test_gate_metric_conditional_regions_and_dynamic_plan(execution_device):
     model(x).sum().backward()
 
 
+@pytest.mark.parametrize("dtype", [torch.complex64, torch.complex128])
+def test_gate_scores_preserve_complex_magnitude_and_prune(dtype, execution_device):
+    gate = ChannelGate(2, -1)
+    gate.weight = nn.Parameter(torch.tensor([8j, 1.0], dtype=dtype))
+    model = nn.Sequential(nn.Linear(3, 2, dtype=dtype), gate, nn.Linear(2, 2, dtype=dtype)).to(
+        execution_device
+    )
+    x = torch.randn(2, 3, device=execution_device, dtype=dtype)
+    graph = DependencyGraph.build(
+        model, args=(x,), operators=register_gate_operators(OperatorRegistry.default())
+    )
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates(targets=("0",))
+    budget = ChannelRatio(0.5)
+    context = PlanningContext(
+        graph, space.candidates, budget, space.channel_axes, pruner.constraints
+    )
+    metric = GateMagnitude((GateBinding(graph, "1"),))
+    assert context.score(metric, space.candidates) == (8.0, 1.0)
+    with torch.no_grad():
+        kept_channel = torch.nn.functional.linear(x, model[0].weight[:1], model[0].bias[:1])
+        reference = torch.nn.functional.linear(
+            kept_channel * 8j, model[2].weight[:, :1], model[2].bias
+        )
+
+    pruner.apply(pruner.plan(space, budget=budget, strategy=Greedy(metric)))
+    assert gate.size == 1
+    torch.testing.assert_close(model(x), reference)
+
+
 def test_shared_gate_weights_with_distinct_masks_score_and_prune(execution_device):
     class BranchGates(nn.Module):
         def __init__(self):

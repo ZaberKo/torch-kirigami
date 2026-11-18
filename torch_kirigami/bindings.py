@@ -205,12 +205,16 @@ def reference_edits(model: nn.Module, replacements: dict[int, object]) -> tuple[
             nodes = reference_nodes(value)
             if not any(id(t) in replacements for t in nodes):
                 continue
-            # Unrelated constant tensors must retain identity/storage too.
-            memo.update(
-                (id(t), t)
-                for t in nodes
-                if isinstance(t, torch.Tensor) and id(t) not in replacements
-            )
+            # Preserve unrelated tensors and containers, including a config
+            # dict that another attribute may also reference.
+            for node in nodes:
+                if node is value or id(node) in memo:
+                    continue
+                if isinstance(node, torch.Tensor) or not any(
+                    id(child) in replacements
+                    for child in _reference_nodes(node, include_containers=True)
+                ):
+                    memo[id(node)] = node
             edits.append(AttributeEdit(f"{path}.{name}".lstrip("."), copy.deepcopy(value, memo)))
     return tuple(edits)
 

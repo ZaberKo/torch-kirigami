@@ -42,6 +42,40 @@ def test_unflatten_has_explicit_attribute_binding():
     assert tuple(a.value[1] for a in req.expression.args) == (1, 2)
 
 
+@pytest.mark.parametrize("factors", [(-1, 2), (3, 2)])
+@pytest.mark.parametrize("prune_both", [False, True])
+def test_shared_unflatten_respects_each_call(factors, prune_both, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.left = nn.Linear(3, 6)
+            self.right = nn.Linear(3, 8 if factors[0] == -1 else 6)
+            self.split = nn.Unflatten(-1, factors)
+
+        def forward(self, x):
+            return self.split(self.left(x)), self.split(self.right(x))
+
+    model = Model()
+    x = torch.randn(2, 3)
+    left, right = model(x)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    remove = [graph.parameter("left.weight").axis(0).select([0, 1])]
+    if prune_both:
+        remove.append(graph.parameter("right.weight").axis(0).select([0, 1]))
+    if factors[0] != -1 and not prune_both:
+        weights = tuple(model.parameters())
+        with pytest.raises(PlanningError, match="Shared attribute update disagrees"):
+            pruner.plan_remove(remove)
+        assert all(a is b for a, b in zip(weights, model.parameters(), strict=True))
+        assert model.split.unflattened_size == factors
+        torch.testing.assert_close(model(x), (left, right))
+        return
+    pruner.apply(pruner.plan_remove(remove))
+    assert model.split.unflattened_size == ((-1, 2) if factors[0] == -1 else (2, 2))
+    torch.testing.assert_close(model(x), (left[:, 1:], right[:, 1:] if prune_both else right))
+
+
 @pytest.mark.parametrize(
     "mode", ["repeat", "interleave", "tile", "stack", "chunk", "narrow", "unfold"]
 )

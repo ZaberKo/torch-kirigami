@@ -46,6 +46,19 @@ def ordinary_recipe(selection: Selection) -> TensorRecipe:
     )
 
 
+def _bound_attribute(
+    graph: DependencyGraph, binding: AttributeBinding, impact: Impact
+) -> AttributeRecipe:
+    """Evaluate one call's attribute demand, including an unchanged value."""
+    path, _, name = binding.target.rpartition(".")
+    owner = graph.model.get_submodule(path)
+    old = getattr(owner, name)
+    new = evaluate(binding.expression, lambda ref: require_compact_shape(impact, ref))
+    if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
+        new = type(old)(new)
+    return AttributeRecipe(binding.target, old, new)
+
+
 def default_recipe(
     graph: DependencyGraph,
     op: Operation,
@@ -73,15 +86,9 @@ def default_recipe(
     }
     for req in requirements:
         if isinstance(req, AttributeBinding):
-            path, _, name = req.target.rpartition(".")
-            owner = graph.model.get_submodule(path) if path else graph.model
-            old = getattr(owner, name)
-            new = evaluate(req.expression, compact_shape)
-            if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
-                new = type(old)(new)
             # An unchanged binding is still a demand. A shared owner may have
             # another call requiring a different value for the same attribute.
-            attributes.append(AttributeRecipe(req.target, old, new))
+            attributes.append(_bound_attribute(graph, req, impact))
             continue
         if req.kind not in known:
             raise PlanningError(f"Unhandled requirement {req.kind}: {req.target}")
@@ -253,6 +260,29 @@ def compile_recipes(
             if attr.old != attr.new:
                 attributes[attr.path] = attr
         active.append((op, spec, reqs, rule.evaluate_on_meta))
+    if attributes:
+        # An independent branch can call the same module without selecting any
+        # of its tensors. Its declared demand still applies to a shared edit.
+        changed_names = {path.rpartition(".")[2] for path in attributes}
+        for op in operations:
+            if op.name in affected:
+                continue
+            spec = graph.operator_spec(op)
+            if spec is None:
+                continue
+            for req in spec.requirements:
+                if not isinstance(req, AttributeBinding):
+                    continue
+                path, _, name = req.target.rpartition(".")
+                if name not in changed_names:
+                    continue
+                shared = attribute_bindings.get((id(graph.model.get_submodule(path)), name))
+                if (
+                    shared is not None
+                    and shared.old != shared.new
+                    and shared.new != _bound_attribute(graph, req, impact).new
+                ):
+                    raise PlanningError(f"Shared attribute update disagrees: {req.target}")
     for selection in (*impact.parameters, *impact.buffers):
         if selection.tensor.id not in recipes:
             recipe = ordinary_recipe(selection)

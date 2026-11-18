@@ -75,6 +75,38 @@ def test_dictionary_configuration_is_guarded_through_plan_and_checkpoint(
     target(x).sum().backward()
 
 
+@pytest.mark.parametrize("buffer", [False, True])
+def test_tensor_rebinding_preserves_shared_config(buffer, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = nn.Parameter(torch.arange(1.0, 5.0))
+            self.options = {"scale": 2}
+            self.lookup = [self.weight, self.options]
+            if buffer:
+                self.register_buffer("offset", torch.ones(4))
+                self.lookup.append(self.offset)
+
+        def forward(self, x):
+            if self.lookup[1] is not self.options:
+                raise ValueError("Detached configuration")
+            y = self.lookup[0] * x * self.lookup[1]["scale"]
+            return y + self.lookup[2] if buffer else y
+
+    model = Model()
+    options = model.options
+    graph = DependencyGraph.build(model, args=(torch.ones(4),))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    pruner.apply(pruner.plan_remove((graph.parameter("weight").axis(0).select([1]),)))
+    assert model.lookup[0] is model.weight
+    assert model.lookup[1] is model.options is options
+    if buffer:
+        assert model.lookup[2] is model.offset
+    options["scale"] = 3
+    expected = torch.tensor([3.0, 9.0, 12.0]) + int(buffer)
+    torch.testing.assert_close(model(torch.ones(3)), expected)
+
+
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 def test_ordinary_tensor_and_parent_references_keep_registration_categories(

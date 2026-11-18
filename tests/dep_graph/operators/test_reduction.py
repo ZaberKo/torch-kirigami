@@ -103,6 +103,42 @@ def test_empty_reduction_dimensions_are_all_axes(kind, dims, keep, execution_dev
 
 @pytest.mark.parametrize(
     "operation",
+    [
+        lambda x: torch.any(x, dim=[]),
+        lambda x: torch.all(x, dim=(), keepdim=True),
+        lambda x: x.any(dim=(), keepdim=True),
+        lambda x: x.all(dim=[]),
+    ],
+)
+def test_boolean_reduction_over_no_axes_preserves_channels(operation, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.producer = nn.Linear(3, 4)
+            self.consumer = nn.Linear(4, 2)
+
+        def forward(self, x):
+            return self.consumer(operation(self.producer(x)).float())
+
+    model = Model().eval()
+    x = torch.randn(2, 3)
+    with torch.no_grad():
+        model.producer.weight[0].zero_()
+        model.producer.bias[0].zero_()
+        kept = [0, 2, 3]
+        truth_values = (model.producer(x)[:, kept] != 0).float()
+        expected = F.linear(truth_values, model.consumer.weight[:, kept], model.consumer.bias)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    remove = graph.parameter("producer.weight").axis(0).select([1])
+    plan = pruner.plan_remove([remove])
+    assert removed(plan.analysis, graph.parameter("consumer.weight"), 1) == {1}
+    pruner.apply(plan)
+    torch.testing.assert_close(model(x), expected)
+
+
+@pytest.mark.parametrize(
+    "operation",
     [lambda x: x.sum(dim=0), lambda x: x.transpose(0, 0), lambda x: torch.softmax(x, dim=0)],
 )
 def test_scalar_tensor_operations_do_not_divide_by_rank(operation, execution_device):

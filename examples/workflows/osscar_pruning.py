@@ -262,6 +262,8 @@ def feature_rows(layer: nn.Module, inputs: torch.Tensor, row_ids: torch.Tensor) 
         return rows[row_ids]
     if type(layer) is not nn.Conv2d or layer.groups != 1 or layer.padding_mode != "zeros":
         raise ValueError("Feature sampling supports Linear and ordinary zero-padded Conv2d")
+    if inputs.ndim == 3:
+        inputs = inputs.unsqueeze(0)
     same_padding = layer.padding == "same"
     padding = (0, 0) if isinstance(layer.padding, str) else layer.padding
     totals = (
@@ -426,6 +428,8 @@ def collect_reconstruction(
         """Save sampled preactivation targets before downstream in-place operations."""
         if sampled:
             raise ValueError("Repeated consumer calls are outside this workflow's scope")
+        if type(module) is nn.Conv2d and output.ndim == 3:
+            output = output.unsqueeze(0)
         locations = output.shape[-2] * output.shape[-1] if type(module) is nn.Conv2d else 1
         count = (
             output.shape[0] * locations
