@@ -20,6 +20,7 @@ from .construction import _Analyzer
 from .contracts import AttributeBinding, Constraint, Diagnostic, Impact, ShapeExpr
 from .eligibility import has_native_query_semantics
 from .graph_state import DependencyGraphState, resolve_attribute, validate_reference
+from .identity_axes import IdentityAxisIndex
 from .operation import Operation, OperatorRule, OperatorSpec, TensorFacts
 from .registry import OperatorRegistry
 from .relations import Relation
@@ -131,22 +132,28 @@ class DependencyGraph:
 
     @property
     def relations(self) -> tuple[Relation, ...]:
-        """Return the structural relations recorded by operation rules."""
+        """Structural relations recorded by operator rules."""
         return tuple(self._data.relations)
 
     @property
+    def identity_axes(self) -> IdentityAxisIndex:
+        """Return the snapshot's shared index of identity-coordinate relations."""
+        self.validate()
+        return self._solver.identity_axes
+
+    @property
     def constraints(self) -> tuple[Constraint, ...]:
-        """Return the constraints checked after propagation reaches a fixed point."""
+        """Graph constraints checked after propagation reaches a fixed point."""
         return tuple(self._data.constraints)
 
     @property
     def diagnostics(self) -> tuple[Diagnostic, ...]:
-        """Return build-time diagnostics, including unsupported captured operations."""
+        """Build-time diagnostics, including unsupported captured operations."""
         return tuple(self._data.diagnostics)
 
     @property
     def shape_expressions(self) -> Mapping[str, ShapeExpr]:
-        """Return shape provenance indexed by FX node name."""
+        """Read-only shape provenance keyed by FX node name."""
         return MappingProxyType({node.name: expr for node, expr in self._data.expressions.items()})
 
     def parameter(self, path: str) -> TensorRef:
@@ -294,13 +301,35 @@ class DependencyGraph:
         return original
 
     def constant_guards(self) -> tuple[str, ...]:
-        """Return paths to registered Tensors whose values guard the analysis."""
+        """Return paths of registered tensors whose values guard the analysis.
+
+        Returns:
+            The first registered path of each guarded tensor. Freshness checks
+            raise `torch_kirigami.StaleGraphError` if a guarded value changes.
+        """
         return tuple(ref.paths[0] for ref in self._data.constant_refs)
 
     def affected_operations(self, impact: Impact) -> frozenset[str]:
-        """Include size-expression consumers even without removed tensor regions."""
-        self.validate_impact(impact)
+        """Return the captured operations that an impact can affect.
 
+        An operation is affected if a selected tensor is one of its inputs,
+        outputs, or module bindings, or is read by the shape expression of one
+        of its input nodes. Every FX successor of an affected operation, including
+        later readers of its declared in-place writes, is also affected, even if
+        its own tensors have no selected regions.
+
+        Args:
+            impact: A result produced by this graph.
+
+        Returns:
+            FX node names of the affected operations.
+
+        Raises:
+            ValueError: The impact belongs to another graph.
+            torch_kirigami.StaleGraphError: A tracked model property has changed.
+        """
+        self.validate_impact(impact)
+        self._check_fresh()
         return self._solver.affected_operations(impact.selections)
 
     def operations(self, module_path: str | None = None) -> tuple[Operation, ...]:
@@ -357,15 +386,16 @@ class DependencyGraph:
             constraints: Additional consumer constraints, such as protected axes.
 
         Returns:
-            An Impact containing determined selections, provenance, constraints,
-            and rewrite requirements. A resolved result is neither an executable
-            pruning plan nor a numerical equivalence guarantee.
+            An `Impact` containing determined selections, provenance, diagnostics,
+            constraints, and rewrite requirements. A resolved result is neither an
+            executable pruning plan nor a numerical equivalence guarantee.
 
         Raises:
             torch_kirigami.StaleGraphError: A tracked model property has changed.
             ValueError: A selection or constraint refers to another graph.
-            torch_kirigami.AnalysisLimitError: A supplied selection exceeds the region limit.
-                Limits reached while following relations are reported as diagnostics.
+            torch_kirigami.AnalysisLimitError: Merging the requested selections
+                exceeds the region limit. Limits reached while following relations
+                or checking constraints are reported as diagnostics instead.
         """
         self._check_fresh()
         return self._solver.propagate(remove=remove, constraints=constraints)

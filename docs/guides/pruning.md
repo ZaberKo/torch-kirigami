@@ -368,7 +368,7 @@ configuration in application code. Settings are not included in saved plans.
 | `max_record_depth` | 100 | Static pruning-record and encoded-record nesting. |
 | `score_batch_size` | 32 | Generic metric batch size. |
 | `impact_cache_size` | 32 | Retained joint planning queries. |
-| `candidate_cache_size` | 4,096 | Native rejection proofs per filter. Zero also disables reuse of the latest filtered space. |
+| `candidate_cache_size` | 4,096 | Minimum bound per candidate proof cache. With a known candidate count the bound is at least twice that count. Zero disables proof caches and reuse of the latest filtered space. |
 | `recipe_cache_size` | 4 | Retained compiled recipe sets. |
 | `attribute_cache_size` | 32 | Retained attribute-validation results. |
 | `normalization_cache_size` | 32 | GroupMagnitude normalization entries. |

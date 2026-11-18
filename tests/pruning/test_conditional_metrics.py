@@ -8,12 +8,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from torch_kirigami import DependencyGraph
+from torch_kirigami import DependencyGraph, IndexSet, Region
 from torch_kirigami.dep_graph.contracts import Diagnostic
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
     ChannelRatio,
+    Greedy,
+    ParameterBudget,
     PlanningContext,
     PlanningError,
     Pruner,
@@ -31,6 +33,117 @@ def context_for(graph, candidates):
         tuple(dict.fromkeys(c.axis for c in candidates if c.axis is not None)),
         (),
     )
+
+
+@pytest.mark.parametrize(
+    "metric", [Magnitude(1), Magnitude(2), WeightTaylor(), WeightTaylor("joint_abs")]
+)
+def test_equal_regions_score_bitwise_equal_for_every_decomposition(metric, execution_device):
+    """Seed order changes the region decomposition of an effect, never its score."""
+    torch.manual_seed(5)
+    model = nn.Linear(6, 5, bias=False)
+    model.weight.grad = torch.randn_like(model.weight)
+    graph = DependencyGraph.build(model, args=(torch.ones(2, 6),))
+    ref = graph.parameter("weight")
+    rows, columns = ref.axis(0), ref.axis(1)
+    candidates = (
+        Candidate("rows_first", (rows.select([1]), columns.select([2]))),
+        Candidate("columns_first", (columns.select([2]), rows.select([1]))),
+    )
+    context = context_for(graph, candidates)
+    accepted = context.impact((rows.select([0]), columns.select([3])))
+    regions = [
+        parameter_regions(context, candidate, accepted_impact=accepted)[0]
+        for candidate in candidates
+    ]
+    assert regions[0] == regions[1] and regions[0].regions != regions[1].regions
+    scores = metric.score(context, candidates, accepted_impact=accepted)
+    assert scores[0] == scores[1]
+    mask = torch.zeros_like(model.weight, dtype=torch.bool)
+    mask[1] = True
+    mask[:, 2] = True
+    mask[0] = False
+    mask[:, 3] = False
+    values = model.weight.detach().double()[mask]
+    if isinstance(metric, WeightTaylor):
+        products = values * model.weight.grad.double()[mask]
+        reference = (
+            products.abs().sum() if metric.mode == "elementwise_abs" else products.sum().abs()
+        )
+    else:
+        reference = values.abs().sum() if metric.p == 1 else values.square().sum().sqrt()
+    assert scores[0] == pytest.approx(reference.item(), rel=1e-6)
+
+
+def test_joint_taylor_cancels_within_coordinate_regions(execution_device):
+    """Signed sums follow coordinate-determined regions, not one flattened row-major vector."""
+    model = nn.Linear(2, 3, bias=False).double().eval()
+    with torch.no_grad():
+        model.weight.copy_(
+            torch.tensor([[1e308, 0.0], [1e308, -1e308], [-1e308, 0.0]], dtype=torch.float64)
+        )
+    model.weight.grad = torch.ones_like(model.weight)
+    graph = DependencyGraph.build(model, args=(torch.zeros(1, 2, dtype=torch.float64),))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    ref = graph.parameter("weight")
+    candidate = Candidate("overlap", (ref.axis(0).select([1]), ref.axis(1).select([0])))
+    context = PlanningContext(
+        graph, (candidate,), ParameterBudget(2), (ref.axis(0), ref.axis(1)), ()
+    )
+    # Rows 0 and 2 keep column 0; row 1 keeps both columns. Each region sums to zero.
+    assert context.score(WeightTaylor("joint_abs"), (candidate,)) == (0.0,)
+    space = CandidateSpace((candidate,), (ref.axis(0), ref.axis(1)))
+    plan = pruner.plan(space, budget=ParameterBudget(2), strategy=Greedy(WeightTaylor("joint_abs")))
+    assert plan.selected == ("overlap",)
+    pruner.apply(plan)
+    assert tuple(model.weight.shape) == (2, 1)
+
+
+def test_taylor_axis_statistics_follow_selected_coordinates(monkeypatch):
+    """One selection split into one or five regions uses one reduction path."""
+    model = nn.Linear(3, 4, bias=False).double().eval()
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+        model.weight[0, 0] = 2.0**53
+    model.weight.grad = torch.ones_like(model.weight)
+    graph = DependencyGraph.build(model, args=(torch.zeros(1, 3, dtype=torch.float64),))
+    ref = graph.parameter("weight")
+
+    def tile(rows, columns):
+        return Region((IndexSet.of(rows), IndexSet.of(columns)))
+
+    rows = ref.axis(0).select([0, 1, 2])
+    pinwheel = ref.select(
+        (
+            tile((0,), (0, 1)),
+            tile((0, 1), (2,)),
+            tile((2,), (1, 2)),
+            tile((1, 2), (0,)),
+            tile((1,), (1,)),
+        )
+    )
+    assert rows == pinwheel and len(pinwheel.regions) == 5
+    candidates = (Candidate("rows", (rows,)), Candidate("pinwheel", (pinwheel,)))
+    context = PlanningContext(graph, candidates, ParameterBudget(10), (ref.axis(0),), ())
+    statistics = []
+    original = WeightTaylor._axis_sums
+
+    def counted(self, weight, dim):
+        result = original(self, weight, dim)
+        if result is not None:
+            statistics.append(dim)
+        return result
+
+    monkeypatch.setattr(WeightTaylor, "_axis_sums", counted)
+    for metric in (Magnitude(1), Magnitude(2), WeightTaylor(), WeightTaylor("joint_abs")):
+        statistics.clear()
+        scores = context.score(metric, candidates)
+        assert scores[0] == scores[1]
+        # 2**53 plus eleven ones rounds to a neighboring float64 value.
+        expected = 2.0**53 if getattr(metric, "p", 1) == 2 else 2.0**53 + 11
+        assert scores[0] == pytest.approx(expected, rel=1e-15)
+        if isinstance(metric, WeightTaylor):
+            assert statistics == ([0, 0] if metric.mode == "elementwise_abs" else [])
 
 
 @pytest.mark.parametrize(

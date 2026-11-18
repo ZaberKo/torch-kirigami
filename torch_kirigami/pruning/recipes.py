@@ -3,7 +3,15 @@
 import torch
 
 from ..dep_graph.contracts import Impact
-from ..dep_graph.selection import IndexSet, Region, Selection, concatenated_shape, full_region
+from ..dep_graph.selection import (
+    IndexSet,
+    Region,
+    Selection,
+    canonical_boxes,
+    concatenated_shape,
+    full_region,
+    region_boxes,
+)
 from ..operator_recipes import TensorRecipe
 from .types import CoordinateSegment, PlanningError
 
@@ -52,8 +60,10 @@ def validate_recipe(recipe: TensorRecipe, impact: Impact) -> None:
     kept = Selection(ref, recipe.segments)
     if sum(Selection(ref, (r,)).count for r in recipe.segments) != kept.count:
         raise PlanningError("Recipe segments overlap")
-    full = Selection(ref, (full_region(ref.shape),))
-    if kept != full.subtract(impact.selection(ref)):
+    retained = canonical_boxes(
+        region_boxes((full_region(ref.shape),)), region_boxes(impact.selection(ref).regions)
+    )
+    if canonical_boxes(region_boxes(kept.regions)) != retained:
         raise PlanningError("Recipe retained coordinates disagree with the joint Impact")
     try:
         concatenated_shape(recipe.segments, recipe.concat_dim)

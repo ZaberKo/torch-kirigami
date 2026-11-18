@@ -29,6 +29,7 @@ from torch_kirigami.pruning import (
     Granularity,
     Greedy,
     GroupMagnitude,
+    Magnitude,
     ParameterBudget,
     PlanningContext,
     PlanningError,
@@ -42,6 +43,13 @@ class ReferenceMagnitude(GroupMagnitude):
     """Force ordinary per-candidate joint scoring with the same metric formula."""
 
 
+class ReferenceUnionMagnitude(Magnitude):
+    """Force ordinary per-candidate joint scoring for the union norm."""
+
+
+METRIC_PAIRS = [(GroupMagnitude, ReferenceMagnitude), (Magnitude, ReferenceUnionMagnitude)]
+
+
 def context_for(
     graph: DependencyGraph, candidates: tuple[Candidate, ...], constraints: tuple = ()
 ) -> PlanningContext:
@@ -53,10 +61,13 @@ def context_for(
 @pytest.mark.parametrize("p", [1, 2])
 @pytest.mark.parametrize("strategy_type", [Greedy, DynamicGreedy])
 @pytest.mark.parametrize("convolution", [False, True])
+@pytest.mark.parametrize(("metric_type", "reference_type"), METRIC_PAIRS)
 def test_public_plan_restore_apply_matches_generic_joint_scoring(
     p: int,
     strategy_type: type[Greedy],
     convolution: bool,
+    metric_type: type[Magnitude | GroupMagnitude],
+    reference_type: type[Magnitude | GroupMagnitude],
     execution_device: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -69,11 +80,11 @@ def test_public_plan_restore_apply_matches_generic_joint_scoring(
     reference = copy.deepcopy(model)
     x = torch.randn(2, 4, 3, 3) if convolution else torch.randn(2, 3, 4)
     plans, compact, propagation_counts = [], [], []
-    for current, metric in ((model, GroupMagnitude(p)), (reference, ReferenceMagnitude(p))):
+    for current, metric in ((model, metric_type(p)), (reference, reference_type(p))):
         graph = DependencyGraph.build(current, args=(x,))
         pruner = Pruner(current, graph=graph, granularity=Granularity(default=2))
         space = pruner.discover_candidates(targets=("0", "3"))
-        if type(metric) is GroupMagnitude:
+        if type(metric) is metric_type:
             ranking = IndependentRanking.build(
                 context_for(graph, space.candidates), metric, space.channel_axes
             )
@@ -228,7 +239,8 @@ def test_batched_statistics_and_conditional_order_have_independent_reference(
         math.fsum(abs(v) for v in (*a, b, *c, d, e)) if p == 1 else math.hypot(*a, b, *c, d, e)
         for a, b, c, d, e in zip(rows, bn, columns, bias, bn_bias, strict=True)
     ]
-    assert ranking.norms[0] == pytest.approx(expected, rel=1e-12, abs=0)
+    norms = [ranking.norms[0][position] for position in range(6)]
+    assert norms == pytest.approx(expected, rel=1e-12, abs=0)
     selected = context.impact((axis.select([0]),))
     result = ranking.score(selected)
     scores_by_key, removals = result.scores, result.removals
@@ -260,7 +272,9 @@ def test_batched_norms_preserve_low_precision_and_complex_values(
     ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     assert ranking is not None
     expected = [math.hypot(*(abs(v) for v in row)) for row in values.cpu().tolist()]
-    assert ranking.norms[0] == pytest.approx(expected, rel=1e-6, abs=0)
+    assert [ranking.norms[0][i] for i in range(len(expected))] == pytest.approx(
+        expected, rel=1e-6, abs=0
+    )
 
 
 def test_dynamic_propagations_follow_joint_trials_instead_of_candidate_count(monkeypatch) -> None:
@@ -328,10 +342,21 @@ def test_unproved_candidates_use_generic_scoring(case: str) -> None:
     context = context_for(graph, candidates, constraints)
     ranking = IndependentRanking.build(context, GroupMagnitude(), context.channel_axes)
     if case == "overlap":
+        # Rows of `2.weight` belong to the second component and its columns to
+        # the first. Removing one row removes part of each column slice, so the
+        # first component is scored on the rest of its slices.
         assert ranking is not None
-        scores = ranking.score(context.impact(())).scores
-        assert set(scores) == {"first"}
-        assert ranking.score(context.impact(candidates[1].remove)) is None
+        empty = context.impact(())
+        scores = ranking.score(empty).scores
+        assert set(scores) == {"first", "other"}
+        expected = context.score(ReferenceMagnitude(), candidates, accepted_impact=empty)
+        assert [scores["first"], scores["other"]] == pytest.approx(expected, rel=1e-12)
+        accepted = context.impact(candidates[1].remove)
+        result = ranking.score(accepted)
+        assert result is not None
+        expected = context.score(ReferenceMagnitude(), candidates[:1], accepted_impact=accepted)
+        assert dict(result.scores) == {"first": expected[0]}
+        assert result.covered == {"other"}
     else:
         assert ranking is None
     if case == "custom":
@@ -340,14 +365,19 @@ def test_unproved_candidates_use_generic_scoring(case: str) -> None:
 
 
 @pytest.mark.parametrize("kind", ["subclass", "instance_override", "inference"])
-def test_extensions_and_inference_tensors_do_not_reuse_statistics(kind: str) -> None:
+@pytest.mark.parametrize(("metric_type", "reference_type"), METRIC_PAIRS)
+def test_extensions_and_inference_tensors_do_not_reuse_statistics(
+    kind: str,
+    metric_type: type[Magnitude | GroupMagnitude],
+    reference_type: type[Magnitude | GroupMagnitude],
+) -> None:
     with torch.inference_mode(kind == "inference"):
         model = nn.Linear(3, 4)
         graph = DependencyGraph.build(model, args=(torch.ones(2, 3),))
         axis = graph.parameter("weight").axis(0)
         candidates = (Candidate("first", (axis.select([0]),), axis),)
         context = context_for(graph, candidates)
-        metric = ReferenceMagnitude() if kind == "subclass" else GroupMagnitude()
+        metric = reference_type() if kind == "subclass" else metric_type()
         if kind == "instance_override":
             metric.score = lambda *args, **kwargs: [7.0]
         assert IndependentRanking.build(context, metric, context.channel_axes) is None
@@ -438,7 +468,12 @@ def test_initial_divisibility_violation_is_still_repaired() -> None:
 
 
 @pytest.mark.parametrize("value", [0.0, 1.0, float("nan"), float("inf")])
-def test_ties_and_invalid_statistics_match_generic_public_planning(value: float) -> None:
+@pytest.mark.parametrize(("metric_type", "reference_type"), METRIC_PAIRS)
+def test_ties_and_invalid_statistics_match_generic_public_planning(
+    value: float,
+    metric_type: type[Magnitude | GroupMagnitude],
+    reference_type: type[Magnitude | GroupMagnitude],
+) -> None:
     model = nn.Sequential(nn.Linear(3, 6), nn.Linear(6, 3)).double()
     with torch.no_grad():
         for parameter in model.parameters():
@@ -448,7 +483,7 @@ def test_ties_and_invalid_statistics_match_generic_public_planning(value: float)
     pruner = Pruner(model, graph=graph)
     space = pruner.discover_candidates(targets=("0",))
     plans = []
-    for metric in (GroupMagnitude(), ReferenceMagnitude()):
+    for metric in (metric_type(), reference_type()):
         if not math.isfinite(value):
             with pytest.raises(PlanningError, match="nonfinite"):
                 pruner.plan(space, budget=ChannelRatio(0.5), strategy=DynamicGreedy(metric))
@@ -509,7 +544,8 @@ def test_repeated_calls_and_multiple_consumers_preserve_shared_statistics(
         + model.left.weight.square().sum(0)
         + model.right.weight.square().sum(0)
     )
-    assert ranking.norms[0] == pytest.approx(energy.sqrt().tolist())
+    norms = [ranking.norms[0][i] for i in range(len(energy))]
+    assert norms == pytest.approx(energy.sqrt().tolist())
     plans = [
         pruner.plan(space, budget=ChannelRatio(0.5), strategy=DynamicGreedy(metric))
         for metric in (GroupMagnitude(), ReferenceMagnitude())

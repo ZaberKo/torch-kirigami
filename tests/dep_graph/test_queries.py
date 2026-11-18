@@ -85,3 +85,19 @@ def test_public_graph_queries_are_isolated_and_alias_aware():
     graph.invalidate()
     with pytest.raises(StaleGraphError):
         graph.tensor(ref)
+
+
+@pytest.mark.parametrize("change", ["invalidate", "attribute"])
+def test_affected_operations_rejects_stale_graph(change):
+    model = nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 2))
+    graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
+    impact = graph.propagate(remove=[graph.parameter("0.weight").axis(0).select([1])])
+    affected = graph.affected_operations(impact)
+    assert {operation.node.name for operation in graph.operations()} >= affected
+    assert len(affected) >= 2
+    if change == "invalidate":
+        graph.invalidate()
+    else:
+        model[0].out_features = 5
+    with pytest.raises(StaleGraphError):
+        graph.affected_operations(impact)

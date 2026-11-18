@@ -1,7 +1,7 @@
 """Plan and apply structural pruning on the original PyTorch Module."""
 
+from ..dep_graph.identity_axes import IdentityAxisIndex
 from ..operator_recipes import AttributeRecipe, OperatorRecipe, TensorRecipe
-from .axis_domains import IdentityAxisIndex
 from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
 from .granularity import Granularity

@@ -20,8 +20,11 @@ class Config:
         max_record_depth: Static and encoded pruning-record nesting bound.
         score_batch_size: Generic scoring batch size; custom strategies may batch explicitly.
         impact_cache_size: Maximum retained planning impact queries; zero disables retention.
-        candidate_cache_size: Maximum native rejection proofs per filter. Zero also
-            disables reuse of the latest filtered candidate space.
+        candidate_cache_size: Minimum bound of each proof cache in a candidate
+            filter. A filter with a known candidate count raises the bound to
+            twice that count, so a full rescan by `DynamicGreedy` reuses its
+            proofs. Zero disables these caches and reuse of the latest filtered
+            candidate space.
         recipe_cache_size: Maximum retained compiled recipe sets.
         attribute_cache_size: Maximum retained attribute-validation results.
         normalization_cache_size: Maximum GroupMagnitude normalization entries.

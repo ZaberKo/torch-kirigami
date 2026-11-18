@@ -123,6 +123,59 @@ def test_scoped_axis_relation_requires_complete_cross_sections():
         assert set(left.fully_selected_indices(selection)) == complete
 
 
+@pytest.mark.parametrize(
+    "ports",
+    [
+        ("rows",),
+        ("columns",),
+        ("rows", "top", "bottom"),
+        ("top", "bottom"),
+    ],
+)
+def test_layout_ports_match_every_small_removal(ports):
+    """Whole-tensor ports and scoped partitions accept exactly the covered cells."""
+    ref = TensorRef("matrix", (4, 3))
+    scopes = {
+        "rows": (0, None),
+        "columns": (1, Region((IndexSet.span(0, 4), IndexSet.span(0, 3)))),
+        "top": (1, Region((IndexSet.span(0, 2), IndexSet.span(0, 3)))),
+        "bottom": (1, Region((IndexSet.span(2, 4), IndexSet.span(0, 3)))),
+    }
+    constraint = LayoutConstraint(
+        ref, tuple(AxisPort(ref.axis(scopes[name][0]), scopes[name][1]) for name in ports)
+    )
+    cells = set(product(range(4), range(3)))
+
+    def cross_section(name, cell):
+        dim, scope = scopes[name]
+        inside = cells if scope is None else set(product(*scope.axes))
+        return {c for c in inside if c[dim] == cell[dim]} if cell in inside else None
+
+    def check(selection, chosen):
+        covered = all(
+            any(
+                (section := cross_section(name, cell)) is not None and section <= chosen
+                for name in ports
+            )
+            for cell in chosen
+        )
+        diagnostic = constraint.check({ref.id: selection})
+        assert (diagnostic is None) == covered, chosen
+        assert diagnostic is None or diagnostic.code == "unsupported_layout"
+
+    for chosen in subsets(sorted(cells)):
+        check(
+            Selection(ref, tuple(Region(tuple(IndexSet.of([i]) for i in cell)) for cell in chosen)),
+            chosen,
+        )
+    # One region of complete cross-sections, as produced by axis requests.
+    for dim in (0, 1):
+        for positions in subsets(range(ref.shape[dim])):
+            if positions:
+                chosen = {cell for cell in cells if cell[dim] in positions}
+                check(ref.axis(dim).select(sorted(positions)), chosen)
+
+
 def test_partial_regions_distinguish_fixed_layout_and_opaque_barriers():
     ref = TensorRef("matrix", (2, 3))
     partial = Selection(ref, (Region((IndexSet.of([0]), IndexSet.of([1]))),))

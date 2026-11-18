@@ -1,10 +1,20 @@
 """core / coordinate properties contracts."""
 
+import random
 from itertools import combinations, permutations, product
 
 import pytest
 
-from torch_kirigami import IndexSet, Region, Selection, TensorRef
+from torch_kirigami import (
+    AnalysisLimitError,
+    AxisPort,
+    IndexSet,
+    LayoutConstraint,
+    Region,
+    Selection,
+    TensorRef,
+    config,
+)
 from torch_kirigami.dep_graph.relations import BroadcastRelation, PermuteRelation, ReshapeRelation
 
 
@@ -62,6 +72,80 @@ def test_all_small_selection_pairs_against_coordinate_sets(shape):
             assert actual_points(difference) == left - right, context
             assert difference.count == len(left - right), context
             assert (a == b) == (left == right), context
+            assert a.issubset(b) == (left <= right), context
+
+
+def test_containment_needs_no_representable_difference():
+    """`issubset` answers where `subtract` would exceed the region limit."""
+    config.max_parts = 2
+    ref = TensorRef("rows", (9, 2))
+    full = Selection(ref, (Region((IndexSet.span(0, 9), IndexSet.span(0, 2))),))
+    holes = Selection(ref, (Region((IndexSet.of([1, 5]), IndexSet.span(0, 2))),))
+    with pytest.raises(AnalysisLimitError):
+        full.subtract(holes)
+    assert holes.issubset(full) and not full.issubset(holes)
+    with pytest.raises(ValueError, match="different tensors"):
+        holes.issubset(Selection(TensorRef("other", (9, 2))))
+
+
+def _limited(function, *args):
+    try:
+        return function(*args)
+    except AnalysisLimitError:
+        return "analysis_limit"
+
+
+def test_layout_checks_depend_only_on_coordinates():
+    """Different region decompositions of one position set check identically.
+
+    Constraint results feed shared analyses, so a decomposition that happens to
+    stay within `max_parts` must not be judged differently from one that does not.
+    """
+    rng = random.Random(5)
+    ref = TensorRef("layout", (4, 6))
+    decomposed = limited = 0
+    for _ in range(300):
+        config.max_parts = 64
+        removed = {p for p in points(ref.shape) if rng.random() < 0.6}
+        if not removed:
+            continue
+        fibers = [{}, {}]
+        for point in removed:
+            for dim in (0, 1):
+                fibers[dim].setdefault(point[1 - dim], []).append(point[dim])
+        selections = [selected(ref, removed)]
+        for dim, groups in enumerate(fibers):
+            regions = []
+            for other, positions in groups.items():
+                axes = [IndexSet.of([other])]
+                axes.insert(dim, IndexSet.of(positions))
+                regions.append(Region(tuple(axes)))
+            selections.append(Selection(ref, tuple(regions)))
+        decomposed += len({selection.regions for selection in selections}) > 1
+        ports = tuple(
+            AxisPort(
+                ref.axis(rng.randrange(2)),
+                Region(
+                    tuple(IndexSet.of(rng.sample(range(n), rng.randint(1, n))) for n in ref.shape)
+                ),
+            )
+            for _ in range(rng.randint(0, 3))
+        )
+        constraint = LayoutConstraint(ref, ports)
+        scope = ports[0].scope if ports else None
+        config.max_parts = rng.randint(1, 3)
+        outcomes = [
+            (
+                _limited(selection.compact_shape),
+                _limited(selection.fully_selected_indices, 0, scope),
+                _limited(selection.fully_selected_indices, 1, scope),
+                _limited(constraint.check, {ref.id: selection}),
+            )
+            for selection in selections
+        ]
+        assert outcomes == [outcomes[0]] * len(outcomes), (removed, ports)
+        limited += "analysis_limit" in outcomes[0]
+    assert decomposed > 100 and limited > 10
 
 
 def test_every_small_removal_has_the_correct_compact_shape_and_scoped_axes():

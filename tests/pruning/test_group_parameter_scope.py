@@ -296,7 +296,7 @@ def test_zero_parameters_and_covered_requests_are_valid(
     ranking = IndependentRanking.build(context, metric, space.channel_axes)
     accepted = context.impact(space.candidates[0].remove)
     assert context.score(metric, space.candidates, accepted_impact=accepted) == (0.0,) * 4
-    if metric_type is GroupMagnitude:
+    if metric_type in (GroupMagnitude, Magnitude):
         assert ranking is not None
         accelerated = ranking.score(accepted)
         assert accelerated is not None

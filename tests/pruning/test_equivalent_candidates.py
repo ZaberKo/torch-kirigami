@@ -256,3 +256,28 @@ def test_parameter_groups_reuse_residual_analysis_without_deduplication(
     filtered = pruner.parameter_groups(space.candidates, parameter_filter=keep)
     assert [group.selections for group in filtered] == [group.selections for group in groups]
     assert seen == [s.tensor for group in groups for s in group.selections]
+
+
+def test_residual_aliases_share_one_joint_query_after_hidden_channel_removal(monkeypatch):
+    """The accepted seed shares a weight with the trunk on its other axis."""
+    graph = DependencyGraph.build(ResidualCNN().eval(), args=(torch.randn(1, 3, 2, 2),))
+    context = PlanningContext(graph, (), ChannelRatio(0.25), (), ())
+    prefix = (graph.parameter("blocks.0.c1.weight").axis(0).select([1]),)
+    axes = [
+        graph.parameter(path).axis(0)
+        for path in ("stem.weight", "blocks.0.c2.weight", "blocks.1.c2.weight")
+    ]
+    requests = [(*prefix, axis.select([0])) for axis in axes]
+    reference = [graph.propagate(remove=request) for request in requests]
+    calls = []
+    ordinary = DependencySolver.propagate
+
+    def counted(self, *, remove, constraints=()):
+        calls.append(remove)
+        return ordinary(self, remove=remove, constraints=constraints)
+
+    monkeypatch.setattr(DependencySolver, "propagate", counted)
+    for request, expected in zip(requests, reference, strict=True):
+        actual = context.impact(request)
+        assert actual.complete and actual == expected
+    assert len(calls) == 1

@@ -324,7 +324,10 @@ An explicit full region has the same coverage as an omitted scope. Optimization
 proofs additionally require native records at every nested field.
 Value equality alone does not establish the behavior of extension objects.
 
-Constraints check the accumulated closure. They do not add removals. A planner can choose additional candidates to satisfy an unresolved condition.
+A constraint checks the accumulated closure. For a fixed configuration, the same
+selected coordinates must give the same diagnostic. The solver can reuse a
+result, so the number of calls to `check()` can vary. Only the planner can
+add candidates to satisfy an unresolved constraint.
 
 | Constraint | Contract |
 | --- | --- |
@@ -383,7 +386,10 @@ Custom constraints can set `irreversible=True` only on a conflict that persists 
 
 `AnalysisLimitError` means an exact symbolic region exceeded the representation limit. Constructing an oversized user selection can raise this error before propagation starts.
 
-If a relation exceeds the limit during propagation, the graph disables that relation for the query. It adds an incomplete `analysis_limit` diagnostic. The graph does not approximate the missing coordinates.
+If propagation reaches the fragment limit, the graph can still prove a native
+compound request by checking the complete set of forced coordinates against
+every adjacent relation. If that proof fails, the query reports an incomplete
+`analysis_limit` diagnostic.
 
 `CaptureError` means the graph could not trace or execute the model under the capture contract. Build returns no usable graph.
 

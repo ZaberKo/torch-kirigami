@@ -6,7 +6,13 @@ import pytest
 import torch
 from torch import nn
 
-from torch_kirigami import AxisRelation, DependencyGraph, IndexSet, Region, TensorRef
+from torch_kirigami import (
+    AxisRelation,
+    DependencyGraph,
+    IndexSet,
+    Region,
+    TensorRef,
+)
 from torch_kirigami.dep_graph.relations import (
     AxisPort,
     BlockMap,
@@ -133,3 +139,13 @@ def test_equivalent_seeds_keep_full_closure_with_nonidentity_relations(execution
             assert dict(actual.selections) == dict(reference.selections)
             assert actual.diagnostics == reference.diagnostics
     assert all(index.equivalent_axes(axis) == axes for axis in axes)
+
+
+def test_canonical_axis_can_recur_on_a_shared_tensor():
+    """Mathematical equivalence still holds when seeding both slices would overlap."""
+    weight = TensorRef("weight", (4, 4))
+    rows, columns = weight.axis(0), weight.axis(1)
+    index = IdentityAxisIndex((AxisRelation.equal(rows, columns),))
+    seed = columns.select([1])
+    assert index.canonical_seeds((seed,)) == (rows.select([1]),)
+    assert index.equivalent_slices(seed) == (seed,)

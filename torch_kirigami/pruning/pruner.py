@@ -14,8 +14,10 @@ from ..dep_graph.contracts import Constraint, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.selection import Selection, TensorRef, gather_region
+from ..errors import AnalysisLimitError
 from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
+from .candidate_checks import propagate_request
 from .candidates import (
     CandidateSpace,
     discover_candidates,
@@ -348,16 +350,18 @@ class Pruner:
             key not in registered for key, _reason in result.exclusions
         ):
             raise PlanningError("Strategy returned an unregistered candidate key")
-        impact = graph.propagate(
-            remove=(s for key in keys for s in registered[key].remove),
-            constraints=self.constraints,
+        impact = propagate_request(
+            graph, tuple(s for key in keys for s in registered[key].remove), self.constraints
         )
         # Reestablish premises after arbitrary strategy callbacks.
         final_context = PlanningContext(graph, candidates, budget, axes, self.constraints)
-        recipes, attributes, notes = final_context.compile(impact)
-        # Measurements are independently recomputed; diagnostics cannot make an
-        # infeasible selection executable or declare a resource target met.
-        final_context.require_budget(impact, result=result)
+        try:
+            recipes, attributes, notes = final_context.compile(impact)
+            # Measurements are independently recomputed; diagnostics cannot make an
+            # infeasible selection executable or declare a resource target met.
+            final_context.require_budget(impact, result=result)
+        except AnalysisLimitError as error:
+            raise PlanningError(f"Verification reached an analysis limit: {error}") from error
         return self._finish(
             impact,
             recipes,

@@ -82,7 +82,6 @@ from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
     Granularity,
-    IdentityAxisIndex,
     Metric,
     MetricContext,
     ParameterBudget,
@@ -309,7 +308,7 @@ def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> Candi
     local dimension in every head. Other graph-declared candidates are unchanged.
     No independent per-channel scores are added to estimate a block's score.
     """
-    index = IdentityAxisIndex(graph.relations)
+    index = graph.identity_axes
     groups: dict[AxisRef, tuple[IndexSet, ...]] = {}
     for operation in graph.operations():
         if type(operation.module) is not torch.nn.MultiheadAttention:
@@ -571,7 +570,7 @@ class Isomorphic:
                 operation_indices[ref].add(index)
         accepted = context.impact(())
         pending_scores: list[RemovalAction] = []
-        axis_index = IdentityAxisIndex(context.graph.relations)
+        axis_index = context.graph.identity_axes
         templates: dict[AxisRef, _IdentityFamily | None] = {}
         equivalent_actions: dict[tuple[tuple[AxisRef, ...], IndexSet], int] = {}
         all_constraints = (*context.graph.constraints, *context.constraints)
@@ -598,7 +597,7 @@ class Isomorphic:
         )
 
         def axis_seed(candidate: Candidate) -> tuple[AxisRef, IndexSet] | None:
-            """Recognize a full-axis seed, never infer one from a shape."""
+            """Recognize complete slices requested directly on the declared axis."""
             axis = candidate.axis
             if (
                 not reuse_axes
@@ -607,6 +606,7 @@ class Isomorphic:
                 or not has_native_semantics(axis)
                 or len(candidate.remove) != 1
                 or not has_native_semantics(candidate.remove)
+                or candidate.remove[0].tensor != axis.tensor
             ):
                 return None
             indices = candidate.remove[0].fully_selected_indices(axis.dim)

@@ -2,30 +2,48 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+import math
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Literal, Protocol
 
 from ..settings import config
 from .relations import AxisPort
-from .selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from .selection import (
+    AxisRef,
+    IndexSet,
+    Region,
+    Selection,
+    TensorRef,
+    canonical_boxes,
+    full_region,
+    region_boxes,
+)
 
 
 @dataclass(frozen=True)
 class Diagnostic:
-    """Explain a conflict or an unproved part of an analysis.
+    """A conflict or an unproved part of an analysis.
 
     Attributes:
-        code: Stable diagnostic category.
+        code: Stable diagnostic category, such as `unsupported` or `empty_axis`.
         message: Human-readable explanation.
-        severity: Unresolved for missing proof or conflict for a violation.
+        severity: `unresolved` when a condition cannot be proved yet, or
+            `conflict` when a declared condition is violated.
         node: FX node name, when the issue belongs to a particular operation.
-        tensors: IDs of tensor entities involved in the issue.
-        complete: Whether the influence range is known despite this diagnostic.
-        irreversible: Proof that this violation persists under every superset of
-            the current removals, with graph assumptions and constraints fixed.
-            False makes no claim about whether completion is possible.
+        tensors: IDs of the tensor entities involved in the issue.
+        complete: Whether the influence range is still fully known despite this
+            diagnostic. This is independent of `severity`.
+        irreversible: Whether this conflict is proved to persist under every
+            superset of the current removals, with graph assumptions and
+            constraints fixed. Only a conflict can be irreversible. False makes
+            no claim about whether additional removals can repair the conflict.
+
+    Raises:
+        ValueError: `severity` is invalid, or `irreversible` is set on a
+            diagnostic that is not a conflict.
+        TypeError: `complete` or `irreversible` is not a boolean.
     """
 
     code: str
@@ -37,7 +55,7 @@ class Diagnostic:
     irreversible: bool = False
 
     def __str__(self) -> str:
-        """Render the category, available operation location, and actionable message."""
+        """Render the category, the operation location when known, and the message."""
         location = f" at {self.node}" if self.node else ""
         return f"{self.code}{location}: {self.message}"
 
@@ -54,11 +72,15 @@ class Diagnostic:
 
 
 class Constraint(Protocol):
-    """Check a structural condition without choosing additional removals."""
+    """A deterministic structural condition on selected coordinates.
+
+    For fixed configuration and selected coordinates, each check must return
+    the same diagnostic. Query caching can change the number of calls.
+    """
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         ...
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
@@ -75,7 +97,12 @@ class Constraint(Protocol):
 
 
 def chosen(selections: Mapping[str, Selection], tensor: TensorRef) -> Selection:
-    """Return a tensor's accumulated selection, or an empty selection."""
+    """Return a tensor's accumulated selection, or an empty selection.
+
+    Raises:
+        ValueError: The selection stored under the tensor's ID belongs to a
+            different reference.
+    """
     selection = selections.get(tensor.id)
     if selection is None:
         return Selection(tensor)
@@ -96,11 +123,21 @@ class NonEmpty:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Report a conflict if the entire axis would disappear."""
+        """Report a conflict if every position on the axis would be removed.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An irreversible `empty_axis` conflict, or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         selection = chosen(selections, self.axis.tensor)
         indices = selection.fully_selected_indices(self.axis.dim)
         if len(indices) == self.axis.tensor.shape[self.axis.dim]:
@@ -116,7 +153,7 @@ class NonEmpty:
 
 @dataclass(frozen=True)
 class Fixed:
-    """Require a tensor use to preserve this axis's structural positions.
+    """Require every position on an axis to be preserved.
 
     Attributes:
         axis: Tensor axis whose positions must remain unchanged.
@@ -126,11 +163,24 @@ class Fixed:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Check that the protected structural axis is preserved."""
+        """Check that no complete position on the protected axis is removed.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An irreversible `fixed_axis` conflict if a complete position is
+            removed, an unresolved `partitioned_constraint` diagnostic if the
+            selection needs partitioned packing and preservation cannot be
+            proved on this physical axis, or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         selection = chosen(selections, self.axis.tensor)
         if selection.fully_selected_indices(self.axis.dim):
             return Diagnostic(
@@ -161,6 +211,10 @@ class Balanced:
             entire axis is optional.
         nonempty: Whether removing an entire partition is a conflict.
 
+    Raises:
+        ValueError: `partitions` is empty, or a partition is not a nonempty
+            `IndexSet`, exceeds the axis, or overlaps another partition.
+
     Notes:
         Unequal counts remain unresolved; this constraint never chooses channels.
     """
@@ -185,11 +239,25 @@ class Balanced:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Check partition counts without choosing a balancing completion."""
+        """Check retained partition counts without choosing a balancing completion.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved `partitioned_constraint` diagnostic if the selection
+            needs partitioned packing, an irreversible `empty_partition` conflict
+            if `nonempty` is set and a partition loses every position, an
+            unresolved `unbalanced_groups` diagnostic if retained counts differ,
+            or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         selection = chosen(selections, self.axis.tensor)
         if selection and selection.compact_shape() is None:
             return Diagnostic(
@@ -222,13 +290,14 @@ class BlockBalance:
 
     Attributes:
         groups: Axis representing logical groups; whole groups may disappear.
-        members: Axis containing contiguous blocks of group members.
+        members: Axis containing one contiguous block of members per group, in
+            group order.
         block_size: Original number of members in each group.
-        node: FX node responsible for this constraint.
+        node: Name of the FX node responsible for this constraint.
 
     Raises:
-        ValueError: The block size is invalid or the member axis does not match
-            the declared number of groups and members per group.
+        ValueError: `block_size` is not a positive integer, or the member axis
+            length differs from the group count times `block_size`.
     """
 
     groups: AxisRef
@@ -247,11 +316,23 @@ class BlockBalance:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.groups.tensor, self.members.tensor)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Check member counts in surviving groups without completing the request."""
+        """Check member counts in surviving groups without completing the request.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved `unbalanced_blocks` diagnostic if a surviving group has
+            no members left or surviving groups have different member counts,
+            otherwise None.
+
+        Raises:
+            ValueError: A stored selection belongs to a different reference.
+        """
         removed_groups = chosen(selections, self.groups.tensor).fully_selected_indices(
             self.groups.dim
         )
@@ -289,7 +370,7 @@ class Divisible:
         factor: Positive divisor required by the consumer.
 
     Raises:
-        ValueError: factor is not a positive, non-boolean integer.
+        ValueError: `factor` is not a positive, non-boolean integer.
     """
 
     axis: AxisRef
@@ -301,11 +382,23 @@ class Divisible:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Check divisibility of the retained logical axis length."""
+        """Check that the retained axis length is divisible by `factor`.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved `partitioned_constraint` diagnostic if the selection
+            needs partitioned packing, an unresolved `indivisible_axis`
+            diagnostic if the retained length is not divisible, or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         selection = chosen(selections, self.axis.tensor)
         if selection and selection.compact_shape() is None:
             return Diagnostic(
@@ -332,7 +425,7 @@ class Barrier:
     Attributes:
         refs: Tensor references whose selections activate this barrier.
         message: Explanation returned in the diagnostic.
-        node: Optional FX node responsible for the barrier.
+        node: Name of the FX node responsible for the barrier, if any.
         code: Diagnostic category, defaulting to `unsupported`.
     """
 
@@ -345,7 +438,17 @@ class Barrier:
         object.__setattr__(self, "refs", tuple(self.refs))
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Report the barrier only if a referenced tensor is affected."""
+        """Report the barrier if any referenced tensor has a nonempty selection.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved, incomplete diagnostic with category `code`, or None.
+
+        Raises:
+            ValueError: A stored selection belongs to a different reference.
+        """
         if any(chosen(selections, ref) for ref in self.refs):
             return Diagnostic(
                 self.code,
@@ -359,12 +462,12 @@ class Barrier:
 
 @dataclass(frozen=True)
 class AxisBarrier:
-    """Report unsupported changes to complete positions on one axis.
+    """Report unsupported removal of complete positions on one axis.
 
     Attributes:
         axis: Tensor axis whose complete cross-sections are protected.
         message: Explanation returned in the diagnostic.
-        node: Optional FX node responsible for the barrier.
+        node: Name of the FX node responsible for the barrier, if any.
     """
 
     axis: AxisRef
@@ -373,11 +476,23 @@ class AxisBarrier:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.axis.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Report the barrier only if full positions on this axis are affected."""
+        """Report the barrier if a complete position on this axis is selected.
+
+        Partial cross-sections do not activate the barrier.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved, incomplete `unsupported_axis` diagnostic, or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         if chosen(selections, self.axis.tensor).fully_selected_indices(self.axis.dim):
             return Diagnostic(
                 "unsupported_axis",
@@ -396,7 +511,10 @@ class LayoutConstraint:
     Attributes:
         tensor: Tensor whose removed regions are checked.
         ports: Allowed partition scopes, or empty for ordinary axis compaction.
-        node: FX call imposing the layout restriction.
+        node: Name of the FX call imposing the layout restriction, if any.
+
+    Raises:
+        ValueError: A port is not an `AxisPort` on `tensor`.
 
     Notes:
         Shared tensors must satisfy every use's layout separately. Combining the
@@ -415,21 +533,35 @@ class LayoutConstraint:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensors whose selections this constraint inspects."""
+        """Tensors whose selections this constraint inspects."""
         return (self.tensor,)
 
     def check(self, selections: Mapping[str, Selection]) -> Diagnostic | None:
-        """Check that all selected regions fit this use's supported packing."""
+        """Check that the selection fits this use's supported packing.
+
+        Without ports, the selection must consist of complete axis
+        cross-sections. With ports, every selected element must lie in a
+        complete scoped cross-section of at least one port.
+
+        Args:
+            selections: Accumulated selections keyed by graph-local tensor ID.
+
+        Returns:
+            An unresolved `unsupported_layout` diagnostic, or None.
+
+        Raises:
+            ValueError: The stored selection belongs to a different reference.
+        """
         selection = chosen(selections, self.tensor)
         if not selection:
             return None
         if not self.ports:
             valid = selection.compact_shape() is not None
+        elif self._full_port_cross_sections(selection):
+            valid = True
         else:
-            covered = Selection(self.tensor)
-            for port in self.ports:
-                covered = covered.union(port.select(port.fully_selected_indices(selection)))
-            valid = not selection.subtract(covered)
+            covered = tuple(box for port in self.ports for box in port.covered_boxes(selection))
+            valid = not canonical_boxes(region_boxes(selection.regions), covered)
         if not valid:
             return Diagnostic(
                 "unsupported_layout",
@@ -439,15 +571,242 @@ class LayoutConstraint:
             )
         return None
 
+    def _full_port_cross_sections(self, selection: Selection) -> bool:
+        """Recognize complete cross-sections on the axis of a whole-tensor port.
+
+        That port then covers every selected element, so the general union of
+        port coverage is unnecessary. Only exact native records take this path.
+        """
+        if not (
+            type(selection) is Selection
+            and type(self.tensor) is TensorRef
+            and len(selection.regions) == 1
+            and type(selection.regions[0]) is Region
+            and all(type(size) is int for size in self.tensor.shape)
+            and all(type(indices) is IndexSet for indices in selection.regions[0].axes)
+        ):
+            return False
+        partial = [
+            dim
+            for dim, (indices, size) in enumerate(
+                zip(selection.regions[0].axes, self.tensor.shape, strict=True)
+            )
+            if indices.intervals != ((0, size),)
+        ]
+        if len(partial) != 1:
+            return False
+        return any(
+            type(port) is AxisPort
+            and type(port.axis) is AxisRef
+            and type(port.axis.dim) is int
+            and port.axis.dim == partial[0]
+            and (
+                port.scope is None
+                or (
+                    type(port.scope) is Region
+                    and all(type(indices) is IndexSet for indices in port.scope.axes)
+                    and port.scope == full_region(self.tensor.shape)
+                )
+            )
+            for port in self.ports
+        )
+
+
+# Every other built-in constraint reports only repairable or incomplete states.
+IRREVERSIBLE_CONSTRAINTS = (NonEmpty, Fixed, Balanced)
+"""Built-in constraint types whose `check` can return an irreversible diagnostic."""
+
+
+@dataclass(frozen=True)
+class AlignmentClass:
+    """Retained-size requirements shared by one set of identity-equivalent axes.
+
+    Attributes:
+        axes: Axes of the set that carry `NonEmpty`, in stable order.
+        factor: Least common multiple of the set's `Divisible` factors.
+        balances: Partitions and `nonempty` flags of the set's `Balanced`
+            constraints, without duplicates.
+    """
+
+    axes: tuple[AxisRef, ...]
+    factor: int
+    balances: tuple[tuple[tuple[IndexSet, ...], bool], ...] = ()
+
+
+def alignment_classes(
+    constraints: Iterable[Constraint],
+    equivalent: Callable[[AxisRef], tuple[AxisRef, ...]],
+) -> tuple[AlignmentClass, ...]:
+    """Combine retained-size constraints over identity-equivalent axes.
+
+    Identity-equivalent axes remove the same positions in every complete
+    closure, so they share one retained length and one set of retained
+    positions. Their `Divisible` factors and `Balanced` partitions are
+    combined, even when they are declared on different axes, for example on
+    the rows of a producer and the columns of its consumer.
+
+    Args:
+        constraints: Constraints to combine. Only exact built-in `NonEmpty`,
+            `Divisible` and `Balanced` records contribute; callers verify their
+            native semantics.
+        equivalent: Returns the identity-equivalent axes of an axis, including
+            the axis itself, in a stable order.
+
+    Returns:
+        One class per set of equivalent axes with a `Divisible` or `Balanced`
+        constraint, in first-constraint order. Sets without a `NonEmpty` axis,
+        or with factor 1 and no partitions, cannot conflict and are omitted.
+    """
+    nonempty = set()
+    factors: dict[tuple[AxisRef, ...], int] = {}
+    balances: dict[tuple[AxisRef, ...], list[tuple[tuple[IndexSet, ...], bool]]] = {}
+    for constraint in constraints:
+        if type(constraint) is NonEmpty:
+            nonempty.add(constraint.axis)
+        elif type(constraint) in (Divisible, Balanced):
+            axes = equivalent(constraint.axis)
+            if type(constraint) is Divisible:
+                factors[axes] = math.lcm(factors.get(axes, 1), constraint.factor)
+            else:
+                factors.setdefault(axes, 1)
+                balances.setdefault(axes, []).append((constraint.partitions, constraint.nonempty))
+    classes = []
+    for axes, factor in factors.items():
+        required = tuple(axis for axis in axes if axis in nonempty)
+        groups = tuple(dict.fromkeys(balances.get(axes, ())))
+        if required and (factor > 1 or groups):
+            classes.append(AlignmentClass(required, factor, groups))
+    return tuple(classes)
+
+
+def alignment_conflicts(
+    classes: Iterable[AlignmentClass], selections: Mapping[str, Selection]
+) -> tuple[Diagnostic, ...]:
+    """Prove axes whose retained size can no longer be aligned without emptying them.
+
+    Additional removals only shrink an axis. Suppose an axis that must stay
+    nonempty retains `r` positions, with `0 < r < m`, where `m` is the least
+    common multiple of its factors. No smaller positive length is a multiple
+    of `m`, and length zero violates `NonEmpty`, so the conflict persists under
+    every superset. Neither constraint can prove this alone.
+
+    `Balanced` partitions restrict the reachable lengths further. Every
+    partition must keep the same count `c`, at most the smallest current
+    count, and at least 1 when emptied partitions are forbidden. Positions
+    outside the partitions can keep any count up to their current one. If no
+    such choice gives a positive multiple of `m`, larger requests cannot
+    produce one either, because they only lower these bounds. Each `Balanced`
+    constraint is checked separately, which proves fewer conflicts than a
+    joint check of several but never a false one.
+
+    Args:
+        classes: Results of `alignment_classes` for the checked constraints.
+        selections: Accumulated selections keyed by graph-local tensor ID.
+
+    Returns:
+        One irreversible `unreachable_alignment` conflict per class, in class
+        order. Its tensors are those of the nonempty axes in the conflict range.
+        The message omits the retained counts, so the same axes give an equal
+        diagnostic for every conflicting state, including states where
+        `Balanced` also reports an emptied partition. An emptied axis is left
+        to `NonEmpty`.
+
+    Raises:
+        ValueError: A stored selection belongs to a different reference.
+        torch_kirigami.AnalysisLimitError: Counting removed positions exceeds
+            the region limit.
+    """
+    diagnostics = []
+    for alignment in classes:
+        conflicting = []
+        for axis in alignment.axes:
+            width = axis.tensor.shape[axis.dim]
+            removed = IndexSet()
+            if axis.tensor.id in selections:
+                selection = chosen(selections, axis.tensor)
+                # Fully selected positions lie inside the regions' extents on
+                # this axis. Without partitions, most axes keep at least
+                # `factor` positions by this bound alone, so skip their exact
+                # cross-section analysis.
+                extents = sum(len(region.axes[axis.dim]) for region in selection.regions)
+                if not alignment.balances and width - extents >= alignment.factor:
+                    continue
+                if selection.compact_shape() is None:
+                    continue  # `Divisible` reports partitioned selections instead.
+                removed = selection.fully_selected_indices(axis.dim)
+            if _unreachable_alignment(alignment, width, removed):
+                conflicting.append(axis.tensor.id)
+        if conflicting:
+            factor = alignment.factor
+            if not alignment.balances:
+                message = (
+                    f"A positive retained size below {factor} cannot become a multiple "
+                    f"of {factor} without emptying the axis"
+                )
+            elif factor > 1:
+                message = (
+                    f"Balanced partitions cannot keep a positive size divisible by {factor} "
+                    "without emptying the axis"
+                )
+            else:
+                message = "Balanced partitions cannot keep equal counts without emptying the axis"
+            diagnostics.append(
+                Diagnostic(
+                    "unreachable_alignment",
+                    message,
+                    "conflict",
+                    tensors=tuple(dict.fromkeys(conflicting)),
+                    irreversible=True,
+                )
+            )
+    return tuple(diagnostics)
+
+
+def _unreachable_alignment(alignment: AlignmentClass, width: int, removed: IndexSet) -> bool:
+    """Decide whether no subset of the retained positions satisfies one class."""
+    remaining = width - len(removed)
+    factor = alignment.factor
+    if remaining == 0:
+        return False
+    if remaining < factor:
+        return True
+    for partitions, nonempty in alignment.balances:
+        counts = [len(p) - len(p.intersect(removed)) for p in partitions]
+        outside = remaining - sum(counts)
+        least = min(counts)
+        groups = len(partitions)
+        # `groups * count` modulo `factor` repeats with this period, so one
+        # period of the largest counts covers every reachable residue.
+        period = factor // math.gcd(groups, factor)
+        lowest = max(1 if nonempty else 0, least - period + 1)
+        if not any(
+            -(-max(groups * count, 1) // factor) * factor <= groups * count + outside
+            for count in range(least, lowest - 1, -1)
+        ):
+            return True
+    return False
+
 
 @dataclass(frozen=True)
 class ShapeExpr:
-    """Record limited dimension provenance without a computation IR.
+    """Limited provenance of a dimension value, without a general computation IR.
 
     Attributes:
-        kind: Expression category, such as constant, dimension, or integer operation.
-        value: Category-specific payload, such as an integer or tensor-axis binding.
-        args: Operand expressions for supported shape operations.
+        kind: Expression category. Leaves are `constant` and `infer` (integer
+            payload; `infer` is always -1), `unknown` (a description string),
+            `dimension` (a tensor and axis pair), and `shape`, `dim`, or
+            `numel` (a tensor reference). `tuple` groups any number of
+            operands, and `add`, `sub`, `mul`, `floordiv`, and `mod` take
+            exactly two operands.
+        value: Category-specific payload. A `dimension` payload is normalized
+            to a tensor reference and a nonnegative axis index. Composite
+            expressions have no payload.
+        args: Operand expressions for `tuple` and the binary operations.
+
+    Raises:
+        TypeError: An operand is not a `ShapeExpr`, or a payload has the wrong type.
+        ValueError: `kind`, the operand count, or a scalar payload is invalid.
+        IndexError: A `dimension` axis is outside the tensor rank.
     """
 
     kind: Literal[
@@ -506,7 +865,7 @@ class ShapeExpr:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return unique tensor sources without retaining capture state."""
+        """Unique tensor references read by this expression and its operands, in order."""
         own: tuple[TensorRef, ...] = ()
         if isinstance(self.value, TensorRef):
             own = (self.value,)
@@ -537,13 +896,18 @@ def _requirement_value(value: object, depth: int = 0) -> object:
 class ArgumentRef:
     """Identify a call parameter used by a structural contract.
 
+    Operator requirements and tensor effects use this record to locate call
+    arguments without retaining a mutable operation context.
+
     Attributes:
         name: Canonical keyword name, resolved with the native alias table.
         position: Position in FX arguments, including any Tensor receiver.
         variadic: Whether all remaining positional arguments belong to this parameter.
 
-    Operator requirements and tensor effects use this record to locate call
-    arguments without retaining a mutable operation context.
+    Raises:
+        ValueError: `name` is empty or not a string, or `position` is not a
+            nonnegative integer.
+        TypeError: `variadic` is not a boolean.
     """
 
     name: str
@@ -564,16 +928,16 @@ class AttributeBinding:
     """Bind a qualified module attribute to a structural size expression.
 
     The expression uses the shape-provenance representation. Planning evaluates
-    it against retained dimensions without editing the model.
+    it against retained dimensions; this record never edits the model.
 
     Attributes:
-        target: Qualified path of the module attribute to update.
+        target: Dotted path of the module attribute to update.
         expression: Shape expression that gives the planned value.
         detail: Human-readable description of the required update.
 
     Raises:
-        ValueError: target is not a qualified attribute path.
-        TypeError: expression is not a ShapeExpr.
+        ValueError: `target` is empty, not a string, or contains an empty path component.
+        TypeError: `expression` is not a `ShapeExpr`.
     """
 
     target: str
@@ -592,24 +956,34 @@ class AttributeBinding:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor dimensions determining this attribute."""
+        """Tensor references whose dimensions determine this attribute."""
         return self.expression.refs
 
 
 @dataclass(frozen=True)
 class Requirement:
-    """Describe a modification an executor needs to implement.
+    """Describe a modification that an executor must implement or reject.
 
     Attributes:
-        kind: Execution obligation category, such as layout or graph argument.
-        target: Graph location to check. Module attributes use AttributeBinding.
-        tensors: Tensor entities determining the modification.
+        kind: Extensible obligation category, such as `metadata_layout` or
+            `partitioned_compaction`. The kind `attribute` is reserved; declare
+            module attributes with `AttributeBinding` instead.
+        target: Location to check, such as an FX node name or a registered
+            tensor path.
+        tensors: Tensor references determining the modification.
         detail: Human-readable explanation and limitations.
-        data: Unique named values containing scalar data, slices, structural
-            references, or nested sequences. Sequences are frozen as tuples;
-            opaque mutable objects are rejected. Kind names remain extensible.
+        data: Uniquely named values containing scalars, integer slices,
+            structural references, or nested sequences. Sequences are frozen as
+            tuples; other payload types are rejected.
         arguments: Specific parameters this requirement validates when they change.
             All other dimension-derived semantic parameters must remain unchanged.
+
+    Raises:
+        ValueError: `kind` is `attribute`, `kind` or `target` is invalid,
+            `data` entries are not uniquely named pairs, or a payload is too
+            deeply nested.
+        TypeError: A tensor is not a `TensorRef`, an argument is not an
+            `ArgumentRef`, or a payload has an unsupported type.
 
     Notes:
         A requirement is descriptive; it neither mutates the model nor guarantees
@@ -647,7 +1021,10 @@ class Requirement:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Include sources embedded in payloads for graph ownership validation."""
+        """Tensor references in `tensors` and embedded in `data`, deduplicated in order.
+
+        Graphs use these references to validate requirement ownership.
+        """
 
         def visit(value: object) -> Iterator[TensorRef]:
             """Yield tensor references embedded in a requirement payload."""
@@ -681,19 +1058,29 @@ class Provenance:
 
 @dataclass(frozen=True)
 class Impact:
-    """Hold dependency analysis results, not an executable pruning plan.
+    """The structural consequences, constraints, and diagnostics of one request.
+
+    An impact is an analysis result, not an executable pruning plan. All
+    selections use the original (captured) coordinates of their tensors.
 
     Attributes:
         graph_id: Identity of the graph that produced this result.
         requested: Original removal requests.
-        selections: Closure of known selections, keyed by tensor ID.
+        selections: Read-only closure of known selections, keyed by tensor ID.
         diagnostics: Conflicts and reasons that part of the analysis is unresolved.
         requirements: Modifications the execution layer must handle or explicitly reject.
         provenance: Reasons for newly discovered selections.
         interfaces: Affected external input and output tensor references.
-        status: Resolved, unresolved, or conflict.
-        constraints: Conditions checked against the closure.
-        tensors: Known references, including unaffected values, for ownership checks.
+        status: `conflict` if any diagnostic is a conflict, `unresolved` if
+            other diagnostics remain, otherwise `resolved`. Status is
+            independent of `complete`.
+        constraints: Conditions checked against the closure, including
+            caller-supplied constraints.
+        tensors: Read-only map of all known references, including unaffected
+            values, used for ownership checks.
+
+    Raises:
+        ValueError: `status` is not `resolved`, `unresolved`, or `conflict`.
 
     Notes:
         A resolved result only proves the declared structural conditions under the
@@ -728,30 +1115,46 @@ class Impact:
 
     @property
     def complete(self) -> bool:
-        """Whether the influence range is known, independently of constraint validity."""
+        """Whether the influence range is fully known.
+
+        This is independent of `status`: a complete result can still contain
+        conflicts, and an incomplete result is never resolved.
+        """
         return all(d.complete for d in self.diagnostics)
 
     @property
     def irreversible(self) -> bool:
-        """Whether a declared conflict cannot be repaired by additional removals.
+        """Whether some conflict is proved to survive every additional removal.
 
-        This is independent of influence completeness. False does not prove
-        feasibility. A conflict without this proof can still require joint choices.
+        This is a stronger proof than `status == "conflict"` and is independent
+        of `complete`. False does not prove feasibility; a conflict without this
+        proof can still require joint choices to repair.
         """
         return any(d.irreversible for d in self.diagnostics)
 
     def selection(self, tensor: TensorRef) -> Selection:
-        """Return the accumulated selection for a tensor, or an empty selection."""
+        """Return the accumulated selection for a tensor.
+
+        Args:
+            tensor: A reference from the graph that produced this impact.
+
+        Returns:
+            The tensor's selection, or an empty selection if it is unaffected.
+
+        Raises:
+            ValueError: The reference does not belong to this impact's graph or
+                has altered metadata.
+        """
         if self.tensors.get(tensor.id) != tensor:
             raise ValueError("Tensor reference does not belong to this impact")
         return chosen(self.selections, tensor)
 
     @property
     def parameters(self) -> tuple[Selection, ...]:
-        """Return affected parameter selections, deduplicated by object identity."""
+        """Selections on affected parameters, one per parameter object."""
         return tuple(s for s in self.selections.values() if s.tensor.kind == "parameter")
 
     @property
     def buffers(self) -> tuple[Selection, ...]:
-        """Return affected registered-buffer selections."""
+        """Selections on affected registered buffers, one per buffer object."""
         return tuple(s for s in self.selections.values() if s.tensor.kind == "buffer")

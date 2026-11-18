@@ -18,12 +18,16 @@ from ..settings import config
 class IndexSet:
     """A normalized union of nonnegative, half-open integer intervals.
 
-    Overlapping and adjacent intervals are merged. Construction rejects invalid
-    bounds and representations exceeding the active `max_parts` limit;
-    it does not allocate masks.
+    Construction sorts the intervals, drops empty ones, and merges overlapping
+    or adjacent ones. It never allocates masks.
 
     Attributes:
-        intervals: Sorted pairs with inclusive starts and exclusive stops.
+        intervals: Sorted, disjoint pairs with inclusive starts and exclusive stops.
+
+    Raises:
+        ValueError: A bound is not a nonnegative integer or a stop precedes its start.
+        torch_kirigami.AnalysisLimitError: The normalized set has more intervals
+            than the active `max_parts` limit.
     """
 
     intervals: tuple[tuple[int, int], ...] = ()
@@ -73,10 +77,17 @@ class IndexSet:
 
     @classmethod
     def span(cls, start: int, stop: int) -> IndexSet:
-        """Construct the half-open interval [start, stop).
+        """Construct the half-open interval `[start, stop)`.
+
+        Args:
+            start: Inclusive first index.
+            stop: Exclusive end index.
+
+        Returns:
+            A set containing the interval, or an empty set if `start == stop`.
 
         Raises:
-            ValueError: A bound is not a nonnegative integer or stop < start.
+            ValueError: A bound is not a nonnegative integer or `stop < start`.
         """
         return cls(((start, stop),))
 
@@ -105,7 +116,17 @@ class IndexSet:
         return False
 
     def union(self, other: IndexSet) -> IndexSet:
-        """Return indices contained in either set."""
+        """Return indices contained in either set.
+
+        Args:
+            other: Set to combine with this set.
+
+        Returns:
+            The normalized union.
+
+        Raises:
+            torch_kirigami.AnalysisLimitError: The union exceeds the interval limit.
+        """
         if type(self) is type(other) is IndexSet:
             if not self.intervals or self.intervals == other.intervals:
                 return other
@@ -114,7 +135,17 @@ class IndexSet:
         return IndexSet(self.intervals + other.intervals)
 
     def intersect(self, other: IndexSet) -> IndexSet:
-        """Return indices contained in both sets."""
+        """Return indices contained in both sets.
+
+        Args:
+            other: Set to intersect with this set.
+
+        Returns:
+            The normalized intersection.
+
+        Raises:
+            torch_kirigami.AnalysisLimitError: The intersection exceeds the interval limit.
+        """
         if type(self) is type(other) is IndexSet:
             if not self.intervals or self.intervals == other.intervals:
                 return self
@@ -133,7 +164,17 @@ class IndexSet:
         return IndexSet(tuple(result))
 
     def subtract(self, other: IndexSet) -> IndexSet:
-        """Return indices in this set that are absent from other."""
+        """Return indices in this set that are absent from another set.
+
+        Args:
+            other: Indices to remove.
+
+        Returns:
+            The normalized difference.
+
+        Raises:
+            torch_kirigami.AnalysisLimitError: The difference exceeds the interval limit.
+        """
         if type(self) is type(other) is IndexSet:
             if not self.intervals or not other.intervals:
                 return self
@@ -161,7 +202,13 @@ class IndexSet:
         return IndexSet(tuple(result))
 
     def shift(self, offset: int) -> IndexSet:
-        """Translate interval bounds by an integer offset.
+        """Translate every interval bound by an offset.
+
+        Args:
+            offset: Integer amount added to each start and stop.
+
+        Returns:
+            The translated set.
 
         Raises:
             ValueError: The offset makes a bound negative or produces a non-integer bound.
@@ -195,11 +242,17 @@ class Region:
 
     @property
     def empty(self) -> bool:
-        """Return whether any axis makes the Cartesian product empty."""
+        """Whether some axis is empty, which makes the Cartesian product empty."""
         return any(not a for a in self.axes)
 
     def intersect(self, other: Region) -> Region:
         """Return the Cartesian intersection.
+
+        Args:
+            other: A region of the same rank.
+
+        Returns:
+            The axis-wise intersection, which may be empty.
 
         Raises:
             ValueError: The regions have different ranks.
@@ -291,8 +344,14 @@ class TensorRef:
     Attributes:
         id: Snapshot-qualified identity.
         shape: Original physical dimensions.
-        kind: Parameter, buffer, input, or intermediate value category.
-        paths: Original registered aliases, when applicable.
+        kind: Tensor category: `parameter`, `buffer`, `input`, or `value` for
+            other captured values.
+        paths: Original registered paths, including aliases, for parameters
+            and buffers.
+
+    Raises:
+        ValueError: `id` is empty, a dimension is not a nonnegative integer, or
+            `kind` or a path is not a string.
     """
 
     id: str
@@ -316,9 +375,13 @@ class TensorRef:
         object.__setattr__(self, "paths", paths)
 
     def portable(self) -> TensorRef:
-        """Remove a graph UUID, retaining a structural label for saved-plan queries.
+        """Return a copy without the graph UUID prefix, for saved-plan queries.
 
         Portable labels do not establish ownership of a live dependency graph.
+
+        Returns:
+            A reference whose `id` omits the snapshot UUID, or this reference
+            if its `id` has no UUID prefix.
         """
         prefix, separator, suffix = self.id.partition(":")
         if separator and len(prefix) == 32 and all(c in "0123456789abcdef" for c in prefix):
@@ -332,24 +395,42 @@ class TensorRef:
             dim: Axis index in the original tensor shape.
 
         Returns:
-            An AxisRef with a nonnegative dimension index.
+            An `AxisRef` with a nonnegative dimension index.
 
         Raises:
-            IndexError: dim is outside the tensor rank.
+            TypeError: `dim` is not an integer.
+            IndexError: `dim` is outside the tensor rank.
         """
         return AxisRef(self, dim)
 
     def select(self, regions: Iterable[Region]) -> Selection:
-        """Construct a removal selection from Cartesian regions in original coordinates."""
+        """Construct a removal selection from Cartesian regions in original coordinates.
+
+        Args:
+            regions: Regions with one index set per tensor axis.
+
+        Returns:
+            A normalized selection on this tensor.
+
+        Raises:
+            ValueError: A region rank differs from the tensor rank.
+            IndexError: A region exceeds the original shape.
+            torch_kirigami.AnalysisLimitError: Normalization exceeds the region limit.
+        """
         return Selection(self, tuple(regions))
 
 
 def resolve_reference(query: TensorRef, references: Iterable[TensorRef]) -> TensorRef:
-    """Resolve compatible portable labels; distinguish unknown from unaffected.
+    """Find the reference matching a live or portable label.
+
+    A reference matches if its portable ID equals the query's portable ID, or if
+    the two share a registered path. A `KeyError` means the label is unknown to
+    this catalog, which differs from a known but unaffected tensor.
 
     Raises:
-        KeyError: The label is absent from this snapshot's catalog.
-        ValueError: The label exists but its shape, kind, or aliases disagree.
+        TypeError: `query` is not a `TensorRef`.
+        KeyError: No reference matches the label.
+        ValueError: A reference matches but its shape, kind, or paths disagree.
     """
     if not isinstance(query, TensorRef):
         raise TypeError("Expected a TensorRef")
@@ -408,7 +489,11 @@ class AxisRef:
 
     Attributes:
         tensor: Owning tensor reference.
-        dim: Canonical nonnegative axis index, including direct construction.
+        dim: Nonnegative axis index. Construction normalizes negative indices.
+
+    Raises:
+        TypeError: `tensor` is not a `TensorRef` or `dim` is not an integer.
+        IndexError: `dim` is outside the tensor rank.
     """
 
     tensor: TensorRef
@@ -428,14 +513,14 @@ class AxisRef:
         """Select complete cross-sections at the given original axis positions.
 
         Args:
-            indices: Individual indices or a symbolic IndexSet.
+            indices: Individual indices or an `IndexSet`.
 
         Returns:
-            A Selection spanning every other tensor axis.
+            A selection spanning every other tensor axis.
 
         Raises:
-            ValueError: Individual indices are invalid.
-            IndexError: Selected positions exceed the original axis size.
+            ValueError: An individual index is invalid.
+            IndexError: A selected position exceeds the original axis size.
         """
         selected = indices if isinstance(indices, IndexSet) else IndexSet.of(indices)
         axes = list(full_region(self.tensor.shape).axes)
@@ -465,6 +550,11 @@ class Selection:
     Attributes:
         tensor: Owning tensor reference.
         regions: Normalized, disjoint Cartesian regions.
+
+    Raises:
+        ValueError: A region rank differs from the tensor rank.
+        IndexError: A region exceeds the original tensor shape.
+        torch_kirigami.AnalysisLimitError: Normalization exceeds the region limit.
 
     Notes:
         Equality compares selected coordinates, not a particular rectangle
@@ -514,11 +604,32 @@ class Selection:
         if self.regions == other.regions:
             return True
         count = self.count
-        if count != other.count:
-            return False
+        return count == other.count and self._shares(other, count)
+
+    def issubset(self, other: Selection) -> bool:
+        """Check that another selection contains every position selected here.
+
+        Unlike `subtract`, this never builds the difference, so it cannot reach
+        the region limit.
+
+        Args:
+            other: Selection on the same tensor reference.
+
+        Returns:
+            Whether every selected position is also selected by `other`.
+
+        Raises:
+            ValueError: The selections refer to different tensor references.
+        """
+        self._same(other)
+        if not self.regions or self.regions == other.regions:
+            return True
+        return self._shares(other, self.count)
+
+    def _shares(self, other: Selection, count: int) -> bool:
+        """Check that `self` and `other` have `count` common positions, or more."""
         # Each side's regions are disjoint, so pairwise intersection volumes
-        # count every common coordinate exactly once. Equality must not fail
-        # because a hypothetical difference exceeds the representation limit.
+        # count every common coordinate exactly once.
         covered = 0
         for left in self.regions:
             for right in other.regions:
@@ -528,7 +639,7 @@ class Selection:
                     if not volume:
                         break
                 covered += volume
-                if covered == count:
+                if covered >= count:
                     return True
         return False
 
@@ -537,11 +648,17 @@ class Selection:
 
     @property
     def count(self) -> int:
-        """Return the number of selected tensor elements without overlap."""
+        """Number of selected tensor elements, each counted once."""
         return sum(prod(len(a) for a in r.axes) for r in self.regions)
 
     def union(self, other: Selection) -> Selection:
-        """Combine regions for the same tensor without double-counting positions.
+        """Combine selections on the same tensor.
+
+        Args:
+            other: Selection on the same tensor reference.
+
+        Returns:
+            A normalized selection containing positions from either selection.
 
         Raises:
             ValueError: The selections refer to different tensor references.
@@ -552,6 +669,12 @@ class Selection:
 
     def subtract(self, other: Selection) -> Selection:
         """Return positions selected here but absent from another selection.
+
+        Args:
+            other: Selection on the same tensor reference.
+
+        Returns:
+            A normalized selection containing the difference.
 
         Raises:
             ValueError: The selections refer to different tensor references.
@@ -572,12 +695,22 @@ class Selection:
         """Find axis positions whose entire scoped cross-section is selected.
 
         Args:
-            dim: Physical axis whose complete cross sections are inspected.
-            scope: Region restricting the cross-section, or None for the full tensor.
+            dim: Physical axis whose cross-sections are inspected. Negative
+                values count from the last axis.
+            scope: Region restricting the cross-sections, or None for the full tensor.
 
         Returns:
-            Positions fully covered inside the scope. Partial coverage does not
-            imply that the corresponding physical axis position can be removed.
+            Positions inside the scope whose scoped cross-sections are fully
+            selected. Coverage inside a partial scope does not imply that the
+            corresponding physical axis position can be removed.
+
+        Raises:
+            TypeError: `dim` is not an integer.
+            IndexError: `dim` is outside the tensor rank, or `scope` exceeds the tensor.
+            ValueError: `scope` has a different rank from the tensor.
+            torch_kirigami.AnalysisLimitError: The result exceeds the interval
+                limit. The result depends only on the selected coordinates,
+                never on their region decomposition.
         """
         dim = self.tensor.axis(dim).dim
         if not self and scope is None:
@@ -593,21 +726,25 @@ class Selection:
             )
             return IndexSet(axes[dim].intervals) if complete else IndexSet()
         scope = scope or full_region(self.tensor.shape)
-        scoped = Selection(self.tensor, (scope,))
+        Selection(self.tensor, (scope,))  # Validates the scope rank and bounds.
         if not self:
             return IndexSet()
-        remaining = scoped.subtract(self)
-        uncovered = IndexSet()
-        for region in remaining.regions:
-            uncovered = uncovered.union(region.axes[dim])
-        return scope.axes[dim].subtract(uncovered)
+        uncovered = canonical_boxes(region_boxes((scope,)), region_boxes(self.regions))
+        return IndexSet(complete_intervals(scope.axes[dim], uncovered, dim))
 
     def compact_shape(self) -> tuple[int, ...] | None:
         """Return the shape after deleting complete axis cross-sections.
 
         Returns:
-            Remaining dimensions, or None if partition-specific packing is needed.
-            None does not by itself mean that the selection is structurally invalid.
+            Remaining dimensions, or None if the selection is not a union of
+            complete axis cross-sections (for example, when partition-specific
+            packing is needed or a scalar is removed). None does not by itself
+            mean that the selection is structurally invalid.
+
+        Raises:
+            torch_kirigami.AnalysisLimitError: The complete positions of one
+                axis exceed the interval limit. Like the result, this depends
+                only on the selected coordinates.
         """
         if not self:
             return self.tensor.shape
@@ -633,13 +770,18 @@ class Selection:
                 sizes[partial[0]] -= len(axes[partial[0]])
                 return tuple(sizes)
             return None
-        covered = Selection(self.tensor)
-        sizes = []
-        for dim, size in enumerate(self.tensor.shape):
-            indices = self.fully_selected_indices(dim)
-            covered = covered.union(self.tensor.axis(dim).select(indices))
+        shape = self.tensor.shape
+        selected = region_boxes(self.regions)
+        uncovered = canonical_boxes(region_boxes((full_region(shape),)), selected)
+        sizes, slices = [], []
+        for dim, size in enumerate(shape):
+            indices = IndexSet(complete_intervals(IndexSet.span(0, size), uncovered, dim))
             sizes.append(size - len(indices))
-        return tuple(sizes) if not self.subtract(covered) else None
+            if indices:
+                box = [((0, n),) for n in shape]
+                box[dim] = indices.intervals
+                slices.append(tuple(box))
+        return tuple(sizes) if not canonical_boxes(selected, slices) else None
 
 
 def coalesce_selections(selections: tuple[Selection, ...]) -> tuple[Selection, ...]:
@@ -822,17 +964,170 @@ def concatenated_shape(regions: Sequence[Region], dim: int) -> tuple[int, ...]:
     return tuple(result)
 
 
-def gather_region(tensor: torch.Tensor, region: Region) -> torch.Tensor:
-    """Gather a region without a full-tensor mask, preserving autograd."""
-    # Shrink the most selective axis first to bound intermediate allocation.
-    order = sorted(range(tensor.ndim), key=lambda d: len(region.axes[d]) / max(1, tensor.shape[d]))
+IntervalBox = tuple[tuple[tuple[int, int], ...], ...]
+"""Cartesian product with one tuple of half-open intervals per tensor axis.
+
+Unlike a `Region`, a box is not limited by `max_parts`.
+"""
+
+
+def region_boxes(regions: Iterable[Region]) -> tuple[IntervalBox, ...]:
+    """Return the interval boxes of regions."""
+    return tuple(tuple(axis.intervals for axis in region.axes) for region in regions)
+
+
+_FULL_TAIL: tuple[IntervalBox, ...] = ((),)
+
+
+def canonical_boxes(
+    plus: Sequence[IntervalBox], minus: Sequence[IntervalBox] = ()
+) -> tuple[IntervalBox, ...]:
+    """Decompose the positions in `plus` and outside `minus` by their coordinates alone.
+
+    Positions on the first axis are grouped by their cross-sections, which
+    are decomposed the same way on the remaining axes. Equal position sets
+    therefore give equal boxes in the same order, whatever boxes describe
+    them. The intervals of a box are not limited by `max_parts`, so this never
+    raises `AnalysisLimitError`. The work is proportional to the number of
+    distinct interval bounds of each axis, times the number of distinct
+    cross-sections found on the preceding axes.
+
+    Args:
+        plus: Boxes of one rank, which can overlap. Each axis holds sorted,
+            disjoint, nonadjacent, nonempty intervals, as in
+            `IndexSet.intervals`.
+        minus: Boxes of the same rank whose positions are excluded.
+
+    Returns:
+        Sorted, disjoint, nonempty boxes with sorted, disjoint, nonadjacent
+        intervals.
+    """
+    plus, minus = tuple(plus), tuple(minus)
+    if not plus:
+        return ()
+    if not minus and len(plus) == 1 and all(plus[0]):
+        return plus
+    rank = len(plus[0])
+    memo: dict[tuple[int, tuple[int, ...], tuple[int, ...]], tuple[IntervalBox, ...]] = {}
+
+    def sweep(
+        depth: int, active_plus: tuple[int, ...], active_minus: tuple[int, ...]
+    ) -> tuple[IntervalBox, ...]:
+        """Decompose the cross-section that the active boxes give from axis `depth` on."""
+        if depth == rank:
+            return () if active_minus else _FULL_TAIL
+        key = (depth, active_plus, active_minus)
+        found = memo.get(key)
+        if found is not None:
+            return found
+        changes: dict[int, list[tuple[int, int]]] = {}
+        for sign, boxes, active in ((1, plus, active_plus), (-1, minus, active_minus)):
+            for index in active:
+                for start, stop in boxes[index][depth]:
+                    changes.setdefault(start, []).append((sign * (index + 1), 1))
+                    changes.setdefault(stop, []).append((sign * (index + 1), -1))
+        # Box identifiers are signed: positive for `plus` and negative for `minus`.
+        counts: dict[int, int] = {}
+        groups: dict[tuple[IntervalBox, ...], list[tuple[int, int]]] = {}
+        # Equal active sets return one memoized object; hash each tail once.
+        rows_by_tail: dict[int, list[tuple[int, int]]] = {}
+        previous = 0
+        for bound in sorted(changes):
+            if any(identifier > 0 for identifier in counts):
+                tail = sweep(
+                    depth + 1,
+                    tuple(sorted(i - 1 for i in counts if i > 0)),
+                    tuple(sorted(-i - 1 for i in counts if i < 0)),
+                )
+                if tail:
+                    rows = rows_by_tail.get(id(tail))
+                    if rows is None:
+                        rows = rows_by_tail[id(tail)] = groups.setdefault(tail, [])
+                    if rows and rows[-1][1] == previous:
+                        rows[-1] = (rows[-1][0], bound)
+                    else:
+                        rows.append((previous, bound))
+            for identifier, delta in changes[bound]:
+                count = counts.get(identifier, 0) + delta
+                if count:
+                    counts[identifier] = count
+                else:
+                    del counts[identifier]
+            previous = bound
+        result = tuple(sorted((tuple(rows), *box) for tail, rows in groups.items() for box in tail))
+        memo[key] = result
+        return result
+
+    return sweep(0, tuple(range(len(plus))), tuple(range(len(minus))))
+
+
+def complete_intervals(
+    indices: IndexSet, uncovered: Sequence[IntervalBox], dim: int
+) -> tuple[tuple[int, int], ...]:
+    """Return the positions of `indices` that no uncovered box reaches on axis `dim`.
+
+    The result can be used directly as a box axis for coverage checks.
+    """
+    merged: list[tuple[int, int]] = []
+    for start, stop in sorted(interval for box in uncovered for interval in box[dim]):
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(stop, merged[-1][1]))
+        else:
+            merged.append((start, stop))
+    result, right = [], 0
+    for lo, hi in indices.intervals:
+        cursor = lo
+        while right < len(merged) and merged[right][1] <= cursor:
+            right += 1
+        index = right
+        while index < len(merged) and merged[index][0] < hi:
+            start, stop = merged[index]
+            if cursor < start:
+                result.append((cursor, start))
+            cursor = max(cursor, stop)
+            index += 1
+        if cursor < hi:
+            result.append((cursor, hi))
+    return tuple(result)
+
+
+def gather_intervals(
+    tensor: torch.Tensor, axes: Sequence[tuple[tuple[int, int], ...]]
+) -> torch.Tensor:
+    """Gather a Cartesian product of axis intervals without a full-tensor mask, preserving autograd.
+
+    The most selective axis is gathered first. Each step still allocates the
+    product of the gathered and the remaining full axes, so temporary memory
+    can exceed the result, for example a `[2, n]` slice for a `[2, 2]` result.
+
+    Args:
+        tensor: Tensor to read.
+        axes: Sorted, disjoint intervals for each axis of `tensor`.
+
+    Returns:
+        The selected elements, in axis order.
+    """
+    counts = [sum(stop - start for start, stop in intervals) for intervals in axes]
+    order = sorted(range(tensor.ndim), key=lambda d: counts[d] / max(1, tensor.shape[d]))
     for dim in order:
-        indices = region.axes[dim]
-        if len(indices) != tensor.shape[dim]:
-            if len(indices.intervals) == 1:
-                start, stop = indices.intervals[0]
+        intervals = axes[dim]
+        if counts[dim] != tensor.shape[dim]:
+            if len(intervals) == 1:
+                start, stop = intervals[0]
                 tensor = tensor.narrow(dim, start, stop - start)
             else:
-                index = torch.tensor(tuple(indices), dtype=torch.long, device=tensor.device)
+                index = torch.tensor(
+                    [i for start, stop in intervals for i in range(start, stop)],
+                    dtype=torch.long,
+                    device=tensor.device,
+                )
                 tensor = tensor.index_select(dim, index)
     return tensor
+
+
+def gather_region(tensor: torch.Tensor, region: Region) -> torch.Tensor:
+    """Gather a region without a full-tensor mask, preserving autograd.
+
+    Temporary memory follows `gather_intervals`.
+    """
+    return gather_intervals(tensor, tuple(axis.intervals for axis in region.axes))

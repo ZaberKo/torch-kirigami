@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import torch
 
-from ..dep_graph.contracts import Constraint, Impact, Provenance
+from ..dep_graph.contracts import Constraint, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operation import Operation
@@ -16,7 +16,7 @@ from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
 from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
 from .budget import remaining_parameters, resolve_budget
-from .candidate_checks import CandidateFilter
+from .candidate_checks import CandidateFilter, propagate_request
 from .rewrite import compile_recipes
 from .types import (
     Candidate,
@@ -30,22 +30,39 @@ from .types import (
     StrategyResult,
 )
 
+_ImpactKey = tuple[tuple[TensorRef, tuple[Region, ...]], ...]
+
 
 class PlanningContext:
-    """Read-only model access, candidates, joint analysis, scoring, and budget checks.
+    """Read-only planning services passed to `Strategy.select`.
 
-    Metrics own their statistics and are never cached here. Global settings bound impact,
-    verified recipe, and attribute-check caches. Pure native metadata outputs
-    retain at most one fact tree per captured call. Caches retain no tensor data;
-    version changes invalidate compilation caches, and callback boundaries still
-    validate state.
+    The context provides the candidates, joint dependency analysis, scoring,
+    recipe compilation, and budget measurement for one planning round. It never
+    modifies the model; accepted removals exist only as `Impact` analyses.
+    Metrics own their statistics, which are never cached here. Global settings
+    bound the caches of impacts, verified recipes, and attribute checks, and
+    native metadata outputs keep at most one fact tree per captured call. No
+    cache keeps tensor data. Tensor version changes invalidate the compilation
+    caches, and the graph is revalidated after user callbacks.
+
+    `impact` reports analysis limits in the returned impact. Recipe
+    compilation and budget measurement raise `AnalysisLimitError` when a
+    selection they derive exceeds `max_parts`; the built-in strategies record
+    it as the failure of the request being evaluated and continue.
 
     Args:
-        graph: Fresh dependency snapshot supplying captured calls and bindings.
-        candidates: Explicit candidate universe; no discovery is performed.
-        budget: Upper bounds on final parameter count or channel widths.
+        graph: Fresh dependency graph that supplies captured calls and bindings.
+        candidates: Candidates available to the strategy; no discovery is
+            performed.
+        budget: Cap on the final parameter count or on final channel widths.
         channel_axes: Logical axes used to count channel removals.
-        constraints: Fixed structural premises for this planning round.
+        constraints: Structural constraints fixed for this planning round.
+
+    Raises:
+        TypeError: `budget` is not a supported budget type.
+        ValueError: A `ChannelCount` budget does not match `channel_axes`, or an
+            axis belongs to another graph.
+        torch_kirigami.StaleGraphError: The model changed after capture.
     """
 
     def __init__(
@@ -63,16 +80,17 @@ class PlanningContext:
         for axis in self.channel_axes:
             graph.metadata(axis.tensor)
         self._constraints = tuple(constraints)
-        self._candidate_filter = CandidateFilter(graph, self._constraints, query=self.impact)
+        self._candidate_filter = CandidateFilter(
+            graph, self._constraints, query=self.impact, candidate_count=len(self._candidates)
+        )
         self._widths = tuple(a.tensor.shape[a.dim] for a in self.channel_axes)
         self._parameter_count = sum(
             math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"
         )
         self._target = resolve_budget(budget, self.channel_axes, self._parameter_count)
         self._trials = 0
-        self._cache: OrderedDict[tuple[tuple[TensorRef, tuple[Region, ...]], ...], Impact] = (
-            OrderedDict()
-        )
+        # Single slices on equivalent axes use the same solver initialization.
+        self._cache: OrderedDict[_ImpactKey, Impact] = OrderedDict()
         self._compiled: OrderedDict[
             int,
             tuple[
@@ -100,117 +118,142 @@ class PlanningContext:
 
     @property
     def graph(self) -> DependencyGraph:
-        """Return the source dependency snapshot."""
+        """Source dependency graph."""
         return self._graph
 
     @property
     def operations(self) -> tuple[Operation, ...]:
-        """Return captured calls used for recipe compilation."""
+        """Captured calls used for recipe compilation."""
         return self._operations
 
     @property
     def candidates(self) -> tuple[Candidate, ...]:
-        """Return the fixed candidate universe."""
+        """Candidates available to the strategy, fixed for this round."""
         return self._candidates
 
     @property
     def budget(self) -> ChannelCount | ChannelRatio | ParameterBudget:
-        """Return the caller's immutable budget."""
+        """Budget supplied by the caller."""
         return self._budget
 
     @property
     def channel_axes(self) -> tuple[AxisRef, ...]:
-        """Return unique original logical channel axes."""
+        """Unique logical channel axes in original coordinates."""
         return self._channel_axes
 
     @property
     def constraints(self) -> tuple[Constraint, ...]:
-        """Return fixed analysis premises; callbacks must not mutate constraints."""
+        """Constraints fixed for this round; callbacks must not mutate them."""
         return self._constraints
 
     @property
     def widths(self) -> tuple[int, ...]:
-        """Return logical axis widths, used only by channel budgets."""
+        """Original widths of `channel_axes`, used only by channel budgets."""
         return self._widths
 
     @property
     def targets(self) -> tuple[int, ...]:
-        """Return upper bounds on final sizes, aligned with remaining()."""
+        """Caps on final resource sizes, aligned with `remaining()`."""
         return self._target.limits
 
     @property
     def budget_axes(self) -> tuple[AxisRef, ...]:
-        """Return axes needing channel summaries; parameters use verified recipes."""
+        """Logical axes counted by a channel budget; empty for a `ParameterBudget`."""
         return self._target.axes
 
     @property
     def trials(self) -> int:
-        """Return joint attempts made through `attempt`, including cache hits."""
+        """Number of joint attempts made through `attempt()`, including cache hits."""
         return self._trials
 
     def attempt(self, remove: tuple[Selection, ...]) -> Impact:
-        """Count and analyze a proposed joint request without mutating the model.
+        """Analyze a proposed joint request and count it as one trial.
 
-        Strategies own their attempt limit. Ordinary `impact` calls used for
-        scoring and inspection do not count as selection trials.
+        Strategies enforce their own trial limits using `trials`. Plain
+        `impact()` calls for scoring and inspection do not count as trials.
 
         Args:
-            remove: Original-coordinate selections to analyze together.
+            remove: Selections in original coordinates, analyzed together.
 
         Returns:
-            Their combined dependency impact.
+            Their combined dependency impact. The model is not modified.
+
+        Raises:
+            ValueError: A selection belongs to another graph.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         self._trials += 1
         return self.impact(remove)
 
     def impact(self, remove: tuple[Selection, ...]) -> Impact:
-        """Analyze joint original-coordinate selections without executing the model.
+        """Analyze selections jointly in original coordinates without running the model.
+
+        The result is that of `DependencyGraph.propagate` for the selections in
+        this order, except that a seed merge beyond `max_parts` returns an
+        incomplete impact instead of raising. Strategies then skip the request
+        like any other incomplete one.
+
+        The bounded cache can share a complete result for the same ordered
+        prefix and an equivalent last slice on disjoint seed tensors. The
+        impact explains that result from the caller's original seeds.
 
         Args:
             remove: Hypothetical selections to propagate together.
 
         Returns:
             Their combined impact, including constraints and diagnostics.
+
+        Raises:
+            ValueError: A selection belongs to another graph.
+            torch_kirigami.StaleGraphError: The model changed after capture.
         """
         self._sync_cache_settings()
         remove = tuple(remove)
         for selection in remove:
             self.graph.metadata(selection.tensor)
-        key = tuple((s.tensor, s.regions) for s in remove)
-        canonical = remove
-        if (
-            config.impact_cache_size > 0
-            and self._candidate_filter.reuse_equivalent
-            and has_native_semantics(remove)
-        ):
-            canonical = self._candidate_filter.index.canonical_seeds(remove)
-            key = tuple((s.tensor, s.regions) for s in canonical)
-        if key not in self._cache:
-            impact = self.graph.propagate(remove=canonical, constraints=self.constraints)
-            if canonical != remove and not impact.complete:
-                # A limited or incomplete closure is not an equivalence proof.
-                return self.graph.propagate(remove=remove, constraints=self.constraints)
-            self._cache[key] = impact
-            if len(self._cache) > config.impact_cache_size:
-                self._cache.popitem(last=False)
-        else:
+        if not config.impact_cache_size or not has_native_semantics(remove):
+            return propagate_request(self.graph, remove, self.constraints)
+        key = self._candidate_filter.request_key(remove)
+        impact = self._cache.get(key)
+        if impact is not None and (impact.complete or impact.requested == remove):
             self.graph.validate()  # propagate performs the entry check on cache misses.
             self._cache.move_to_end(key)
-            impact = self._cache[key]
-        if canonical != remove and not impact.complete:
-            return self.graph.propagate(remove=remove, constraints=self.constraints)
-        if impact.requested == remove:
-            return impact
-        bridges = tuple(
-            Provenance(original, target, "Equivalent axes through native identity relations")
-            for original, target in zip(remove, canonical, strict=True)
-            if original != target
-        )
-        # Preserve caller seeds and explain the path into the cached canonical proof.
-        return replace(impact, requested=remove, provenance=(*bridges, *impact.provenance))
+            if remove == impact.requested:
+                return impact
+            # Single-slice aliases start from the same canonical seed. Rebuild
+            # the explanation from the caller's seed, just as the solver does.
+            slices = self._candidate_filter.index.equivalent_slices(remove[-1], prefix=remove[:-1])
+            return replace(
+                impact,
+                requested=remove,
+                provenance=(
+                    *self._candidate_filter.index.slice_provenance(remove[-1], slices),
+                    *impact.provenance[len(slices) - 1 :],
+                ),
+            )
+        impact = propagate_request(self.graph, remove, self.constraints)
+        self._remember(key, impact)
+        return impact
+
+    def _remember(self, key: _ImpactKey, impact: Impact) -> None:
+        """Insert into the bounded least-recently-used impact cache."""
+        self._cache[key] = impact
+        self._cache.move_to_end(key)
+        if len(self._cache) > config.impact_cache_size:
+            self._cache.popitem(last=False)
 
     def require_complete(self, impact: Impact) -> None:
-        """Reject incomplete influence ranges while allowing repairable constraints."""
+        """Reject an analysis with incomplete influence.
+
+        Constraint violations, including repairable ones, are not rejected.
+
+        Args:
+            impact: Analysis from this context's graph.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The influence is incomplete.
+            ValueError: `impact` belongs to another graph.
+        """
         self.graph.validate_impact(impact)
         incomplete = [d for d in impact.diagnostics if not d.complete]
         if incomplete:
@@ -223,21 +266,29 @@ class PlanningContext:
         *,
         accepted_impact: Impact | None = None,
     ) -> tuple[float, ...]:
-        """Score each candidate's addition to the accepted removal requests.
+        """Score each candidate as an addition to the accepted removal requests.
 
-        Temporary multi-selection candidates are allowed. Influence is checked
-        jointly: an isolated candidate can miss effects triggered by combining
-        it with the accepted requests. Feasibility is checked by the strategy.
+        The scored candidates need not be members of this context's
+        `candidates`; temporary candidates with several selections are allowed. Influence is checked for each candidate
+        jointly with the accepted requests, because the combination can trigger
+        effects that the candidate alone does not. Scoring does not check
+        whether a removal can be executed; that is the strategy's job.
 
         Args:
             metric: Batch-independent scorer with caller-owned statistics.
-            candidates: Requests to score separately, in the returned score order.
+            candidates: Requests to score separately.
             accepted_impact: Complete dependency analysis of previously accepted
-                removal requests. None uses the empty request. This is a planning
-                baseline; the original model has not been physically pruned.
+                removal requests. `None` uses the empty request. The model has
+                not been pruned; this analysis is only a planning baseline.
 
         Returns:
-            One finite real score per candidate, in the same order.
+            One finite real score per candidate, in input order.
+
+        Raises:
+            TypeError: `metric` has no `score` method.
+            torch_kirigami.pruning.PlanningError: An influence is incomplete, or
+                the metric returns a misaligned, non-real, or nonfinite batch.
+            ValueError: `accepted_impact` or a selection belongs to another graph.
         """
         candidates = tuple(candidates)
         accepted_impact = self.impact(()) if accepted_impact is None else accepted_impact
@@ -284,52 +335,107 @@ class PlanningContext:
             impact: Joint analysis of the proposed removals.
 
         Returns:
-            Final parameter count or channel widths, in `targets` order.
+            The final parameter count for a `ParameterBudget`, the final width of
+            each axis for a local channel budget, or the summed final width for a
+            global channel budget, aligned with `targets`.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: A `ParameterBudget` needs
+                recipes and `impact` has no verified execution recipe.
+            ValueError: `impact` belongs to another graph.
         """
         self.graph.validate_impact(impact)
         recipes = self.compile(impact)[0] if self._target.resource == "parameters" else ()
         return self._target.remaining(impact, recipes)
 
     def parameter_count(self, impact: Impact) -> int:
-        """Count final unique Parameter elements using verified joint recipes."""
-        return remaining_parameters(self._parameter_count, self.compile(impact)[0])
-
-    def within_budget(self, impact: Impact) -> bool:
-        """Check all final-size upper bounds.
+        """Count the final unique Parameter elements using verified joint recipes.
 
         Args:
             impact: Joint analysis of the proposed removals.
 
         Returns:
-            Whether every budget target is met. This does not establish that
-            the removals can be executed.
+            The number of parameter elements left after the removal.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: `impact` has no verified
+                execution recipe.
+        """
+        return remaining_parameters(self._parameter_count, self.compile(impact)[0])
+
+    def within_budget(self, impact: Impact) -> bool:
+        """Check whether a removal meets every final-size cap.
+
+        Args:
+            impact: Joint analysis of the proposed removals.
+
+        Returns:
+            Whether every cap is met. For channel budgets, this does not prove
+            that the removal can be executed.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: A `ParameterBudget` needs
+                recipes and `impact` has no verified execution recipe.
         """
         return self._target.met(self.remaining(impact))
 
     def deficit(self, impact: Impact) -> int:
-        """Measure missing reduction; local excesses cannot cancel each other.
+        """Measure how far a removal is from meeting the budget.
 
-        A complete addition must lower this value before a greedy strategy
-        accepts it. Coupled deletion may also shrink an already satisfied axis.
+        The deficit is the sum of the amounts by which final sizes exceed their
+        caps, so one axis below its cap cannot offset another axis above its cap.
+        The built-in greedy strategies accept an addition only when it lowers
+        this value. Coupled removals can also shrink an axis that already meets
+        its cap.
+
+        Args:
+            impact: Joint analysis of the proposed removals.
+
+        Returns:
+            Zero when every cap is met, otherwise the total excess.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: A `ParameterBudget` needs
+                recipes and `impact` has no verified execution recipe.
         """
         return self._target.deficit(self.remaining(impact))
 
     def require_budget(self, impact: Impact, *, result: StrategyResult | None = None) -> None:
-        """Reject a missed final target with measured sizes and search diagnostics.
+        """Raise unless a removal meets the budget.
+
+        The error message reports the measured sizes and search diagnostics.
 
         Args:
             impact: Joint analysis of the proposed removals.
-            result: Optional strategy diagnostics to include in the failure.
+            result: Optional strategy diagnostics to include in the error.
 
         Raises:
-            torch_kirigami.pruning.PlanningError: A budget target is not met.
+            torch_kirigami.pruning.PlanningError: A cap is not met, or a
+                `ParameterBudget` needs recipes and `impact` has none.
         """
         self._target.require(self.remaining(impact), self.trials, result)
 
     def compile(
         self, impact: Impact
     ) -> tuple[tuple[TensorRecipe, ...], tuple[AttributeRecipe, ...], tuple[str, ...]]:
-        """Return (tensor recipes, attribute recipes, notes), without new weights."""
+        """Compile and verify execution recipes for a joint removal.
+
+        No weights are allocated. Results are cached per `Impact` object until
+        a tracked tensor changes.
+
+        Args:
+            impact: Resolved joint analysis from this context's graph.
+
+        Returns:
+            A tuple of tensor recipes, attribute recipes, and notes.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The analysis is not resolved or
+                the original forward cannot be proven to run on the compact
+                structure.
+            ValueError: `impact` belongs to another graph.
+            torch_kirigami.StaleGraphError: The model changed after capture.
+        """
         self._sync_cache_settings()
         self.graph.validate()
         self.graph.validate_impact(impact)
@@ -378,6 +484,17 @@ class PlanningContext:
         *,
         exclusions: tuple[tuple[str, str], ...] = (),
     ) -> ParameterReport | SelectionReport:
-        """Freeze the measured budget and strategy diagnostics."""
+        """Build a static report of the measured budget and strategy diagnostics.
+
+        Args:
+            impact: Joint analysis of the selected removals.
+            result: Strategy result whose stop reason and exclusions are recorded.
+            exclusions: Earlier exclusions, such as candidate filtering results,
+                listed before the strategy's own exclusions.
+
+        Returns:
+            A `ParameterReport` for a `ParameterBudget`, otherwise a
+            `SelectionReport`.
+        """
         self.graph.validate_impact(impact)
         return self._target.report(self.remaining(impact), impact, self.trials, result, exclusions)

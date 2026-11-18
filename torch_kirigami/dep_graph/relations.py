@@ -11,23 +11,27 @@ from ..settings import config
 from .selection import (
     AxisRef,
     IndexSet,
+    IntervalBox,
     Region,
     Selection,
     TensorRef,
+    canonical_boxes,
+    complete_intervals,
     full_region,
     linear_indices,
     offset_regions,
+    region_boxes,
 )
 
 
 class Relation(Protocol):
-    """Describe monotone selection propagation between tensor entities."""
+    """Monotone selection propagation between tensor entities."""
 
     reason: str
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return all tensor endpoints used to schedule propagation."""
+        """All tensor endpoints, used to schedule propagation."""
         ...
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
@@ -38,7 +42,7 @@ class Relation(Protocol):
 
         Returns:
             Implied endpoint selections in original coordinates. Implementations must
-            be monotone and must not mutate the source or execute model code.
+            be deterministic and monotone and must not mutate the source or execute model code.
         """
         ...
 
@@ -49,8 +53,13 @@ class AxisPort:
 
     Attributes:
         axis: Physical tensor axis used for the logical positions.
-        scope: Original-coordinate region limiting the axis cross sections, or
+        scope: Original-coordinate region limiting the axis cross-sections, or
             None to use the whole tensor.
+
+    Raises:
+        TypeError: `axis` is not an `AxisRef`.
+        ValueError: `scope` has a different rank from the tensor.
+        IndexError: `scope` exceeds the tensor shape.
     """
 
     axis: AxisRef
@@ -64,27 +73,43 @@ class AxisPort:
 
     @property
     def tensor(self) -> TensorRef:
-        """Return the tensor containing this logical port."""
+        """Tensor containing this logical port."""
         return self.axis.tensor
 
     @property
     def region(self) -> Region:
-        """Return the explicit partition scope or the full tensor region."""
+        """Explicit partition scope, or the full tensor region if there is none."""
         return self.scope or full_region(self.tensor.shape)
 
     @property
     def is_full(self) -> bool:
-        """Return whether this port covers the entire original tensor region."""
+        """Whether this port covers the entire original tensor region."""
         return self.scope is None or self.scope == full_region(self.tensor.shape)
 
     def fully_selected_indices(self, selection: Selection) -> IndexSet:
-        """Return positions whose entire scoped cross sections are selected."""
+        """Return axis positions whose entire scoped cross-sections are selected.
+
+        Args:
+            selection: Selection on this port's tensor.
+
+        Returns:
+            Original axis positions fully covered inside the port's region.
+
+        Raises:
+            ValueError: The selection belongs to another tensor.
+        """
         if selection.tensor != self.tensor:
             raise ValueError("Selection belongs to another port tensor")
         if self.scope is not None or len(selection.regions) != 1:
             return selection.fully_selected_indices(self.axis.dim, self.region)
         # Only exact native records can bypass the general scoped calculation.
-        native = (
+        scope = self.scope if self._native_coordinates(selection) else self.region
+        return selection.fully_selected_indices(self.axis.dim, scope)
+
+    def _native_coordinates(self, selection: Selection) -> bool:
+        """Check whether fiber geometry can use native interval operations."""
+        regions = selection.regions if self.scope is None else (*selection.regions, self.scope)
+        return (
             type(self) is AxisPort
             and type(self.axis) is AxisRef
             and type(self.axis.dim) is int
@@ -100,14 +125,38 @@ class AxisPort:
                     )
                     for indices in region.axes
                 )
-                for region in selection.regions
+                for region in regions
             )
         )
-        scope = self.scope if native else self.region
-        return selection.fully_selected_indices(self.axis.dim, scope)
+
+    def covered_boxes(self, selection: Selection) -> tuple[IntervalBox, ...]:
+        """Return the complete scoped fibers for a layout coverage test.
+
+        The proof consumes interval boxes directly. A fragmented intersection
+        can cover valid fibers even when its positions would exceed the limit
+        on a materialized `IndexSet`.
+        """
+        if selection.tensor != self.tensor:
+            raise ValueError("Selection belongs to another port tensor")
+        if not self._native_coordinates(selection):
+            return region_boxes(self.select(self.fully_selected_indices(selection)).regions)
+        scope = self.region
+        (box,) = region_boxes((scope,))
+        dim = self.axis.dim
+        missing = canonical_boxes((box,), region_boxes(selection.regions))
+        fibers = complete_intervals(scope.axes[dim], missing, dim)
+        return ((*box[:dim], fibers, *box[dim + 1 :]),) if fibers else ()
 
     def select(self, indices: IndexSet) -> Selection:
-        """Select scoped cross sections at the given original axis positions."""
+        """Select scoped cross-sections at the given original axis positions.
+
+        Args:
+            indices: Original axis positions. Positions outside the port's
+                region are ignored.
+
+        Returns:
+            A selection limited to the port's region.
+        """
         axes = list(self.region.axes)
         axes[self.axis.dim] = axes[self.axis.dim].intersect(indices)
         return Selection(self.tensor, (Region(tuple(axes)),))
@@ -125,6 +174,11 @@ class BlockMap:
         target_block: Number of target positions per block.
         require_full_source: Whether forward mapping requires a whole source block.
         require_full_target: Whether reverse mapping requires a whole target block.
+
+    Raises:
+        ValueError: A start or count is negative, a block size is not positive,
+            or one of them is not an integer.
+        TypeError: A completion policy is not a boolean.
     """
 
     source_start: int
@@ -150,12 +204,15 @@ class BlockMap:
         """Map selected positions into corresponding blocks.
 
         Args:
-            indices: Original positions on the source side, or target side if reversed.
-            reverse: Whether to swap the mapping direction and completion policy.
+            indices: Original positions on the source side, or on the target side
+                if reversed. Positions outside the mapped range are ignored.
+            reverse: Whether to map from target to source, using
+                `require_full_target` instead of `require_full_source`.
 
         Returns:
-            Complete corresponding blocks. With a full-block policy, partial blocks
-            do not propagate; otherwise, touching a block selects its counterpart.
+            Complete corresponding blocks on the other side. With a full-block
+            policy, partial blocks do not propagate; otherwise, touching a block
+            selects its counterpart.
         """
         source_start, target_start = self.source_start, self.target_start
         source_block, target_block = self.source_block, self.target_block
@@ -199,6 +256,10 @@ class AxisRelation:
         right: Target-side logical axis and optional scope.
         maps: Block mappings applied in both directions.
         reason: Explanation attached to propagated selections.
+
+    Raises:
+        TypeError: An endpoint is not an `AxisPort` or a mapping is not a `BlockMap`.
+        ValueError: A mapping range exceeds its endpoint axis.
     """
 
     left: AxisPort
@@ -237,7 +298,7 @@ class AxisRelation:
             A bidirectional axis relation.
 
         Raises:
-            ValueError: If the axes have different original lengths.
+            ValueError: The axes have different original lengths.
         """
         size = left.tensor.shape[left.dim]
         if size != right.tensor.shape[right.dim]:
@@ -246,11 +307,25 @@ class AxisRelation:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor endpoints of this relation."""
+        """Tensor endpoints of this relation."""
         return (self.left.tensor, self.right.tensor)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Map full scoped cross sections in both applicable directions."""
+        """Map fully selected scoped cross-sections to the other endpoint.
+
+        If both ports belong to the same tensor, both directions apply.
+
+        Args:
+            source: Accumulated selection on one endpoint tensor.
+
+        Returns:
+            Nonempty selections implied on the opposite endpoints.
+
+        Raises:
+            ValueError: `source` does not belong to either endpoint.
+            torch_kirigami.AnalysisLimitError: The mapped positions exceed the
+                interval limit.
+        """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         result = []
@@ -305,11 +380,22 @@ class BroadcastRelation:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor endpoints of this relation."""
+        """Tensor endpoints of this relation."""
         return (self.small, self.big)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Expand regions or require complete broadcast fibers in reverse."""
+        """Expand regions forward, or require complete broadcast fibers in reverse.
+
+        Args:
+            source: Accumulated selection on `small` or `big`.
+
+        Returns:
+            One selection on the opposite endpoint, which may be empty.
+
+        Raises:
+            ValueError: `source` does not belong to either endpoint.
+            torch_kirigami.AnalysisLimitError: The mapped regions exceed the region limit.
+        """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         offset = len(self.big.shape) - len(self.small.shape)
@@ -362,11 +448,20 @@ class ReshapeRelation:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor endpoints of this relation."""
+        """Tensor endpoints of this relation."""
         return (self.left, self.right)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Map regions while retaining common outer dimensions symbolically.
+        """Map regions to the other endpoint in row-major order.
+
+        Leading and trailing dimensions shared by both shapes are kept as
+        Cartesian axes; only the differing middle dimensions are flattened.
+
+        Args:
+            source: Accumulated selection on either endpoint.
+
+        Returns:
+            One selection on the opposite endpoint.
 
         Raises:
             ValueError: source does not belong to either endpoint.
@@ -410,8 +505,14 @@ class PermuteRelation:
     Attributes:
         left: Tensor before permutation.
         right: Tensor after permutation.
-        dims: Original axis index for each axis of the permuted tensor.
+        dims: Source axis index for each axis of the permuted tensor.
+            Construction normalizes negative indices.
         reason: Explanation attached to propagated selections.
+
+    Raises:
+        ValueError: `dims` is not a permutation of the source axes, or the
+            permuted source shape differs from the shape of `right`.
+        IndexError: An axis index is outside the source rank.
     """
 
     left: TensorRef
@@ -429,11 +530,17 @@ class PermuteRelation:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor endpoints of this relation."""
+        """Tensor endpoints of this relation."""
         return (self.left, self.right)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
         """Permute region axes, using the inverse order for reverse propagation.
+
+        Args:
+            source: Accumulated selection on either endpoint.
+
+        Returns:
+            One selection on the opposite endpoint.
 
         Raises:
             ValueError: source does not belong to either endpoint.
@@ -477,9 +584,18 @@ class SliceRelation:
     Attributes:
         big: Tensor before indexing.
         small: Indexed tensor.
-        index: One integer or positive-step slice per original axis. None
-            inserts a singleton axis without consuming an original axis.
+        index: One integer or positive-step slice per source axis, plus None
+            entries that insert singleton axes without consuming a source axis.
+            Construction normalizes integers to nonnegative positions and
+            slices to clamped bounds.
         reason: Explanation attached to propagated selections.
+
+    Raises:
+        ValueError: The number of non-None entries differs from the source rank,
+            a slice step is not positive, or the result shape differs from the
+            shape of `small`.
+        IndexError: An integer index is outside its source axis.
+        TypeError: An entry is not an integer, slice, or None.
 
     Notes:
         Rules expand ellipses before constructing this relation.
@@ -522,11 +638,27 @@ class SliceRelation:
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:
-        """Return the tensor endpoints of this relation."""
+        """Tensor endpoints of this relation."""
         return (self.big, self.small)
 
     def propagate(self, source: Selection) -> tuple[Selection, ...]:
-        """Clip source regions into a slice or inject slice coordinates back."""
+        """Map regions between the source tensor and the indexed tensor.
+
+        Forward propagation clips each region to the indexed positions and drops
+        regions that miss an integer index. Reverse propagation places each
+        region back at the indexed source positions.
+
+        Args:
+            source: Accumulated selection on `big` or `small`.
+
+        Returns:
+            One selection on the opposite endpoint, which may be empty.
+
+        Raises:
+            ValueError: `source` does not belong to either endpoint.
+            torch_kirigami.AnalysisLimitError: A strided reverse mapping exceeds
+                the interval limit.
+        """
         if source.tensor not in self.refs:
             raise ValueError("Selection is not a relation endpoint")
         forward = source.tensor == self.big

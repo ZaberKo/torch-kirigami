@@ -32,15 +32,35 @@
       "object": "torch_kirigami.pruning.candidate_checks.CandidateFilter",
       "contracts": [
         {
-          "behavior": "Exclude only irreversible removal requests using native closure proofs or ordinary analysis, without changing explicit budget axes or raw group queries.",
+          "behavior": "Exclude only irreversible removal requests using native closure proofs or ordinary analysis, and prove complete joint closures for exact score reuse, also after accepted removals on another axis of a member tensor, without changing explicit budget axes or raw group queries. Projections verify the actual closure and the constraints that can see it, covering only the requested positions. Proof caches keep at least two entries per known candidate, so a full rescan reuses them; a changed cache size takes effect at the next query, and zero clears and disables them.",
           "tests": [
             "tests/pruning/test_irreversible_candidates.py::test_partial_protection_filters_before_metrics_and_preserves_sparse_query",
             "tests/pruning/test_irreversible_candidates.py::test_changed_scalar_arguments_are_not_irreversible_and_joint_plan_can_execute",
             "tests/pruning/test_fixed_discovery.py::test_fixed_subclasses_do_not_inherit_the_native_exclusion_proof",
             "tests/pruning/test_group_parameter_scope.py::test_custom_parameter_scope_keeps_exact_accelerated_planning",
-            "tests/pruning/test_native_query_validation.py::test_shared_projection_checks_preserve_group_and_planning_contracts"
+            "tests/pruning/test_native_query_validation.py::test_shared_projection_checks_preserve_group_and_planning_contracts",
+            "tests/pruning/test_projected_rejections.py::test_projected_rejections_match_propagation_for_changing_accepted_impacts",
+            "tests/pruning/test_projected_rejections.py::test_cross_axis_accepted_removals_match_propagation",
+            "tests/pruning/test_projected_rejections.py::test_planning_filter_capacity_covers_one_scan_of_its_candidates",
+            "tests/pruning/test_component_ranking.py::test_bottleneck_dynamic_plan_scores_shared_weights_conditionally",
+            "tests/pruning/test_projected_rejections.py::test_only_listed_constraint_types_construct_irreversible_diagnostics",
+            "tests/pruning/test_alignment_conflicts.py::test_greedy_excludes_unreachable_alignment_seeds_without_trials",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_exact_closure_survives_an_intermediate_limit",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_completeness_checks_only_candidate_positions",
+            "tests/pruning/test_projected_rejections.py::test_zero_cache_size_clears_every_cache_at_the_next_query",
+            "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine"
           ],
-          "conditions": "Partial and whole protection, native and extension constraints, accepted removals, static and dynamic scoring, and independent compact-model references.",
+          "conditions": "Partial and whole protection, native and extension constraints, accepted removals, intermediate analysis limits, bounded proof caches and cache-size changes, static and dynamic scoring, and independent compact-model references.",
+          "gaps": []
+        },
+        {
+          "behavior": "Reuse rejection diagnostics of equivalent single slices with identical solver initialization; `fixed_rejection` applies changed cache sizes like the other queries.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_filter_reports_proved_broadcast_conflicts",
+            "tests/pruning/test_projected_rejections.py::test_zero_cache_size_clears_every_cache_at_the_next_query"
+          ],
+          "conditions": "Equivalent broadcast requests yield the same irreversible conflicts with the default or disabled candidate cache.",
           "gaps": []
         }
       ]
@@ -86,7 +106,8 @@
             "tests/dep_graph/test_query_indexes.py::test_public_plans_and_applied_models_match_sequential_seeds",
             "tests/dep_graph/test_query_indexes.py::test_shape_expression_subclasses_keep_query_time_truthiness_and_references",
             "tests/dep_graph/test_constraint_queries.py::test_nested_constraint_extensions_are_not_cached",
-            "tests/dep_graph/test_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation"
+            "tests/dep_graph/test_construction.py::test_graphs_keep_independent_rules_queries_and_invalidation",
+            "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine"
           ],
           "conditions": "Original coordinates, accumulated selections, graph-local caches, and freshness checks at the public graph boundary. Constraint reuse requires exact immutable built-in records at every depth; nested extensions run on each query.",
           "gaps": []
@@ -101,9 +122,15 @@
           "tests": [
             "tests/pruning/test_identity_axes.py::test_identity_component_matches_every_single_position",
             "tests/pruning/test_identity_axes.py::test_identity_component_rejects_partial_scopes_extensions_and_full_width",
+            "tests/pruning/test_limited_requests.py::test_identity_slices_span_different_tensor_dimensions",
+            "tests/pruning/test_limited_requests.py::test_complete_broadcast_closures_match_coordinate_reference",
+            "tests/pruning/test_limited_requests.py::test_single_slice_cache_replays_operator_reasons_from_the_requested_seed",
+            "tests/pruning/test_equivalent_candidates.py::test_residual_aliases_share_one_joint_query_after_hidden_channel_removal",
             "tests/pruning/test_identity_axes.py::test_equivalent_seeds_keep_full_closure_with_nonidentity_relations",
             "tests/workflows/test_isomorphic_pruning.py::test_identity_family_reuse_matches_generic_plan_and_reduces_queries",
-            "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring"
+            "tests/workflows/test_isomorphic_pruning.py::test_isomorphic_bias_seed_with_downstream_channel_axis",
+            "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring",
+            "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine"
           ],
           "conditions": "Exact declared relations; proper subsets for full-component reuse; equivalent seeds checked through actual CPU/CUDA propagation, planning, replay and execution.",
           "gaps": [
@@ -121,7 +148,7 @@
             "tests/pruning/test_component_ranking.py::test_component_fallback_preserves_other_scores_and_fixed_summaries",
             "tests/pruning/test_component_ranking.py::test_mixed_component_public_plan_apply_matches_generic"
           ],
-          "conditions": "Internal plan-local record; CPU/CUDA cross-axis and last-position invalidation, immutable summaries, public planning failure and replay checks.",
+          "conditions": "Internal plan-local record; CPU/CUDA cross-axis conditional scores, last-position invalidation, immutable summaries, public planning failure and replay checks.",
           "gaps": []
         }
       ]
@@ -130,7 +157,7 @@
       "object": "torch_kirigami.pruning.ranking.IndependentRanking",
       "contracts": [
         {
-          "behavior": "Reuse independent axis statistics without changing dynamic scores, joint constraints, budgets or executable plans.",
+          "behavior": "Reuse independent axis statistics only for proved complete joint closures, with scores bitwise equal to ordinary scoring, without changing dynamic scores, joint constraints, budgets or executable plans.",
           "tests": [
             "tests/pruning/test_independent_ranking.py::test_public_plan_restore_apply_matches_generic_joint_scoring",
             "tests/pruning/test_independent_ranking.py::test_batched_statistics_and_conditional_order_have_independent_reference",
@@ -142,12 +169,36 @@
             "tests/pruning/test_independent_ranking.py::test_partial_reuse_with_cross_axis_acceptance_matches_public_generic_plan",
             "tests/pruning/test_component_ranking.py::test_component_fallback_preserves_other_scores_and_fixed_summaries",
             "tests/pruning/test_component_ranking.py::test_mixed_component_public_plan_apply_matches_generic",
-            "tests/workflows/test_vit_head_pruning.py::test_mixed_head_ffn_reuse_matches_generic_global_selection"
+            "tests/workflows/test_vit_head_pruning.py::test_mixed_head_ffn_reuse_matches_generic_global_selection",
+            "tests/pruning/test_independent_ranking.py::test_ties_and_invalid_statistics_match_generic_public_planning",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_scores_are_bitwise_ordinary_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_statistics_reduce_one_slice_at_a_time",
+            "tests/pruning/test_component_ranking.py::test_bottleneck_dynamic_plan_scores_shared_weights_conditionally",
+            "tests/pruning/test_conditional_metrics.py::test_equal_regions_score_bitwise_equal_for_every_decomposition",
+            "tests/pruning/test_exact_score_reuse.py::test_exact_closure_survives_an_intermediate_limit",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_completeness_checks_only_candidate_positions"
           ],
-          "conditions": "Exact built-in GroupMagnitude; singleton candidates in proved tensor-disjoint identity-axis components, optionally mixed with ordinary candidates in one global ranking. Complete accepted projections guard conditional reuse. CPU and CUDA numerical and lifecycle references.",
+          "conditions": "Exact built-in Magnitude and GroupMagnitude; singleton candidates in proved identity-axis components, which may share a tensor on different axes, optionally mixed with ordinary candidates in one global ranking. Complete accepted projections guard conditional reuse per component; after removals on another axis of a member tensor, scores reduce the remaining parts of each slice and are compared bitwise with generic scoring. CPU and CUDA numerical and lifecycle references. Memory is bounded by one slice per member.",
           "gaps": [
-            "Complex mappings, overlapping domains and arbitrary extensions intentionally retain generic joint scoring."
+            "Complex mappings, joint states that fail the relation closure proof, and arbitrary extensions intentionally retain generic joint scoring."
           ]
+        },
+        {
+          "behavior": "Compute conditional statistics only for positions that the accepted state proves complete, without changing the plan.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_conditional_norms_after_removal_through_flatten"
+          ],
+          "conditions": "DynamicGreedy with Magnitude compared with an ordinary Magnitude subclass; the plan applied.",
+          "gaps": []
+        },
+        {
+          "behavior": "Leave a component whose normalization, or a candidate whose group score, raises `PlanningError` to ordinary scoring, which reports or excludes it.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_unscorable_normalization_excludes_only_its_axis"
+          ],
+          "conditions": "Nonfinite and unproved normalization positions on one of two branches; Greedy and DynamicGreedy.",
+          "gaps": []
         }
       ]
     },
@@ -222,6 +273,23 @@
             "tests/dep_graph/test_selection.py::test_empty_selection_preserves_zero_shape"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "`issubset` checks containment by intersection volumes, so it answers where `subtract` would exceed the region limit, and rejects another tensor.",
+          "tests": [
+            "tests/dep_graph/test_coordinate_properties.py::test_all_small_selection_pairs_against_coordinate_sets",
+            "tests/dep_graph/test_coordinate_properties.py::test_containment_needs_no_representable_difference"
+          ],
+          "conditions": "Every pair of small coordinate sets; `max_parts=2` for the limit case.",
+          "gaps": []
+        },
+        {
+          "behavior": "`fully_selected_indices` and `compact_shape` work on canonical boxes, so their results and any `AnalysisLimitError` depend only on the selected coordinates, not on the region decomposition.",
+          "tests": [
+            "tests/dep_graph/test_coordinate_properties.py::test_layout_checks_depend_only_on_coordinates"
+          ],
+          "conditions": "Random position sets described by points, row fibers and column fibers; random scopes; `max_parts` 1 to 3.",
           "gaps": []
         }
       ]
@@ -410,6 +478,30 @@
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
+        },
+        {
+          "behavior": "Report a positive retained size below the least common multiple of native factors on a nonempty axis as an irreversible conflict, and exclude such candidates before trials.",
+          "tests": [
+            "tests/pruning/test_alignment_conflicts.py::test_alignment_conflict_starts_below_the_least_common_multiple",
+            "tests/pruning/test_alignment_conflicts.py::test_greedy_excludes_unreachable_alignment_seeds_without_trials",
+            "tests/pruning/test_alignment_conflicts.py::test_axes_narrower_than_their_factor_fail_before_trials_without_mutation",
+            "tests/pruning/test_projected_rejections.py::test_projected_rejections_match_propagation_for_changing_accepted_impacts",
+            "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine"
+          ],
+          "conditions": "Every retained size of one axis, combined factors on one axis and on identity-equivalent axes, axes narrower than their factor, native projection parity, public plan/apply and unmutated failure.",
+          "gaps": []
+        },
+        {
+          "behavior": "Report a state as an irreversible conflict when no larger removal lets one `Balanced` constraint keep equal partition counts with a positive size divisible by the combined factor, and exclude such candidates before trials.",
+          "tests": [
+            "tests/pruning/test_alignment_conflicts.py::test_balanced_alignment_conflicts_match_every_superset",
+            "tests/pruning/test_alignment_conflicts.py::test_balanced_alignment_dead_ends_are_excluded_before_trials",
+            "tests/pruning/test_projected_rejections.py::test_projected_rejections_match_propagation_for_changing_accepted_impacts"
+          ],
+          "conditions": "Every removal of a nine-position axis with positions outside the partitions, factors 1, 2, 4 and 6, both `nonempty` values, partitions on the same axis and on an identity-equivalent axis; grouped convolution with three groups and factor 8 under `Greedy` and `DynamicGreedy` with public plan/apply.",
+          "gaps": [
+            "Several `Balanced` constraints on one set of equivalent axes are checked one at a time; dead ends that only their combination proves remain reversible conflicts for search."
+          ]
         }
       ]
     },
@@ -466,9 +558,20 @@
           "tests": [
             "tests/dep_graph/test_constraint_properties.py::test_axis_constraints_match_every_small_removal_without_completing_it",
             "tests/dep_graph/test_constraint_properties.py::test_partial_regions_distinguish_fixed_layout_and_opaque_barriers",
-            "tests/dep_graph/test_propagation.py::test_multiple_partition_constraints"
+            "tests/dep_graph/test_propagation.py::test_multiple_partition_constraints",
+            "tests/dep_graph/test_constraint_properties.py::test_layout_ports_match_every_small_removal"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "Check port coverage on canonical boxes, so equal selections give equal diagnostics and analysis limits for every region decomposition and request order.",
+          "tests": [
+            "tests/dep_graph/test_coordinate_properties.py::test_layout_checks_depend_only_on_coordinates",
+            "tests/pruning/test_limited_requests.py::test_equal_closures_pass_partitioned_layouts_alike",
+            "tests/pruning/test_limited_requests.py::test_redundant_partition_does_not_limit_coverage"
+          ],
+          "conditions": "Random decompositions and ports at `max_parts` 1 to 3; a partitioned layout whose two equal closures differ in decomposition, with default and disabled impact cache, `parameter_groups()` in both orders and the plan applied.",
           "gaps": []
         }
       ]
@@ -805,7 +908,8 @@
             "tests/pruning/test_shared_constraints.py::test_shared_module_paths_and_calls",
             "tests/dep_graph/test_propagation.py::test_linear_chain_and_joint_requests",
             "tests/dep_graph/test_provenance.py::test_provenance_steps_reconstruct_exact_closure",
-            "tests/dep_graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate"
+            "tests/dep_graph/test_freshness.py::test_training_mode_and_parameter_replacement_invalidate",
+            "tests/dep_graph/test_queries.py::test_affected_operations_rejects_stale_graph"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -1038,6 +1142,16 @@
             "tests/pruning/test_unified_budget.py::test_cumulative_targets_keep_original_baseline_after_overshoot_and_restore"
           ],
           "gaps": []
+        },
+        {
+          "behavior": "Share a complete impact for a common request prefix and an equivalent disjoint last slice using its common solver initialization; preserve the original seed and declared propagation reasons. Record seeds that cannot be merged as an incomplete `analysis_limit` impact equal to direct propagation diagnostics.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_proved_broadcast_closure_preserves_plan_and_output",
+            "tests/pruning/test_limited_requests.py::test_seed_limits_exclude_one_candidate_and_planning_continues",
+            "tests/pruning/test_limited_requests.py::test_equal_closures_pass_partitioned_layouts_alike"
+          ],
+          "conditions": "Default and disabled impact cache; the equivalent complete request queried first, also for equal closures with different region decompositions under a partitioned layout.",
+          "gaps": []
         }
       ]
     },
@@ -1049,9 +1163,31 @@
           "tests": [
             "tests/pruning/test_dynamic_strategy.py::test_conditional_magnitude_changes_choice_and_matches_manual_model",
             "tests/pruning/test_dynamic_strategy.py::test_dynamic_reranks_after_whole_constraint_completion",
-            "tests/pruning/test_dynamic_strategy.py::test_dynamic_score_failure_keeps_model_and_graph_usable"
+            "tests/pruning/test_dynamic_strategy.py::test_dynamic_score_failure_keeps_model_and_graph_usable",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_scores_are_bitwise_ordinary_scores",
+            "tests/pruning/test_component_ranking.py::test_bottleneck_dynamic_plan_scores_shared_weights_conditionally",
+            "tests/pruning/test_alignment_conflicts.py::test_balanced_alignment_dead_ends_are_excluded_before_trials"
           ],
-          "conditions": "CPU and CUDA with public planning, portable plan replay, independent compact forward and backward.",
+          "conditions": "CPU and CUDA with public planning, portable plan replay, independent compact forward and backward; convolution bottlenecks whose middle weight joins two components.",
+          "gaps": []
+        },
+        {
+          "behavior": "Record an analysis limit of one candidate as its exclusion and continue with the other candidates, also when an equivalent request is complete.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_seed_limits_exclude_one_candidate_and_planning_continues",
+            "tests/pruning/test_limited_requests.py::test_proved_broadcast_closure_preserves_plan_and_output"
+          ],
+          "conditions": "Default and disabled impact cache; the selected plan applied and its output checked.",
+          "gaps": []
+        },
+        {
+          "behavior": "When a score batch raises `PlanningError` or `AnalysisLimitError`, score each candidate alone and exclude only those that fail; raise the batch error when no candidate reproduces it.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_unscorable_normalization_excludes_only_its_axis",
+            "tests/pruning/test_limited_requests.py::test_batch_failures_without_a_failing_candidate_are_raised"
+          ],
+          "conditions": "GroupMagnitude with an unproved or nonfinite normalization position on one axis, default and disabled impact cache, the other branch planned, applied and checked; a metric that fails only for batches.",
           "gaps": []
         }
       ]
@@ -1084,9 +1220,28 @@
             "tests/pruning/test_group_parameter_scope.py::test_opaque_gqa_score_and_public_pruning",
             "tests/pruning/test_group_parameter_scope.py::test_parameter_free_scoring_fails_without_mutating_model",
             "tests/pruning/test_group_parameter_scope.py::test_native_parameters_need_no_scoring_registration",
-            "tests/pruning/test_group_parameter_scope.py::test_zero_parameters_and_covered_requests_are_valid"
+            "tests/pruning/test_group_parameter_scope.py::test_zero_parameters_and_covered_requests_are_valid",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_scores_are_bitwise_ordinary_scores"
           ],
           "conditions": "CPU and CUDA numerical references for all affected Parameters, including biases and custom modules. No claim of task-loss accuracy.",
+          "gaps": []
+        },
+        {
+          "behavior": "Cache normalization by the ordered accepted request, because accepted requests with identical closures can differ in which normalization requests are complete.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_normalization_agrees_for_proved_broadcasts"
+          ],
+          "conditions": "Default and disabled impact and normalization caches; alternating accepted requests.",
+          "gaps": []
+        },
+        {
+          "behavior": "Combine the seeds of a candidate as canonical boxes, so complete slices are recognized whatever the seed count and order, and a failing normalization excludes only the candidates of that axis.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_group_scores_merge_seeds_with_the_accepted_slices",
+            "tests/pruning/test_limited_requests.py::test_unscorable_normalization_excludes_only_its_axis"
+          ],
+          "conditions": "Four single-row seeds that exceed `max_parts` as regions, scored after an accepted request that fills the gaps, compared with Magnitude and applied; unproved and nonfinite normalization positions with Greedy and DynamicGreedy.",
           "gaps": []
         }
       ]
@@ -1101,7 +1256,9 @@
             "tests/pruning/test_strategy.py::test_greedy_initial_invalid_divisibility_and_limit",
             "tests/pruning/test_strategy.py::test_metric_errors_and_nonadditive_custom_scoring",
             "tests/pruning/test_context.py::test_metric_keyword_contract_and_accepted_impact_match_independent_reference",
-            "tests/pruning/test_strategy.py::test_default_zero_budget_avoids_candidate_scoring"
+            "tests/pruning/test_strategy.py::test_default_zero_budget_avoids_candidate_scoring",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_scores_are_bitwise_ordinary_scores"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
           "gaps": []
@@ -1117,6 +1274,24 @@
           "gaps": [
             "不自动证明任意用户代码改写等价；只给出已识别问题的有条件建议"
           ]
+        },
+        {
+          "behavior": "Record an analysis limit of one candidate as its exclusion and continue with the other candidates, also when an equivalent request is complete.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_seed_limits_exclude_one_candidate_and_planning_continues",
+            "tests/pruning/test_limited_requests.py::test_proved_broadcast_closure_preserves_plan_and_output"
+          ],
+          "conditions": "Default and disabled impact cache; the selected plan applied and its output checked.",
+          "gaps": []
+        },
+        {
+          "behavior": "When a score batch raises `PlanningError` or `AnalysisLimitError`, score each candidate alone and exclude only those that fail; raise the batch error when no candidate reproduces it.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_unscorable_normalization_excludes_only_its_axis",
+            "tests/pruning/test_limited_requests.py::test_batch_failures_without_a_failing_candidate_are_raised"
+          ],
+          "conditions": "GroupMagnitude with an unproved or nonfinite normalization position on one axis, default and disabled impact cache, the other branch planned, applied and checked; a metric that fails only for batches.",
+          "gaps": []
         }
       ]
     },
@@ -1134,6 +1309,15 @@
           ],
           "conditions": "Aliases, intersecting axes, joint-only effects, covered requests, foreign graphs and incomplete influence. CPU/CUDA custom-metric plan/apply checks.",
           "gaps": []
+        },
+        {
+          "behavior": "Return the exact additional selection when it is representable, and raise `AnalysisLimitError` when it, or a piece of `Selection.subtract`, exceeds the region limit.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_interleaved_regions_beyond_the_limit_score_and_plan",
+            "tests/pruning/test_limited_requests.py::test_additional_regions_beyond_the_limit_score_exactly"
+          ],
+          "conditions": "Regrouped rows that exceed the limit only in canonical boxes; an additional row set with more intervals than `max_parts`.",
+          "gaps": []
         }
       ]
     },
@@ -1147,9 +1331,32 @@
             "tests/pruning/test_precision.py::test_magnitude_low_precision_accumulation",
             "tests/pruning/test_precision.py::test_l2_extreme_finite_values_preserve_scores_and_order",
             "tests/pruning/test_precision.py::test_taylor_promotes_before_multiplying",
-            "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
+            "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value",
+            "tests/pruning/test_exact_score_reuse.py::test_incomplete_candidates_never_receive_cached_scores",
+            "tests/pruning/test_exact_score_reuse.py::test_cached_scores_are_bitwise_ordinary_scores"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "Reduce each canonical box of the additional parameter positions on its own, so equal selected coordinates give bitwise equal scores for every region decomposition and intersections count once. Boxes are not limited by `max_parts`; gather temporaries can exceed a box.",
+          "tests": [
+            "tests/pruning/test_conditional_metrics.py::test_equal_regions_score_bitwise_equal_for_every_decomposition",
+            "tests/pruning/test_conditional_metrics.py::test_taylor_axis_statistics_follow_selected_coordinates",
+            "tests/pruning/test_exact_score_reuse.py::test_row_and_column_scores_reduce_one_region_at_a_time",
+            "tests/pruning/test_component_ranking.py::test_component_fallback_preserves_other_scores_and_fixed_summaries"
+          ],
+          "conditions": "L1 and L2 on float32 weights with two seed orders that produce different decompositions of one conditional effect, one and five regions of one selection, overlapping rows and columns with a CUDA peak-memory bound, and independent mask references; CPU and CUDA.",
+          "gaps": []
+        },
+        {
+          "behavior": "Score candidates with a complete closure whose region groups or additional positions exceed `max_parts`, with box order determined only by coordinates.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_interleaved_regions_beyond_the_limit_score_and_plan",
+            "tests/pruning/test_limited_requests.py::test_additional_regions_beyond_the_limit_score_exactly",
+            "tests/pruning/test_limited_requests.py::test_canonical_boxes_depend_only_on_coordinates"
+          ],
+          "conditions": "L1 and L2 against independent float64 mask references; default and disabled impact cache; Greedy and DynamicGreedy plans applied.",
           "gaps": []
         }
       ]
@@ -1166,9 +1373,12 @@
             "tests/pruning/test_taylor_statistics.py::test_axis_statistics_chunk_promotions_and_fall_back_for_oversized_slices",
             "tests/pruning/test_taylor_statistics.py::test_joint_requests_keep_generic_overflow_failure_and_valid_alternative",
             "tests/pruning/test_taylor_statistics.py::test_absolute_taylor_near_float64_overflow_retains_region_failure_semantics",
-            "tests/pruning/test_taylor_statistics.py::test_public_plans_compact_models_and_restore_match_generic_statistics"
+            "tests/pruning/test_taylor_statistics.py::test_public_plans_compact_models_and_restore_match_generic_statistics",
+            "tests/pruning/test_conditional_metrics.py::test_equal_regions_score_bitwise_equal_for_every_decomposition",
+            "tests/pruning/test_conditional_metrics.py::test_joint_taylor_cancels_within_coordinate_regions",
+            "tests/pruning/test_conditional_metrics.py::test_taylor_axis_statistics_follow_selected_coordinates"
           ],
-          "conditions": "CPU/CUDA, signed/absolute modes, ordinary fallback, serialization, application, checkpoint and backward.",
+          "conditions": "CPU/CUDA, signed/absolute modes, ordinary fallback, statistic reuse decided by the selected coordinates, finite signed cancellation within regions, serialization, application, checkpoint and backward.",
           "gaps": []
         },
         {
@@ -1181,6 +1391,15 @@
             "tests/pruning/test_precision.py::test_complex_l1_promotes_before_absolute_value"
           ],
           "conditions": "CPU；使用 execution_device 的张量执行用例另验 CUDA",
+          "gaps": []
+        },
+        {
+          "behavior": "Score region groups and additional positions beyond `max_parts` exactly, using axis statistics only for one box with a single partial axis.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_interleaved_regions_beyond_the_limit_score_and_plan",
+            "tests/pruning/test_limited_requests.py::test_additional_regions_beyond_the_limit_score_exactly"
+          ],
+          "conditions": "Independent float64 mask references with explicit gradients; default and disabled impact cache.",
           "gaps": []
         }
       ]
@@ -1425,6 +1644,20 @@
           "gaps": [
             "未穷举任意 Python 配置读取及所有组合"
           ]
+        },
+        {
+          "behavior": "Direct `impact()` and `plan_remove()` raise for seeds that cannot be merged, while `plan()` excludes that candidate and continues; `parameter_groups()` and `filter_candidates()` check each candidate as its own ordered request, whatever its neighbors. `parameter_groups()` analyzes equal native requests once, shares an equivalent complete analysis only through at most `impact_cache_size` entries of parameter selections, and keeps no impacts.",
+          "tests": [
+            "tests/pruning/test_limited_requests.py::test_seed_limits_exclude_one_candidate_and_planning_continues",
+            "tests/pruning/test_limited_requests.py::test_parameter_groups_preserve_order_for_proved_broadcasts",
+            "tests/pruning/test_limited_requests.py::test_filter_reports_proved_broadcast_conflicts",
+            "tests/pruning/test_limited_requests.py::test_equal_closures_pass_partitioned_layouts_alike",
+            "tests/pruning/test_limited_requests.py::test_parameter_groups_analyze_equal_requests_once",
+            "tests/pruning/test_limited_requests.py::test_parameter_groups_keep_no_impacts",
+            "tests/pruning/test_limited_requests.py::test_parameter_groups_share_equivalent_requests_within_the_cache"
+          ],
+          "conditions": "Default and disabled impact and candidate caches, and a single-entry impact cache; every neighbor order; propagation counts and live impacts; the selected plan applied and its output checked.",
+          "gaps": []
         }
       ]
     },
@@ -1690,6 +1923,21 @@
             "tests/dep_graph/test_consumer_guards.py::test_integer_read_requires_no_intervening_writes"
           ],
           "conditions": "Public integration on CPU and CUDA through execution_device",
+          "gaps": []
+        }
+      ]
+    },
+    {
+      "object": "torch_kirigami.dep_graph.contracts.AlignmentClass",
+      "contracts": [
+        {
+          "behavior": "Combine `NonEmpty`, `Divisible` factors and `Balanced` partitions over identity-equivalent axes, and drive the same irreversible alignment proofs in propagation and candidate projections.",
+          "tests": [
+            "tests/pruning/test_alignment_conflicts.py::test_factors_on_identity_equivalent_axes_combine",
+            "tests/pruning/test_alignment_conflicts.py::test_balanced_alignment_conflicts_match_every_superset",
+            "tests/pruning/test_projected_rejections.py::test_projected_rejections_match_propagation_for_changing_accepted_impacts"
+          ],
+          "conditions": "Internal record; accepted through propagation and `CandidateFilter` behavior.",
           "gaps": []
         }
       ]

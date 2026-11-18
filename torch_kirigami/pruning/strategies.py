@@ -10,10 +10,10 @@ from typing import Literal
 from ..dep_graph.contracts import Balanced, Constraint, Divisible, Impact
 from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.selection import AxisRef, IndexSet
+from ..errors import AnalysisLimitError
 from ..settings import config
-from .metrics import GroupMagnitude, Magnitude
 from .planner import PlanningContext
-from .ranking import IndependentRanking
+from .ranking import IndependentRanking, _has_native_score
 from .types import (
     Candidate,
     ChannelCount,
@@ -25,18 +25,20 @@ from .types import (
 )
 
 _EMPTY_INDICES = IndexSet()
-_NATIVE_SCORES = {Magnitude: Magnitude.score, GroupMagnitude: GroupMagnitude.score}
+
+
+def _failure(error: PlanningError | AnalysisLimitError) -> str:
+    """Describe why one candidate request was not accepted."""
+    if isinstance(error, AnalysisLimitError):
+        return f"Analysis limit reached: {error}"
+    return str(error)
 
 
 def _can_reuse_score_checks(metric: Metric, context: PlanningContext) -> bool:
     """Require native scoring, budgets and candidates before batching validation."""
-    if type(context) is not PlanningContext or type(metric) not in _NATIVE_SCORES:
+    if type(context) is not PlanningContext or not _has_native_score(metric):
         return False
-    if (
-        "score" in vars(metric)
-        or type(metric).score is not _NATIVE_SCORES[type(metric)]
-        or not has_native_semantics(metric.p)
-    ):
+    if not has_native_semantics(metric.p):
         return False
     if type(context.budget) not in (ChannelCount, ChannelRatio, ParameterBudget):
         return False
@@ -298,12 +300,27 @@ def _validate_options(metric: Metric, max_trials: int) -> None:
 
 @dataclass(frozen=True)
 class Greedy:
-    """Select in one static score order, verifying complete structural changes.
+    """Greedy selection in one static score order.
+
+    The metric scores every candidate once, relative to the empty request, and
+    the scores are never updated. Candidates are tried in ascending
+    `(score, key)` order. Each seed is verified jointly with the accepted
+    selection; when grouping constraints such as `Balanced` or `Divisible`
+    require more removals, other candidates are added to complete it. A complete
+    selection is accepted only when it compiles and lowers the unmet budget.
+    Selection stops when the budget is met, the candidates are exhausted, or
+    `max_trials` is reached. The model is never modified during selection.
 
     Attributes:
-        metric: Batch-independent scorer. Scores use the initial empty request.
-        max_trials: Maximum joint attempts, including cache hits. Scoring queries
-            are separate. Covered seeds and proven irreversible additions use no attempt.
+        metric: Batch-independent scorer.
+        max_trials: Maximum number of joint verification attempts, including
+            cache hits. Scoring queries do not count. Seeds already covered by
+            accepted removals and candidates with a proven irreversible conflict
+            use no attempt.
+
+    Raises:
+        ValueError: `max_trials` is not a nonnegative integer.
+        TypeError: `metric` has no `score` method.
     """
 
     metric: Metric
@@ -313,26 +330,44 @@ class Greedy:
         _validate_options(self.metric, self.max_trials)
 
     def select(self, context: PlanningContext) -> StrategyResult:
-        """Return a verified choice without changing the model or context premises."""
-        with context.graph._native_queries(
-            context.constraints, enabled=_can_reuse_score_checks(self.metric, context)
-        ):
-            return _select(context, self.metric, self.max_trials, dynamic=False)
+        """Select candidates that meet the budget, without modifying the model.
+
+        Args:
+            context: Planning services and the filtered candidates.
+
+        Returns:
+            The accepted candidate keys and search diagnostics.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The accepted selection does not
+                meet the budget, scoring fails, or no valid request exists.
+        """
+        native = _can_reuse_score_checks(self.metric, context)
+        with context.graph._native_queries(context.constraints, enabled=native):
+            return _select(context, self.metric, self.max_trials, dynamic=False, native=native)
 
 
 @dataclass(frozen=True)
 class DynamicGreedy:
-    """Rescore remaining candidates after every accepted structural change.
+    """Greedy selection that rescores the remaining candidates after each acceptance.
 
-    A commitment can contain several candidates required by grouping constraints.
-    Their completion uses scores from before that entire commitment. The metric
-    receives the accepted impact in original coordinates; the model is neither
-    physically compacted nor recalibrated. Rescoring may dominate runtime.
+    Selection works like `Greedy`, but after each accepted complete selection
+    the metric rescores the remaining candidates relative to the new accepted
+    impact. A complete selection can contain several candidates required by
+    grouping constraints; their completion uses the scores from before that
+    selection. Rescoring happens only in the dependency analysis, in original
+    coordinates: the model is never physically pruned, retrained, or
+    recalibrated during planning. Rescoring can dominate the runtime.
 
     Attributes:
-        metric: Batch-independent scorer relative to accepted removals. Statistics
-            remain caller-owned.
-        max_trials: Maximum joint verification attempts, excluding score queries.
+        metric: Batch-independent scorer that supports scoring relative to
+            accepted removals. Its statistics remain caller-owned.
+        max_trials: Maximum number of joint verification attempts, including
+            cache hits. Scoring queries do not count.
+
+    Raises:
+        ValueError: `max_trials` is not a nonnegative integer.
+        TypeError: `metric` has no `score` method.
     """
 
     metric: Metric
@@ -342,11 +377,21 @@ class DynamicGreedy:
         _validate_options(self.metric, self.max_trials)
 
     def select(self, context: PlanningContext) -> StrategyResult:
-        """Return a verified choice, reranking after every complete commitment."""
-        with context.graph._native_queries(
-            context.constraints, enabled=_can_reuse_score_checks(self.metric, context)
-        ):
-            return _select(context, self.metric, self.max_trials, dynamic=True)
+        """Select candidates that meet the budget, rescoring after each acceptance.
+
+        Args:
+            context: Planning services and the filtered candidates.
+
+        Returns:
+            The accepted candidate keys and search diagnostics.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The accepted selection does not
+                meet the budget, scoring fails, or no valid request exists.
+        """
+        native = _can_reuse_score_checks(self.metric, context)
+        with context.graph._native_queries(context.constraints, enabled=native):
+            return _select(context, self.metric, self.max_trials, dynamic=True, native=native)
 
 
 def _rank_candidates(
@@ -357,6 +402,7 @@ def _rank_candidates(
     axes: tuple[AxisRef, ...],
     exclusions: dict[str, str],
     independent: IndependentRanking | None = None,
+    analysis_order: Mapping[str, tuple] | None = None,
 ) -> tuple[list[Candidate], dict[str, Mapping[AxisRef, IndexSet]]]:
     """Check complete joint influence and score within the bounded impact cache.
 
@@ -364,6 +410,8 @@ def _rank_candidates(
     conservative lower bounds for combinations. They do not replace verification.
     Unproved candidates follow the ordinary metric batching contract. Proven
     native statistics join the same global score order, without separate pruning.
+    `analysis_order` maps candidate keys to a query order that keeps equivalent
+    native requests near each other within the bounded impact cache.
     """
     eligible, scores, removals = [], {}, {}
     proved = independent.score(accepted_impact) if independent is not None else None
@@ -376,20 +424,12 @@ def _rank_candidates(
         if candidate.key in proved_scores
         or (
             candidate.key not in proved_covered
-            and any(s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
+            and not all(s.issubset(accepted_impact.selection(s.tensor)) for s in candidate.remove)
         )
     ]
-    if _can_reuse_score_checks(metric, context) and context._candidate_filter.reuse_equivalent:
-        # Keep equivalent native requests near each other within the bounded cache.
+    if analysis_order is not None:
         # Every candidate is still scored. Final ordering remains (score, key).
-        def analysis_order(candidate: Candidate) -> tuple:
-            seeds = context._candidate_filter.index.canonical_seeds(candidate.remove)
-            return tuple(
-                (s.tensor.id, tuple(tuple(axis.intervals for axis in r.axes) for r in s.regions))
-                for s in seeds
-            )
-
-        remaining.sort(key=analysis_order)
+        remaining.sort(key=lambda candidate: analysis_order[candidate.key])
     batch_size = config.score_batch_size
     for start in range(0, len(remaining), batch_size):
         batch = []
@@ -407,30 +447,52 @@ def _rank_candidates(
             try:
                 joint = context.impact((*accepted_impact.requested, *candidate.remove))
                 context.require_complete(joint)
-            except PlanningError as error:
-                exclusions[candidate.key] = str(error)
-            else:
-                exclusions.pop(candidate.key, None)
                 removals[candidate.key] = {
                     axis: delta
                     for axis, indices in _axis_removals(joint, axes).items()
                     if (delta := indices.subtract(accepted_removals.get(axis, _EMPTY_INDICES)))
                 }
+            except (PlanningError, AnalysisLimitError) as error:
+                exclusions[candidate.key] = _failure(error)
+            else:
+                exclusions.pop(candidate.key, None)
                 batch.append(candidate)
-        if batch:
+        if not batch:
+            continue
+        try:
             values = context._score_complete(metric, tuple(batch), accepted_impact=accepted_impact)
-            scores.update(
-                (candidate.key, score) for candidate, score in zip(batch, values, strict=True)
-            )
-            eligible.extend(batch)
+        except (PlanningError, AnalysisLimitError) as batch_error:
+            # Scores do not depend on batching, so scoring each candidate alone
+            # excludes only the candidates whose scoring fails. A batch failure
+            # that no single candidate reproduces breaks that contract.
+            scored = []
+            for candidate in batch:
+                try:
+                    (value,) = context._score_complete(
+                        metric, (candidate,), accepted_impact=accepted_impact
+                    )
+                except (PlanningError, AnalysisLimitError) as error:
+                    exclusions[candidate.key] = _failure(error)
+                    del removals[candidate.key]
+                else:
+                    scored.append((candidate, value))
+            if len(scored) == len(batch):
+                raise batch_error
+        else:
+            scored = list(zip(batch, values, strict=True))
+        scores.update((candidate.key, value) for candidate, value in scored)
+        eligible.extend(candidate for candidate, _value in scored)
     ranked = sorted(eligible, key=lambda candidate: (scores[candidate.key], candidate.key))
     return ranked, removals
 
 
 def _select(
-    context: PlanningContext, metric: Metric, max_trials: int, *, dynamic: bool
+    context: PlanningContext, metric: Metric, max_trials: int, *, dynamic: bool, native: bool
 ) -> StrategyResult:
-    """Share budget, completion, and failure handling between both greedy loops."""
+    """Share budget, completion, and failure handling between both greedy loops.
+
+    `native` is the result of `_can_reuse_score_checks` for this metric and context.
+    """
     accepted_candidates: list[Candidate] = []
     accepted_impact = context.impact(())
     exclusions: dict[str, str] = {}
@@ -456,7 +518,7 @@ def _select(
         covered = {
             candidate.key
             for candidate in context.candidates
-            if all(not s.subtract(accepted_impact.selection(s.tensor)) for s in candidate.remove)
+            if all(s.issubset(accepted_impact.selection(s.tensor)) for s in candidate.remove)
         }
         result = StrategyResult(
             keys=tuple(c.key for c in accepted_candidates),
@@ -493,11 +555,28 @@ def _select(
     axes = tuple(dict.fromkeys((*counted_axes, *(c.axis for c in repair_constraints))))
     accepted_removals = _axis_removals(accepted_impact, axes)
     independent = IndependentRanking.build(context, metric, axes)
+    analysis_order = None
+    if native and context._candidate_filter.reuse_equivalent:
+        index = context._candidate_filter.index
+        analysis_order = {
+            candidate.key: tuple(
+                (s.tensor.id, tuple(tuple(axis.intervals for axis in r.axes) for r in s.regions))
+                for s in index.canonical_seeds(candidate.remove)
+            )
+            for candidate in context.candidates
+        }
 
     def rank() -> tuple[list[Candidate], dict[str, Mapping[AxisRef, IndexSet]]]:
         """Use proved independent statistics; retain ordinary joint scoring otherwise."""
         return _rank_candidates(
-            context, metric, context.candidates, accepted_impact, axes, exclusions, independent
+            context,
+            metric,
+            context.candidates,
+            accepted_impact,
+            axes,
+            exclusions,
+            independent,
+            analysis_order,
         )
 
     ranked, removals = rank()
@@ -514,21 +593,24 @@ def _select(
     while True:
         progress = False
         for seed in ranked:
-            if all(not s.subtract(accepted_impact.selection(s.tensor)) for s in seed.remove):
+            if all(s.issubset(accepted_impact.selection(s.tensor)) for s in seed.remove):
                 continue
             rejected = context._candidate_filter.rejections(seed, accepted_impact)
             if rejected:
                 exclusions[seed.key] = "; ".join(map(str, rejected))
                 continue
             initial = [*accepted_candidates, seed]
-            batch = _propose_batch(
-                initial,
-                accepted_removals,
-                ranked,
-                removals,
-                ranked_by_axis,
-                count_constraints,
-            )
+            try:
+                batch = _propose_batch(
+                    initial,
+                    accepted_removals,
+                    ranked,
+                    removals,
+                    ranked_by_axis,
+                    count_constraints,
+                )
+            except AnalysisLimitError:
+                batch = initial  # Joint analysis checks the bare seed.
             # Recheck the bare seed if the heuristic's preferred completion fails;
             # another partner can remain legal despite identical predicted counts.
             trials = (batch, initial) if len(batch) > len(initial) else (initial,)
@@ -538,19 +620,20 @@ def _select(
                     trial, impact = _complete_trial(
                         context, trial, ranked, removals, ranked_by_axis, attempt
                     )
-                except PlanningError as error:
+                    deficit = context.deficit(impact)
+                    trial_removals = _axis_removals(impact, axes)
+                except (PlanningError, AnalysisLimitError) as error:
                     if context.trials > attempts_before or seed.key not in failures:
-                        failures[seed.key] = (revision, str(error))
+                        failures[seed.key] = (revision, _failure(error))
                     if limited:
                         break
                 else:
-                    deficit = context.deficit(impact)
                     if accepted_deficit is not None and deficit >= accepted_deficit:
                         failures[seed.key] = (revision, "No reduction of unmet budget targets")
                         continue
                     accepted_candidates, accepted_impact = trial, impact
                     valid = progress = True
-                    accepted_removals = _axis_removals(impact, axes)
+                    accepted_removals = trial_removals
                     accepted_deficit = deficit
                     revision += 1
                     if deficit == 0:

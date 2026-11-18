@@ -1,6 +1,6 @@
-"""One candidate universe for planning, budget accounting and sparse training."""
+"""Candidate spaces shared by planning, channel-budget accounting, and sparse training."""
 
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
@@ -12,14 +12,17 @@ from ..dep_graph.contracts import Constraint, Fixed
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
 from ..dep_graph.operation import CandidateAxis, Operation
-from ..dep_graph.selection import AxisRef, Region, TensorRef
-from .candidate_checks import CandidateFilter
+from ..dep_graph.selection import AxisRef, Region, Selection, TensorRef
+from ..settings import config
+from .candidate_checks import CandidateFilter, propagate_request
 from .groups import ParameterGroup
 from .types import Candidate, PlanningError
 
+_RequestKey = tuple[tuple[TensorRef, tuple[Region, ...]], ...]
+
 
 def interface_constraints(graph: DependencyGraph, preserve_io: bool) -> tuple[Fixed, ...]:
-    """Return the standard protection of every external tensor axis."""
+    """Return `Fixed` constraints for every external input/output axis when requested."""
     return (
         tuple(Fixed(ref.axis(d)) for ref in graph.interfaces() for d in range(len(ref.shape)))
         if preserve_io
@@ -68,18 +71,29 @@ def _candidates(domain: CandidateAxis) -> Iterator[Candidate]:
 
 @dataclass(frozen=True)
 class CandidateSpace:
-    """Explicit candidates and logical axes used to count channels.
+    """Candidates for one planning round and the logical axes used by channel budgets.
 
-    Construction performs no discovery or analysis and retains no model. The
-    consuming Pruner validates graph ownership. Discovery metadata records excluded
-    axes for cumulative accounting; explicit budget axes are never filtered.
+    A candidate space is not the set of all dependency groups in the model: it
+    holds only the removal requests a strategy may choose from, plus the
+    logical channel axes whose widths channel budgets count. Construction
+    performs no discovery or analysis and retains no model; the consuming
+    `Pruner` checks that every reference belongs to its graph. Candidate
+    filtering never removes `channel_axes`, so the channel-budget baseline stays
+    fixed.
 
     Attributes:
-        candidates: Named original-coordinate requests available to a strategy.
-        channel_axes: Logical axes counted by channel budgets.
-        excluded_channel_axes: Discovered domains whose candidates are all
-            irreversibly blocked. They are outside this space's channel baseline.
-        exclusions: Rejected candidate keys or `domain:` keys, with their reasons.
+        candidates: Named removal requests in original coordinates, with unique
+            keys.
+        channel_axes: Unique logical axes counted by channel budgets.
+        excluded_channel_axes: Discovered axes whose candidates all have a proven
+            irreversible conflict. They are outside the channel-budget baseline.
+        exclusions: Rejected candidate keys, or `domain:` keys for excluded axes,
+            with their reasons.
+
+    Raises:
+        TypeError: A candidate or axis has the wrong type.
+        ValueError: Candidate keys repeat or an exclusion is not a pair of
+            strings.
     """
 
     candidates: tuple[Candidate, ...]
@@ -108,7 +122,11 @@ class CandidateSpace:
 def discover_candidates(
     graph: DependencyGraph, constraints: tuple[Constraint, ...], targets: Iterable[str] | None
 ) -> CandidateSpace:
-    """Filter declared domains before freezing widths and creating seeds."""
+    """Build a candidate space from declared domains, excluding irreversible conflicts.
+
+    `targets` patterns use `fnmatchcase`, so `*` also matches across `.`.
+    Fully excluded domains are removed before the channel baseline is frozen.
+    """
     graph.validate()
     checks = CandidateFilter(graph, constraints)
     operations = graph.operations()
@@ -167,13 +185,13 @@ def discover_candidates(
 def filter_candidates(
     graph: DependencyGraph, constraints: tuple[Constraint, ...], space: CandidateSpace
 ) -> CandidateSpace:
-    """Exclude irreversible candidates while preserving an explicit budget baseline."""
+    """Exclude candidates with irreversible conflicts, keeping every channel axis."""
     graph.validate()
     if not isinstance(space, CandidateSpace):
         raise TypeError("Expected a CandidateSpace")
     for axis in (*space.channel_axes, *space.excluded_channel_axes):
         graph.metadata(axis.tensor)
-    checks = CandidateFilter(graph, constraints)
+    checks = CandidateFilter(graph, constraints, candidate_count=len(space.candidates))
     kept, exclusions = [], dict(space.exclusions)
     for candidate in space.candidates:
         reasons = checks.rejections(candidate)
@@ -196,45 +214,62 @@ def parameter_groups(
 ) -> tuple[ParameterGroup, ...]:
     """Extract one group per candidate, preserving order and repeated groups.
 
-    Require complete influence before filtering parameters. Constraint failures
-    do not prevent extraction. This query does not compile execution recipes.
-    Reject empty filtered groups instead of changing candidate-to-group alignment.
+    Complete influence is required before parameters are filtered. Constraint
+    failures do not prevent extraction, and no execution recipes are compiled.
+    An empty filtered group raises instead of breaking candidate-to-group
+    alignment. Each candidate is checked as its own ordered request, so the
+    first failing candidate in input order raises, whatever its neighbors.
+    Equal native requests are analyzed once. An equivalent request shares a
+    complete analysis for single slices with the same canonical starting axis.
+    At most `impact_cache_size` such parameter selection tuples are kept.
     """
     candidates = tuple(candidates)
+    for candidate in candidates:
+        for selection in candidate.remove:
+            graph.metadata(selection.tensor)
+        if candidate.axis is not None:
+            graph.metadata(candidate.axis.tensor)
     native = parameter_filter is None and all(
         type(candidate) is Candidate and has_native_semantics((candidate.axis, candidate.remove))
         for candidate in candidates
     )
     with graph._native_queries(constraints, enabled=native):
-        checks = CandidateFilter(graph, constraints)
-        batches = [[(number, candidate)] for number, candidate in enumerate(candidates)]
-        if native and checks.reuse_equivalent:
-            # Group only proved equal seeds. Keep no persistent cache or impacts.
-            equivalent: dict[
-                tuple[tuple[TensorRef, tuple[Region, ...]], ...], list[tuple[int, Candidate]]
-            ] = {}
-            for number, candidate in enumerate(candidates):
-                for selection in candidate.remove:
-                    graph.metadata(selection.tensor)
-                if candidate.axis is not None:
-                    graph.metadata(candidate.axis.tensor)
-                key = tuple(
-                    (s.tensor, s.regions) for s in checks.index.canonical_seeds(candidate.remove)
-                )
-                equivalent.setdefault(key, []).append((number, candidate))
-            batches = list(equivalent.values())
-        result: dict[int, ParameterGroup] = {}
-        for batch in batches:
-            candidate = batch[0][1]
-            parameters = checks.parameter_selections(candidate)
+        checks = CandidateFilter(graph, constraints, candidate_count=len(candidates))
+        reuse = native and checks.reuse_equivalent
+        # Parameter selections by exact request; these are part of the result.
+        analyzed: dict[_RequestKey, tuple[Selection, ...]] = {}
+        shared: OrderedDict[_RequestKey, tuple[Selection, ...]] = OrderedDict()
+        groups = []
+        for candidate in candidates:
+            exact = tuple((s.tensor, s.regions) for s in candidate.remove) if native else None
+            parameters = analyzed.get(exact) if exact is not None else None
             if parameters is None:
-                impact = graph.propagate(remove=candidate.remove, constraints=constraints)
-                if not impact.complete:
-                    raise PlanningError(
-                        f"Incomplete parameter group for candidate {candidate.key!r}: "
-                        + "; ".join(d.message for d in impact.diagnostics if not d.complete)
-                    )
-                parameters = impact.parameters
+                parameters = checks.parameter_selections(candidate)
+            if parameters is None:
+                key = (
+                    checks.request_key(candidate.remove)
+                    if reuse and len(candidate.remove) == 1 and config.impact_cache_size
+                    else None
+                )
+                entry = shared.get(key) if key is not None else None
+                if entry is not None:
+                    shared.move_to_end(key)
+                    parameters = entry
+                else:
+                    impact = propagate_request(graph, candidate.remove, constraints)
+                    if not impact.complete:
+                        raise PlanningError(
+                            f"Incomplete parameter group for candidate {candidate.key!r}: "
+                            + "; ".join(d.message for d in impact.diagnostics if not d.complete)
+                        )
+                    parameters = impact.parameters
+                    if key is not None:
+                        shared[key] = parameters
+                        shared.move_to_end(key)
+                        if len(shared) > config.impact_cache_size:
+                            shared.popitem(last=False)
+            if exact is not None:
+                analyzed[exact] = parameters
             selections = []
             for selection in parameters:
                 if parameter_filter is None:
@@ -251,6 +286,5 @@ def parameter_groups(
                 raise PlanningError(
                     f"Candidate {candidate.key!r} has no parameter regions after extraction and filtering"
                 )
-            for number, member in batch:
-                result[number] = ParameterGroup(graph, tuple(selections), member.key)
-        return tuple(result[number] for number in range(len(candidates)))
+            groups.append(ParameterGroup(graph, tuple(selections), candidate.key))
+        return tuple(groups)

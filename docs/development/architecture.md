@@ -115,15 +115,73 @@ The caller supplies gradients or activation statistics before planning when a me
 `CandidateFilter` shares native closure and constraint checks between filtering and parameter-group extraction.
 Filtering uses irreversible conflicts. Raw group extraction requires complete influence and preserves complete constraint conflicts.
 
-`IdentityAxisIndex` proves mutual implication between native axis selections.
-Filters retain bounded rejection diagnostics for these equivalent seeds.
-Planning shares complete impacts, with provenance links from the caller's original seeds.
-The proof does not merge candidate identities, metric scores, or budget axes.
-Native parameter-group extraction shares one analysis for equal seeds within the call.
-It returns a separate group for each candidate in the original order.
-Caller-provided parameter filters retain their original invocation order.
-`Pruner` retains only its latest immutable native filtered space to avoid duplicate filtering.
-Custom constraints and incomplete influence retain ordinary analysis.
+Planning analyzes many overlapping requests, so it reuses structural work. Every
+reuse rests on an exact proof, never on an approximation:
+
+- **Identity axes.** `IdentityAxisIndex` in `dep_graph/identity_axes.py` proves
+  that two native axis selections imply each other, as when several residual
+  producers feed one trunk channel. Their candidate keys, scores, and budget axes
+  stay separate. Only the structural analysis is shared. The solver also uses it
+  to combine `Divisible` factors on tied axes.
+- **Candidate filtering and impact caching.** Consider an accepted request
+  followed by one native axis slice. The solver seeds equivalent slices in a
+  fixed order on tensors that have no earlier seed. A complete result can then
+  serve another request with the same prefix and the same slice on any of those
+  tensors. The caller receives an explanation rooted at its own slice. If the
+  last tensor already has a seed, or the equivalence class repeats a tensor on
+  different axes, the request uses its original key. All remaining relations
+  and constraints are still checked. `GroupMagnitude` keeps the ordered
+  accepted request in its normalization key because its population queries
+  can involve compound seeds outside this proof.
+- **Parameter groups.** Extraction returns one group per candidate in input
+  order. Identical native requests reuse their parameter selections. The cache
+  for equivalent single slices holds at most `impact_cache_size` entries and
+  retains only parameter selections. `Pruner` also remembers its latest
+  native filtered space to avoid filtering it again after a freshness check.
+- **Scores.** Built-in magnitude metrics score equivalent requests together.
+  The final order is still `(score, key)`, and `DynamicGreedy` still rescores after
+  each accepted addition. `IndependentRanking` reuses single-position statistics
+  only when `CandidateFilter` proves that the joint closure is complete, and
+  computes conditional statistics only for the positions it proves. Scoring
+  does not build the additional parameter positions as a `Selection`. It
+  decomposes them into canonical boxes (`canonical_boxes`), which depend only on
+  the selected coordinates. Scoring a complete closure needs no second
+  bounded selection. Nonfinite weights or missing statistics still produce
+  a scoring error. Each box is reduced on its own, so
+  intersections count once and the reused scores are bitwise equal to ordinary
+  scores. `gather_intervals` gathers the most selective axis first. Each
+  `index_select` step allocates the gathered positions times the remaining
+  full axes, so a temporary can exceed the box, for example a `[2, n]` slice
+  for a `[2, 2]` box. `WeightTaylor` uses its per-axis statistics only when
+  the canonical form is one box with a single partial axis. `GroupMagnitude`
+  combines the seeds of a candidate as boxes too, so complete slices are
+  recognized whatever the seed count. Scores do not depend on batching, so
+  when a score batch raises `PlanningError` or `AnalysisLimitError`, the greedy
+  strategies score each candidate alone and exclude only those that fail, for
+  example the candidates of an axis whose normalization needs an unproved
+  position. A batch error that no single candidate reproduces is raised.
+- **Shared weights.** Components can share a tensor on different axes, such as
+  the rows and columns of a ResNet `conv2.weight`. After removals on one axis,
+  `CandidateFilter` proves the joint closure of the other component as the
+  accepted closure plus the new slices on each member. Every relation adjacent
+  to a member must map that state back into it, and each member tensor must keep
+  its compactness and the complete cross-sections of its other axes. Rejections
+  and completeness are then checked against that state, and `IndependentRanking`
+  reduces the parts of each slice that the accepted closure does not remove.
+  Any failed step uses ordinary propagation.
+- **Analysis limits.** If incremental propagation exceeds its region limit,
+  the solver can still prove a native compound request directly. It adds
+  slices implied by the caller's seeds to the coordinates already reached,
+  then checks that every adjacent relation maps back into the result. Every
+  added coordinate is necessary, and the relation checks establish that the
+  closure is complete. Constraints and execution checks still apply. If this
+  proof fails, the request keeps its incomplete diagnostic. If the initial
+  seeds themselves cannot be merged, direct queries raise `AnalysisLimitError`
+  and automatic planning excludes the request.
+- **Scoring proofs.** `complete_positions` checks the positions the score
+  requires. For `GroupMagnitude`, this includes every surviving position in
+  the normalization population. Extension relations use ordinary propagation;
+  extension constraints receive the full closure.
 
 A parameter budget limits the final parameter count.
 A channel budget limits final logical widths.

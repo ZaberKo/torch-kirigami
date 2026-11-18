@@ -62,13 +62,15 @@ def test_component_fallback_preserves_other_scores_and_fixed_summaries(
     accepted = context.impact(requested)
     result = ranking.score(accepted)
     assert result is not None
-    live = tuple(
-        c for c in space.candidates if c.axis == independent and c.key not in result.covered
-    )
+    # Row removals on one weight remove parts of the column slices of the other
+    # component. Its scores then reduce the remaining parts of those slices.
+    # Keeping one position of `a.0` leaves only that component to generic scoring.
+    valid = (first, second, independent) if invalidate == "cross_axis" else (second, independent)
+    live = tuple(c for c in space.candidates if c.axis in valid and c.key not in result.covered)
     covered = {
         c.key
         for c in space.candidates
-        if c.axis == independent and c.remove == (independent.select([0]),)
+        if c.axis in valid and all(not s.subtract(accepted.selection(s.tensor)) for s in c.remove)
     }
     assert result.covered == covered
     assert set(result.scores) == {c.key for c in live}
@@ -76,7 +78,7 @@ def test_component_fallback_preserves_other_scores_and_fixed_summaries(
     for candidate in live:
         assert result.removals[candidate.key] is original.removals[candidate.key]
     expected = context.score(GenericMagnitude(p), live, accepted_impact=accepted)
-    assert tuple(result.scores[c.key] for c in live) == pytest.approx(expected, rel=1e-12)
+    assert [result.scores[c.key] for c in live] == list(expected)
     ranked, _ = _rank_candidates(
         context, ranking.metric, space.candidates, accepted, space.channel_axes, {}, ranking
     )
@@ -86,6 +88,96 @@ def test_component_fallback_preserves_other_scores_and_fixed_summaries(
     assert ranked == reference  # Invalid components must remain in the generic ranking.
     with pytest.raises(TypeError):
         result.removals[live[0].key][independent] = None
+
+
+class Bottleneck(nn.Module):
+    """Convolutions whose middle weight joins two components on different axes."""
+
+    def __init__(self):
+        super().__init__()
+        self.conv1 = nn.Conv2d(4, 8, 1)
+        self.bn1 = nn.BatchNorm2d(8)
+        self.conv2 = nn.Conv2d(8, 8, 3, padding=1)
+        self.bn2 = nn.BatchNorm2d(8)
+        self.conv3 = nn.Conv2d(8, 4, 1)
+
+    def forward(self, x):
+        hidden = F.relu(self.bn1(self.conv1(x)))
+        return x + self.conv3(F.relu(self.bn2(self.conv2(hidden))))
+
+
+@pytest.mark.parametrize("p", [1, 2])
+def test_bottleneck_dynamic_plan_scores_shared_weights_conditionally(p, monkeypatch):
+    """Both components of `conv2.weight` keep exact scores after either one shrinks."""
+    torch.manual_seed(11)
+    source = Bottleneck().double().eval()
+    with torch.no_grad():
+        for module in (source.bn1, source.bn2):
+            module.running_mean.uniform_(-1, 1)
+            module.running_var.uniform_(0.5, 2)
+            module.weight.uniform_(0.5, 2)
+    x = torch.randn(2, 4, 5, 5, dtype=torch.float64)
+    original_score = IndependentRanking.score
+    states = []
+
+    def observe(ranking, accepted):
+        result = original_score(ranking, accepted)
+        if result is not None:
+            states.append(len(ranking.conditional))
+        return result
+
+    monkeypatch.setattr(IndependentRanking, "score", observe)
+    plans = []
+    for metric in (GroupMagnitude(p), GenericMagnitude(p)):
+        model = copy.deepcopy(source)
+        graph = DependencyGraph.build(model, args=(x,))
+        pruner = Pruner(model, graph=graph)
+        space = pruner.discover_candidates(targets=("conv1", "conv2"))
+        plan = pruner.plan(
+            space, budget=ParameterBudget.from_ratio(model, 0.4), strategy=DynamicGreedy(metric)
+        )
+        plans.append(plan.to_dict())
+        compact, _ = pruner.apply(PruningPlan.from_dict(plan.to_dict()))
+        removed = {
+            name: set(
+                plan.analysis.selection(graph.parameter(f"{name}.weight")).fully_selected_indices(0)
+            )
+            for name in ("conv1", "conv2")
+        }
+        first = [i for i in range(8) if i not in removed["conv1"]]
+        second = [i for i in range(8) if i not in removed["conv2"]]
+        assert first and second and len(first) + len(second) < 16
+        hidden = F.relu(
+            F.batch_norm(
+                F.conv2d(x, source.conv1.weight[first], source.conv1.bias[first]),
+                source.bn1.running_mean[first],
+                source.bn1.running_var[first],
+                source.bn1.weight[first],
+                source.bn1.bias[first],
+                eps=source.bn1.eps,
+            )
+        )
+        hidden = F.relu(
+            F.batch_norm(
+                F.conv2d(
+                    hidden,
+                    source.conv2.weight[second][:, first],
+                    source.conv2.bias[second],
+                    padding=1,
+                ),
+                source.bn2.running_mean[second],
+                source.bn2.running_var[second],
+                source.bn2.weight[second],
+                source.bn2.bias[second],
+                eps=source.bn2.eps,
+            )
+        )
+        expected = x + F.conv2d(hidden, source.conv3.weight[:, second], source.conv3.bias)
+        torch.testing.assert_close(compact(x), expected, rtol=1e-12, atol=1e-12)
+    assert plans[0] == plans[1]
+    # After the first acceptance, the other component of `conv2.weight` is scored
+    # conditionally instead of by ordinary propagation.
+    assert any(states)
 
 
 @pytest.mark.parametrize("p", [1, 2])
@@ -100,14 +192,12 @@ def test_mixed_component_public_plan_apply_matches_generic(
         source.a[3].weight[:, :2].mul_(0.0001)
     x = torch.randn(2, 4, dtype=torch.float64)
     original_score = IndependentRanking.score
-    partial = []
+    conditional = []
 
     def observe(ranking, accepted):
         result = original_score(ranking, accepted)
-        if result is not None:
-            cached = {candidate.key for candidate, _, _ in ranking.candidates}
-            if cached - result.scores.keys() - result.covered:
-                partial.append(result)
+        if result is not None and ranking.conditional:
+            conditional.append(result)
         return result
 
     monkeypatch.setattr(IndependentRanking, "score", observe)
@@ -145,4 +235,4 @@ def test_mixed_component_public_plan_apply_matches_generic(
         assert all(parameter.grad is not None for parameter in compact.parameters())
     assert plans[0] == plans[1]
     if strategy_type is DynamicGreedy:
-        assert partial
+        assert conditional

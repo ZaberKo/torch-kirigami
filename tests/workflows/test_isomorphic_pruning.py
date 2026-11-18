@@ -424,16 +424,19 @@ def test_invalid_quota_is_not_silently_replaced_by_a_larger_ratio(execution_devi
 
 
 def test_exhausted_alignment_reports_failure_without_mutating_model(execution_device):
-    model = TwoFamilies((4, 4)).eval()
-    graph, pruner, space = build(model, torch.randn(2, 3), granularity=4)
+    model = TwoFamilies((12, 12)).eval()
+    graph, pruner, space = build(model, torch.randn(2, 3), granularity=8)
+    # One removal keeps 11 aligned-reachable channels, so discovery keeps every
+    # candidate. The family quota of six leaves six, below the factor of eight.
+    assert len(pruner.discover_candidates().candidates) == 24
     with pytest.raises(PlanningError, match="entire structural axis"):
         pruner.plan(
             space,
-            budget=ParameterBudget(40),
-            strategy=workflow.Isomorphic(ExplicitScores(), ratio=0.25),
+            budget=ParameterBudget(100),
+            strategy=workflow.Isomorphic(ExplicitScores(), ratio=0.5),
         )
     graph.validate()
-    assert model.a[0].out_features == model.b[0].out_features == 4
+    assert model.a[0].out_features == model.b[0].out_features == 12
 
 
 def miniature_model(name):
@@ -610,6 +613,36 @@ def test_paper_taylor_formula_aliases_joint_regions_and_public_plan(execution_de
         restored_base, tmp_path / "model.pt", map_location=execution_device
     ).eval()
     torch.testing.assert_close(restored(x), model(x))
+
+
+def test_isomorphic_bias_seed_with_downstream_channel_axis(execution_device):
+    model = nn.Sequential(nn.Linear(3, 4), nn.ReLU(), nn.Linear(4, 2)).eval()
+    x = torch.ones(2, 3)
+    with torch.no_grad():
+        model[0].weight.copy_(torch.arange(1, 5)[:, None].expand(4, 3))
+        model[0].bias.zero_()
+        model[2].weight.fill_(1)
+        for weight in (model[0].weight, model[2].weight):
+            weight.grad = torch.ones_like(weight)
+        model[0].weight.grad[2].zero_()
+        model[2].weight.grad[:, 2].zero_()
+        kept = [0, 1, 3]
+        expected = F.linear(model[:2](x)[:, kept], model[2].weight[:, kept], model[2].bias)
+
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    bias = graph.parameter("0.bias").axis(0)
+    columns = graph.parameter("2.weight").axis(1)
+    candidates = tuple(Candidate(str(i), (bias.select([i]),), columns) for i in range(4))
+    plan = pruner.plan(
+        CandidateSpace(candidates, (columns,)),
+        budget=ParameterBudget.from_ratio(model, 0.1),
+        strategy=workflow.Isomorphic(ratio=0.25),
+    )
+    assert plan.selected == ("2",)
+    pruner.apply(plan)
+    assert model[0].out_features == model[2].in_features == 3
+    torch.testing.assert_close(model(x), expected)
 
 
 def test_taylor_missing_or_nonfinite_gradients_fail_before_mutation(execution_device):
