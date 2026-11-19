@@ -1,6 +1,6 @@
 # Structural pruning workflow examples
 
-These eleven examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
+These twelve examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
 Each entry owns its CLI and training stages.
 The examples implement selected research ideas, with explicit changes to scope and training.
 They do not claim the papers' published accuracy.
@@ -404,6 +404,23 @@ python gate_pruning.py \
   --sparse_epochs 1 --sparse_loss_weight 0.0001 \
   --finetune_epochs 1 --lr 0.001 \
   --output runs/resnet18_gate_pruning
+```
+
+### Comb, Prune, Distill
+
+[Comb, Prune, Distill](https://arxiv.org/abs/2408.03046) (ITSC 2024) interleaves training, importance scoring, and group removal. The [public implementation](https://github.com/InSAI-Lab/CPD) supplies a semantic segmentation workflow.
+
+This classification adaptation uses a frozen copy of the original model as the teacher. After each backward pass, it sums the signed weight-gradient products within each output channel, squares the sum, and divides it by the output activation count. It accumulates these scores over a fixed number of training batches. It applies the source code's normalization across group members and ranks each group by the sum of its selected channels' scores.
+
+Each interval removes one executable group. The entry considers dense ResNet block interiors and ViT MLP hidden widths. The width determines the removal size for a convolution group, up to four channels. A ViT MLP group removes up to 32 channels. At least one channel remains. Kirigami analyzes the dependency closure and physically compacts the model. The entry also compacts SGD momentum buffers using the same retained coordinates. Each interval starts with fresh scores.
+
+The run stops when the total number of remaining parameters meets the cap derived from `--pruning_ratio`. The final complete group can reduce the count below the cap. Raise `--max_intervals` if the interval limit stops the run before it reaches the cap. Optional recovery uses the same cross-entropy and logit distillation objective as pruning. Set `--distillation_weight 0` to train with cross-entropy alone.
+
+```bash
+python cpd_pruning.py \
+  --model resnet18 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --pruning_interval_batches 50 \
+  --recovery_epochs 1 --output runs/resnet18_cpd
 ```
 
 ### Selection stability

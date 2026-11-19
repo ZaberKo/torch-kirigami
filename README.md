@@ -106,7 +106,7 @@ Start with the small API examples:
 
 The [pretrained ImageNet workflows](examples/workflows/README.md) provide complete
 pruning and fine-tuning examples for ResNet, ViT, and ConvNeXt models. They cover
-magnitude and Taylor pruning, FPGM, sparse training, iterative pruning, VBP,
+magnitude and Taylor pruning, FPGM, sparse training, iterative pruning, CPD, VBP,
 Isomorphic Pruning, OSSCAR, and ViT attention-head and FFN pruning. Each workflow
 reports validation accuracy, parameter counts, MACs, and latency.
 
