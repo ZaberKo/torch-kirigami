@@ -23,7 +23,7 @@ from torch_kirigami import (
     config,
 )
 from torch_kirigami.dep_graph.identity_axes import IdentityAxisIndex
-from torch_kirigami.dep_graph.selection import canonical_boxes
+from torch_kirigami.dep_graph.selection import canonical_boxes, gather_intervals
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -38,8 +38,9 @@ from torch_kirigami.pruning import (
     Pruner,
     StrategyResult,
     WeightTaylor,
+    parameter_boxes,
     parameter_regions,
-    ranking,
+    score_reuse,
 )
 
 # None keeps the default capacity.
@@ -187,6 +188,10 @@ def test_additional_regions_beyond_the_limit_score_exactly(case, impact_cache_si
     assert accepted_impact.complete
     assert context.impact((accepted, *seeds)).complete
     values = model.p.detach()[expected]
+    ((ref, boxes),) = parameter_boxes(context, candidate, accepted_impact=accepted_impact)
+    assert ref == p
+    gathered = torch.cat([gather_intervals(model.p.detach(), box).flatten() for box in boxes])
+    torch.testing.assert_close(gathered.sort().values, values.sort().values)
     references = (
         (Magnitude(1), values.sum()),
         (Magnitude(2), values.square().sum().sqrt()),
@@ -502,18 +507,18 @@ def test_conditional_norms_after_removal_through_flatten(monkeypatch):
     space = pruner.discover_candidates(targets=("0", "2"))
     budget = ChannelCount((3, 127), space.channel_axes)
     conditional = []
-    original = ranking._position_norms
+    original = score_reuse._position_norms
 
-    def counted(metric, members, bindings, positions, base=None):
+    def counted(members, bindings, positions, base=None, *, p):
         positions = tuple(positions)
         if base is not None:
             conditional.append(len(positions))
-        return original(metric, members, bindings, positions, base)
+        return original(members, bindings, positions, base, p=p)
 
-    monkeypatch.setattr(ranking, "_position_norms", counted)
+    monkeypatch.setattr(score_reuse, "_position_norms", counted)
     plan = pruner.plan(space, budget=budget, strategy=DynamicGreedy(Magnitude()))
     assert conditional == [128]  # The other branch changed four input columns of this weight.
-    monkeypatch.setattr(ranking, "_position_norms", original)
+    monkeypatch.setattr(score_reuse, "_position_norms", original)
 
     class OrdinaryMagnitude(Magnitude):
         pass

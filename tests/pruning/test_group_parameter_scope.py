@@ -21,7 +21,7 @@ from torch_kirigami.pruning import (
     Pruner,
     WeightTaylor,
 )
-from torch_kirigami.pruning.ranking import IndependentRanking
+from torch_kirigami.pruning.score_reuse import IndependentRanking
 from torch_kirigami.pruning.types import MetricContext
 
 

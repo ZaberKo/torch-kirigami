@@ -960,6 +960,20 @@ class AttributeBinding:
         return self.expression.refs
 
 
+_REQUIREMENT_CHECKS = {
+    "operator_argument": "argument",
+    "partitioned_compaction": "layout",
+    "metadata_layout": "tensor_metadata",
+    "reduction_domain": "note",
+    "shape_arguments": "replay",
+    "dimension_transform": "replay",
+    "partition_arguments": "replay",
+    "slice_arguments": "replay",
+    "call_arguments": "replay",
+    "index_arguments": "replay",
+}
+
+
 @dataclass(frozen=True)
 class Requirement:
     """Describe a modification that an executor must implement or reject.
@@ -975,8 +989,8 @@ class Requirement:
         data: Uniquely named values containing scalars, integer slices,
             structural references, or nested sequences. Sequences are frozen as
             tuples; other payload types are rejected.
-        arguments: Specific parameters this requirement validates when they change.
-            All other dimension-derived semantic parameters must remain unchanged.
+        arguments: Specific parameters checked by an argument comparison or
+            replay. Other dimension-derived parameters stay guarded by the graph.
 
     Raises:
         ValueError: `kind` is `attribute`, `kind` or `target` is invalid,
@@ -1018,6 +1032,16 @@ class Requirement:
         object.__setattr__(
             self, "data", tuple((key, _requirement_value(value)) for key, value in data)
         )
+
+    @property
+    def check(self) -> str | None:
+        """Built-in verification required by this kind, or None for an unknown kind."""
+        return _REQUIREMENT_CHECKS.get(self.kind)
+
+    @property
+    def checked_arguments(self) -> tuple[ArgumentRef, ...]:
+        """Arguments covered by the verification instead of the default shape guard."""
+        return self.arguments if self.check in ("argument", "replay") else ()
 
     @property
     def refs(self) -> tuple[TensorRef, ...]:

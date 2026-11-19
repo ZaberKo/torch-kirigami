@@ -43,6 +43,12 @@ from tests.support.torchvision_models import workflow_resnet
             id="dynamic-taylor",
         ),
         pytest.param("prune_finetune", ["--metric", "geometric_median"], id="geometric-median"),
+        pytest.param("prune_finetune", ["--metric", "pruner_zero"], id="pruner-zero"),
+        pytest.param(
+            "prune_finetune",
+            ["--metric", "pruner_zero", "--selection", "dynamic"],
+            id="dynamic-pruner-zero",
+        ),
         ("iterative_pruning", ["--rounds", "2"]),
         ("bn_guided_pruning", []),
         ("group_sparsity", []),
@@ -243,6 +249,8 @@ def test_pretrained_workflow(
     assert "100%" in progress_output and "2/2" in progress_output
     if recipe == "prune_finetune" and "taylor" in extra:
         assert "taylor calibration" in progress_output
+    if recipe == "prune_finetune" and "pruner_zero" in extra:
+        assert "pruner-zero calibration" in progress_output
     saved = json.loads((tmp_path / "metrics.json").read_text())
     results = saved["stages"]
     expected_layers = (

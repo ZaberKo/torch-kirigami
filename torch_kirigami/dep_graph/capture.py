@@ -27,7 +27,8 @@ from torch.fx.proxy import Attribute
 from torch.overrides import TorchFunctionMode
 
 from ..bindings import (
-    copy_module_state,
+    attribute_owner,
+    copy_module_tree,
     ordinary_tensors,
     reference_edits,
     reference_nodes,
@@ -44,6 +45,7 @@ from ..configuration import (
 from ..errors import CaptureError
 from .operation import TensorEffects, TensorFacts
 from .operation import argument as call_argument
+from .operators.defaults import is_native_rule
 from .operators.effects import (
     AUGMENTED_BINARY,
     INPUT,
@@ -55,7 +57,6 @@ from .operators.effects import (
     named_inplace,
     written_inputs,
 )
-from .operators.rules import is_native_rule
 from .registry import OperatorRegistry
 
 
@@ -783,17 +784,11 @@ def validate_attribute_changes(
 
     try:
         with isolated_execution(model, (), {}) as (_, _, aliases):
-            # Copy configuration without invoking Module.__deepcopy__, which may
-            # return the source object. Preallocate module shells to preserve shared
-            # submodules and ordinary references; registered tensors remain shared.
-            shells = {id(m): object.__new__(type(m)) for m in model.modules()}
-            memo = {**shells, **{id(t): t for t in (*model.parameters(), *model.buffers())}}
-            for module in model.modules():
-                copy_module_state(module, shells[id(module)], memo)
-            prepared = shells[id(model)]
+            bindings = {id(t): t for t in (*model.parameters(), *model.buffers())}
+            prepared = copy_module_tree(model, bindings)
             for path, value in updates:
-                parent, _, name = path.rpartition(".")
-                object.__setattr__(prepared.get_submodule(parent), name, value)
+                owner, name = attribute_owner(prepared, path)
+                object.__setattr__(owner, name, value)
             revised = trace_module(prepared, registry, buffer_sources=aliases)
             if not same(original_signature, capture_signature(revised, prepared)):
                 raise CaptureError(
@@ -862,7 +857,7 @@ def _check_tensor_effects(
         if (
             recognized_write
             and effects.writes_inputs == ()
-            and (rule is None or not is_native_rule(rule))
+            and (rule is None or not is_native_rule(node, module, rule))
         ):
             raise CaptureError(f"Input mutation contradicts tensor_effects at {node.name}")
         write_sources = set().union(*(aliases.get(n, set()) for n in write_nodes))

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import fields, is_dataclass
+from math import prod
 from typing import Any, cast
 
 import torch
 from torch import nn
 
-from ..bindings import has_tensor_hooks, storage_key
+from ..bindings import attribute_owner, has_tensor_hooks, storage_key
 from ..dep_graph.contracts import Constraint, Fixed, Impact
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
@@ -17,6 +18,7 @@ from ..dep_graph.selection import Selection, TensorRef, gather_region
 from ..errors import AnalysisLimitError
 from ..operator_recipes import AttributeRecipe, TensorRecipe
 from ..settings import config
+from .budget import resolve_budget
 from .candidate_checks import propagate_request
 from .candidates import (
     CandidateSpace,
@@ -32,7 +34,6 @@ from .planner import PlanningContext
 from .recipes import compact_stride, coordinate_mapping
 from .rewrite import compile_recipes
 from .state import (
-    attribute,
     check_structure,
     commit,
     managed_record,
@@ -329,8 +330,8 @@ class Pruner:
         Raises:
             TypeError: `space`, `strategy`, or the strategy result has the wrong
                 type.
-            ValueError: A `ChannelCount` budget does not use the space's channel
-                axes in order.
+            ValueError: A `ChannelCount` budget disagrees with the candidate
+                space's axes.
             torch_kirigami.pruning.PlanningError: No graph is available, or no
                 plan meets the budget and passes verification.
             torch_kirigami.pruning.ExecutionError: Tracked tensors changed during
@@ -405,8 +406,8 @@ class Pruner:
             TypeError: `space` is not a `CandidateSpace`, `strategy` has no
                 `select` method, or it returns something other than a
                 `StrategyResult`.
-            ValueError: A `ChannelCount` budget does not use the space's channel
-                axes in order, or a reference belongs to another graph.
+            ValueError: A `ChannelCount` budget disagrees with the candidate
+                space's axes, or a reference belongs to another graph.
             torch_kirigami.pruning.PlanningError: No graph is available, the
                 strategy returns an unknown key, or the selection misses the
                 budget or fails verification.
@@ -429,7 +430,14 @@ class Pruner:
         space = self.filter_candidates(space)
         candidates, axes = space.candidates, space.channel_axes
         registered = {c.key: c for c in candidates}
-        context = PlanningContext(graph, candidates, budget, axes, self.constraints)
+        context = PlanningContext(
+            graph,
+            candidates,
+            budget,
+            axes,
+            self.constraints,
+            excluded_channel_axes=space.excluded_channel_axes,
+        )
         if not callable(getattr(strategy, "select", None)):
             raise TypeError("Strategy must implement select(context) -> StrategyResult")
         result = strategy.select(context)
@@ -443,13 +451,17 @@ class Pruner:
         impact = propagate_request(
             graph, tuple(s for key in keys for s in registered[key].remove), self.constraints
         )
-        # Reestablish premises after arbitrary strategy callbacks.
-        final_context = PlanningContext(graph, candidates, budget, axes, self.constraints)
+        # Reestablish premises after the strategy callback. Measure the budget
+        # and build the report from the same freshly verified edits.
+        parameter_count = sum(prod(s.shape) for s in before.tensors if s.kind == "parameter")
+        target = resolve_budget(
+            budget, axes, parameter_count, excluded_axes=space.excluded_channel_axes
+        )
         try:
-            recipes, attributes, notes = final_context.compile(impact)
-            # Measurements are independently recomputed; diagnostics cannot make an
-            # infeasible selection executable or declare a resource target met.
-            final_context.require_budget(impact, result=result)
+            recipes, attributes, notes = compile_recipes(graph, graph.operations(), impact)
+            sizes = target.measure(impact, recipes)
+            target.require(target.remaining(sizes), context.trials, result)
+            report = target.report(sizes, context.trials, result, space.exclusions)
         except AnalysisLimitError as error:
             raise PlanningError(f"Verification reached an analysis limit: {error}") from error
         return self._finish(
@@ -457,7 +469,7 @@ class Pruner:
             recipes,
             attributes,
             keys,
-            context.report(impact, result, exclusions=space.exclusions),
+            report,
             notes,
             before,
             versions,
@@ -561,7 +573,7 @@ class Pruner:
         replacements = []
         with torch.inference_mode(False), torch.no_grad():
             for recipe in plan.recipes:
-                owner, name = attribute(self.model, recipe.tensor.paths[0])
+                owner, name = attribute_owner(self.model, recipe.tensor.paths[0])
                 old = getattr(owner, name)
                 if has_tensor_hooks(old):
                     raise ExecutionError(

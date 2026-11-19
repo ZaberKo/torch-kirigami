@@ -31,7 +31,7 @@ from torch_kirigami.pruning import (
     Pruner,
     PruningPlan,
 )
-from torch_kirigami.pruning.ranking import IndependentRanking
+from torch_kirigami.pruning.score_reuse import IndependentRanking
 
 
 class ReferenceMagnitude(GroupMagnitude):

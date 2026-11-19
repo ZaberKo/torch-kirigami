@@ -3,13 +3,16 @@
 import pytest
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from tests.support.pruning import KeyStrategy, build
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
     ChannelCount,
+    Greedy,
     Magnitude,
+    PlanningContext,
     Pruner,
     WeightTaylor,
 )
@@ -51,3 +54,49 @@ def test_metric_union_formula_and_precision(metric, execution_device):
         budget=ChannelCount((4,), (ref.axis(0),)),
         strategy=strategy,
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="Requires parameters on CPU and CUDA")
+@pytest.mark.parametrize(
+    ("metric", "expected"),
+    [
+        (Magnitude(1), (7.0, 5.0, 11.0)),
+        (Magnitude(2), (5.0, 17**0.5, 73**0.5)),
+        (WeightTaylor("elementwise_abs"), (10.0, 8.0, 25.0)),
+        (WeightTaylor("joint_abs"), (2.0, 0.0, 7.0)),
+    ],
+)
+def test_metric_scores_regions_on_cpu_and_cuda(metric, expected):
+    """Combine the CPU row and CUDA column of each removal before ranking it."""
+
+    class SplitDevices(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.first = nn.Linear(2, 3, bias=False, device="cpu")
+            self.last = nn.Linear(3, 1, bias=False, device="cuda")
+
+        def forward(self, x):
+            return self.last(self.first(x).to("cuda"))
+
+    model = SplitDevices().eval()
+    with torch.no_grad():
+        model.first.weight.copy_(torch.tensor([[3.0, 0.0], [4.0, 0.0], [8.0, 0.0]]))
+        model.last.weight.copy_(torch.tensor([[4.0, 1.0, 3.0]], device="cuda"))
+    model.first.weight.grad = torch.tensor([[2.0, 0.0], [1.0, 0.0], [2.0, 0.0]])
+    model.last.weight.grad = torch.tensor([[-1.0, -4.0, -3.0]], device="cuda")
+    x = torch.tensor([[1.0, 2.0]])
+    graph, pruner = build(model, x)
+    space = pruner.discover_candidates(targets=("first",))
+    budget = ChannelCount((2,), space.channel_axes)
+    context = PlanningContext(
+        graph, space.candidates, budget, space.channel_axes, pruner.constraints
+    )
+    assert context.score(metric, space.candidates) == pytest.approx(expected, rel=1e-12)
+    plan = pruner.plan(space, budget=budget, strategy=Greedy(metric))
+    axis = graph.parameter("first.weight").axis(0)
+    assert tuple(plan.analysis.selection(axis.tensor).fully_selected_indices(axis.dim)) == (1,)
+    reference = F.linear(
+        F.linear(x, model.first.weight[[0, 2]]).to("cuda"), model.last.weight[:, [0, 2]]
+    )
+    pruner.apply(plan)
+    torch.testing.assert_close(model(x), reference)

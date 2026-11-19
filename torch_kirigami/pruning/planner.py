@@ -57,11 +57,13 @@ class PlanningContext:
         budget: Cap on the final parameter count or on final channel widths.
         channel_axes: Logical axes used to count channel removals.
         constraints: Structural constraints fixed for this planning round.
+        excluded_channel_axes: Discovered axes without candidates. An explicit
+            `ChannelCount` can still count these axes.
 
     Raises:
         TypeError: `budget` is not a supported budget type.
-        ValueError: A `ChannelCount` budget does not match `channel_axes`, or an
-            axis belongs to another graph.
+        ValueError: A `ChannelCount` budget omits an active axis or names an
+            undeclared axis, or an axis belongs to another graph.
         torch_kirigami.StaleGraphError: The model changed after capture.
     """
 
@@ -72,12 +74,14 @@ class PlanningContext:
         budget: ChannelCount | ChannelRatio | ParameterBudget,
         channel_axes: tuple[AxisRef, ...],
         constraints: tuple[Constraint, ...],
+        *,
+        excluded_channel_axes: tuple[AxisRef, ...] = (),
     ) -> None:
         graph.validate()
         self._graph, self._operations = graph, graph.operations()
         self._candidates = tuple(candidates)
         self._budget, self._channel_axes = budget, tuple(dict.fromkeys(channel_axes))
-        for axis in self.channel_axes:
+        for axis in (*self.channel_axes, *excluded_channel_axes):
             graph.metadata(axis.tensor)
         self._constraints = tuple(constraints)
         self._candidate_filter = CandidateFilter(
@@ -87,7 +91,9 @@ class PlanningContext:
         self._parameter_count = sum(
             math.prod(ref.shape) for ref, _ in graph.tensor_bindings() if ref.kind == "parameter"
         )
-        self._target = resolve_budget(budget, self.channel_axes, self._parameter_count)
+        self._target = resolve_budget(
+            budget, self.channel_axes, self._parameter_count, excluded_axes=excluded_channel_axes
+        )
         self._trials = 0
         # Single slices on equivalent axes use the same solver initialization.
         self._cache: OrderedDict[_ImpactKey, Impact] = OrderedDict()
@@ -344,9 +350,13 @@ class PlanningContext:
                 recipes and `impact` has no verified execution recipe.
             ValueError: `impact` belongs to another graph.
         """
+        return self._target.remaining(self._measure(impact))
+
+    def _measure(self, impact: Impact) -> tuple[int, ...]:
+        """Measure the requested resources, compiling only for a parameter budget."""
         self.graph.validate_impact(impact)
         recipes = self.compile(impact)[0] if self._target.resource == "parameters" else ()
-        return self._target.remaining(impact, recipes)
+        return self._target.measure(impact, recipes)
 
     def parameter_count(self, impact: Impact) -> int:
         """Count the final unique Parameter elements using verified joint recipes.
@@ -496,5 +506,4 @@ class PlanningContext:
             A `ParameterReport` for a `ParameterBudget`, otherwise a
             `SelectionReport`.
         """
-        self.graph.validate_impact(impact)
-        return self._target.report(self.remaining(impact), impact, self.trials, result, exclusions)
+        return self._target.report(self._measure(impact), self.trials, result, exclusions)

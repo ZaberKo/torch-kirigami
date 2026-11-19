@@ -21,7 +21,6 @@ from .extended import (
 )
 from .indexing import (
     channel_shuffle,
-    chunk,
     getitem,
     glu,
     index_select,
@@ -130,12 +129,6 @@ class ChannelShuffleRule(NativeRule):
     def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
         """Declare read-only inputs and allow a degenerate shuffle to alias its input."""
         return TensorEffects(writes_inputs=(), aliases_input=INPUT)
-
-
-class ChunkRule(NativeRule):
-    """Map captured `chunk` outputs to the input partitions they cover."""
-
-    build_spec = staticmethod(chunk)
 
 
 class ConcatenateRule(NativeRule):
@@ -416,7 +409,7 @@ class SoftmaxRule(NativeRule):
 
 
 class SplitRule(NativeRule):
-    """Map `split` and `unbind` outputs to their input partitions."""
+    """Map `split`, `chunk`, and `unbind` outputs to their input partitions."""
 
     build_spec = staticmethod(split)
 
@@ -449,59 +442,3 @@ class TensorUnfoldRule(NativeRule):
     """Map nonwindow axes of `Tensor.unfold`, whose output can view the input."""
 
     build_spec = staticmethod(tensor_unfold)
-
-
-NATIVE_RULE_TYPES = (
-    FourierRule,
-    AddmmRule,
-    AttentionRule,
-    AttributeReadRule,
-    BatchNormRule,
-    CastRule,
-    ChannelOperatorRule,
-    ChannelShuffleRule,
-    ChunkRule,
-    ConcatenateRule,
-    ConvolutionRule,
-    DropoutRule,
-    EinsumRule,
-    EmbeddingRule,
-    GluRule,
-    GroupNormRule,
-    IdentityRule,
-    IndexRule,
-    IndexSelectRule,
-    InstanceNormRule,
-    LayerNormRule,
-    LinearRule,
-    MatmulRule,
-    MultiheadAttentionRule,
-    NarrowRule,
-    NormalizeRule,
-    PaddingRule,
-    PermuteRule,
-    PixelShuffleRule,
-    PointwiseRule,
-    PreluRule,
-    ReductionRule,
-    RepeatRule,
-    ReshapeRule,
-    ShapeOnlyRule,
-    SoftmaxRule,
-    SplitRule,
-    StackRule,
-    SelectRule,
-    TensorUnfoldRule,
-    UnfoldFoldRule,
-)
-
-
-def is_native_rule(rule: OperatorRule) -> bool:
-    """Return whether a rule is an unmodified built-in.
-
-    Subclasses and instances that assign their own hooks count as extensions.
-    """
-    return type(rule) in NATIVE_RULE_TYPES and not any(
-        name in rule.__dict__
-        for name in ("build_spec", "build_recipe", "validate_capture", "tensor_effects")
-    )

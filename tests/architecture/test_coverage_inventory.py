@@ -92,11 +92,12 @@ def test_registered_entry_inventory_has_no_missing_or_obsolete_targets():
     # Registration coverage is a rule-level claim, never an implicit claim
     # that capture, lowering, commit and restoration all ran for every entry.
     assert inventory["operator_verification"]["level"] == "rule"
+    path, name = inventory["operator_verification"]["test"].split("::")
+    assert any(
+        isinstance(node, ast.FunctionDef) and node.name == name
+        for node in ast.parse((ROOT / path).read_text()).body
+    )
     assert len(entries) == len({entry["entry"] for entry in entries})
     assert {entry["entry"] for entry in entries} == expected
     for entry in entries:
-        assert (
-            entry["test"]
-            == "tests/dep_graph/operators/test_registered_entries.py::test_native_entry_matches_and_propagates_declared_axis"
-        )
         assert entry["conditions"] and entry["contract"]

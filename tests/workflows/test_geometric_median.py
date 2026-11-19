@@ -197,7 +197,8 @@ def test_geometric_public_plan_apply_and_checkpoint(family, dtype, execution_dev
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path=dict.fromkeys(targets, 2)))
     space = pruner.discover_candidates(targets=targets)
     budget = ParameterBudget.from_ratio(model, 0.05)
-    plan = prune_finetune.make_plan(pruner, space, budget, "geometric_median")
+    metric = prune_finetune.GeometricMedian(graph, space.channel_axes)
+    plan = prune_finetune.make_plan(pruner, space, budget, metric)
     assert plan.selection_report.target_met
     for (name, tensor), (dense_name, old) in zip(
         model.state_dict().items(), dense.state_dict().items(), strict=True
@@ -229,17 +230,16 @@ def test_geometric_public_plan_apply_and_checkpoint(family, dtype, execution_dev
     assert all(parameter.grad is not None for parameter in pruned.parameters())
 
 
-@pytest.mark.parametrize("metric", ["magnitude", "taylor"])
+@pytest.mark.parametrize("metric_type", [GroupMagnitude, WeightTaylor])
 @pytest.mark.parametrize("selection", ["static", "dynamic"])
-def test_workflow_selects_requested_strategy(metric, selection, execution_device, monkeypatch):
+def test_workflow_selects_requested_strategy(metric_type, selection, execution_device, monkeypatch):
     _model, pruner, space, _context = metric_context(execution_device)
+    metric = metric_type()
 
     def inspect_plan(candidate_space, *, budget, strategy):
         assert candidate_space is space
         assert isinstance(strategy, Greedy if selection == "static" else DynamicGreedy)
-        assert isinstance(
-            strategy.metric, GroupMagnitude if metric == "magnitude" else WeightTaylor
-        )
+        assert strategy.metric is metric
         return "verified"
 
     monkeypatch.setattr(pruner, "plan", inspect_plan)
@@ -247,8 +247,6 @@ def test_workflow_selects_requested_strategy(metric, selection, execution_device
         prune_finetune.make_plan(pruner, space, ParameterBudget(20), metric, selection)
         == "verified"
     )
-    with pytest.raises(ValueError, match="requires static"):
-        prune_finetune.make_plan(pruner, space, ParameterBudget(20), "geometric_median", "dynamic")
 
 
 @pytest.mark.parametrize(

@@ -266,14 +266,20 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     impossible = accounting.budget(graph, compact, 0.99)
     with pytest.raises(PlanningError, match="Channel target not reached"):
         Pruner(model, graph=graph).plan(
-            CandidateSpace(compact.candidates, impossible.channel_axes),
+            compact,
             budget=impossible,
             strategy=Greedy(Magnitude()),
         )
     budget = accounting.budget(graph, compact, 0.66)
     assert budget.channel_axes == (graph.parameter("0.weight").axis(0),)
+    with pytest.raises(ValueError, match="may include excluded axes"):
+        Pruner(model, graph=graph).plan(
+            compact,
+            budget=ChannelCount((1,), (graph.parameter("0.weight").axis(1),)),
+            strategy=Greedy(Magnitude()),
+        )
     plan = Pruner(model, graph=graph).plan(
-        CandidateSpace(compact.candidates, budget.channel_axes),
+        compact,
         budget=budget,
         strategy=Greedy(Magnitude()),
     )
@@ -293,6 +299,31 @@ def test_cumulative_budget_retains_newly_protected_domain_and_restores(scope):
     assert resumed.budget(fresh_graph, fresh, 0.99).max_channels == (
         0 if scope == "global" else (0,)
     )
+
+
+def test_cumulative_budget_keeps_each_cap_with_its_axis_after_reordering(execution_device):
+    model = nn.Sequential(nn.Linear(2, 4), nn.Linear(4, 6), nn.Linear(6, 2)).to(execution_device)
+    inputs = torch.randn(2, 2, device=execution_device)
+    original = copy.deepcopy(model)
+    graph = DependencyGraph.build(model, args=(inputs,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    accounting = CumulativeChannelBudget(graph, space)
+    reordered = CandidateSpace(space.candidates, channel_axes=space.channel_axes[::-1])
+    budget = accounting.budget(graph, reordered, 0.5)
+    assert budget.channel_axes == reordered.channel_axes
+    assert budget.max_channels == (3, 2)
+    plan = pruner.plan(reordered, budget=budget, strategy=Greedy(Magnitude()))
+    kept = []
+    for axis in space.channel_axes:
+        removed = set(plan.analysis.selection(axis.tensor).fully_selected_indices(axis.dim))
+        kept.append([i for i in range(axis.tensor.shape[axis.dim]) if i not in removed])
+    first, second = kept
+    expected = original[0](inputs)[:, first] @ original[1].weight[second][:, first].T
+    expected = (expected + original[1].bias[second]) @ original[2].weight[:, second].T
+    pruner.apply(plan)
+    assert model[0].out_features == 2 and model[1].out_features == 3
+    torch.testing.assert_close(model(inputs), expected + original[2].bias)
 
 
 @pytest.mark.parametrize(

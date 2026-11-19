@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from collections.abc import Sequence
+from collections import OrderedDict, defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 
 import torch
 from torch import nn
 
-from ..bindings import has_tensor_hooks
+from ..bindings import attribute_owner, has_tensor_hooks
 from ..configuration import freeze, thaw
 from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import Operation, OperatorSpec
 from ..dep_graph.operators.coordinates import retained_indices as _keep
-from ..dep_graph.operators.rules import is_native_rule
+from ..dep_graph.operators.defaults import is_native_rule
 from ..dep_graph.operators.shapes import evaluate
 from ..dep_graph.operators.shapes import reevaluate as _reevaluate
 from ..dep_graph.selection import IndexSet, Region, Selection, TensorRef
@@ -50,8 +50,7 @@ def _bound_attribute(
     graph: DependencyGraph, binding: AttributeBinding, impact: Impact
 ) -> AttributeRecipe:
     """Evaluate one call's attribute demand, including an unchanged value."""
-    path, _, name = binding.target.rpartition(".")
-    owner = graph.model.get_submodule(path)
+    owner, name = attribute_owner(graph.model, binding.target)
     old = getattr(owner, name)
     new = evaluate(binding.expression, lambda ref: require_compact_shape(impact, ref))
     if type(old) in (list, tuple, torch.Size) and isinstance(new, tuple):
@@ -73,27 +72,17 @@ def default_recipe(
         return require_compact_shape(impact, ref)
 
     recipes, attributes, notes = [], [], []
-    known = {
-        "operator_argument",
-        "partitioned_compaction",
-        "shape_arguments",
-        "dimension_transform",
-        "partition_arguments",
-        "slice_arguments",
-        "reduction_domain",
-        "call_arguments",
-        "index_arguments",
-    }
     for req in requirements:
         if isinstance(req, AttributeBinding):
             # An unchanged binding is still a demand. A shared owner may have
             # another call requiring a different value for the same attribute.
             attributes.append(_bound_attribute(graph, req, impact))
             continue
-        if req.kind not in known:
+        check = req.check
+        if check is None:
             raise PlanningError(f"Unhandled requirement {req.kind}: {req.target}")
-        data = dict(req.data)
-        if req.kind == "operator_argument":
+        if check == "argument":
+            data = dict(req.data)
             if len(req.arguments) != 1:
                 raise PlanningError(f"Expected one functional argument binding for {req.target}")
             name, position = req.arguments[0].name, req.arguments[0].position
@@ -110,7 +99,7 @@ def default_recipe(
                 raise PlanningError(
                     f"{req.target}: changing a functional argument requires editing original forward"
                 )
-        elif req.kind == "reduction_domain":
+        elif check == "note":
             notes.append(req.detail)
     for descriptor in spec.layouts:
         if impact.selection(descriptor.tensor):
@@ -125,32 +114,23 @@ def default_recipe(
 
 
 def _requirements_by_operation(
-    operations: Sequence[Operation], requirements: Sequence[Requirement | AttributeBinding]
+    model: nn.Module,
+    module_paths: Mapping[str, Mapping[int, str]],
+    requirements: Sequence[Requirement | AttributeBinding],
 ) -> dict[str, tuple[Requirement | AttributeBinding, ...]]:
-    """Index call and descendant-attribute requirements in declaration order."""
-    by_name: dict[str, list[Requirement | AttributeBinding]] = {
-        op.node.name: [] for op in operations
-    }
-    by_path: dict[str, list[str]] = {}
-    for op in operations:
-        if op.module is not None:
-            for path in op.module_paths:
-                by_path.setdefault(path, []).append(op.node.name)
+    """Index each requirement by call name or the identity of its attribute owner."""
+    by_name: dict[str, list[Requirement | AttributeBinding]] = {name: [] for name in module_paths}
+    calls_by_owner: dict[int, list[str]] = defaultdict(list)
+    for call, paths in module_paths.items():
+        for owner in paths:
+            calls_by_owner[owner].append(call)
     for requirement in requirements:
-        if isinstance(requirement, Requirement) and requirement.kind == "metadata_layout":
-            continue
-        names = {requirement.target} if requirement.target in by_name else set()
         if isinstance(requirement, AttributeBinding):
-            # An opaque module owns requirements for its descendants too. Root
-            # modules use the empty path; repeated calls must all receive them.
-            path = requirement.target.rpartition(".")[0]
-            while True:
-                names.update(by_path.get(path, ()))
-                if not path:
-                    break
-                path = path.rpartition(".")[0]
-        for name in names:
-            by_name[name].append(requirement)
+            owner, _ = attribute_owner(model, requirement.target)
+            for call in calls_by_owner.get(id(owner), ()):
+                by_name[call].append(requirement)
+        elif requirement.check != "tensor_metadata" and requirement.target in by_name:
+            by_name[requirement.target].append(requirement)
     return {name: tuple(items) for name, items in by_name.items()}
 
 
@@ -177,16 +157,23 @@ def compile_recipes(
             raise PlanningError(
                 f"Unregistered captured constant {path} has no proved original binding"
             )
-    recipes, attributes, notes, handled, strides = {}, {}, [], set(), {}
+    recipes, notes, handled, strides = {}, [], set(), {}
     active = []
     attribute_bindings = {}
     affected = graph.affected_operations(impact)
-    requirements = _requirements_by_operation(
-        tuple(op for op in operations if op.node.name in affected), impact.requirements
-    )
-    for op in operations:
-        if op.node.name not in affected:
-            continue
+    affected_calls = tuple(op for op in operations if op.name in affected)
+    # An opaque call owns the attributes of its registered descendants, even
+    # when a requirement names a path outside the call to the same descendant.
+    module_paths = {
+        op.name: (
+            {id(module): path for path, module in op.module.named_modules()}
+            if op.module is not None
+            else {}
+        )
+        for op in affected_calls
+    }
+    requirements = _requirements_by_operation(graph.model, module_paths, impact.requirements)
+    for op in affected_calls:
         reqs = requirements[op.node.name]
         rule = graph.operator_rule(op)
         if rule is None:
@@ -195,7 +182,7 @@ def compile_recipes(
         if spec is None:
             raise PlanningError(f"No structural specification for {op.name}")
         custom = None
-        if not is_native_rule(rule):
+        if not is_native_rule(op.node, op.module, rule):
             try:
                 custom = rule.build_recipe(op, spec, impact)
             except UnsupportedOperation as error:
@@ -248,22 +235,24 @@ def compile_recipes(
                 )
             recipes[recipe.tensor.id] = recipe
         for attr in result.attributes:
-            path, _, name = attr.path.rpartition(".")
-            owner = graph.model.get_submodule(path) if path else graph.model
-            if freeze(getattr(owner, name)) != freeze(thaw(attr.old)):
+            owner, name = attribute_owner(graph.model, attr.path)
+            if freeze(getattr(owner, name)) != attr.old:
                 raise PlanningError(f"Rewrite attribute precondition disagrees: {attr.path}")
             identity = (id(owner), name)
-            previous = attribute_bindings.get(identity)
-            if previous is not None and (previous.old != attr.old or previous.new != attr.new):
+            previous = attribute_bindings.setdefault(identity, attr)
+            if previous.new != attr.new:
                 raise PlanningError(f"Shared attribute update disagrees: {attr.path}")
-            attribute_bindings[identity] = attr
-            if attr.old != attr.new:
-                attributes[attr.path] = attr
-        active.append((op, spec, reqs, rule.evaluate_on_meta))
+        active.append((op, spec, reqs, rule))
+    attributes = []
+    edits_by_owner: dict[int, list[tuple[str, object]]] = defaultdict(list)
+    for (owner_id, name), attr in attribute_bindings.items():
+        if attr.old != attr.new:
+            attributes.append(attr)
+            edits_by_owner[owner_id].append((name, attr.new))
     if attributes:
         # An independent branch can call the same module without selecting any
         # of its tensors. Its declared demand still applies to a shared edit.
-        changed_names = {path.rpartition(".")[2] for path in attributes}
+        changed_names = {name for edits in edits_by_owner.values() for name, _ in edits}
         for op in operations:
             if op.name in affected:
                 continue
@@ -273,10 +262,11 @@ def compile_recipes(
             for req in spec.requirements:
                 if not isinstance(req, AttributeBinding):
                     continue
-                path, _, name = req.target.rpartition(".")
+                name = req.target.rsplit(".", 1)[-1]
                 if name not in changed_names:
                     continue
-                shared = attribute_bindings.get((id(graph.model.get_submodule(path)), name))
+                owner, name = attribute_owner(graph.model, req.target)
+                shared = attribute_bindings.get((id(owner), name))
                 if (
                     shared is not None
                     and shared.old != shared.new
@@ -294,7 +284,7 @@ def compile_recipes(
         for key, recipe in recipes.items()
     }
     for req in impact.requirements:
-        if not isinstance(req, Requirement) or req.kind != "metadata_layout":
+        if not isinstance(req, Requirement) or req.check != "tensor_metadata":
             continue
         ref = req.tensors[0]
         recipe = recipes[ref.id]
@@ -317,13 +307,23 @@ def compile_recipes(
         handled.add(id(req))
     if any(id(r) not in handled for r in impact.requirements):
         raise PlanningError("Impact contains an unhandled execution requirement")
+
+    call_edits = {
+        call: tuple(
+            (f"{path}.{name}".lstrip("."), value)
+            for owner_id, path in paths.items()
+            for name, value in edits_by_owner.get(owner_id, ())
+        )
+        for call, paths in module_paths.items()
+        if edits_by_owner and paths
+    }
     check_forward(
-        graph, operations, active, impact, recipes, attributes, strides, meta_outputs=meta_outputs
+        graph, operations, active, impact, recipes, call_edits, strides, meta_outputs=meta_outputs
     )
     # Attribute validation depends on configuration, not which same-width channels
     # were selected. The context owns/invalidate this bounded cache; manual and final
     # independent compilation still validate without sharing another context's cache.
-    key = tuple(sorted((a.path, freeze(thaw(a.new))) for a in attributes.values()))
+    key = tuple(sorted((a.path, a.new) for a in attributes))
     if attribute_checks is not None and key in attribute_checks:
         error = attribute_checks[key]
         attribute_checks.move_to_end(key)
@@ -332,7 +332,7 @@ def compile_recipes(
     else:
         error = None
         try:
-            graph.validate_attribute_changes((a.path, thaw(a.new)) for a in attributes.values())
+            graph.validate_attribute_changes((a.path, thaw(a.new)) for a in attributes)
         except CaptureError as cause:
             error = str(cause)
         if attribute_checks is not None:
@@ -342,4 +342,4 @@ def compile_recipes(
     # tensor_bindings() checked entry state; check exit even when the cached
     # attribute proof avoided re-tracing. Generic lowering needs no per-call scan.
     graph.validate()
-    return tuple(recipes.values()), tuple(attributes.values()), tuple(dict.fromkeys(notes))
+    return tuple(recipes.values()), tuple(attributes), tuple(dict.fromkeys(notes))

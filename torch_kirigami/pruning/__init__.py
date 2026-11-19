@@ -6,7 +6,14 @@ from .candidates import CandidateSpace
 from .checkpoint import load_checkpoint, save_checkpoint
 from .granularity import Granularity
 from .groups import ParameterGroup, unique_groups
-from .metrics import GroupMagnitude, Magnitude, WeightTaylor, parameter_regions
+from .metrics import (
+    GroupMagnitude,
+    Magnitude,
+    PrunerZero,
+    WeightTaylor,
+    parameter_boxes,
+    parameter_regions,
+)
 from .plan import PruningPlan, PruningResult
 from .planner import PlanningContext
 from .pruner import Pruner
@@ -54,6 +61,7 @@ __all__ = [
     "PlanningContext",
     "PlanningError",
     "Pruner",
+    "PrunerZero",
     "PruningPlan",
     "PruningResult",
     "SelectionReport",
@@ -62,6 +70,7 @@ __all__ = [
     "TensorRecipe",
     "WeightTaylor",
     "load_checkpoint",
+    "parameter_boxes",
     "parameter_regions",
     "save_checkpoint",
     "unique_groups",

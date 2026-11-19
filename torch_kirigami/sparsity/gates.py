@@ -12,7 +12,8 @@ from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.operation import Operation, OperatorRule, OperatorSpec, TensorEffects
 from ..dep_graph.registry import OperatorRegistry
 from ..dep_graph.relations import AxisRelation
-from ..dep_graph.selection import TensorRef, gather_region
+from ..dep_graph.selection import TensorRef, gather_intervals
+from ..pruning.metrics import parameter_boxes
 from ..pruning.pruner import Pruner
 from ..pruning.types import Candidate, MetricContext
 
@@ -294,18 +295,14 @@ class GateMagnitude:
         terms_by_device: dict[torch.device, list[torch.Tensor]] = {}
         accumulation_order: list[tuple[int, torch.device, int]] = []
         for candidate_index, candidate in enumerate(candidates):
-            impact = context.impact(accepted_impact.requested + candidate.remove)
-            context.require_complete(impact)
+            boxes = dict(parameter_boxes(context, candidate, accepted_impact=accepted_impact))
             found = False
             for ref, values in prepared:
-                selection = impact.selection(ref).subtract(accepted_impact.selection(ref))
-                if not selection:
-                    continue
-                found = True
-                for region in selection.regions:
+                for box in boxes.get(ref, ()):
+                    found = True
                     device_terms = terms_by_device.setdefault(values.device, [])
                     accumulation_order.append((candidate_index, values.device, len(device_terms)))
-                    device_terms.append(gather_region(values, region).abs().sum())
+                    device_terms.append(gather_intervals(values, box).abs().sum())
             if not found:
                 # A previously selected gated candidate has zero marginal cost.
                 # An unrelated candidate must still be rejected, even if prior

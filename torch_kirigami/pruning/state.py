@@ -10,11 +10,16 @@ from typing import Protocol
 import torch
 from torch import nn
 
-from ..bindings import AttributeEdit, reference_edits, reference_signature, storage_key
+from ..bindings import (
+    AttributeEdit,
+    attribute_owner,
+    reference_edits,
+    reference_signature,
+    storage_key,
+)
 from ..configuration import (
     STRUCTURE_ATTRIBUTE,
     forward_hook_paths,
-    freeze,
     has_registration_hooks,
     thaw,
 )
@@ -66,12 +71,6 @@ class _PlanContract(Protocol):
         ...
 
 
-def attribute(model: nn.Module, path: str) -> tuple[nn.Module, str]:
-    """Resolve a registered or declared attribute to its original owner."""
-    parent, _, name = path.rpartition(".")
-    return model.get_submodule(parent) if parent else model, name
-
-
 def snapshot(model: nn.Module, *, guarded: tuple[str, ...] = ()) -> ModelStructure:
     """Read structural state; ordinary weight updates do not change this record."""
     modules = {}
@@ -110,7 +109,7 @@ def snapshot(model: nn.Module, *, guarded: tuple[str, ...] = ()) -> ModelStructu
     for tensor, kind, paths in entities.values():
         persistence = []
         for path in paths:
-            owner, name = attribute(model, path)
+            owner, name = attribute_owner(model, path)
             persistence.append(kind == "parameter" or name not in owner._non_persistent_buffers_set)
         tensors.append(
             TensorState(
@@ -166,9 +165,9 @@ def transformed(
                 if key not in edits:
                     continue
                 edit = edits[key]
-                if old != freeze(thaw(edit.old)):
+                if old != edit.old:
                     raise ValueError(f"Attribute precondition mismatch: {key}")
-                new = freeze(thaw(edit.new))
+                new = edit.new
                 # All aliases describe one final assignment, including a no-op.
                 if name in assigned and assigned[name] != new:
                     raise ValueError("Shared attribute edits disagree")
@@ -298,11 +297,11 @@ def commit(
     try:
         for state, old, new in replacements:
             for path in state.paths:
-                owner, name = attribute(model, path)
+                owner, name = attribute_owner(model, path)
                 journal.append((owner, name, old, state.kind))
                 setattr(owner, name, new)
         for edit in edits.values():
-            owner, name = attribute(model, edit.path)
+            owner, name = attribute_owner(model, edit.path)
             journal.append((owner, name, getattr(owner, name, missing), "attribute"))
             if edit.delete:
                 object.__delattr__(owner, name)
@@ -317,7 +316,7 @@ def commit(
         setattr(model, STRUCTURE_ATTRIBUTE, record)
         for state, _, new in replacements:
             for path in state.paths:
-                owner, name = attribute(model, path)
+                owner, name = attribute_owner(model, path)
                 if getattr(owner, name) is not new:
                     raise ExecutionError(
                         "Committed tensor binding differs from the prepared object"

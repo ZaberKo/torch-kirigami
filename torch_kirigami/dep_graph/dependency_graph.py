@@ -12,6 +12,7 @@ from types import MappingProxyType
 import torch
 from torch import fx, nn
 
+from ..bindings import attribute_owner
 from ..errors import StaleGraphError
 from ..settings import config
 from .capture import fingerprint
@@ -331,8 +332,7 @@ class DependencyGraph:
         result = []
         seen = set()
         for path in ref.paths:
-            parent, _, name = path.rpartition(".")
-            owner = self._data.model.get_submodule(parent) if parent else self._data.model
+            owner, name = attribute_owner(self._data.model, path)
             if (id(owner), name) not in seen:
                 result.append((owner, name))
                 seen.add((id(owner), name))

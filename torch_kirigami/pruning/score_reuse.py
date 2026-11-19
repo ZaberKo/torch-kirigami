@@ -14,34 +14,15 @@ because its normalization reads all of them.
 
 from __future__ import annotations
 
-import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import cast
+from typing import TypeGuard
 
 import torch
 
-from ..dep_graph.contracts import (
-    AxisBarrier,
-    Balanced,
-    Barrier,
-    BlockBalance,
-    Divisible,
-    Fixed,
-    Impact,
-    LayoutConstraint,
-    NonEmpty,
-)
-from ..dep_graph.eligibility import has_native_semantics
+from ..dep_graph.contracts import AxisBarrier, Barrier, Impact
 from ..dep_graph.operators.shapes import CallArgumentConstraint
-from ..dep_graph.relations import (
-    AxisRelation,
-    BroadcastRelation,
-    PermuteRelation,
-    ReshapeRelation,
-    SliceRelation,
-)
 from ..dep_graph.selection import (
     AxisRef,
     IndexSet,
@@ -53,65 +34,42 @@ from ..dep_graph.selection import (
 )
 from ..errors import AnalysisLimitError
 from ..settings import config
-from .metrics import (
-    GroupMagnitude,
-    Magnitude,
-    _candidate_domain,
-    _combine_totals,
-    _group_score,
-    _normalization,
-    _parameter_bindings,
-    _region_totals,
-)
+from .metrics import GroupMagnitude, Magnitude, _magnitude_norms, _ParameterBoxes
 from .planner import PlanningContext
 from .types import Candidate, Metric, PlanningError
 
 _NATIVE_SCORES = {Magnitude: Magnitude.score, GroupMagnitude: GroupMagnitude.score}
-_RELATIONS = (AxisRelation, BroadcastRelation, PermuteRelation, ReshapeRelation, SliceRelation)
-_CONSTRAINTS = (
-    NonEmpty,
-    Fixed,
-    Balanced,
-    BlockBalance,
-    Divisible,
-    Barrier,
-    AxisBarrier,
-    LayoutConstraint,
-    CallArgumentConstraint,
-)
 
 
 def _position_norms(
-    metric: Magnitude | GroupMagnitude,
     members: tuple[AxisRef, ...],
     bindings: Mapping[TensorRef, torch.Tensor],
     positions: Iterable[int],
     base: tuple[Selection, ...] | None = None,
+    *,
+    p: int,
 ) -> Mapping[int, float]:
     """Return the ordinary union L1 or L2 norm of single positions of a component.
 
     The caller proves that one position adds exactly the member slices to the
     accepted closure, whose member selections are `base`, or nothing when
     `base` is None. The parts of those slices outside `base` are then the
-    parameter regions that ordinary scoring reduces. `canonical_boxes` and
-    `_region_totals` reduce equal coordinates identically, one position at a
-    time, so scores are bitwise equal and temporary memory is bounded by one
-    slice per member.
+    parameter regions that ordinary scoring reduces. Use the same canonical
+    boxes and norm calculation as ordinary scoring to keep scores bitwise
+    equal.
     """
     accepted = (None,) * len(members) if base is None else base
-    parameters = tuple(
+    parameter_axes = tuple(
         (member, () if selection is None else region_boxes(selection.regions))
         for member, selection in zip(members, accepted, strict=True)
         if member.tensor in bindings and all(member.tensor.shape)
     )
-    ordered = sorted(positions)
-    result = {}
-    for start in range(0, len(ordered), config.score_batch_size):
-        batch = ordered[start : start + config.score_batch_size]
-        totals = []
+
+    def boxes_by_position(batch: Iterable[int]) -> Iterator[_ParameterBoxes]:
+        """Yield the additional boxes for each proved position."""
         for position in batch:
             parts = []
-            for member, removed in parameters:
+            for member, removed in parameter_axes:
                 box = tuple(
                     ((position, position + 1),) if dim == member.dim else ((0, size),)
                     for dim, size in enumerate(member.tensor.shape)
@@ -119,12 +77,18 @@ def _position_norms(
                 boxes = canonical_boxes((box,), removed)
                 if boxes:
                     parts.append((member.tensor, boxes))
-            totals.append(_region_totals(metric, bindings, parts))
-        result.update(zip(batch, _combine_totals(metric, totals), strict=True))
+            yield tuple(parts)
+
+    ordered = sorted(positions)
+    result = {}
+    for start in range(0, len(ordered), config.score_batch_size):
+        batch = ordered[start : start + config.score_batch_size]
+        norms = _magnitude_norms(bindings, boxes_by_position(batch), p=p)
+        result.update(zip(batch, norms, strict=True))
     return MappingProxyType(result)
 
 
-def _has_native_score(metric: Metric) -> bool:
+def _has_native_score(metric: Metric) -> TypeGuard[Magnitude | GroupMagnitude]:
     """Accept only built-in scores whose formulas the cached statistics reproduce."""
     native = _NATIVE_SCORES.get(type(metric))
     return native is not None and "score" not in vars(metric) and type(metric).score is native
@@ -196,30 +160,21 @@ class IndependentRanking:
         """Freeze proved domains and their summaries for the requested counting axes."""
         if not _has_native_score(metric):
             return None
-        metric = cast("Magnitude | GroupMagnitude", metric)
         graph = context.graph
+        checks = context._candidate_filter
+        if not checks.native_semantics:
+            return None
         if not context.impact(()).complete:
             return None
-        if any(type(r) not in _RELATIONS for r in graph.relations):
-            return None
         constraints = (*graph.constraints, *context.constraints)
-        if any(type(c) not in _CONSTRAINTS or not has_native_semantics(c) for c in constraints):
-            return None
-        axis_index = graph.identity_axes
         domains, candidates, groups, removals = [], [], {}, {}
         counted = []
         for candidate in context.candidates:
-            if (
-                type(candidate) is not Candidate
-                or not has_native_semantics(candidate.axis)
-                or not has_native_semantics(candidate.remove)
-            ):
+            domain = checks.native_domain(candidate)
+            if domain is None:
                 continue
-            try:
-                axis, count, position = _candidate_domain(candidate)
-            except PlanningError:
-                continue
-            if count != 1 or any(
+            axis, indices, members = domain
+            if len(indices) != 1 or any(
                 len(selected) != axis.tensor.shape[dim]
                 for seed in candidate.remove
                 for region in seed.regions
@@ -227,11 +182,9 @@ class IndependentRanking:
                 if dim != axis.dim
             ):
                 continue  # `complete_positions` proves single-slice requests only.
+            position = indices.intervals[0][0]
             group = groups.get(axis)
             if group is None:
-                members = axis_index.component(axis)
-                if members is None:
-                    continue
                 # Components may share a tensor on different axes, such as the
                 # rows and columns of one weight. Once the accepted closure
                 # removes another part of a member tensor, `score` reduces the
@@ -258,7 +211,7 @@ class IndependentRanking:
             versions = tuple(t._version for t in bindings.values())
         except RuntimeError:
             return None  # Inference tensors have no mutation-aware cache key.
-        parameters = _parameter_bindings(context)
+        parameters = {ref: tensor for ref, tensor in bindings.items() if ref.kind == "parameter"}
         if any(not any(axis.tensor in parameters for axis in members) for members in domains):
             # Ordinary scoring reports parameter-free requests. Do not turn a
             # missing scoring basis into a cached vector of zero importance.
@@ -270,18 +223,14 @@ class IndependentRanking:
             candidate_positions = tuple(IndexSet.of(group) for group in positions)
         except AnalysisLimitError:
             return None  # Ordinary ranking scores candidates at too many separate positions.
-        # GroupMagnitude normalizes over every position; Magnitude needs only
-        # the candidates' own positions.
-        if type(metric) is GroupMagnitude:
-            positions = [set(range(members[0].tensor.shape[members[0].dim])) for members in domains]
-        norms = tuple(
-            _position_norms(metric, members, parameters, group_positions)
-            for members, group_positions in zip(domains, positions, strict=True)
-        )
-        if type(metric) is Magnitude and not all(
-            math.isfinite(norms[group][position]) for _, group, position in candidates
-        ):
-            return None  # Ordinary scoring reports nonfinite candidate scores.
+        norms = []
+        for members, requested in zip(domains, candidate_positions, strict=True):
+            root = members[0]
+            required = metric._norm_positions(requested)
+            positions_to_score = (
+                range(root.tensor.shape[root.dim]) if required is None else required
+            )
+            norms.append(_position_norms(members, parameters, positions_to_score, p=metric.p))
         graph.validate()
         return cls(
             context,
@@ -291,7 +240,7 @@ class IndependentRanking:
             tuple(candidates),
             candidate_positions,
             MappingProxyType(removals),
-            norms,
+            tuple(norms),
             MappingProxyType(parameters),
             tuple(bindings.values()),
             versions,
@@ -320,9 +269,8 @@ class IndependentRanking:
             or tuple(t._version for t in self.bindings) != self.versions
         ):
             return None
-        group_scores = type(self.metric) is GroupMagnitude
         checks = self.context._candidate_filter
-        removed, normalization = {}, {}
+        component_scores: dict[int, tuple[frozenset[int], dict[int, float]]] = {}
         for group, members in enumerate(self.domains):
             root = members[0]
             width = root.tensor.shape[root.dim]
@@ -335,15 +283,12 @@ class IndependentRanking:
             indices = frozenset(selected)
             if width - len(indices) <= 1:
                 continue  # Completing an entire axis can activate other axes.
-            # Ordinary normalization scores every surviving position, so each
-            # of those joint closures must also be proved complete.
-            complete = frozenset(
-                checks.complete_positions(
-                    members, accepted_impact, None if group_scores else self.positions[group]
-                )
-            )
-            if group_scores and any(i not in complete for i in range(width) if i not in indices):
-                continue
+            requested = self.positions[group]
+            required = self.metric._norm_positions(requested)
+            proved = checks.complete_positions(members, accepted_impact, required)
+            if required is None and len(proved) != width - len(indices):
+                continue  # Normalization reads the whole surviving axis.
+            complete = frozenset(proved)
             norms = self.norms[group]
             if base is not None and complete:
                 key = tuple(selection.regions for selection in base)
@@ -355,37 +300,25 @@ class IndependentRanking:
                 missing = [i for i in complete if i not in entry[1]]
                 if missing:
                     entry[1].update(
-                        _position_norms(self.metric, members, self.parameters, missing, base)
+                        _position_norms(members, self.parameters, missing, base, p=self.p)
                     )
                 norms = entry[1]
-            if group_scores:
-                try:
-                    normalization[group] = _normalization(
-                        [norms[i] for i in range(width) if i not in indices], self.p
-                    )
-                except PlanningError:
-                    continue  # Ordinary ranking reports or excludes this component.
-            removed[group] = (indices, complete, norms)
-        if not removed:
+            try:
+                scores = self.metric._scores_from_norms(
+                    root, (i for i in requested if i in complete), indices, norms
+                )
+            except PlanningError:
+                continue  # Ordinary ranking reports or excludes this component.
+            component_scores[group] = (indices, scores)
+        if not component_scores:
             return None
         scores, covered = {}, set()
         for candidate, group, position in self.candidates:
-            if group not in removed:
+            if group not in component_scores:
                 continue
-            indices, complete, norms = removed[group]
+            indices, available = component_scores[group]
             if position in indices:
                 covered.add(candidate.key)
-                continue
-            if position not in complete:
-                continue  # Ordinary ranking reports or excludes this candidate.
-            value = norms[position]
-            if not math.isfinite(value):
-                continue  # Ordinary scoring reports nonfinite conditional scores.
-            if group_scores:
-                scale, scaled_mean_energy = normalization[group]
-                try:
-                    value = _group_score(value, scale, scaled_mean_energy, self.p)
-                except PlanningError:
-                    continue  # Ordinary ranking reports or excludes this candidate.
-            scores[candidate.key] = value
+            elif position in available:
+                scores[candidate.key] = available[position]
         return IndependentScores(MappingProxyType(scores), self.removals, frozenset(covered))

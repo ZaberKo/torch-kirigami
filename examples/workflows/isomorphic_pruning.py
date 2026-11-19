@@ -1,8 +1,7 @@
 """Prune within structurally similar dependency families using Taylor scores.
 
-This workflow adopts comparisons within dependency families from ECCV 2024.
-Paper: *Isomorphic Pruning for Vision Models*.
-https://arxiv.org/abs/2407.04616
+This workflow adopts comparisons within dependency families from
+*Isomorphic Pruning for Vision Models* (ECCV 2024).
 
 `DependencyGraph` and `Pruner` discover graph-declared candidate domains.
 Interface protections and execution checks restrict this discovery.
@@ -53,7 +52,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch_prisma import count_parameters
@@ -63,8 +62,6 @@ from torch_kirigami import (
     AxisBarrier,
     AxisRef,
     Balanced,
-    Barrier,
-    BlockBalance,
     DependencyGraph,
     Divisible,
     Fixed,
@@ -76,8 +73,12 @@ from torch_kirigami import (
     TensorRef,
 )
 from torch_kirigami.dep_graph.eligibility import has_native_semantics
-from torch_kirigami.dep_graph.operators.shapes import CallArgumentConstraint
-from torch_kirigami.dep_graph.selection import canonical_boxes, gather_region, region_boxes
+from torch_kirigami.dep_graph.selection import (
+    canonical_boxes,
+    gather_intervals,
+    region_boxes,
+    slice_intervals,
+)
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -90,6 +91,7 @@ from torch_kirigami.pruning import (
     Pruner,
     StrategyResult,
     load_checkpoint,
+    parameter_boxes,
     save_checkpoint,
 )
 
@@ -256,36 +258,39 @@ class PaperTaylor:
         batch_norms: dict[tuple[object, ...], tuple[float, ...]] = {}
         with torch.no_grad():
             for candidate in candidates:
-                impact = context.impact((*accepted_impact.requested, *candidate.remove))
-                context.require_complete(impact)
                 terms = []
-                for selection in impact.selections.values():
-                    if selection.tensor not in self._weights:
+                for ref, boxes in parameter_boxes(
+                    context, candidate, accepted_impact=accepted_impact
+                ):
+                    if ref not in self._weights:
                         continue
-                    previous = accepted_impact.selections.get(selection.tensor.id)
-                    if previous is not None:
-                        selection = selection.subtract(previous)
-                    if not selection.regions:
-                        continue
-                    weight = bindings[selection.tensor]
+                    weight = bindings[ref]
                     if weight.is_complex() or weight.grad is None or weight.grad.is_sparse:
                         raise PlanningError("PaperTaylor requires real weights and dense gradients")
-                    if len(selection.regions) == 1:
-                        region = selection.regions[0]
+                    if len(boxes) == 1:
+                        box = boxes[0]
                         changed = [
                             dim
-                            for dim, indices in enumerate(region.axes)
-                            if len(indices) != weight.shape[dim]
+                            for dim, intervals in enumerate(box)
+                            if intervals != ((0, weight.shape[dim]),)
                         ]
                         if len(changed) == 1:
                             dim = changed[0]
-                            norms = self._axis_norms(selection.tensor, weight, dim, batch_norms)
-                            terms.append(math.hypot(*(norms[index] for index in region.axes[dim])))
+                            norms = self._axis_norms(ref, weight, dim, batch_norms)
+                            terms.append(
+                                math.hypot(
+                                    *(
+                                        norms[index]
+                                        for start, stop in box[dim]
+                                        for index in range(start, stop)
+                                    )
+                                )
+                            )
                             continue
                     norm = torch.zeros((), dtype=torch.float64, device=weight.device)
-                    for region in selection.regions:
-                        values = gather_region(weight.detach(), region).double()
-                        gradient = gather_region(weight.grad.detach(), region).double()
+                    for box in boxes:
+                        values = gather_intervals(weight.detach(), box).double()
+                        gradient = gather_intervals(weight.grad.detach(), box).double()
                         norm = torch.hypot(norm, torch.linalg.vector_norm(values * gradient))
                     terms.append(norm.item())
                 if not terms:
@@ -434,7 +439,6 @@ class RemovalAction:
 
     Attributes:
         candidate: Representative candidate for this equivalent closure.
-        aliases: Candidate keys that share this closure.
         family: Index of the structural family used for score comparisons.
         axes: Complete affected coordinates by axis.
         score: Static score assigned within the family.
@@ -442,7 +446,6 @@ class RemovalAction:
     """
 
     candidate: Candidate
-    aliases: list[str]
     family: int
     axes: dict[AxisRef, IndexSet]
     score: float = 0.0
@@ -557,11 +560,18 @@ class Isomorphic:
                 factors[constraint.axis] = math.lcm(
                     factors.get(constraint.axis, 1), constraint.factor
                 )
+        actions, exclusions = self._score_actions(context, axes)
+        return self._select_actions(context, ratio, actions, factors, exclusions)
+
+    def _score_actions(
+        self, context: PlanningContext, axes: set[AxisRef]
+    ) -> tuple[list[RemovalAction], list[tuple[str, str]]]:
+        """Group equivalent closures and score representatives in structural families."""
         by_tensor: dict[TensorRef, list[AxisRef]] = defaultdict(list)
         for axis in sorted(axes, key=lambda axis: (axis.tensor.id, axis.dim)):
             by_tensor[axis.tensor].append(axis)
         actions: list[RemovalAction] = []
-        closures: dict[tuple[object, ...], int] = {}
+        closures: set[tuple[object, ...]] = set()
         signatures: dict[tuple[object, ...], int] = {}
         exclusions = []
         operation_indices: dict[TensorRef, set[int]] = defaultdict(set)
@@ -572,28 +582,14 @@ class Isomorphic:
         pending_scores: list[RemovalAction] = []
         axis_index = context.graph.identity_axes
         templates: dict[AxisRef, _IdentityFamily | None] = {}
-        equivalent_actions: dict[tuple[tuple[AxisRef, ...], IndexSet], int] = {}
+        equivalent_actions: set[tuple[tuple[AxisRef, ...], IndexSet]] = set()
         all_constraints = (*context.graph.constraints, *context.constraints)
-        native_constraints = (
-            NonEmpty,
-            Fixed,
-            Divisible,
-            Balanced,
-            BlockBalance,
-            Barrier,
-            AxisBarrier,
-            LayoutConstraint,
-            CallArgumentConstraint,
-        )
         reuse_axes = (
             accepted.complete
             and type(self.metric) is PaperTaylor
             and "score" not in vars(self.metric)
             and PaperTaylor.score is _PAPER_SCORE
-            and all(
-                type(constraint) in native_constraints and has_native_semantics(constraint)
-                for constraint in all_constraints
-            )
+            and all(has_native_semantics(constraint) for constraint in all_constraints)
         )
 
         def axis_seed(candidate: Candidate) -> tuple[AxisRef, IndexSet] | None:
@@ -606,10 +602,12 @@ class Isomorphic:
                 or not has_native_semantics(axis)
                 or len(candidate.remove) != 1
                 or not has_native_semantics(candidate.remove)
-                or candidate.remove[0].tensor != axis.tensor
             ):
                 return None
-            indices = candidate.remove[0].fully_selected_indices(axis.dim)
+            intervals = slice_intervals(axis, candidate.remove)
+            if intervals is None:
+                return None
+            indices = IndexSet(intervals)
             if not indices or candidate.remove != (axis.select(indices),):
                 return None
             return axis, indices
@@ -674,7 +672,6 @@ class Isomorphic:
                 (axis_index.equivalent_axes(origin[0]), origin[1]) if origin is not None else None
             )
             if equivalent in equivalent_actions:
-                actions[equivalent_actions[equivalent]].aliases.append(candidate.key)
                 continue
             template = (
                 templates.get(origin[0]) if origin is not None and len(origin[1]) == 1 else None
@@ -687,18 +684,16 @@ class Isomorphic:
                         for member in template.axes
                     )
                 )
+                equivalent_actions.add(equivalent)
                 if closure in closures:
-                    actions[closures[closure]].aliases.append(candidate.key)
-                    equivalent_actions[equivalent] = closures[closure]
                     continue
                 score = template.scores[next(iter(indices))]
                 if not math.isfinite(score):
                     raise PlanningError("PaperTaylor produced a nonfinite score")
-                closures[closure] = len(actions)
+                closures.add(closure)
                 actions.append(
                     RemovalAction(
                         candidate,
-                        [candidate.key],
                         template.family,
                         dict.fromkeys(
                             (member for member in template.axes if member in axes), indices
@@ -706,7 +701,6 @@ class Isomorphic:
                         score,
                     )
                 )
-                equivalent_actions[equivalent] = len(actions) - 1
                 continue
             impact = context.impact(candidate.remove)
             if not impact.complete:
@@ -725,9 +719,8 @@ class Isomorphic:
                 )
             )
             if closure in closures:
-                actions[closures[closure]].aliases.append(candidate.key)
                 if equivalent is not None:
-                    equivalent_actions[equivalent] = closures[closure]
+                    equivalent_actions.add(equivalent)
                 continue
             try:
                 indices = set().union(
@@ -745,17 +738,16 @@ class Isomorphic:
                 for axis in by_tensor[selection.tensor]
                 if (indices := selection.fully_selected_indices(axis.dim))
             }
-            closures[closure] = len(actions)
+            closures.add(closure)
             actions.append(
                 RemovalAction(
                     candidate,
-                    [candidate.key],
                     signatures.setdefault(signature, len(signatures)),
                     contributions,
                 )
             )
             if equivalent is not None:
-                equivalent_actions[equivalent] = len(actions) - 1
+                equivalent_actions.add(equivalent)
             members = (
                 reusable_axes(origin[0], impact)
                 if origin is not None and len(origin[1]) == 1
@@ -775,9 +767,18 @@ class Isomorphic:
                 if origin is not None:
                     templates[origin[0]] = None
                 pending_scores.append(actions[-1])
-        # Store topology once per family, not once per original channel.
-        del closures, signatures
         score_pending()
+        return actions, exclusions
+
+    def _select_actions(
+        self,
+        context: PlanningContext,
+        ratio: Fraction,
+        actions: list[RemovalAction],
+        factors: dict[AxisRef, int],
+        exclusions: list[tuple[str, str]],
+    ) -> StrategyResult:
+        """Allocate family quotas, round retained widths and validate the joint request."""
         families: dict[int, list[int]] = defaultdict(list)
         for index, action in enumerate(actions):
             families[action.family].append(index)
@@ -962,9 +963,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     graph = DependencyGraph.build(model, args=(example,))

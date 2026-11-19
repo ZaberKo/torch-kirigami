@@ -2,10 +2,12 @@
 
 import builtins
 import operator
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from functools import cache
+from types import MappingProxyType
 
 import torch
-from torch import nn
+from torch import fx, nn
 from torch.nn import functional as F
 
 from ..operation import OperatorRule
@@ -18,7 +20,6 @@ from .rules import (
     CastRule,
     ChannelOperatorRule,
     ChannelShuffleRule,
-    ChunkRule,
     ConcatenateRule,
     ConvolutionRule,
     DropoutRule,
@@ -56,42 +57,49 @@ from .rules import (
 )
 
 
-def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRule, bool], ...]:
-    """Return fresh built-in registration entries for a new registry.
+@cache
+def default_rules() -> Mapping[
+    type[nn.Module] | Callable | str, tuple[type[NativeRule], bool, bool]
+]:
+    """Return the immutable declarations used to populate each local registry.
 
     The registry matches exact module classes, function objects, and Tensor
     method names separately, so each spelling and each module subclass needs
     its own entry.
 
     Returns:
-        `(target, rule, opaque)` entries with new rule instances. `opaque` is
-        true for module classes, which FX keeps as leaves.
+        Each target's rule type, fresh-output flag, and opaque flag, in
+        registration order. The registry creates the rule instances.
 
     Raises:
         ValueError: One function object is registered with two different
             rules or freshness flags.
     """
-    entries: list[tuple[type[nn.Module] | Callable | str, OperatorRule, bool]] = []
-    function_rules: dict[Callable, tuple[type[NativeRule], bool]] = {}
+    entries: dict[type[nn.Module] | Callable | str, tuple[type[NativeRule], bool, bool]] = {}
 
     def modules(targets: Sequence[type[nn.Module]], rule: type[NativeRule], *, fresh: bool) -> None:
         """Register exact module classes as FX leaves."""
-        entries.extend((target, rule(fresh=fresh), True) for target in targets)
+        for target in targets:
+            if target in entries:
+                raise ValueError(f"Duplicate built-in module rule for {target}")
+            entries[target] = (rule, fresh, True)
 
     def functions(targets: Sequence[Callable], rule: type[NativeRule], *, fresh: bool) -> None:
         """Register function objects once each, without FX leaf wrapping."""
         for target in targets:
-            previous = function_rules.get(target)
+            previous = entries.get(target)
             if previous is not None:
-                if previous != (rule, fresh):
+                if previous != (rule, fresh, False):
                     raise ValueError(f"Conflicting built-in semantics for {target}")
                 continue  # Public aliases can be the same Python function object.
-            function_rules[target] = (rule, fresh)
-            entries.append((target, rule(fresh=fresh), False))
+            entries[target] = (rule, fresh, False)
 
     def methods(targets: Sequence[str], rule: type[NativeRule], *, fresh: bool) -> None:
         """Register Tensor method spellings."""
-        entries.extend((target, rule(fresh=fresh), False) for target in targets)
+        for target in targets:
+            if target in entries:
+                raise ValueError(f"Duplicate built-in Tensor method rule for {target}")
+            entries[target] = (rule, fresh, False)
 
     modules([nn.Softmax, nn.LogSoftmax], SoftmaxRule, fresh=True)
     functions([F.softmax, F.log_softmax, torch.softmax, torch.log_softmax], SoftmaxRule, fresh=True)
@@ -523,8 +531,8 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
     methods(["all", "any", "nansum", "nanmean"], ReductionRule, fresh=True)
 
     functions([torch.stack], StackRule, fresh=True)
-    functions([torch.chunk], ChunkRule, fresh=False)
-    methods(["chunk"], ChunkRule, fresh=False)
+    functions([torch.chunk], SplitRule, fresh=False)
+    methods(["chunk"], SplitRule, fresh=False)
     functions([torch.narrow], NarrowRule, fresh=False)
     methods(["narrow"], NarrowRule, fresh=False)
     functions([torch.index_select], IndexSelectRule, fresh=True)
@@ -857,4 +865,19 @@ def default_rules() -> tuple[tuple[type[nn.Module] | Callable | str, OperatorRul
         fresh=False,
     )
     methods(["conj", "conj_physical", "resolve_conj", "resolve_neg"], PointwiseRule, fresh=False)
-    return tuple(entries)
+    return MappingProxyType(entries)
+
+
+def is_native_rule(node: fx.Node, module: nn.Module | None, rule: OperatorRule) -> bool:
+    """Recognize an unmodified built-in for this particular operator target."""
+    target = node.target if module is None else type(module)
+    declaration = default_rules().get(target)
+    return (
+        declaration is not None
+        and type(rule) is declaration[0]
+        and rule.fresh is declaration[1]
+        and not any(
+            name in vars(rule)
+            for name in ("build_spec", "build_recipe", "validate_capture", "tensor_effects")
+        )
+    )

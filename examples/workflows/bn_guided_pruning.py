@@ -1,8 +1,7 @@
 """Prune ResNet convolution channels using BatchNorm scale scores.
 
-This workflow adapts Network Slimming from Liu et al., ICCV 2017.
-Paper: *Learning Efficient Convolutional Networks through Network Slimming*.
-https://openaccess.thecvf.com/content_ICCV_2017/papers/Liu_Learning_Efficient_Convolutional_ICCV_2017_paper.pdf
+This workflow adapts *Learning Efficient Convolutional Networks through
+Network Slimming* (ICCV 2017).
 
 The paper applies L1 sparsity to BatchNorm scales.
 It selects channels by a global magnitude threshold, removes linked weights,
@@ -46,7 +45,7 @@ from typing import Any, cast
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -63,7 +62,7 @@ from torch_kirigami.pruning import (
     PlanningError,
     Pruner,
     load_checkpoint,
-    parameter_regions,
+    parameter_boxes,
     save_checkpoint,
 )
 from torch_kirigami.sparsity import ScaleL1
@@ -74,7 +73,7 @@ class BNScaleMagnitude:
 
     Conv weights and BN offsets do not contribute. Each newly removed scale
     contributes once, including when several candidate seeds reach the same BN.
-    `torch_kirigami.pruning.parameter_regions` supplies the joint parameter
+    `torch_kirigami.pruning.parameter_boxes` supplies the joint parameter
     effects. This metric selects scale regions from those effects and sums their
     absolute values. It does not restrict dependency analysis or physical pruning.
 
@@ -125,19 +124,22 @@ class BNScaleMagnitude:
         }
         scores = []
         for candidate in candidates:
-            regions = parameter_regions(context, candidate, accepted_impact=accepted_impact)
-            scale_regions = tuple(s for s in regions if s.tensor in self.scales)
-            if not scale_regions and any(
-                seed.subtract(accepted_impact.selection(seed.tensor)) for seed in candidate.remove
+            boxes = parameter_boxes(context, candidate, accepted_impact=accepted_impact)
+            scale_boxes = tuple((ref, boxes) for ref, boxes in boxes if ref in self.scales)
+            if not scale_boxes and any(
+                not seed.issubset(accepted_impact.selection(seed.tensor))
+                for seed in candidate.remove
             ):
-                original = parameter_regions(context, candidate, accepted_impact=context.impact(()))
-                if not any(s.tensor in self.scales for s in original):
+                original = parameter_boxes(context, candidate, accepted_impact=context.impact(()))
+                if not any(ref in self.scales for ref, _ in original):
                     raise PlanningError(f"No BN scale supports candidate {candidate.key!r}")
             scores.append(
                 math.fsum(
-                    values[selection.tensor][position]
-                    for selection in scale_regions
-                    for position in selection.fully_selected_indices(0)
+                    values[ref][position]
+                    for ref, boxes in scale_boxes
+                    for box in boxes
+                    for start, stop in box[0]
+                    for position in range(start, stop)
                 )
             )
         return scores
@@ -302,9 +304,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     model.train(options.sparse_epochs > 0 or options.finetune_epochs > 0)

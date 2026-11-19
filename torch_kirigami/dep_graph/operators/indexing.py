@@ -7,7 +7,6 @@ for a call it cannot describe.
 
 from __future__ import annotations
 
-from dataclasses import replace
 from math import prod
 
 import torch
@@ -27,8 +26,8 @@ from ..relations import (
     SliceRelation,
 )
 from ..selection import IndexSet, TensorRef
-from .coordinates import expand_index, narrow_index
-from .native import equal, one, split
+from .coordinates import slice_index
+from .native import equal, one
 from .shapes import has_known_provenance, scalar_spec
 
 
@@ -78,31 +77,13 @@ def stack(operation: Operation) -> OperatorSpec:
     )
 
 
-def chunk(operation: Operation) -> OperatorSpec:
-    """Map captured chunk outputs as a split by the first output's width."""
-    x = one(operation.argument("input", 0))
-    dim = operation.argument("dim", 2, 0) % len(x.shape)
-    width = operation.outputs[0].shape[dim]
-    result = split(replace(operation, args=(x, width, dim), kwargs={}))
-    requirements = tuple(
-        replace(r, data=(*r.data, ("chunks", operation.argument("chunks", 1))), arguments=())
-        for r in result.requirements
-    )
-    return replace(result, requirements=requirements)
-
-
 def narrow(operation: Operation) -> OperatorSpec:
     """Map a fixed contiguous interval and verify it after upstream compaction."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
-    dim, start, length = (
-        operation.argument("dim", 1),
-        operation.argument("start", 2),
-        operation.argument("length", 3),
-    )
-    if not all(type(v) is int for v in (dim, start, length)):
-        raise UnsupportedOperation("narrow requires static integer arguments")
-    dim %= len(x.shape)
-    index = narrow_index(x.shape, dim, start, length)
+    try:
+        index = slice_index(operation.node.target, x.shape, operation.args, operation.kwargs)
+    except ValueError as error:
+        raise UnsupportedOperation(str(error)) from error
     return OperatorSpec(
         (SliceRelation(x, y, tuple(index), operation.node.name),),
         requirements=(
@@ -111,7 +92,7 @@ def narrow(operation: Operation) -> OperatorSpec:
                 operation.node.name,
                 (x, y),
                 "Preserve narrow coordinates",
-                (("index", tuple(index)), ("narrow_dim", dim)),
+                (("index", index),),
                 arguments=(ArgumentRef("start", 2), ArgumentRef("length", 3)),
             ),
         ),
@@ -249,7 +230,9 @@ def getitem(operation: Operation) -> OperatorSpec:
         )
 
     try:
-        expanded = expand_index(index, len(source.shape))
+        expanded = slice_index(
+            operation.node.target, source.shape, operation.args, operation.kwargs
+        )
     except ValueError as error:
         raise UnsupportedOperation(str(error)) from error
     y = one(operation.result)

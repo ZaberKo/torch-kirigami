@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-import copy
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import suppress
 
 import torch
 from torch import fx, nn
 
+from ..bindings import attribute_owner, copy_module_tree
 from ..configuration import freeze, thaw
 from ..dep_graph.contracts import AttributeBinding, Impact, Requirement
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.operation import Operation, OperatorSpec, TensorFacts, argument
-from ..dep_graph.operators.coordinates import expand_index, narrow_index, retained_indices
+from ..dep_graph.operation import Operation, OperatorRule, OperatorSpec, TensorFacts, argument
+from ..dep_graph.operators.coordinates import retained_indices, slice_index
+from ..dep_graph.operators.defaults import is_native_rule
 from ..dep_graph.operators.effects import (
     metadata_read,
     mutable_parameter_inputs,
@@ -21,7 +23,7 @@ from ..dep_graph.operators.effects import (
 )
 from ..dep_graph.operators.shapes import evaluate, reevaluate
 from ..dep_graph.selection import TensorRef
-from ..operator_recipes import AttributeRecipe, TensorRecipe
+from ..operator_recipes import TensorRecipe
 from .layouts import view_preserves_stride_boundaries
 from .recipes import compact_stride
 from .types import PlanningError, require_compact_shape
@@ -90,22 +92,20 @@ def _restore_meta_output(value: object) -> object:
 
 
 def _check_slice_coordinates(
-    op: Operation, requirements: tuple[Requirement, ...], impact: Impact, new_index: object
+    op: Operation,
+    impact: Impact,
+    original_index: tuple[object, ...],
+    compact_index: tuple[object, ...],
 ) -> None:
     """Reject slices that select different original coordinates after compaction."""
     x, y = op.inputs[0], op.outputs[0]
-    expanded = dict(next(r for r in requirements if r.kind == "slice_arguments").data)["index"]
-    try:
-        new_expanded = expand_index(new_index, len(x.shape))
-    except ValueError as error:
-        raise PlanningError(f"{op.name}: {error}") from error
-    if len(new_expanded) != len(expanded):
+    if len(compact_index) != len(original_index):
         raise PlanningError(
             f"{op.name}: compact slice changes the indexed axes. "
-            f"Expected {len(expanded)} index entries, got {len(new_expanded)}."
+            f"Expected {len(original_index)} index entries, got {len(compact_index)}."
         )
     dim = out_dim = 0
-    for entry, (item, new_item) in enumerate(zip(expanded, new_expanded, strict=True)):
+    for entry, (item, new_item) in enumerate(zip(original_index, compact_index, strict=True)):
         if type(new_item) is not type(item):
             raise PlanningError(
                 f"{op.name}: compact slice changes the indexed axes at entry {entry}. "
@@ -162,36 +162,154 @@ def _check_slice_coordinates(
 
 def _meta_module(
     operation: Operation,
-    attributes: Mapping[str, AttributeRecipe],
+    edits: tuple[tuple[str, object], ...],
     tensor: Callable[[TensorRef], torch.Tensor],
+    *,
+    rule: OperatorRule,
 ) -> nn.Module:
-    """Copy a built-in module structure with compact meta bindings and attributes.
+    """Copy a module's configuration and replace every captured tensor binding.
 
-    Parameters and buffers are resolved from analysis metadata, never copied from
-    live weights. Registered containers are copied before changing any binding.
+    Native leaves read their configuration and use registered tensor slots.
+    Extension calls get isolated configuration, including ordinary aliases to
+    registered tensors. Neither path invokes the module's copy hooks.
     """
+    original = operation.module
+    replacements = {}
+    for path, value in (*original.named_parameters(), *original.named_buffers()):
+        ref = operation.bindings.get(path)
+        if ref is None:
+            raise PlanningError(f"{operation.name}: no captured tensor binding for {path}")
+        replacements[id(value)] = tensor(ref)
+    state = vars(original)
+    if (
+        is_native_rule(operation.node, original, rule)
+        and not original._modules
+        and not any(callable(value) for value in state.values())
+    ):
+        # The built-in forward cannot use unrelated Python state attached to the
+        # instance, such as a lock or an activation retained by an observer.
+        state = state.copy()
+        for name in ("_modules", "_parameters", "_buffers"):
+            state[name] = {
+                key: replacements.get(id(value), value) for key, value in state[name].items()
+            }
+        result = object.__new__(type(original))
+        object.__setattr__(result, "__dict__", state)
+    else:
+        result = copy_module_tree(original, replacements)
+    for path, new in edits:
+        owner, name = attribute_owner(result, path)
+        object.__setattr__(owner, name, thaw(new))
+    return result
 
-    def clone(original: nn.Module, prefix: str = "") -> nn.Module:
-        """Copy a module subtree while replacing registered tensor bindings."""
-        result = copy.copy(original)
-        for field in ("_parameters", "_buffers"):
-            bindings = {}
-            for name, value in getattr(original, field).items():
-                ref = operation.bindings.get(prefix + name)
-                bindings[name] = tensor(ref) if ref is not None else value
-            setattr(result, field, bindings)
-        result._modules = {
-            name: clone(child, prefix + name + ".") if child is not None else None
-            for name, child in original._modules.items()
-        }
-        owner_path = ".".join(part for part in (operation.module_path, prefix.rstrip(".")) if part)
-        for edit in attributes.values():
-            parent, _, name = edit.path.rpartition(".")
-            if parent == owner_path:
-                object.__setattr__(result, name, thaw(edit.new))
-        return result
 
-    return clone(operation.module)
+def _check_index_coordinates(op: Operation, requirement: Requirement, impact: Impact) -> None:
+    """Check a static vector against the original positions on its compact axis."""
+    data = dict(requirement.data)
+    axis = data["axis"]
+    size = axis.tensor.shape[axis.dim]
+    kept = list(retained_indices(impact, axis))
+    for i in data["indices"]:
+        if not -len(kept) <= i < len(kept):
+            raise PlanningError(
+                f"{op.name}: static index {i} is out of bounds for compact width "
+                f"{len(kept)} and cannot preserve original coordinates"
+            )
+        if kept[i] != i % size:
+            raise PlanningError(
+                f"{op.name}: static indices change original coordinates. "
+                f"Index {i} selected position {i % size} before pruning and "
+                f"would select original position {kept[i]} after pruning."
+            )
+
+
+def _replay_arguments(
+    op: Operation,
+    requirements: tuple[Requirement, ...],
+    impact: Impact,
+    shape: Callable[[TensorRef], tuple[int, ...]],
+    uncertain: set[str],
+) -> tuple[tuple[object, ...], dict[str, object], str]:
+    """Recompute size expressions and verify original-coordinate argument contracts."""
+    try:
+        args = reevaluate(op.node.args, op.args, op.expressions, shape)
+        kwargs = reevaluate(op.node.kwargs, op.kwargs, op.expressions, shape)
+    except (ArithmeticError, TypeError, ValueError, IndexError) as error:
+        raise PlanningError(
+            f"{op.name}: cannot evaluate compact call arguments: {error}"
+        ) from error
+    hints = []
+    for req in requirements:
+        if req.kind == "index_arguments":
+            _check_index_coordinates(op, req, impact)
+            data = dict(req.data)
+            if data.get("mask"):
+                axis = data["axis"]
+                width = shape(axis.tensor)[axis.dim]
+                size = axis.tensor.shape[axis.dim]
+                if width != size:
+                    raise PlanningError(
+                        f"{op.name}: fixed boolean mask needs width {size} on axis {axis.dim}. "
+                        f"Pruning would change it to {width}."
+                    )
+                # Meta cannot evaluate boolean nonzero; replay the guarded True positions.
+                index = [slice(None)] * len(axis.tensor.shape)
+                index[axis.dim] = list(data["indices"])
+                args = (args[0], tuple(index))
+        elif req.kind == "slice_arguments":
+            try:
+                index = slice_index(op.node.target, shape(op.inputs[0]), args, kwargs)
+            except ValueError as error:
+                raise PlanningError(f"{op.name}: {error}") from error
+            _check_slice_coordinates(op, impact, dict(req.data)["index"], index)
+        elif req.kind == "partition_arguments":
+            if req.arguments:
+                binding = req.arguments[0]
+                sections = argument(
+                    args, kwargs, binding.name, binding.position, target=op.node.target
+                )
+                if isinstance(sections, int) and sections <= 0:
+                    raise PlanningError(
+                        f"{op.name}: split size becomes {sections} after pruning; "
+                        "the compact split requires a positive split size"
+                    )
+            # The relations partition the old axis in order. If replay produces
+            # the same retained size at each port, the boundaries also agree.
+            hints.append(" The compact partitions must preserve the original output ports.")
+        elif req.kind == "shape_arguments":
+            data = dict(req.data)
+            dimensions = evaluate(data["expression"], shape)
+            while (
+                isinstance(dimensions, tuple)
+                and len(dimensions) == 1
+                and isinstance(dimensions[0], tuple)
+            ):
+                dimensions = dimensions[0]
+            expected = shape(op.outputs[0])
+            if len(dimensions) != len(expected) or any(
+                requested != -1 and requested != size
+                for requested, size in zip(dimensions, expected, strict=False)
+            ):
+                hints.append(
+                    " If a fixed number was intended to follow a tensor dimension, "
+                    "replace it with tensor.size(dim) or a valid -1 inference, then "
+                    "rebuild the dependency graph. Keep algorithmic constants fixed."
+                )
+            source = op.inputs[0]
+            if (
+                data["requires_view"]
+                and any(ref.id in uncertain for ref in op.inputs)
+                and not view_preserves_stride_boundaries(shape(source), expected)
+            ):
+                raise PlanningError(
+                    f"{op.name}: input stride cannot be proved for view after pruning. "
+                    "If a copy is acceptable, use reshape(...) or contiguous().view(...) "
+                    "in forward and rebuild the dependency graph; shape and index "
+                    "constraints still apply."
+                )
+            args = (source, *dimensions) if data["unpack_shape"] else (source, dimensions)
+            kwargs = {}
+    return args, kwargs, "".join(hints)
 
 
 def _temporary_write_issue(
@@ -249,11 +367,11 @@ def check_forward(
     graph: DependencyGraph,
     operations: Sequence[Operation],
     active: Iterable[
-        tuple[Operation, OperatorSpec, tuple[Requirement | AttributeBinding, ...], bool]
+        tuple[Operation, OperatorSpec, tuple[Requirement | AttributeBinding, ...], OperatorRule]
     ],
     impact: Impact,
     recipes: Mapping[str, TensorRecipe],
-    attributes: Mapping[str, AttributeRecipe],
+    call_edits: Mapping[str, tuple[tuple[str, object], ...]],
     strides: Mapping[str, tuple[int, ...]],
     *,
     meta_outputs: dict[str, tuple[object, object]] | None = None,
@@ -263,10 +381,10 @@ def check_forward(
     Args:
         graph: Dependency graph for the unmodified model.
         operations: Captured calls in execution order.
-        active: Calls to validate, with specs, requirements, and meta permissions.
+        active: Calls to validate, with specs, requirements, and operator rules.
         impact: Joint removal selections and their dependency closure.
         recipes: Planned tensor replacements indexed by tensor reference ID.
-        attributes: Planned module attribute assignments indexed by path.
+        call_edits: Frozen attribute assignments indexed by call, with module-local paths.
         strides: Proven compact strides indexed by tensor reference ID.
         meta_outputs: Optional cache of reusable metadata outputs, updated in place.
 
@@ -279,8 +397,7 @@ def check_forward(
         evaluation execute, using meta tensors and copied module configuration.
     """
     active_by_name = {
-        op.name: (spec, requirements, evaluate_on_meta)
-        for op, spec, requirements, evaluate_on_meta in active
+        op.name: (spec, requirements, rule) for op, spec, requirements, rule in active
     }
     operations_by_name = {op.node.name: op for op in operations}
     positions = None
@@ -348,11 +465,14 @@ def check_forward(
                 else torch.empty_strided(output.shape, output.stride(), dtype=dtype, device="meta")
             )
         elif isinstance(refs, (tuple, list)):
-            if len(refs) != len(output):
-                raise PlanningError("Original forward changes output port count")
+            container = tuple if isinstance(refs, tuple) else list
+            if not isinstance(output, container) or len(refs) != len(output):
+                raise PlanningError(f"Original forward changes output ports{shape_hint}")
             for r, v in zip(refs, output, strict=True):
                 record(r, v, shape_hint)
         elif isinstance(refs, dict):
+            if not isinstance(output, dict) or refs.keys() != output.keys():
+                raise PlanningError(f"Original forward changes output keys{shape_hint}")
             for key, r in refs.items():
                 record(r, output[key], shape_hint)
 
@@ -360,11 +480,11 @@ def check_forward(
         entry = active_by_name.get(op.node.name)
         if entry is None:
             continue
-        spec, requirements, evaluate_on_meta = entry
+        spec, requirements, rule = entry
         requirements = tuple(r for r in requirements if isinstance(r, Requirement))
-        if spec.expression is not None:
+        requires_replay = any(req.check == "replay" for req in requirements)
+        if spec.expression is not None and not requires_replay:
             continue
-        rule = graph.operator_rule(op)
         effects = op.effects
         inplace = effects.writes_inputs is None or bool(effects.writes_inputs)
         if inplace:
@@ -390,15 +510,8 @@ def check_forward(
                         "If no consumer relies on modifying the original tensor, use an "
                         "out-of-place operation and rebuild the dependency graph."
                     )
-        if not evaluate_on_meta:
-            forward_checks = {
-                "shape_arguments",
-                "dimension_transform",
-                "partition_arguments",
-                "slice_arguments",
-                "index_arguments",
-            }
-            if any(req.kind in forward_checks for req in requirements):
+        if not rule.evaluate_on_meta:
+            if requires_replay:
                 raise PlanningError(
                     f"{op.name}: declared original-call checks require evaluate_on_meta=True; "
                     "they cannot be acknowledged by a custom recipe"
@@ -412,133 +525,15 @@ def check_forward(
                     tensor(ref)
                     uncertain.add(ref.id)
             continue
-        normalized_args = reevaluate(op.node.args, op.args, op.expressions, shape)
-        normalized_kwargs = reevaluate(op.node.kwargs, op.kwargs, op.expressions, shape)
-        for req in requirements:
-            data = dict(req.data)
-            if req.kind == "index_arguments":
-                axis = data["axis"]
-                size = axis.tensor.shape[axis.dim]
-                kept = list(retained_indices(impact, axis))
-                for i in data["indices"]:
-                    if not -len(kept) <= i < len(kept):
-                        raise PlanningError(
-                            f"{op.name}: static index {i} is out of bounds for compact width "
-                            f"{len(kept)} and cannot preserve original coordinates"
-                        )
-                    if kept[i] != i % size:
-                        raise PlanningError(
-                            f"{op.name}: static indices change original coordinates. "
-                            f"Index {i} selected position {i % size} before pruning and "
-                            f"would select original position {kept[i]} after pruning."
-                        )
-                if data.get("mask"):
-                    width = shape(axis.tensor)[axis.dim]
-                    if width != size:
-                        raise PlanningError(
-                            f"{op.name}: fixed boolean mask needs width {size} on axis {axis.dim}. "
-                            f"Pruning would change it to {width}."
-                        )
-                    # Meta tensors have no boolean values for nonzero. Use the
-                    # guarded True positions to check the same compact shape.
-                    index = [slice(None)] * len(axis.tensor.shape)
-                    index[axis.dim] = list(data["indices"])
-                    normalized_args = (normalized_args[0], tuple(index))
-            if req.kind == "slice_arguments":
-                if "narrow_dim" in data:
-                    dim = argument(
-                        normalized_args, normalized_kwargs, "dim", 1, target=op.node.target
-                    ) % len(op.inputs[0].shape)
-                    if dim != data["narrow_dim"]:
-                        raise PlanningError("narrow dimension changed")
-                    start = argument(
-                        normalized_args, normalized_kwargs, "start", 2, target=op.node.target
-                    )
-                    length = argument(
-                        normalized_args, normalized_kwargs, "length", 3, target=op.node.target
-                    )
-                    try:
-                        index = narrow_index(shape(op.inputs[0]), dim, start, length)
-                    except ValueError as error:
-                        raise PlanningError(f"{op.node.name}: {error}") from error
-                else:
-                    index = normalized_args[1]
-                _check_slice_coordinates(
-                    op, requirements, impact, tuple(index) if isinstance(index, list) else index
-                )
-            if req.kind == "partition_arguments":
-                axis = data["axis"]
-                # AxisPort identity is unchanged only if the original static split
-                # boundaries still match each retained old partition in order.
-                kept = list(retained_indices(impact, axis))
-                if not data["unbound"]:
-                    if "chunks" in data:
-                        chunks = data["chunks"]
-                        sections = (len(kept) + chunks - 1) // chunks
-                    else:
-                        binding = req.arguments[0]
-                        sections = argument(
-                            normalized_args,
-                            normalized_kwargs,
-                            binding.name,
-                            binding.position,
-                            target=op.node.target,
-                        )
-                    if isinstance(sections, int) and sections <= 0:
-                        raise PlanningError(
-                            f"{op.name}: split size becomes {sections} after pruning; "
-                            f"compact width {len(kept)} requires a positive split size"
-                        )
-                    sizes = (
-                        [min(sections, len(kept) - i) for i in range(0, len(kept), sections)]
-                        if isinstance(sections, int)
-                        else list(sections)
-                    )
-                    expected = [shape(r)[axis.dim] for r in op.outputs]
-                    if sizes != expected or sum(sizes) != len(kept):
-                        raise PlanningError(
-                            f"{op.node.name}: static split needs original-forward editing"
-                        )
+        normalized_args, normalized_kwargs, shape_hint = _replay_arguments(
+            op, requirements, impact, shape, uncertain
+        )
         args, kwargs = tree(normalized_args), tree(normalized_kwargs)
-        shape_hint = ""
-        for req in requirements:
-            data = dict(req.data)
-            if req.kind == "shape_arguments":
-                dimensions = evaluate(data["expression"], shape)
-                while (
-                    isinstance(dimensions, tuple)
-                    and len(dimensions) == 1
-                    and isinstance(dimensions[0], tuple)
-                ):
-                    dimensions = dimensions[0]
-                expected = shape(op.outputs[0])
-                if len(dimensions) != len(expected) or any(
-                    requested != -1 and requested != size
-                    for requested, size in zip(dimensions, expected, strict=False)
-                ):
-                    shape_hint = (
-                        " If a fixed number was intended to follow a tensor dimension, "
-                        "replace it with tensor.size(dim) or a valid -1 inference, then "
-                        "rebuild the dependency graph. Keep algorithmic constants fixed."
-                    )
-                if (
-                    data["requires_view"]
-                    and any(r.id in uncertain for r in op.inputs)
-                    and not view_preserves_stride_boundaries(
-                        shape(op.inputs[0]), shape(op.outputs[0])
-                    )
-                ):
-                    raise PlanningError(
-                        f"{op.node.name}: input stride cannot be proved for view after pruning. "
-                        "If a copy is acceptable, use reshape(...) or contiguous().view(...) "
-                        "in forward and rebuild the dependency graph; shape and index "
-                        "constraints still apply."
-                    )
-                if not data["unpack_shape"]:
-                    args, kwargs = (tensor(op.inputs[0]), dimensions), {}
-                else:
-                    args, kwargs = (tensor(op.inputs[0]), *dimensions), {}
         contract = spec.contract
+        simulate_cast = (
+            contract is not None and contract.output_layout == "cast" and not requires_replay
+        )
+        edits = call_edits.get(op.name, ())
         key = None
         if (
             meta_outputs is not None
@@ -546,31 +541,20 @@ def check_forward(
             and effects.outputs_are_fresh
             and not inplace
         ):
-            try:
-                path = op.module_path
-                edits = tuple(
-                    (attr.path, attr.new)
-                    for attr in attributes.values()
-                    if path is not None
-                    and (
-                        attr.path.rpartition(".")[0] == path
-                        or attr.path.startswith(path + ".")
-                        or path == ""
-                    )
-                )
+            # Opaque arguments keep the original per-call evaluation.
+            with suppress(TypeError):
                 key = (
                     _meta_key(args),
                     _meta_key(kwargs),
                     tuple((name, _meta_key(tensor(ref))) for name, ref in op.bindings.items()),
                     edits,
+                    simulate_cast,
                 )
-            except TypeError:
-                pass  # Opaque arguments keep the original per-call evaluation.
         try:
             cached = meta_outputs.get(op.node.name) if key is not None else None
             if cached is not None and cached[0] == key:
                 output = _restore_meta_output(cached[1])
-            elif contract is not None and contract.output_layout == "cast":
+            elif simulate_cast:
                 output = tensor(op.inputs[0]).to(
                     device="meta",
                     dtype=graph.metadata(op.outputs[0]).dtype,
@@ -579,12 +563,18 @@ def check_forward(
                     or graph.metadata(op.inputs[0]).device != graph.metadata(op.outputs[0]).device,
                 )
             elif op.module is not None:
-                module = _meta_module(op, attributes, tensor)
-                output = module.forward(*args, **kwargs)  # Exact built-in types only; bypass hooks.
+                module = _meta_module(op, edits, tensor, rule=rule)
+                output = module.forward(*args, **kwargs)  # Metadata replay bypasses module hooks.
             elif op.node.op == "call_method":
                 output = getattr(args[0], str(op.node.target))(*args[1:], **kwargs)
             else:
                 output = op.node.target(*args, **kwargs)
+            if spec.expression is not None:
+                dimensions = tuple(output) if isinstance(output, (torch.Size, list)) else output
+                if freeze(dimensions) != freeze(evaluate(spec.expression, shape)):
+                    raise PlanningError(
+                        f"{op.name}: compact scalar result disagrees with its declared expression"
+                    )
             record(op.result, output, shape_hint)
             if key is not None and (cached is None or cached[0] != key):
                 try:
@@ -593,7 +583,7 @@ def check_forward(
                     pass
                 else:
                     meta_outputs[op.node.name] = (key, facts)
-        except (RuntimeError, ValueError, TypeError, IndexError, NotImplementedError) as error:
+        except (RuntimeError, ValueError, TypeError, LookupError, ArithmeticError) as error:
             raise PlanningError(
                 f"{op.node.name}: original forward is not proved executable: {error}{shape_hint}"
             ) from error

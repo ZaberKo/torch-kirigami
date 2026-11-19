@@ -9,16 +9,18 @@ from torch import nn
 from torch.nn import functional as F
 
 from tests.support.models import CachedWeight, chain
-from tests.support.pruning import build
+from tests.support.pruning import KeyStrategy, build
 from torch_kirigami import (
     DependencyGraph,
     StaleGraphError,
+    config,
 )
 from torch_kirigami.pruning import (
     ChannelRatio,
     ExecutionError,
     Greedy,
     Magnitude,
+    ParameterBudget,
     PlanningError,
     Pruner,
 )
@@ -157,7 +159,7 @@ def test_cached_reference_commit_failure_rolls_back(monkeypatch):
 
 
 def test_final_accepted_compilation_is_revalidated(monkeypatch):
-    from torch_kirigami.pruning import planner
+    from torch_kirigami.pruning import planner, pruner
 
     model = nn.Sequential(nn.Linear(4, 4), nn.ReLU(), nn.Linear(4, 2))
     graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
@@ -170,6 +172,7 @@ def test_final_accepted_compilation_is_revalidated(monkeypatch):
         return original(graph, operations, impact, **kwargs)
 
     monkeypatch.setattr(planner, "compile_recipes", counted)
+    monkeypatch.setattr(pruner, "compile_recipes", counted)
     plan = Pruner(model, graph=graph).plan(
         Pruner(model, graph=graph).discover_candidates(),
         budget=ChannelRatio(0.25),
@@ -179,3 +182,35 @@ def test_final_accepted_compilation_is_revalidated(monkeypatch):
     # under the original caller premises after the strategy callback returns.
     assert plan.recipes and max(counts.values()) == 2
     assert counts[()] == 1
+
+
+@pytest.mark.parametrize("recipe_cache_size", [0, 4])
+def test_parameter_budget_measures_one_independently_compiled_plan(
+    monkeypatch, recipe_cache_size, execution_device
+):
+    """Final compilation, budget checks and the report use the same verified recipes."""
+    from torch_kirigami.pruning import planner, pruner
+
+    config.recipe_cache_size = recipe_cache_size
+    model = nn.Sequential(nn.Linear(3, 4), nn.Linear(4, 2))
+    x = torch.randn(2, 3)
+    graph = DependencyGraph.build(model, args=(x,))
+    entry = Pruner(model, graph=graph)
+    space = entry.discover_candidates()
+    budget = ParameterBudget(sum(p.numel() for p in model.parameters()) - 6)
+    compile_recipes = pruner.compile_recipes
+    requests = []
+
+    def count(*args, **kwargs):
+        requests.append(args[2].requested)
+        return compile_recipes(*args, **kwargs)
+
+    monkeypatch.setattr(planner, "compile_recipes", count)
+    monkeypatch.setattr(pruner, "compile_recipes", count)
+    chosen = space.candidates[0]
+    plan = entry.plan(space, budget=budget, strategy=KeyStrategy(lambda _: (chosen.key,)))
+    assert requests == [chosen.remove]
+    expected = F.linear(model[0](x)[:, 1:], model[1].weight[:, 1:], model[1].bias)
+    entry.apply(plan)
+    assert plan.selection_report.after_params == sum(p.numel() for p in model.parameters())
+    torch.testing.assert_close(model(x), expected)

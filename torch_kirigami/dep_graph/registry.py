@@ -62,7 +62,8 @@ class OperatorRegistry:
             A new registry that the caller can extend.
         """
         registry = cls()
-        for target, rule, opaque in default_rules():
+        for target, (rule_type, fresh, opaque) in default_rules().items():
+            rule = rule_type(fresh=fresh)
             if isinstance(target, str):
                 registry.register_method(target, rule)
             else:

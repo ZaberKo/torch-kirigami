@@ -27,8 +27,7 @@ from .contracts import (
 )
 from .graph_state import DependencyGraphState
 from .operation import PartitionedLayout
-from .operators.defaults import default_rules
-from .operators.rules import is_native_rule
+from .operators.defaults import is_native_rule
 from .operators.shapes import CallArgumentConstraint
 from .relations import (
     AxisPort,
@@ -115,17 +114,12 @@ def has_native_query_semantics(
         return False
     if not _has_standard_module_access(state.model):
         return False
-    defaults = {target: type(rule) for target, rule, _ in default_rules()}
     for operation in state.operations.values():
         if not _has_native_arguments((operation.args, operation.kwargs)):
             return False
         rule = state.registry.lookup(operation.node, operation.module)
-        if rule is not None:
-            target = (
-                type(operation.module) if operation.module is not None else operation.node.target
-            )
-            if type(rule) is not defaults.get(target) or not is_native_rule(rule):
-                return False
+        if rule is not None and not is_native_rule(operation.node, operation.module, rule):
+            return False
     return True
 
 

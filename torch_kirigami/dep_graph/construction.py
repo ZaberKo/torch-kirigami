@@ -379,7 +379,7 @@ class _Analyzer:
                         a
                         for r in result.requirements
                         if isinstance(r, Requirement)
-                        for a in r.arguments
+                        for a in r.checked_arguments
                     ),
                 )
             )

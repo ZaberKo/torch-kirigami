@@ -6,7 +6,6 @@ Each dependency group contains parameters linked to one candidate's removal.
 
 Group Lasso source: *Learning Structured Sparsity in Deep Neural Networks*
 (NeurIPS 2016).
-https://proceedings.neurips.cc/paper/2016/hash/41bfd20a38bb1b0bec75acf0845530a7-Abstract.html
 
 The paper adds group L2 norms to task loss.
 For convolutional channels, it regularizes input-channel slices across filters
@@ -18,7 +17,6 @@ choices from the paper.
 
 Growing regularization source: *Neural Pruning via Growing Regularization*
 (ICLR 2021).
-https://arxiv.org/abs/2012.09243
 
 GReg-1 starts from a pretrained network and selects filters by L1 norm.
 It raises per-filter L2 penalties at intervals until a ceiling.
@@ -49,13 +47,14 @@ The workflow saves the compact checkpoint and checks its restored outputs.
 import argparse
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -254,9 +253,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     model.train(options.sparse_epochs > 0 or options.finetune_epochs > 0)
@@ -274,12 +271,35 @@ def main() -> None:
     # Penalize equivalent dependency groups once, even with multiple entry points.
     # Lasso penalizes every candidate group. The squared variant refreshes only
     # the currently selected groups at step intervals and increases their penalty.
-    regularizer = (
-        GroupLasso(unique_groups(pruner.parameter_groups(space.candidates)))
-        if options.penalty == "lasso" and options.sparse_epochs
-        else None
-    )
     total_steps = options.sparse_epochs * len(train_loader) if options.sparse_epochs else 0
+    if options.penalty == "lasso":
+        lasso = (
+            GroupLasso(unique_groups(pruner.parameter_groups(space.candidates)))
+            if total_steps
+            else None
+        )
+
+        def penalty_at(_step: int) -> tuple[Callable[[], torch.Tensor] | None, float]:
+            return lasso, options.sparse_loss_weight
+
+    else:
+        squared: Callable[[], torch.Tensor] | None = None
+
+        def penalty_at(step: int) -> tuple[Callable[[], torch.Tensor] | None, float]:
+            nonlocal squared
+            if step % options.selection_interval_steps == 0:
+                tentative_plan = make_plan(pruner, space, budget)
+                selected = set(tentative_plan.selected)
+                groups = pruner.parameter_groups(
+                    candidate for candidate in space.candidates if candidate.key in selected
+                )
+                squared = GroupSquaredL2(unique_groups(groups)) if groups else None
+            # The last update reaches full strength, including a one-batch run.
+            fraction = (step + 1) / total_steps
+            if options.sparsity_schedule == "cosine":
+                fraction = 0.5 * (1 - math.cos(math.pi * fraction))
+            return squared, options.sparse_loss_weight * fraction
+
     completed_steps = 0
     for epoch in range(options.sparse_epochs):
         task_total, sparse_total, weighted_sparse_total, count = 0.0, 0.0, 0.0, 0
@@ -290,21 +310,7 @@ def main() -> None:
             dynamic_ncols=True,
         ) as progress:
             for images, labels in progress:
-                sparse_loss_weight = options.sparse_loss_weight
-                if options.penalty == "squared":
-                    if completed_steps % options.selection_interval_steps == 0:
-                        tentative_plan = make_plan(pruner, space, budget)
-                        selected = set(tentative_plan.selected)
-                        groups = pruner.parameter_groups(
-                            candidate for candidate in space.candidates if candidate.key in selected
-                        )
-                        regularizer = GroupSquaredL2(unique_groups(groups)) if groups else None
-                    # One-based progress reaches the target on the last update,
-                    # including a one-batch run. Epochs and reselection do not reset it.
-                    fraction = (completed_steps + 1) / total_steps
-                    if options.sparsity_schedule == "cosine":
-                        fraction = 0.5 * (1 - math.cos(math.pi * fraction))
-                    sparse_loss_weight *= fraction
+                regularizer, sparse_loss_weight = penalty_at(completed_steps)
                 images = images.to(options.device, non_blocking=True)
                 labels = labels.to(options.device, non_blocking=True)
                 optimizer.zero_grad(set_to_none=True)

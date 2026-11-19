@@ -976,6 +976,28 @@ def region_boxes(regions: Iterable[Region]) -> tuple[IntervalBox, ...]:
     return tuple(tuple(axis.intervals for axis in region.axes) for region in regions)
 
 
+def slice_intervals(
+    axis: AxisRef, selections: tuple[Selection, ...]
+) -> tuple[tuple[int, int], ...] | None:
+    """Read a union of complete axis slices, without constructing a new selection."""
+    if any(selection.tensor != axis.tensor for selection in selections):
+        return None
+    boxes = tuple(box for selection in selections for box in region_boxes(selection.regions))
+    if len(boxes) > 1:
+        boxes = canonical_boxes(boxes)
+    if len(boxes) != 1:
+        return None
+    box = boxes[0]
+    return (
+        box[axis.dim]
+        if all(
+            dim == axis.dim or intervals == ((0, size),)
+            for dim, (intervals, size) in enumerate(zip(box, axis.tensor.shape, strict=True))
+        )
+        else None
+    )
+
+
 _FULL_TAIL: tuple[IntervalBox, ...] = ((),)
 
 

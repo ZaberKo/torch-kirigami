@@ -75,15 +75,18 @@ not make the objects inside them immutable.
 | `Pruner` in `pruner.py` | The entry point. Discovers and filters candidates, extracts parameter groups, plans, and applies. |
 | `candidates.py`, `candidate_checks.py` | Candidate spaces and the shared proofs that exclude irreversible requests. |
 | `PlanningContext` in `planner.py` | The read-only services a strategy uses: impacts, scoring, budget measurement, and recipe compilation. |
-| `metrics.py`, `strategies.py`, `ranking.py` | Built-in scores and selection, and exact reuse of `Magnitude` and `GroupMagnitude` scores. |
+| `metrics.py` | Built-in score formulas and batched reductions of parameter regions. |
+| `score_reuse.py` | Exact reuse of `Magnitude` and `GroupMagnitude` scores for proved axis components. |
+| `strategies.py` | Candidate ranking, joint selection, and constraint and budget checks. |
 | `budget.py`, `granularity.py` | Final-size targets and their measurement, and alignment constraints. |
 | `rewrite.py`, `recipes.py`, `validation.py`, `layouts.py` | Recipe compilation, coordinate and layout checks, and original-call validation. |
 | `state.py`, `plan.py`, `serialization.py` | Structural preconditions, atomic binding updates, portable plans, and closed codecs. |
 | `checkpoint.py` | Compact model checkpoints. |
 
-`Pruner.plan()` checks a strategy's final selection independently of the
-strategy. `Pruner.apply()` prepares every replacement tensor before it rebinds any
-of them. Only `apply()` and `load_checkpoint()` change model structure.
+`Pruner.plan()` checks a strategy's final selection independently. The verified
+recipes also supply the final budget report. `Pruner.apply()` prepares every
+replacement tensor before it rebinds any of them. Only `apply()` and
+`load_checkpoint()` change model structure.
 
 ### Structural reuse
 
@@ -114,8 +117,11 @@ reuse rests on an exact proof, never on an approximation:
   The final order is still `(score, key)`, and `DynamicGreedy` still rescores after
   each accepted addition. `IndependentRanking` reuses single-position statistics
   only when `CandidateFilter` proves that the joint closure is complete, and
-  computes conditional statistics only for the positions it proves. Scoring
-  does not build the additional parameter positions as a `Selection`. It
+  computes conditional statistics only for the positions it proves. Ordinary
+  scoring and score reuse pass parameter boxes to the same magnitude reduction.
+  Each metric defines which position norms it needs and how to turn them into
+  scores. Scalar results are transferred in batches per device. Scoring does not build the
+  additional parameter positions as a `Selection`. It
   decomposes them into canonical boxes (`canonical_boxes`), which depend only on
   the selected coordinates. Scoring a complete closure needs no second
   bounded selection. Nonfinite weights or missing statistics still produce

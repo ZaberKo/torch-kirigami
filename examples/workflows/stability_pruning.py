@@ -1,8 +1,7 @@
 """Train selected channel groups until repeated pruning selections stabilize.
 
-This workflow adapts the selection-stability signal from WACV 2026.
-Paper: *One-Cycle Structured Pruning via Stability-Driven Subnetwork Search*.
-https://openaccess.thecvf.com/content/WACV2026/html/Ghimire_One-Cycle_Structured_Pruning_via_Stability-Driven_Subnetwork_Search_WACV_2026_paper.html
+This workflow adapts the stability signal from *One-Cycle Structured Pruning
+via Stability-Driven Subnetwork Search* (WACV 2026).
 
 The paper ranks dependency groups by normalized group L2 saliency.
 It checks subnetworks each epoch and averages Jaccard similarities over a window.
@@ -45,7 +44,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -346,9 +345,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     suffix = "conv1.weight" if options.model.startswith("resnet") else "mlp.0.weight"

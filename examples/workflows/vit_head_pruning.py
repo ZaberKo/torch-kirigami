@@ -36,7 +36,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, HeadPrunableViT, make_head_prunable_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
@@ -223,9 +223,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     print("Capturing FX graph and constructing whole-head/FFN candidates", flush=True)

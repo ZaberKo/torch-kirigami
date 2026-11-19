@@ -22,6 +22,12 @@ from .errors import CaptureError
 _MODULE_FIELDS = frozenset(vars(nn.Module())) | {STRUCTURE_ATTRIBUTE}
 
 
+def attribute_owner(model: nn.Module, path: str) -> tuple[nn.Module, str]:
+    """Resolve a qualified attribute path to its owning module and local name."""
+    parent, _, name = path.rpartition(".")
+    return model.get_submodule(parent) if parent else model, name
+
+
 def storage_key(tensor: torch.Tensor) -> tuple[str, int] | None:
     """Identify the storage of a nonempty dense tensor for conservative alias checks.
 
@@ -81,18 +87,28 @@ def ordinary_attributes(
     return ((k, v) for k, v in values.items() if k not in _MODULE_FIELDS)
 
 
-def copy_module_state(original: nn.Module, shell: nn.Module, memo: dict[int, object]) -> None:
-    """Deep-copy instance dictionary and slot state into a preallocated module shell.
+def copy_module_tree(model: nn.Module, replacements: Mapping[int, object]) -> nn.Module:
+    """Copy module state without invoking a module's copy hooks.
 
     Args:
-        original: Module whose state is copied.
-        shell: Uninitialized module object that receives the copy.
-        memo: `copy.deepcopy` memo shared across the whole model copy.
+        model: Root of the module tree to copy.
+        replacements: Objects to use in place of the original tensor bindings,
+            keyed by object identity. Registered and ordinary references use
+            the same replacements.
+
+    Returns:
+        A separate module tree with the original module and tensor aliases.
     """
-    object.__setattr__(shell, "__dict__", copy.deepcopy(vars(original), memo))
-    for name, value in object_attributes(original).items():
-        if name not in vars(original):
-            object.__setattr__(shell, name, copy.deepcopy(value, memo))
+    modules = tuple(model.modules())
+    shells = {id(module): object.__new__(type(module)) for module in modules}
+    memo = {**replacements, **shells}
+    for module in modules:
+        shell, fields = shells[id(module)], vars(module)
+        object.__setattr__(shell, "__dict__", copy.deepcopy(fields, memo))
+        for name, value in object_attributes(module).items():
+            if name not in fields:
+                object.__setattr__(shell, name, copy.deepcopy(value, memo))
+    return shells[id(model)]
 
 
 def _reference_nodes(

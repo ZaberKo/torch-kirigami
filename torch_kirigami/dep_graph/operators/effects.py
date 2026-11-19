@@ -137,6 +137,18 @@ def to_copy(args: tuple[object, ...], kwargs: dict[str, object]) -> object:
     return argument(args, kwargs, "copy", position, False)
 
 
+def normalization_tensor_arguments(target: object) -> tuple[ArgumentRef, ...]:
+    """Order affine parameters and running statistics by native signature."""
+    affine = ("weight", "bias")
+    statistics = ("running_mean", "running_var")
+    names = (
+        (*affine, *statistics)
+        if target in (torch.batch_norm, torch.instance_norm)
+        else (*statistics, *affine)
+    )
+    return tuple(ArgumentRef(name, position) for position, name in enumerate(names, 1))
+
+
 def normalization_effects(
     node: fx.Node, module: nn.Module | None, *, instance: bool
 ) -> TensorEffects:
@@ -162,11 +174,11 @@ def normalization_effects(
     updates = argument(node.args, node.kwargs, flag, 5, instance, target=node.target)
     if updates is False:
         return TensorEffects(writes_inputs=(), outputs_are_fresh=True)
-    native = node.target in (torch.batch_norm, torch.instance_norm)
     statistics = tuple(
-        ArgumentRef(name, position)
-        for name, position in zip(names, (3, 4) if native else (1, 2), strict=True)
-        if argument(node.args, node.kwargs, name, position, target=node.target) is not None
+        ref
+        for ref in normalization_tensor_arguments(node.target)
+        if ref.name in names
+        and argument(node.args, node.kwargs, ref.name, ref.position, target=node.target) is not None
     )
     return TensorEffects(
         writes_inputs=statistics,

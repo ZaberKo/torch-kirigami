@@ -1,9 +1,8 @@
 """Learn channel gates and use their scales to select pruning candidates.
 
-This baseline adopts gates and L1 training from Gate Decorator.
-Paper: *Gate Decorator: Global Filter Pruning Method for Accelerating Deep
-Convolutional Neural Networks* (You et al., NeurIPS 2019).
-https://papers.neurips.cc/paper/8486-gate-decorator-global-filter-pruning-method-for-accelerating-deep-convolutional-neural-networks.pdf
+This baseline adopts gates and L1 training from *Gate Decorator: Global Filter
+Pruning Method for Accelerating Deep Convolutional Neural Networks*
+(NeurIPS 2019).
 
 The paper estimates gate-removal loss changes with the first-order Taylor score
 `|gate * d(loss)/d(gate)|`. It uses iterative Tick-Tock pruning.
@@ -42,7 +41,7 @@ from typing import Any, cast
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, TraceableViT, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -245,9 +244,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     model.train(options.sparse_epochs > 0 or options.finetune_epochs > 0)

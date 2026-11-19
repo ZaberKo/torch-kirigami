@@ -7,7 +7,7 @@ parameter values on every call and never cache values or autograd graphs.
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -53,16 +53,19 @@ def group_bindings(
         if refs is not None
         else tuple(dict.fromkeys(s.tensor for g in groups for s in g.selections))
     )
-    parameters = [bindings[ref] for ref in refs]
+    return bindings, parameter_dtype([bindings[ref] for ref in refs])
+
+
+def parameter_dtype(parameters: Sequence[torch.Tensor]) -> torch.dtype:
+    """Validate sparse-operation bindings and choose float32 or float64 accumulation."""
     if len({p.device for p in parameters}) != 1:
         raise ValueError("Sparse operations require groups on one device")
     if any(not p.is_floating_point() or p.layout != torch.strided for p in parameters):
         raise ValueError("Sparse operations require dense real floating parameters")
-    dtype = torch.float64 if any(p.dtype == torch.float64 for p in parameters) else torch.float32
-    return bindings, dtype
+    return torch.float64 if any(p.dtype == torch.float64 for p in parameters) else torch.float32
 
 
-def _gather_group(
+def gather_group(
     selections: tuple[Selection, ...],
     bindings: Mapping[TensorRef, torch.Tensor],
     dtype: torch.dtype,
@@ -97,7 +100,7 @@ def group_values(
     Raises:
         ValueError: A selected value is nonfinite.
     """
-    result = tuple(_gather_group(group, bindings, dtype) for group in groups)
+    result = tuple(gather_group(group, bindings, dtype) for group in groups)
     if not torch.stack([torch.isfinite(v).all() for v in result]).all():
         raise ValueError("Sparse operations require finite selected values")
     return result
@@ -355,7 +358,7 @@ def reduction_plan(
         bindings: Live tensors returned by `group_bindings` for these groups.
 
     Returns:
-        A plan for `group_penalty` with the same groups.
+        A plan for evaluating the same groups in `batched_slices`.
     """
     batches: dict[tuple[TensorRef, int], list[tuple[int, int]]] = {}
     fallback: list[int] = []
@@ -393,87 +396,33 @@ def reduction_plan(
     return ReductionPlan(tuple(prepared), tuple(fallback), owner, refs)
 
 
-def _row_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor:
+def slice_norm(values: torch.Tensor, dimensions: tuple[int, ...]) -> torch.Tensor:
     """Return stable L2 norms over `dimensions`, or absolute values when there are none."""
     if not dimensions:
         return values.abs()
     return _StableNorm.apply(values, dimensions, 1.0)
 
 
-def group_penalty(
-    groups: tuple[ParameterGroup, ...], kind: str, plan: ReductionPlan
-) -> torch.Tensor:
-    """Return the unweighted sum of one penalty over all groups.
-
-    Args:
-        groups: Groups used to build `plan`.
-        kind: `"l1"` for L1 norms, `"l2"` for L2 norms, or `"squared_l2"` for
-            half squared L2 norms.
-        plan: Result of `reduction_plan(groups)`.
-
-    Returns:
-        A scalar in the dtype chosen by `group_bindings`.
-
-    Raises:
-        ValueError: The groups violate the `group_bindings` requirements, or a
-            selected value or penalty is nonfinite.
-    """
-    bindings, dtype = group_bindings(groups, refs=plan.refs)
-    contributions: list[torch.Tensor] = []
-    tiny_squares = []
+def batched_slices(
+    plan: ReductionPlan, bindings: Mapping[TensorRef, torch.Tensor], dtype: torch.dtype
+) -> Iterator[tuple[torch.Tensor, tuple[int, ...], torch.Tensor]]:
+    """Yield each selected tensor, reduction dimensions, and contribution indices."""
     for ref, axis, selected_positions, contribution_indices in plan.batches:
         tensor = bindings[ref].to(dtype)
         if selected_positions is not None:
             tensor = tensor.index_select(axis, selected_positions)
-        dims = tuple(d for d in range(tensor.ndim) if d != axis)
-        if kind == "l2":
-            reduced = _row_norm(tensor, dims)
-        else:
-            if kind == "squared_l2":
-                magnitude = tensor.detach().abs()
-                tiny_squares.append(
-                    ((magnitude != 0) & (magnitude < torch.finfo(dtype).tiny ** 0.5)).any()
-                )
-            values = tensor.abs() if kind == "l1" else half_squared(tensor)
-            reduced = values.sum(dim=dims) if dims else values
-        contributions.append(reduced.index_select(0, contribution_indices))
-    for number in plan.fallback:
-        values = _gather_group(groups[number].selections, bindings, dtype)
-        if kind == "squared_l2":
-            magnitude = values.detach().abs()
-            tiny_squares.append(
-                ((magnitude != 0) & (magnitude < torch.finfo(dtype).tiny ** 0.5)).any()
-            )
-        if kind == "l2":
-            value = stable_norm(values)
-        elif kind == "l1":
-            value = values.abs().sum()
-        else:
-            value = squared_norm(values)
-        contributions.append(value.reshape(1))
-    values = torch.cat(contributions)
-    if not torch.isfinite(values).all():
-        raise ValueError("Sparse operations require finite selected values and penalties")
-    if tiny_squares and torch.stack(tiny_squares).any():
-        # A sum can be representable although every individual square rounds
-        # to zero. Reduce each original group magnitude before squaring it.
-        gathered = torch.cat([_gather_group(group.selections, bindings, dtype) for group in groups])
-        return squared_norm(gathered)
-    if kind != "l2":
-        return values.sum()
+        yield tensor, tuple(d for d in range(tensor.ndim) if d != axis), contribution_indices
 
-    owner = plan.owners
-    zero = values.new_zeros(len(groups))
+
+def segment_norms(values: torch.Tensor, owner: torch.Tensor, count: int) -> torch.Tensor:
+    """Reduce row norms by group, without losing subnormal relative magnitudes."""
+    return _SegmentNorm.apply(values, owner, count)
+
+
+def needs_direct_norm(values: torch.Tensor, owner: torch.Tensor, count: int) -> bool:
+    """Detect when combining rounded row norms would lose the original magnitudes."""
+    zero = values.new_zeros(count)
     maxima = zero.scatter_reduce(0, owner, values.detach(), reduce="amax")
     divisor = torch.where(maxima > 0, maxima, torch.ones_like(maxima))
-    unstable = ((values != 0) & (values.abs() < torch.finfo(dtype).tiny)) | (
-        (values != 0) & (values / divisor[owner] < torch.finfo(dtype).tiny)
-    )
-    if unstable.any():
-        # Rounded subnormal row norms lose the relative magnitudes of rows.
-        # Recompute directly from original values, and
-        # differentiate the direction rather than multiply/divide tiny scales.
-        return torch.stack(
-            [stable_norm(_gather_group(group.selections, bindings, dtype)) for group in groups]
-        ).sum()
-    return _SegmentNorm.apply(values, owner, len(groups)).sum()
+    tiny = torch.finfo(values.dtype).tiny
+    return bool((((values < tiny) | (values / divisor[owner] < tiny)) & (values != 0)).any())

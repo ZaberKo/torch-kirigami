@@ -294,8 +294,9 @@ exception fails the build, so programming errors are not hidden behind a barrier
 Two constructor flags control the execution checks:
 
 - `evaluate_on_meta=True` lets the planner run the compact call on metadata
-  tensors to check its output. Declared reshape, slice, index, and partition
-  requirements need it. Otherwise the planner relies on declared output facts.
+  tensors to check tensor shapes and output ports. Declared reshape, slice,
+  index, partition, and `call_arguments` checks require this flag. When a rule
+  also declares a shape expression, the replayed result must agree with it.
 - `cache_meta_output=True` lets the planner reuse that result. Set it only when
   the result depends on argument metadata and module configuration alone. Reuse
   also requires fresh outputs and no input writes.
@@ -307,10 +308,13 @@ Both default to `False`. A rule with its own constructor must call
 
 For an affine module, relate input features to weight columns, and output
 features to weight rows and bias entries. If the module stores a width in an
-attribute, add an `AttributeBinding` with a `ShapeExpr`. Use scoped ports and a
-`PartitionedLayout` for packed or grouped storage. Give a logical channel domain a
-stable candidate key. If a physical candidate axis is packed and cannot show the
-retained logical width, supply an alignment axis that relations couple to it.
+attribute, add an `AttributeBinding` with a `ShapeExpr`. A binding can use any
+registered path to its owning module. Shared owners receive a single edit, and
+each declaration must agree on the exact new value and type. Use scoped ports
+and a `PartitionedLayout` for packed or grouped storage. Give a logical channel
+domain a stable candidate key. If a physical candidate axis is packed and cannot
+show the retained logical width, supply an alignment axis that relations couple
+to it.
 
 Override `build_recipe()` only when the shared descriptors cannot express an edit.
 Ordinary cuts and declared attributes or layouts need no recipe. The planner

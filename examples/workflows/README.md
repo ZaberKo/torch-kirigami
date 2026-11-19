@@ -169,12 +169,14 @@ For a small execution check, set explicit sample limits and suitable batch sizes
 Also reduce each method's calibration limit when needed.
 Small checks establish execution behavior, not ImageNet accuracy.
 
-### Magnitude, Taylor, and FPGM
+### Magnitude, Taylor, FPGM, and Pruner-Zero
 
 #### Research basis
 
-[Filter Pruning via Geometric Median for Deep Convolutional Neural Networks Acceleration](https://openaccess.thecvf.com/content_CVPR_2019/html/He_Filter_Pruning_via_Geometric_Median_for_Deep_Convolutional_Neural_Networks_Acceleration_CVPR_2019_paper.html) introduced FPGM at CVPR 2019.
-Magnitude and Taylor scoring are generic baselines. This entry does not reproduce one paper.
+- `geometric_median` adapts *Filter Pruning via Geometric Median for Deep Convolutional Neural Networks Acceleration* (CVPR 2019).
+- `pruner_zero` applies the expression from *Pruner-Zero: Evolving Symbolic Pruning Metric From Scratch for Large Language Models* (ICML 2024).
+
+Magnitude and Taylor scoring are generic baselines.
 
 #### Implemented
 
@@ -207,10 +209,18 @@ score(i) = sum_j ||w_i - w_j||_2
 This criterion has quadratic work in output width.
 The example extends it to ViT FFN rows and uses global parameter budgeting with one-shot deletion.
 
+Pruner-Zero accumulates squared gradients of batch-mean cross-entropy in evaluation mode.
+It min-max scales the accumulated statistics over each entire weight tensor and multiplies them by the squared weights.
+Each candidate sums the scores of the newly removed matrix and kernel entries across its dependency closure.
+A constant gradient statistic gives zero importance. Biases and normalization vectors still follow the plan.
+The calibration limit and batch size use `--calibration_batches` and `--train_batch_size`.
+Batch size can change the scores because each gradient is reduced before squaring.
+Dynamic selection reuses these fixed per-weight scores and skips entries already removed by the plan.
+
 #### Differences and omissions
 
-This example omits FPGM's per-epoch filter zeroing and regrowth.
-The CLI rejects dynamic selection for this initial snapshot.
+The FPGM option omits per-epoch filter zeroing and regrowth and uses static selection.
+Pruner-Zero here uses ImageNet batch gradients and physical channel deletion. The original LLM pipeline calibrates on sequences and masks individual weights in unstructured or N:M patterns. This entry applies the discovered expression and omits its genetic search.
 
 #### Run
 
@@ -219,13 +229,18 @@ python prune_finetune.py \
   --model resnet18 --device cuda --compile_latency \
   --pruning_ratio 0.05 --granularity 8 --metric magnitude \
   --finetune_epochs 0 --output runs/resnet18_prune_only
+
+python prune_finetune.py \
+  --model resnet18 --device cuda --compile_latency \
+  --pruning_ratio 0.05 --metric pruner_zero --calibration_batches 16 \
+  --finetune_epochs 0 --output runs/resnet18_pruner_zero
 ```
 
 ### Iterative pruning
 
 #### Research basis
 
-[DepGraph: Towards Any Structural Pruning](https://openaccess.thecvf.com/content/CVPR2023/html/Fang_DepGraph_Towards_Any_Structural_Pruning_CVPR_2023_paper.html) provides CVPR 2023 background on coupled-coordinate deletion. This generic iterative baseline does not reproduce one paper.
+*DepGraph: Towards Any Structural Pruning* (CVPR 2023) provides background on coupled-coordinate deletion.
 
 #### Implemented
 
@@ -256,7 +271,7 @@ python iterative_pruning.py \
 
 #### Research basis
 
-[Learning Efficient Convolutional Networks through Network Slimming](https://openaccess.thecvf.com/content_ICCV_2017/papers/Liu_Learning_Efficient_Convolutional_ICCV_2017_paper.pdf) introduced BN-scale sparsity at ICCV 2017.
+*Learning Efficient Convolutional Networks through Network Slimming* (ICCV 2017) introduced BN-scale sparsity.
 
 #### Implemented
 
@@ -291,8 +306,8 @@ python bn_guided_pruning.py \
 
 #### Research basis
 
-[Learning Structured Sparsity in Deep Neural Networks](https://proceedings.neurips.cc/paper/2016/hash/41bfd20a38bb1b0bec75acf0845530a7-Abstract.html) studies structured group penalties (NeurIPS 2016).
-[Neural Pruning via Growing Regularization](https://arxiv.org/abs/2012.09243) introduces GReg-1 and GReg-2 (ICLR 2021).
+*Learning Structured Sparsity in Deep Neural Networks* (NeurIPS 2016) studies structured group penalties.
+*Neural Pruning via Growing Regularization* (ICLR 2021) introduces GReg-1 and GReg-2.
 
 #### Implemented
 
@@ -337,8 +352,8 @@ python group_sparsity.py \
 
 #### Research basis
 
-[Soft Filter Pruning for Accelerating Deep Convolutional Neural Networks](https://www.ijcai.org/proceedings/2018/309) introduced SFP at IJCAI 2018.
-[Decay Pruning Method: Smooth Pruning With a Self-Rectifying Procedure](https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html) presented norm decay at ICCV Workshops 2025.
+*Soft Filter Pruning for Accelerating Deep Convolutional Neural Networks* (IJCAI 2018) introduced SFP.
+*Decay Pruning Method: Smooth Pruning With a Self-Rectifying Procedure* (ICCV Workshops 2025) presented norm decay.
 
 #### Implemented
 
@@ -376,7 +391,7 @@ python soft_pruning.py \
 
 #### Research basis
 
-[Gate Decorator: Global Filter Pruning Method for Accelerating Deep Convolutional Neural Networks](https://proceedings.neurips.cc/paper_files/paper/2019/file/b51a15f382ac914391a58850ab343b00-Paper.pdf) introduced trainable gates and L1 training at NeurIPS 2019.
+*Gate Decorator: Global Filter Pruning Method for Accelerating Deep Convolutional Neural Networks* (NeurIPS 2019) introduced trainable gates and L1 training.
 
 #### Implemented
 
@@ -408,7 +423,7 @@ python gate_pruning.py \
 
 ### Comb, Prune, Distill
 
-[Comb, Prune, Distill](https://arxiv.org/abs/2408.03046) (ITSC 2024) interleaves training, importance scoring, and group removal. The [public implementation](https://github.com/InSAI-Lab/CPD) supplies a semantic segmentation workflow.
+*Comb, Prune, Distill: Towards Unified Pruning for Vision Model Compression* (ITSC 2024) interleaves training, importance scoring, and group removal. The public implementation supplies a semantic segmentation workflow. [CPD code](https://github.com/InSAI-Lab/CPD)
 
 This classification adaptation uses a frozen copy of the original model as the teacher. After each backward pass, it sums the signed weight-gradient products within each output channel, squares the sum, and divides it by the output activation count. It accumulates these scores over a fixed number of training batches. It applies the source code's normalization across group members and ranks each group by the sum of its selected channels' scores.
 
@@ -427,7 +442,7 @@ python cpd_pruning.py \
 
 #### Research basis
 
-[One-Cycle Structured Pruning via Stability-Driven Subnetwork Search](https://openaccess.thecvf.com/content/WACV2026/html/Ghimire_One-Cycle_Structured_Pruning_via_Stability-Driven_Subnetwork_Search_WACV_2026_paper.html) studies stability-driven search (WACV 2026).
+*One-Cycle Structured Pruning via Stability-Driven Subnetwork Search* (WACV 2026) studies stability-driven search.
 
 #### Implemented
 
@@ -465,7 +480,7 @@ python stability_pruning.py \
 
 #### Research basis
 
-[Variance-Based Pruning for Accelerating and Compressing Trained Networks](https://openaccess.thecvf.com/content/ICCV2025/html/Berisha_Variance-Based_Pruning_for_Accelerating_and_Compressing_Trained_Networks_ICCV_2025_paper.html) introduced VBP at ICCV 2025.
+*Variance-Based Pruning for Accelerating and Compressing Trained Networks* (ICCV 2025) introduced VBP.
 
 #### Implemented
 
@@ -511,7 +526,7 @@ python variance_pruning.py \
 
 #### Research basis
 
-[Isomorphic Pruning for Vision Models](https://arxiv.org/abs/2407.04616) compares structurally similar dependency groups with Taylor scores (ECCV 2024).
+*Isomorphic Pruning for Vision Models* (ECCV 2024) compares structurally similar dependency groups with Taylor scores.
 
 #### Implemented
 
@@ -561,7 +576,7 @@ python isomorphic_pruning.py \
 
 #### Research basis
 
-[OSSCAR: One-Shot Structured Pruning in Vision and Language Models with Combinatorial Optimization](https://proceedings.mlr.press/v235/meng24a.html) combines reconstruction with grouped deletion and local search (ICML 2024).
+*OSSCAR: One-Shot Structured Pruning in Vision and Language Models with Combinatorial Optimization* (ICML 2024) combines reconstruction with grouped deletion and local search.
 
 #### Implemented
 

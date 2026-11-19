@@ -10,11 +10,23 @@ They do not estimate accuracy or guarantee faster inference after pruning.
 The adapter restores module modes. Other forward side effects persist.
 """
 
+import json
 from argparse import Namespace
+from collections.abc import Mapping, Sequence
+from pathlib import Path
 
 import torch
 from torch import nn
 from torch_prisma import calculate_model_complexity, measure_module_latency
+
+
+def write_metrics(
+    output: Path, configuration: Mapping[str, object], stages: Sequence[Mapping[str, object]]
+) -> None:
+    """Write the run configuration and stage measurements to `metrics.json`."""
+    (output / "metrics.json").write_text(
+        json.dumps({"config": configuration, "stages": stages}, indent=2) + "\n"
+    )
 
 
 def measure_model(

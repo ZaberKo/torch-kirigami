@@ -13,7 +13,7 @@ from ..dep_graph.selection import AxisRef, IndexSet
 from ..errors import AnalysisLimitError
 from ..settings import config
 from .planner import PlanningContext
-from .ranking import IndependentRanking, _has_native_score
+from .score_reuse import IndependentRanking, _has_native_score
 from .types import (
     Candidate,
     ChannelCount,
@@ -644,6 +644,9 @@ def _select(
         if not progress or limited:
             break
         if dynamic:
+            if context.trials - start_trials >= max_trials:
+                limited = True
+                break
             ranked, removals = rank()
             ranked_by_axis = _ranked_axis_candidates(ranked, removals)
     if not valid:

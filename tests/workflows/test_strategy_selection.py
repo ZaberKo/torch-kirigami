@@ -66,7 +66,8 @@ def test_workflows_use_library_dependency_scores(entry, metric, execution_device
     # Other tests below run each complete plan/apply/train/save/load workflow.
     monkeypatch.setattr(pruner, "plan", inspect_scores)
     module = importlib.import_module(entry)
-    args = ("taylor" if metric == "taylor" else "magnitude",) if entry == "prune_finetune" else ()
+    score = WeightTaylor() if metric == "taylor" else GroupMagnitude()
+    args = (score,) if entry == "prune_finetune" else ()
     budget = ParameterBudget(20)
     scores = module.make_plan(pruner, space, budget, *args)
     first, last = model[0].weight.detach().double().cpu(), model[1].weight.detach().double().cpu()

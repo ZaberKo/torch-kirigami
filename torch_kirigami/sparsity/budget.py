@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ..dep_graph.dependency_graph import DependencyGraph
+from ..dep_graph.selection import AxisRef
 from ..pruning.budget import channel_targets
 from ..pruning.candidates import CandidateSpace
 from ..pruning.plan import PruningResult
@@ -77,7 +78,7 @@ class CumulativeChannelBudget:
         widths: tuple[int, ...],
         *,
         domains: tuple | None = None,
-    ) -> tuple:
+    ) -> tuple[AxisRef, ...]:
         """Resolve recorded domains in a rebuilt graph and check widths and structure."""
         domains = self._domains if domains is None else domains
         try:
@@ -121,10 +122,13 @@ class CumulativeChannelBudget:
         """
         targets = channel_targets(ChannelRatio(ratio, scope=self.scope), self._initial)
         axes = self._validate_space(graph, space, self._structure, self._current)
+        active = set(space.channel_axes)
+        ordered = (*space.channel_axes, *(axis for axis in axes if axis not in active))
         # Targets refer to original widths, not the already compact model.
-        # A target above a current width is already satisfied; do not request
-        # an additional deletion merely because an earlier round overshot it.
-        return ChannelCount(targets[0] if self.scope == "global" else targets, axes, self.scope)
+        if self.scope == "global":
+            return ChannelCount(targets[0], ordered, self.scope)
+        by_axis = dict(zip(axes, targets, strict=True))
+        return ChannelCount(tuple(by_axis[axis] for axis in ordered), ordered)
 
     def update(self, result: PruningResult, graph: DependencyGraph, space: CandidateSpace) -> None:
         """Record the widths produced by an applied plan.

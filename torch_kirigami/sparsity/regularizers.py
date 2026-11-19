@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import torch
 
 from ..dep_graph.dependency_graph import DependencyGraph
-from ..dep_graph.selection import Selection, TensorRef, full_region
+from ..dep_graph.selection import TensorRef
 from ..pruning.groups import ParameterGroup
 from .values import (
+    ReductionPlan,
+    batched_slices,
+    gather_group,
     group_bindings,
-    group_penalty,
     group_values,
+    half_squared,
+    needs_direct_norm,
+    parameter_dtype,
     reduction_plan,
+    segment_norms,
+    slice_norm,
     squared_norm,
     stable_norm,
 )
@@ -45,6 +53,89 @@ def coefficients_for(count: int, coefficients: tuple[int | float, ...] | None) -
     ):
         raise ValueError("Expected one finite nonnegative scalar coefficient per group")
     return tuple(float(v) for v in values)
+
+
+@torch.no_grad()
+def _prepare_groups(groups: tuple[ParameterGroup, ...], *, batch: bool) -> ReductionPlan | None:
+    """Check the initial bindings and values and optionally prepare batched indices."""
+    bindings, dtype = group_bindings(groups)
+    group_values(tuple(group.selections for group in groups), bindings, dtype)
+    return reduction_plan(groups, bindings) if batch else None
+
+
+def _live_values(groups: tuple[ParameterGroup, ...]) -> tuple[torch.Tensor, ...]:
+    """Read validated values for a weighted or custom reduction."""
+    bindings, dtype = group_bindings(groups)
+    return group_values(tuple(group.selections for group in groups), bindings, dtype)
+
+
+def _custom_penalty(
+    penalty: Callable[[torch.Tensor], torch.Tensor],
+    values: tuple[torch.Tensor, ...],
+    coefficients: tuple[float, ...],
+) -> torch.Tensor:
+    """Apply a subclass penalty to each group before weighting and summing it."""
+    return torch.stack([penalty(v) * a for v, a in zip(values, coefficients, strict=True)]).sum()
+
+
+def _finite(values: torch.Tensor, message: str = "Sparse penalty is nonfinite") -> torch.Tensor:
+    """Validate the result or intermediate reductions together on their device."""
+    if not torch.isfinite(values).all():
+        raise ValueError(message)
+    return values
+
+
+def _batched_lasso(groups: tuple[ParameterGroup, ...], plan: ReductionPlan) -> torch.Tensor:
+    """Combine per-slice L2 norms into one norm per group and sum the results."""
+    bindings, dtype = group_bindings(groups, refs=plan.refs)
+    contributions = [
+        slice_norm(tensor, dims).index_select(0, indices)
+        for tensor, dims, indices in batched_slices(plan, bindings, dtype)
+    ]
+    contributions.extend(
+        stable_norm(gather_group(groups[i].selections, bindings, dtype)).reshape(1)
+        for i in plan.fallback
+    )
+    norms = _finite(
+        torch.cat(contributions), "Sparse operations require finite selected values and penalties"
+    )
+    if needs_direct_norm(norms, plan.owners, len(groups)):
+        # Rounded subnormal row norms can lose their original relative magnitudes.
+        return torch.stack(
+            [stable_norm(gather_group(group.selections, bindings, dtype)) for group in groups]
+        ).sum()
+    return segment_norms(norms, plan.owners, len(groups)).sum()
+
+
+def _batched_squared_l2(groups: tuple[ParameterGroup, ...], plan: ReductionPlan) -> torch.Tensor:
+    """Reduce half squares of selected slices before summing across groups."""
+    bindings, dtype = group_bindings(groups, refs=plan.refs)
+    tiny = torch.finfo(dtype).tiny ** 0.5
+    contributions, tiny_squares = [], []
+
+    def track_underflow(values: torch.Tensor) -> None:
+        """Record nonzero magnitudes whose individual squares may round away."""
+        magnitude = values.detach().abs()
+        tiny_squares.append(((magnitude != 0) & (magnitude < tiny)).any())
+
+    for tensor, dims, indices in batched_slices(plan, bindings, dtype):
+        track_underflow(tensor)
+        values = half_squared(tensor)
+        totals = values.sum(dim=dims) if dims else values
+        contributions.append(totals.index_select(0, indices))
+    for i in plan.fallback:
+        values = gather_group(groups[i].selections, bindings, dtype)
+        track_underflow(values)
+        contributions.append(squared_norm(values).reshape(1))
+    totals = _finite(
+        torch.cat(contributions), "Sparse operations require finite selected values and penalties"
+    )
+    if torch.stack(tiny_squares).any():
+        # The total can be representable even when individual squares are zero.
+        return squared_norm(
+            torch.cat([gather_group(g.selections, bindings, dtype) for g in groups])
+        )
+    return totals.sum()
 
 
 class GroupLasso:
@@ -113,14 +204,9 @@ class GroupLasso:
     ) -> None:
         self.groups = tuple(groups)
         self.coefficients = coefficients_for(len(self.groups), coefficients)
-        with torch.no_grad():
-            bindings, dtype = group_bindings(self.groups)
-            group_values(tuple(g.selections for g in self.groups), bindings, dtype)
-            self._reduction_plan = (
-                reduction_plan(self.groups, bindings)
-                if type(self) in _BUILTIN_PENALTIES and all(a == 1 for a in self.coefficients)
-                else None
-            )
+        self._reduction_plan = _prepare_groups(
+            self.groups, batch=type(self) is GroupLasso and all(a == 1 for a in self.coefficients)
+        )
 
     def __call__(self) -> torch.Tensor:
         """Evaluate the loss on current parameters without running the model.
@@ -136,32 +222,24 @@ class GroupLasso:
         """
         # Exact types keep the optimized path from bypassing a subclass penalty().
         if self._reduction_plan is not None and all(a == 1 for a in self.coefficients):
-            result = group_penalty(
-                self.groups, _BUILTIN_PENALTIES[type(self)], self._reduction_plan
-            )
+            result = _batched_lasso(self.groups, self._reduction_plan)
         else:
-            kind = _BUILTIN_PENALTIES.get(type(self))
-            bindings, dtype = group_bindings(self.groups)
-            values = group_values(tuple(g.selections for g in self.groups), bindings, dtype)
-            # Built-in weighted reductions apply coefficients before a square
-            # can overflow. FP64 preserves finite Python coefficients.
-            if kind is None:
-                result = torch.stack(
-                    [self.penalty(v) * a for v, a in zip(values, self.coefficients, strict=True)]
-                ).sum()
-            elif kind == "squared_l2":
-                result = squared_norm(*values, coefficients=self.coefficients)
+            values = _live_values(self.groups)
+            if type(self) is GroupLasso:
+                # FP64 preserves the full range of finite Python coefficients.
+                result = (
+                    torch.stack(
+                        [
+                            stable_norm(v.double(), coefficient=a)
+                            for v, a in zip(values, self.coefficients, strict=True)
+                        ]
+                    )
+                    .sum()
+                    .to(values[0].dtype)
+                )
             else:
-                terms = [
-                    stable_norm(value.double(), coefficient=coefficient)
-                    if kind == "l2"
-                    else (value.double() * coefficient).abs().sum()
-                    for value, coefficient in zip(values, self.coefficients, strict=True)
-                ]
-                result = torch.stack(terms).sum().to(values[0].dtype)
-        if not torch.isfinite(result):
-            raise ValueError("Sparse penalty is nonfinite")
-        return result
+                result = _custom_penalty(self.penalty, values, self.coefficients)
+        return _finite(result)
 
     def penalty(self, values: torch.Tensor) -> torch.Tensor:
         """Return the unweighted penalty for one group.
@@ -178,7 +256,7 @@ class GroupLasso:
         return stable_norm(values)
 
 
-class GroupSquaredL2(GroupLasso):
+class GroupSquaredL2:
     """Compute half the weighted sum of parameter-group squared L2 norms.
 
     Calling the object returns `0.5 * sum(a_g * ||W_g||_2**2)`. Here `W_g`
@@ -189,9 +267,8 @@ class GroupSquaredL2(GroupLasso):
     `torch_kirigami.pruning.unique_groups` before construction for explicit
     deduplication, then assign coefficients to the returned groups.
 
-    The live bindings, dtype, and first-order autograd contract are inherited
-    from `GroupLasso`. Like `GroupLasso`, it only returns a scalar loss; the
-    caller multiplies it by the overall loss strength and owns training.
+    Calls read current parameter values and support first-order autograd. The
+    caller multiplies the result by the overall loss strength and owns training.
 
     Args:
         groups: Nonempty tuple of `torch_kirigami.pruning.ParameterGroup` objects
@@ -200,10 +277,46 @@ class GroupSquaredL2(GroupLasso):
         coefficients: One fixed, finite, nonnegative Python number per group,
             in input order. `None` assigns one to every group.
 
+    Attributes:
+        groups: Supplied groups in input order, including repeated groups.
+        coefficients: Validated coefficients as floats, in the same order.
+
     Raises:
         TypeError: An item of `groups` is not a `ParameterGroup`.
         ValueError: The groups or coefficients violate the requirements above.
     """
+
+    def __init__(
+        self,
+        groups: tuple[ParameterGroup, ...],
+        *,
+        coefficients: tuple[int | float, ...] | None = None,
+    ) -> None:
+        self.groups = tuple(groups)
+        self.coefficients = coefficients_for(len(self.groups), coefficients)
+        self._reduction_plan = _prepare_groups(
+            self.groups,
+            batch=type(self) is GroupSquaredL2 and all(a == 1 for a in self.coefficients),
+        )
+
+    def __call__(self) -> torch.Tensor:
+        """Evaluate the weighted loss on live parameters without running the model.
+
+        Returns:
+            A scalar in float64 if any selected parameter is float64, or float32 otherwise.
+
+        Raises:
+            ValueError: Selected values or the resulting loss are nonfinite.
+        """
+        if self._reduction_plan is not None and all(a == 1 for a in self.coefficients):
+            result = _batched_squared_l2(self.groups, self._reduction_plan)
+        else:
+            values = _live_values(self.groups)
+            if type(self) is GroupSquaredL2:
+                result = squared_norm(*values, coefficients=self.coefficients)
+            else:
+                result = _custom_penalty(self.penalty, values, self.coefficients)
+        return _finite(result)
 
     def penalty(self, values: torch.Tensor) -> torch.Tensor:
         """Return half the squared L2 norm of one group.
@@ -217,7 +330,7 @@ class GroupSquaredL2(GroupLasso):
         return squared_norm(values)
 
 
-class ScaleL1(GroupLasso):
+class ScaleL1:
     """Compute an L1 loss on explicitly named one-dimensional parameters.
 
     Typical inputs are BatchNorm scale vectors, such as `bn.weight`. Calling
@@ -228,7 +341,6 @@ class ScaleL1(GroupLasso):
 
     Each distinct parameter contributes once, even when paths repeat or alias
     the same object. This class does not propagate dependencies to other weights.
-    It reuses `GroupLasso` binding and evaluation code but computes L1, not L2.
     The caller identifies scale parameters. Any one-dimensional parameter is
     accepted, regardless of its name or role in the model.
 
@@ -238,6 +350,10 @@ class ScaleL1(GroupLasso):
             from this graph. Parameters must be one-dimensional, dense, real
             floating-point tensors on one device, with finite values.
 
+    Attributes:
+        graph: Graph that supplies the live parameter bindings.
+        parameters: Distinct parameter references, sorted by their paths.
+
     Raises:
         KeyError: A path is not a registered parameter of `graph`.
         ValueError: `parameters` is empty, or a parameter violates the
@@ -245,27 +361,33 @@ class ScaleL1(GroupLasso):
     """
 
     def __init__(self, graph: DependencyGraph, parameters: tuple[str | TensorRef, ...]) -> None:
-        refs = tuple(graph.parameter(p) if isinstance(p, str) else p for p in parameters)
-        if any(len(ref.shape) != 1 for ref in refs):
+        self.graph = graph
+        refs = {graph.parameter(p) if isinstance(p, str) else p for p in parameters}
+        self.parameters = tuple(sorted(refs, key=lambda ref: ref.paths))
+        if not self.parameters or any(
+            ref.kind != "parameter" or len(ref.shape) != 1 for ref in self.parameters
+        ):
             raise ValueError("ScaleL1 requires one-dimensional scale parameters")
-        super().__init__(
-            (
-                ParameterGroup(
-                    graph, tuple(Selection(ref, (full_region(ref.shape),)) for ref in refs)
-                ),
-            )
-        )
+        with torch.no_grad():
+            _finite(self._values(), "Sparse operations require finite selected values")
 
-    def penalty(self, values: torch.Tensor) -> torch.Tensor:
-        """Return the L1 norm of one group.
+    def _values(self) -> torch.Tensor:
+        """Read a single vector of live scales in the common accumulation dtype."""
+        bindings = dict(self.graph.tensor_bindings())
+        try:
+            values = [bindings[ref] for ref in self.parameters]
+        except KeyError as error:
+            raise ValueError("ScaleL1 requires parameter references from its graph") from error
+        dtype = parameter_dtype(values)
+        return torch.cat([value.to(dtype).abs() for value in values])
 
-        Args:
-            values: Current selected values, flattened to one dimension.
+    def __call__(self) -> torch.Tensor:
+        """Sum the absolute values of the live scales.
 
         Returns:
-            A scalar tensor. Autograd uses a zero subgradient at zero.
+            A scalar loss with a zero subgradient at zero.
+
+        Raises:
+            ValueError: A scale value or the resulting loss is nonfinite.
         """
-        return values.abs().sum()
-
-
-_BUILTIN_PENALTIES = {GroupLasso: "l2", GroupSquaredL2: "squared_l2", ScaleL1: "l1"}
+        return _finite(self._values().sum())

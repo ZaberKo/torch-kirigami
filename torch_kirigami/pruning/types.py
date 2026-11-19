@@ -194,8 +194,9 @@ class ChannelCount:
     Attributes:
         max_channels: One final-width cap per axis for local scope, or one cap on
             the summed width for global scope.
-        channel_axes: Logical axes covered by the caps. Planning requires them
-            to equal the candidate space's `channel_axes`, in the same order.
+        channel_axes: Logical axes covered by the caps. Include the active axes
+            in candidate-space order. Excluded axes from the same space can
+            also be counted. Local caps follow this field's order.
         scope: `"local"` for per-axis caps or `"global"` for one summed cap.
 
     Raises:

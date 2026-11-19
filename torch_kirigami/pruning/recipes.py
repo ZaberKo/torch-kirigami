@@ -8,7 +8,6 @@ from ..dep_graph.selection import (
     Region,
     Selection,
     canonical_boxes,
-    concatenated_shape,
     full_region,
     region_boxes,
 )
@@ -46,10 +45,8 @@ def memory_format(tensor: torch.Tensor) -> str:
 def validate_recipe(recipe: TensorRecipe, impact: Impact) -> None:
     """Verify retained regions against the complete original-coordinate selection."""
     ref = recipe.tensor
-    if ref.kind not in ("parameter", "buffer") or not recipe.segments:
-        raise PlanningError("Recipes must retain nonempty registered tensor segments")
-    if not 0 <= recipe.concat_dim < max(1, len(ref.shape)):
-        raise PlanningError("Invalid concatenation dimension")
+    if ref.kind not in ("parameter", "buffer"):
+        raise PlanningError("Recipes must refer to registered tensors")
     if len(recipe.segments) > 1:
         previous_end = -1
         for segment in recipe.segments:
@@ -57,18 +54,11 @@ def validate_recipe(recipe: TensorRecipe, impact: Impact) -> None:
             if not axis or axis.intervals[0][0] < previous_end:
                 raise PlanningError("Recipes must preserve original position order")
             previous_end = axis.intervals[-1][1]
-    kept = Selection(ref, recipe.segments)
-    if sum(Selection(ref, (r,)).count for r in recipe.segments) != kept.count:
-        raise PlanningError("Recipe segments overlap")
     retained = canonical_boxes(
         region_boxes((full_region(ref.shape),)), region_boxes(impact.selection(ref).regions)
     )
-    if canonical_boxes(region_boxes(kept.regions)) != retained:
+    if canonical_boxes(region_boxes(recipe.segments)) != retained:
         raise PlanningError("Recipe retained coordinates disagree with the joint Impact")
-    try:
-        concatenated_shape(recipe.segments, recipe.concat_dim)
-    except ValueError as error:
-        raise PlanningError("Recipe segments cannot concatenate") from error
 
 
 def coordinate_mapping(recipe: TensorRecipe) -> tuple[CoordinateSegment, ...]:

@@ -23,7 +23,7 @@ from ..dep_graph.contracts import (
 )
 from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.eligibility import has_native_semantics
-from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef
+from ..dep_graph.selection import AxisRef, IndexSet, Region, Selection, TensorRef, slice_intervals
 from ..errors import AnalysisLimitError
 from ..settings import config
 from .types import Candidate
@@ -165,9 +165,11 @@ class CandidateFilter:
                 for axis in alignment.axes:
                     self._alignment_by_axis[axis] = alignment
             self._empty_diagnostics.extend(alignment_conflicts(classes, MappingProxyType({})))
+        self.native_semantics = self._native and all(
+            has_native_semantics(r) for r in graph.relations
+        )
         self.reuse_equivalent = (
-            self._native
-            and all(has_native_semantics(r) for r in graph.relations)
+            self.native_semantics
             and type(graph) is DependencyGraph
             and not any(callable(value) for value in vars(graph).values())
         )
@@ -383,8 +385,7 @@ class CandidateFilter:
             self.graph.metadata(candidate.axis.tensor)
         if not self._native:
             return None
-        self._sync_cache_settings()
-        domain = self._domain(candidate)
+        domain = self.native_domain(candidate)
         if domain is None:
             return None
         axis, indices, members = domain
@@ -402,12 +403,13 @@ class CandidateFilter:
             return None  # Whole-tensor deletion can activate other axes and relations.
         return members, indices, base
 
-    def _domain(self, candidate: Candidate) -> _Domain | None:
+    def native_domain(self, candidate: Candidate) -> _Domain | None:
         """Return a native candidate's axis, positions and identity component.
 
         Native candidates are deeply immutable, so the result is reused for the
         same object. Extension candidates are never projected.
         """
+        self._sync_cache_settings()
         entry = self._domains.get(id(candidate))
         if entry is not None and entry[0] is candidate:
             self._domains.move_to_end(id(candidate))
@@ -422,18 +424,17 @@ class CandidateFilter:
             return None
         domain = None
         if all(seed.tensor == axis.tensor for seed in candidate.remove):
-            selection = Selection(axis.tensor)
             try:
-                for seed in candidate.remove:
+                selection = candidate.remove[0]
+                for seed in candidate.remove[1:]:
                     selection = selection.union(seed)
-                indices = selection.fully_selected_indices(axis.dim)
-            except AnalysisLimitError:
-                pass  # Ordinary propagation reports the limit or analyzes the request.
-            else:
-                if selection == axis.select(indices):
+                intervals = slice_intervals(axis, (selection,))
+                if intervals is not None:
                     members = self.index.component(axis)
                     if members is not None:
-                        domain = (axis, indices, members)
+                        domain = (axis, IndexSet(intervals), members)
+            except AnalysisLimitError:
+                pass  # Ordinary propagation reports the limit or analyzes the request.
         self._remember(self._domains, id(candidate), (candidate, domain))
         return domain
 

@@ -54,7 +54,7 @@ docs = { requires-python = ">=3.12" }
 module-name = "torch_kirigami"
 module-root = ""
 source-include = ["tests/**", "examples/**", "docs/**", ".readthedocs.yaml"]
-source-exclude = ["/docs/apidocs", "/docs/dev-notes"]
+source-exclude = ["/docs/_build", "/docs/apidocs", "/docs/dev-notes", "/examples/workflows/runs"]
 
 [tool.pytest.ini_options]
 minversion = "8.0"

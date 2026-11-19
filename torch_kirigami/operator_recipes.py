@@ -7,11 +7,8 @@ model, callback, or allocated replacement weight.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-import torch
-
-from .configuration import FrozenDict, FrozenList, FrozenScalar, freeze, thaw
+from .configuration import freeze, thaw
 from .dep_graph.selection import Region, Selection, TensorRef, concatenated_shape
 
 
@@ -80,16 +77,15 @@ class TensorRecipe:
 class AttributeRecipe:
     """A static module-attribute assignment guarded by the attribute's captured value.
 
-    Construction stores `old` and `new` as frozen configuration, so later edits
-    to the caller's lists or dictionaries do not change the recipe. Execution
-    checks that the attribute still equals `old` before it assigns `new`.
+    Construction stores `old` and `new` as frozen configuration, preserving
+    their exact types and values. Use `torch_kirigami.configuration.thaw` to read
+    the values. Execution checks the original configuration before assignment.
 
     Attributes:
         path: Qualified path to the module attribute.
-        old: Value that the attribute must have before the edit.
-        new: Value to assign. Both values may be `None`, Python scalars, tuples
-            of such values, or `torch.Size`, list, and dictionary configuration
-            accepted by `torch_kirigami.configuration.freeze`.
+        old: Frozen value that the attribute must have before the edit.
+        new: Frozen value to assign. Both inputs accept configuration supported
+            by `torch_kirigami.configuration.freeze`.
 
     Raises:
         ValueError: `path` is empty or not a string, or a value is not
@@ -97,24 +93,18 @@ class AttributeRecipe:
     """
 
     path: str
-    old: Any
-    new: Any
+    old: object
+    new: object
 
     def __post_init__(self) -> None:
-        def frozen(value: object) -> object:
-            """Freeze supported configuration values for portable storage."""
-            if isinstance(value, (dict, FrozenDict, list, FrozenList, FrozenScalar, torch.Size)):
-                return freeze(thaw(value))
-            if isinstance(value, tuple):
-                return tuple(frozen(v) for v in value)
-            if value is None or type(value) in (int, float, bool, str):
-                return value
-            raise ValueError("Attribute recipes require scalar/list/tuple configuration values")
-
         if not isinstance(self.path, str) or not self.path:
             raise ValueError("Attribute recipes require a path")
-        object.__setattr__(self, "old", frozen(self.old))
-        object.__setattr__(self, "new", frozen(self.new))
+        try:
+            old, new = freeze(thaw(self.old)), freeze(thaw(self.new))
+        except TypeError as error:
+            raise ValueError("Attribute recipes require portable configuration values") from error
+        object.__setattr__(self, "old", old)
+        object.__setattr__(self, "new", new)
 
 
 @dataclass(frozen=True)

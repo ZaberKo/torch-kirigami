@@ -1,9 +1,8 @@
 """Calibrate MLP activations and compensate removed neurons' mean contributions.
 
 This workflow implements variance ranking and local mean compensation from
-VBP, ICCV 2025.
-Paper: *Variance-Based Pruning for Accelerating and Compressing Trained Networks*.
-https://openaccess.thecvf.com/content/ICCV2025/html/Berisha_Variance-Based_Pruning_for_Accelerating_and_Compressing_Trained_Networks_ICCV_2025_paper.html
+*Variance-Based Pruning for Accelerating and Compressing Trained Networks*
+(ICCV 2025).
 
 `DependencyGraph` discovers eligible dense MLP producer/consumer pairs.
 Supported examples use torchvision ViT and ConvNeXt MLPs.
@@ -49,7 +48,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MLP_MODELS, make_mlp_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import fx, nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -572,9 +571,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     moments = collect_moments(

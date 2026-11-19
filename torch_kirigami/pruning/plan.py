@@ -8,6 +8,7 @@ from types import MappingProxyType
 
 from torch import nn
 
+from ..configuration import thaw
 from ..dep_graph.selection import TensorRef, TensorRefMap
 from ..operator_recipes import AttributeRecipe, TensorRecipe
 from .serialization import RECORD_TYPES, decode, encode
@@ -145,7 +146,7 @@ class PruningPlan:
         lines.extend(f"{r.tensor.paths[0]}: {r.tensor.shape} -> {r.shape}" for r in self.recipes)
         if self.selected:
             lines.append("Selected candidates: " + ", ".join(self.selected))
-        lines.extend(f"{a.path}: {a.old} -> {a.new}" for a in self.attributes)
+        lines.extend(f"{a.path}: {thaw(a.old)} -> {thaw(a.new)}" for a in self.attributes)
         lines.extend(self.notes)
         lines.extend(
             f"Excluded {key}: {reason}" for key, reason in self.selection_report.exclusions

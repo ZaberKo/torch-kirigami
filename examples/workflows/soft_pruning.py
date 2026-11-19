@@ -16,7 +16,6 @@ Projection changes parameter values until physical pruning changes dimensions.
 
 Zero-mode source: *Soft Filter Pruning for Accelerating Deep Convolutional
 Neural Networks* (IJCAI 2018).
-https://www.ijcai.org/proceedings/2018/309
 
 SFP ranks convolutional filters by L2 norm.
 It zeros a newly selected low-norm set at each epoch's end.
@@ -31,7 +30,6 @@ It omits SFP's per-epoch filter ranking and schedule.
 
 Decay-mode source: *Decay Pruning Method: Smooth Pruning With a Self-Rectifying
 Procedure* (ICCV Workshops 2025).
-https://openaccess.thecvf.com/content/ICCV2025W/ECLR/html/Yang_Decay_Pruning_Method_Smooth_Pruning_With_a_Self-Rectifying_Procedure_ICCVW_2025_paper.html
 
 DPM reduces selected structure norms over N training steps.
 It uses gradients to revise pruning choices.
@@ -45,14 +43,14 @@ norm trajectories.
 import argparse
 import json
 import math
-from collections.abc import Sequence
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -166,17 +164,36 @@ def make_plan(pruner: Pruner, space: CandidateSpace, budget: ParameterBudget) ->
     return pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude(p=2)))
 
 
+def make_projection(
+    groups: tuple[ParameterGroup, ...], operation: str, total_steps: int
+) -> Callable[[int], None] | None:
+    """Prepare one cycle's projection at its one-based optimizer step."""
+    if not groups:
+        return None
+    if operation == "zero":
+
+        def zero(_step: int) -> None:
+            zero_groups_(groups)
+
+        return zero
+
+    initial_norm = GroupLasso(groups)().detach().item()
+
+    def decay(step: int) -> None:
+        set_group_norms_(groups, (initial_norm * (1 - step / total_steps),))
+
+    return decay
+
+
 def train_epoch(
     model: nn.Module,
     loader: DataLoader[tuple[torch.Tensor, torch.Tensor]],
     optimizer: torch.optim.Optimizer,
     device: torch.device | str,
     *,
-    groups: Sequence[ParameterGroup] = (),
+    after_step: Callable[[int], None] | None = None,
+    step_offset: int = 0,
     operation: str | None = None,
-    initial_norm: float = 0.0,
-    projection_epoch: int = 0,
-    projection_epochs: int = 1,
     description: str = "Training",
 ) -> None:
     """Take SGD steps, optionally projecting the selected union after each step.
@@ -196,13 +213,8 @@ def train_epoch(
             loss = F.cross_entropy(model(images), labels)
             loss.backward()
             optimizer.step()
-            if groups and operation == "zero":
-                zero_groups_(groups)
-            elif groups and operation == "decay":
-                fraction = (projection_epoch * len(loader) + batch) / (
-                    projection_epochs * len(loader)
-                )
-                set_group_norms_(groups, (initial_norm * (1 - fraction),))
+            if after_step is not None:
+                after_step(step_offset + batch)
             total += loss.detach().item() * labels.numel()
             count += labels.numel()
             progress.set_postfix(images=count, loss=f"{total / count:.4f}", refresh=False)
@@ -279,9 +291,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     suffix = "conv1.weight" if options.model.startswith("resnet") else "mlp.0.weight"
@@ -307,18 +317,19 @@ def main() -> None:
         # regions may overlap and must not be scaled multiple times.
         impact = pruner.impact(selected)
         groups = (ParameterGroup(graph, impact.parameters),) if impact.parameters else ()
-        initial_norm = GroupLasso(groups)().detach().item() if groups else 0.0
+        steps_per_epoch = len(train_loader)
+        project = make_projection(
+            groups, options.operation, options.projection_epochs * steps_per_epoch
+        )
         for epoch in range(options.projection_epochs):
             train_epoch(
                 model,
                 train_loader,
                 optimizer,
                 options.device,
-                groups=groups,
+                after_step=project,
+                step_offset=epoch * steps_per_epoch,
                 operation=options.operation,
-                initial_norm=initial_norm,
-                projection_epoch=epoch,
-                projection_epochs=options.projection_epochs,
                 description=f"Cycle {cycle + 1} projection {epoch + 1}/{options.projection_epochs}",
             )
         record(f"cycle_{cycle + 1}_projected")

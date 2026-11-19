@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import replace
 from os import PathLike
 from typing import IO
@@ -11,7 +12,8 @@ import torch
 from torch import nn
 
 from ..bindings import (
-    copy_module_state,
+    attribute_owner,
+    copy_module_tree,
     final_state_edits,
     has_tensor_hooks,
     reference_devices_match,
@@ -23,7 +25,6 @@ from ..operator_recipes import AttributeRecipe
 from ..settings import config
 from .serialization import decode, encode
 from .state import (
-    attribute,
     commit,
     managed_record,
     snapshot,
@@ -240,13 +241,13 @@ def save_checkpoint(model: nn.Module, path: str | PathLike[str] | IO[bytes]) -> 
         raise ExecutionError("Checkpoint cannot reconstruct distinct tensors sharing storage")
     for state_ in structure.tensors:
         _check_nonoverlap(state_)
-        owner, name = attribute(model, state_.paths[0])
+        owner, name = attribute_owner(model, state_.paths[0])
         expected = nn.Parameter if state_.kind == "parameter" else torch.Tensor
         if type(getattr(owner, name)) is not expected:
             raise ExecutionError("Checkpoint cannot reconstruct custom tensor subclasses")
     state, buffers = {}, {}
     for item in structure.tensors:
-        owner, field = attribute(model, item.paths[0])
+        owner, field = attribute_owner(model, item.paths[0])
         value = getattr(owner, field).detach()
         for name, persistent in zip(item.paths, item.persistent, strict=True):
             (state if persistent else buffers)[name] = value
@@ -267,6 +268,85 @@ def save_checkpoint(model: nn.Module, path: str | PathLike[str] | IO[bytes]) -> 
         },
         path,
     )
+
+
+def _compatible_configuration(
+    original: ModelStructure,
+    restored: ModelStructure,
+    managed: tuple[str, ...],
+    *,
+    custom_state: bool,
+) -> tuple[AttributeRecipe, ...]:
+    """Check the constructor's registered structure and collect allowed field changes."""
+    expected_types = {"parameter": "torch.nn.parameter.Parameter", "buffer": "torch.Tensor"}
+    if any(
+        s.type_name != expected_types.get(s.kind) for s in (*original.tensors, *restored.tensors)
+    ):
+        raise ExecutionError("Checkpoint requires ordinary parameters and buffers")
+    if tuple((m.paths, m.type_name, m.slots) for m in original.modules) != tuple(
+        (m.paths, m.type_name, m.slots) for m in restored.modules
+    ):
+        raise ExecutionError("Module skeleton, aliases, or registered slots differ")
+    if tuple((s.paths, s.kind, s.persistent) for s in original.tensors) != tuple(
+        (s.paths, s.kind, s.persistent) for s in restored.tensors
+    ):
+        raise ExecutionError("Tensor binding/alias/persistence schema differs")
+    changes = []
+    for old, new in zip(original.modules, restored.modules, strict=True):
+        before, after = dict(old.attributes), dict(new.attributes)
+        if before.keys() != after.keys() and not custom_state:
+            raise ExecutionError("Module configuration fields differ")
+        for name, value in after.items():
+            if name in before and before[name] == value:
+                continue
+            paths = [f"{p}.{name}".lstrip(".") for p in old.paths]
+            if name == "training" or any(p in managed for p in paths):
+                changes.append(AttributeRecipe(paths[0], before.get(name), value))
+            elif not custom_state:
+                raise ExecutionError(f"Original constructor configuration differs: {paths[0]}")
+            # Other changes must be restored by the model's extra state setter.
+    return tuple(changes)
+
+
+@torch.no_grad()
+def _restore_extra_state(prepared: nn.Module, values: Mapping[str, object]) -> None:
+    """Run setters in isolation and verify that registered bindings were preserved."""
+    table_names = (
+        "_modules",
+        "_parameters",
+        "_buffers",
+        "_forward_hooks",
+        "_forward_pre_hooks",
+        "_backward_hooks",
+        "_backward_pre_hooks",
+    )
+
+    def registrations(module: nn.Module) -> tuple[object, ...]:
+        """Snapshot the direct slots without traversing the module graph."""
+        return (
+            *(
+                tuple((key, id(value)) for key, value in getattr(module, name).items())
+                for name in table_names
+            ),
+            frozenset(module._non_persistent_buffers_set),
+        )
+
+    # Keep direct references until validation. A setter could introduce a cycle
+    # or replace an object while retaining its type, shape and path.
+    original = tuple(
+        (path, module, registrations(module)) for path, module in prepared.named_modules()
+    )
+    try:
+        for path, module, _ in original:
+            if type(module).set_extra_state is not nn.Module.set_extra_state:
+                module.set_extra_state(values[f"{path}._extra_state".lstrip(".")])
+    except Exception as error:
+        raise ExecutionError(f"State loading failed before commit: {error}") from error
+    finally:
+        if any(registrations(module) != before for _, module, before in original):
+            raise ExecutionError(
+                "Extra state changed registered structure, tensor bindings, or runtime hooks"
+            )
 
 
 @torch.inference_mode(False)
@@ -357,44 +437,16 @@ def load_checkpoint(
     if not isinstance(structure, ModelStructure):
         raise ExecutionError("Checkpoint requires a final ModelStructure")
     original = snapshot(model)
-    expected_types = {"parameter": "torch.nn.parameter.Parameter", "buffer": "torch.Tensor"}
-    if any(
-        s.type_name != expected_types.get(s.kind) for s in (*original.tensors, *structure.tensors)
+    raw_managed = data["managed"]
+    if not isinstance(raw_managed, (list, tuple)) or not all(
+        isinstance(path, str) for path in raw_managed
     ):
-        raise ExecutionError("Checkpoint requires ordinary parameters and buffers")
-
-    def skeleton(
-        structure: ModelStructure,
-    ) -> tuple[tuple[tuple[str, ...], str, tuple[tuple[str, str, bool], ...]], ...]:
-        """Return module types, aliases and registered slots for compatibility checks."""
-        return tuple((m.paths, m.type_name, m.slots) for m in structure.modules)
-
-    if skeleton(original) != skeleton(structure):
-        raise ExecutionError("Module skeleton, aliases, or registered slots differ")
-    if tuple((s.paths, s.kind, s.persistent) for s in original.tensors) != tuple(
-        (s.paths, s.kind, s.persistent) for s in structure.tensors
-    ):
-        raise ExecutionError("Tensor binding/alias/persistence schema differs")
-    managed = tuple(data["managed"])
-    if not all(isinstance(p, str) for p in managed):
         raise ExecutionError("Invalid managed attribute paths")
-    changes = []
+    managed = tuple(raw_managed)
     custom_state = any(
         type(m).set_extra_state is not nn.Module.set_extra_state for m in model.modules()
     )
-    for old, new in zip(original.modules, structure.modules, strict=True):
-        before, after = dict(old.attributes), dict(new.attributes)
-        if before.keys() != after.keys() and not custom_state:
-            raise ExecutionError("Module configuration fields differ")
-        for name, value in after.items():
-            if name not in before or before[name] != value:
-                paths = [f"{p}.{name}".lstrip(".") for p in old.paths]
-                if name != "training" and not any(p in managed for p in paths) and not custom_state:
-                    raise ExecutionError(f"Original constructor configuration differs: {paths[0]}")
-                if name == "training" or any(p in managed for p in paths):
-                    changes.append(AttributeRecipe(paths[0], thaw(before.get(name)), thaw(value)))
-                # Extra state must itself restore other fields, including creation
-                # and deletion. Validate its final configuration before committing.
+    changes = _compatible_configuration(original, structure, managed, custom_state=custom_state)
     values = data["state_dict"]
     buffers = data["nonpersistent_buffers"]
     _validate_payload(model, structure, values, buffers)
@@ -415,76 +467,18 @@ def load_checkpoint(
                 if state.kind == "parameter"
                 else tensor.requires_grad_(state.requires_grad)
             )
-            owner, name = attribute(model, old.paths[0])
+            owner, name = attribute_owner(model, old.paths[0])
             replacements.append((old, getattr(owner, name), new))
 
-    # Shallow module shells isolate hooks and extra state from original tensor
-    # bindings; tensors are already newly allocated, and module aliases persist.
-    # User-defined __copy__ may return the original module. Never invoke it:
-    # changing such a "shell" would corrupt the destination before commit.
-    shells = {id(m): object.__new__(type(m)) for m in model.modules()}
-    memo = dict(shells)
-    memo.update((id(old), new) for _, old, new in replacements)
-    for module in model.modules():
-        shell = shells[id(module)]
-        copy_module_state(module, shell, memo)
-    prepared = shells[id(model)]
-    for state, _, tensor in replacements:
-        for path_ in state.paths:
-            owner, name = attribute(prepared, path_)
-            table = owner._parameters if state.kind == "parameter" else owner._buffers
-            table[name] = tensor
+    prepared = copy_module_tree(model, {id(old): new for _, old, new in replacements})
     for edit in changes:
-        owner, name = attribute(prepared, edit.path)
+        owner, name = attribute_owner(prepared, edit.path)
         object.__setattr__(owner, name, thaw(edit.new))
     # Allocation already applied map_location. Compare the final callback state
     # against these actual devices, rather than the source checkpoint devices.
     prepared_devices = tuple(s.device for s in snapshot(prepared).tensors)
-    # Keep direct references to every prepared module and slot. Inspect these
-    # tables before recursively traversing callbacks' result, so introduced cycles
-    # and same-shape replacement objects are rejected without walking a bad graph.
-    registrations = tuple(
-        (
-            path,
-            module,
-            tuple(
-                (name, tuple((key, id(value)) for key, value in getattr(module, name).items()))
-                for name in (
-                    "_modules",
-                    "_parameters",
-                    "_buffers",
-                    "_forward_hooks",
-                    "_forward_pre_hooks",
-                    "_backward_hooks",
-                    "_backward_pre_hooks",
-                )
-            ),
-            frozenset(module._non_persistent_buffers_set),
-        )
-        for path, module in prepared.named_modules()
-    )
-    try:
-        with torch.inference_mode(False), torch.no_grad():
-            # Visit the original prepared module list, not a graph that a callback
-            # might mutate. Every Tensor already contains its final saved values.
-            for path, module, _, _ in registrations:
-                if type(module).set_extra_state is not nn.Module.set_extra_state:
-                    module.set_extra_state(values[f"{path}._extra_state".lstrip(".")])
-    except Exception as error:
-        raise ExecutionError(f"State loading failed before commit: {error}") from error
-    finally:
-        for _, module, tables, persistence in registrations:
-            if (
-                any(
-                    tuple((key, id(value)) for key, value in getattr(module, name).items())
-                    != entries
-                    for name, entries in tables
-                )
-                or frozenset(module._non_persistent_buffers_set) != persistence
-            ):
-                raise ExecutionError(
-                    "Extra state changed registered structure, tensor bindings, or runtime hooks"
-                )
+    if custom_state:
+        _restore_extra_state(prepared, values)
     _check_state_contract(prepared)
     try:
         final = snapshot(prepared)
@@ -504,7 +498,7 @@ def load_checkpoint(
 
     if custom_state:
         for state in structure.tensors:
-            tensor = getattr(*attribute(prepared, state.paths[0]))
+            tensor = getattr(*attribute_owner(prepared, state.paths[0]))
             source = values if state.persistent[0] else buffers
             if not _same_values(tensor, source[state.paths[0]]) or has_tensor_hooks(tensor):
                 raise ExecutionError("Extra state changed registered tensor values or hooks")

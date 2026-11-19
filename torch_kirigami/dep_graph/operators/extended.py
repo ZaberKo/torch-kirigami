@@ -16,7 +16,7 @@ from ..operation import (
     OutputContract,
 )
 from ..relations import ReshapeRelation
-from .effects import to_copy
+from .effects import normalization_tensor_arguments, to_copy
 from .native import (
     affine_layouts,
     bind,
@@ -103,13 +103,8 @@ def instance_norm(operation: Operation) -> OperatorSpec:
         ]
         channel = len(x.shape) - spatial - 1
     relations = [ReshapeRelation(x, y, operation.node.name)]
-    positions = (
-        (("weight", 1), ("bias", 2), ("running_mean", 3), ("running_var", 4))
-        if operation.node.target is torch.instance_norm
-        else (("running_mean", 1), ("running_var", 2), ("weight", 3), ("bias", 4))
-    )
-    for name, position in positions:
-        value = bind(operation, name, position)
+    for ref in normalization_tensor_arguments(operation.node.target):
+        value = bind(operation, ref.name, ref.position)
         if value is not None:
             relations.append(equal(x, channel, one(value), 0, operation.node.name))
     requirements = (

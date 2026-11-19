@@ -13,24 +13,20 @@ The workflow uses these steps:
 5. Optionally fine-tune with task loss only. Evaluate the result.
 6. Save the compact checkpoint. Load it. Check its outputs.
 
-Magnitude and Taylor metrics support static or dynamic greedy selection.
-Dynamic selection updates scores after accepted removals.
-It does not collect new activations or gradients.
+Magnitude, Taylor, and Pruner-Zero support static and dynamic greedy selection.
+Dynamic selection rescores candidates after accepted removals. Gradient-based
+metrics reuse their original calibration.
 
-The optional `geometric_median` metric adopts the FPGM criterion from CVPR 2019.
-Paper: *Filter Pruning via Geometric Median for Deep Convolutional Neural
-Networks Acceleration*.
-https://openaccess.thecvf.com/content_CVPR_2019/html/He_Filter_Pruning_via_Geometric_Median_for_Deep_Convolutional_Neural_Networks_Acceleration_CVPR_2019_paper.html
+Research metrics
 
-The criterion flattens each Conv or Linear output filter into a signed vector.
-Each score sums Euclidean distances to all filters in the same layer.
-A low score indicates closeness to other filters under this criterion.
-This metric requires static selection.
-
-The example extends FPGM to Linear filters and uses global parameter budgeting.
-It performs one physical pruning stage.
-It omits the paper's per-epoch filter reselection and zeroing during training.
-That paper keeps zeroed filters trainable so they can regrow before final removal.
+- `geometric_median` adopts *Filter Pruning via Geometric Median for Deep
+  Convolutional Neural Networks Acceleration* (CVPR 2019). It sums each signed
+  filter's Euclidean distances to the other filters in the same layer.
+  The example uses static scoring and extends the criterion to Linear layers.
+- `pruner_zero` adopts *Pruner-Zero: Evolving Symbolic Pruning Metric From
+  Scratch for Large Language Models* (ICML 2024). It uses squared ImageNet
+  batch gradients to calibrate per-weight importance, then sums the scores
+  over structural removal regions.
 """
 
 import argparse
@@ -45,7 +41,7 @@ from typing import Any, cast
 import torch
 from imagenet_data import Images, evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -53,7 +49,7 @@ from torchvision.models.resnet import BasicBlock, Bottleneck
 from torchvision.models.vision_transformer import EncoderBlock
 from tqdm.auto import tqdm
 
-from torch_kirigami import AxisRef, DependencyGraph, Impact, Selection
+from torch_kirigami import AxisRef, DependencyGraph, Impact, Selection, TensorRef
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -61,10 +57,12 @@ from torch_kirigami.pruning import (
     Granularity,
     Greedy,
     GroupMagnitude,
+    Metric,
     MetricContext,
     ParameterBudget,
     PlanningError,
     Pruner,
+    PrunerZero,
     PruningPlan,
     WeightTaylor,
     load_checkpoint,
@@ -185,7 +183,7 @@ def parse_args() -> argparse.Namespace:
         "--train_batch_size",
         type=int,
         default=256,
-        help="Training and Taylor calibration batch size",
+        help="Training and gradient calibration batch size",
     )
     parser.add_argument(
         "--val_batch_size",
@@ -215,9 +213,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--granularity", type=int, default=8, help="Retained channel alignment")
     parser.add_argument(
         "--metric",
-        choices=("magnitude", "taylor", "geometric_median"),
+        choices=("magnitude", "taylor", "geometric_median", "pruner_zero"),
         default="magnitude",
-        help="Group magnitude, affected-weight Taylor, or static signed-filter redundancy scores",
+        help="Group magnitude, affected-weight Taylor, static filter redundancy, or Pruner-Zero",
     )
     parser.add_argument(
         "--selection",
@@ -244,7 +242,7 @@ def parse_args() -> argparse.Namespace:
         "--calibration_batches",
         type=int,
         default=16,
-        help="Taylor gradient calibration batches; 0 uses the full training loader",
+        help="Taylor or Pruner-Zero calibration batches; 0 uses the full training loader",
     )
     options = parser.parse_args()
     for name in ("train_batch_size", "val_batch_size", "granularity", "latency_repetitions"):
@@ -326,27 +324,86 @@ def collect_task_gradients(
             module.training = training
 
 
+def calibrate_pruner_zero(
+    model: nn.Module,
+    graph: DependencyGraph,
+    loader: Iterable[tuple[torch.Tensor, torch.Tensor]] | None,
+    device: torch.device | str,
+    max_batches: int,
+) -> PrunerZero:
+    """Collect squared batch-mean gradients without updating weights or `.grad`."""
+    if loader is None:
+        raise ValueError("Pruner-Zero requires an ImageNet training loader")
+    if type(max_batches) is not int or max_batches < 0:
+        raise ValueError("max_batches must be a nonnegative integer")
+    bindings = tuple(
+        (ref, weight)
+        for ref, weight in graph.tensor_bindings()
+        if ref.kind == "parameter" and len(ref.shape) >= 2 and weight.requires_grad
+    )
+    if not bindings:
+        raise PlanningError("Pruner-Zero calibration needs trainable matrix or kernel parameters")
+    weights = tuple(weight for _, weight in bindings)
+    energy: dict[TensorRef, torch.Tensor] = {}
+    modes = [(module, module.training) for module in model.modules()]
+    seen = 0
+    try:
+        model.eval()
+        batches = islice(loader, max_batches) if max_batches else iter(loader)
+        total = len(loader) if isinstance(loader, Sized) else None
+        if max_batches:
+            total = min(total, max_batches) if total is not None else max_batches
+        with (
+            torch.enable_grad(),
+            tqdm(
+                batches,
+                total=total,
+                desc=f"Pruner-Zero calibration ({device})",
+                unit="batch",
+                dynamic_ncols=True,
+            ) as progress,
+        ):
+            for images, labels in progress:
+                loss = F.cross_entropy(
+                    model(images.to(device, non_blocking=True)),
+                    labels.to(device, non_blocking=True),
+                )
+                if not torch.isfinite(loss):
+                    raise PlanningError("Pruner-Zero calibration produced nonfinite loss")
+                gradients = torch.autograd.grad(loss, weights, allow_unused=True)
+                for (ref, _), gradient in zip(bindings, gradients, strict=True):
+                    if gradient is None:
+                        continue
+                    if gradient.layout != torch.strided or not gradient.is_floating_point():
+                        raise PlanningError(
+                            f"Pruner-Zero requires dense real gradients for {ref.id}"
+                        )
+                    dtype = torch.float64 if gradient.dtype == torch.float64 else torch.float32
+                    gradient = gradient.detach().to(dtype)
+                    if ref in energy:
+                        energy[ref].addcmul_(gradient, gradient)
+                    else:
+                        energy[ref] = gradient.square()
+                seen += 1
+    finally:
+        for module, training in modes:
+            module.training = training
+    if not seen:
+        raise ValueError("Cannot calibrate Pruner-Zero on an empty loader")
+    return PrunerZero(graph, energy)
+
+
 def make_plan(
     pruner: Pruner,
     space: CandidateSpace,
     budget: ParameterBudget,
-    metric: str,
+    metric: Metric,
     selection: str = "static",
 ) -> PruningPlan:
-    """Select a feasible request; dynamic Taylor reuses its calibrated gradients."""
+    """Select a feasible request using the configured importance metric."""
     if selection not in ("static", "dynamic"):
         raise ValueError("selection must be static or dynamic")
-    if metric == "geometric_median":
-        if selection != "static":
-            raise ValueError("geometric_median requires static selection")
-        score = GeometricMedian(pruner.graph, space.channel_axes)
-    elif metric == "taylor":
-        score = WeightTaylor(mode="elementwise_abs")
-    elif metric == "magnitude":
-        score = GroupMagnitude(p=2)
-    else:
-        raise ValueError(f"Unknown metric: {metric}")
-    strategy = Greedy(score) if selection == "static" else DynamicGreedy(score)
+    strategy = Greedy(metric) if selection == "static" else DynamicGreedy(metric)
     return pruner.plan(space, budget=budget, strategy=strategy)
 
 
@@ -376,7 +433,7 @@ def main() -> None:
     train, validation, dataset_info = load_images(
         weights,
         options.data_dir,
-        need_train=options.metric == "taylor" or options.finetune_epochs > 0,
+        need_train=options.metric in ("taylor", "pruner_zero") or options.finetune_epochs > 0,
         train_samples=options.train_samples,
         val_samples=options.val_samples,
         seed=options.seed,
@@ -436,9 +493,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     print(f"Capturing dependency graph; sample forward on {options.device}", flush=True)
@@ -454,18 +509,27 @@ def main() -> None:
         {"parameter": axis.tensor.paths[0], "dim": axis.dim} for axis in space.channel_axes
     ]
     config["discovery_exclusions"] = space.exclusions
-    (options.output / "metrics.json").write_text(
-        json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-    )
+    write_metrics(options.output, config, records)
     print(
         f"Graph and {len(space.candidates)} candidates ready in {time.perf_counter() - started:.1f}s",
         flush=True,
     )
+    metric: Metric
     if options.metric == "taylor":
         collect_task_gradients(model, train_loader, options.device, options.calibration_batches)
+        metric = WeightTaylor(mode="elementwise_abs")
+    elif options.metric == "pruner_zero":
+        metric = calibrate_pruner_zero(
+            model, graph, train_loader, options.device, options.calibration_batches
+        )
+    elif options.metric == "geometric_median":
+        metric = GeometricMedian(graph, space.channel_axes)
+    else:
+        metric = GroupMagnitude(p=2)
     print("Planning pruning: dependency propagation and constraint search run on CPU", flush=True)
     started = time.perf_counter()
-    plan = make_plan(pruner, space, budget, options.metric, selection=options.selection)
+    plan = make_plan(pruner, space, budget, metric, selection=options.selection)
+    del metric
     print(
         f"Plan completed in {time.perf_counter() - started:.1f}s; "
         f"{plan.selection_report.trials} joint trials; applying on {options.device}",

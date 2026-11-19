@@ -25,29 +25,43 @@ from torch_kirigami.pruning import validation as validation_module
 from torch_kirigami.pruning.rewrite import _requirements_by_operation
 
 
-@pytest.mark.parametrize("function_call", [False, True])
-def test_requirement_index_matches_exhaustive_ownership(function_call: bool) -> None:
-    """Match root, nested and repeated calls without duplicating dual matches."""
-    model = nn.Sequential(nn.Linear(4, 6), nn.ReLU(), nn.Linear(6, 2))
-    graph = DependencyGraph.build(model, args=(torch.randn(2, 4),))
-    calls = graph.operations()
-    operations = (
-        replace(calls[0], module_paths=("",)),
-        replace(
-            calls[1],
-            module=None if function_call else calls[1].module,
-            module_paths=() if function_call else ("block",),
-        ),
-        replace(calls[2], module_paths=("block.inner",)),
-    )
+def test_requirement_index_matches_exhaustive_ownership() -> None:
+    """Match root, nested, aliased, repeated and function calls in declaration order."""
+    model = nn.Module()
+    model.block = nn.Module()
+    model.block.inner = nn.Module()
+    model.block.inner_more = nn.Module()
+    model.block_more = nn.Module()
+    model.unrelated = nn.Module()
+    model.alias = model.block.inner
+    calls = {
+        "root_call": model,
+        "block_call": model.block,
+        "repeated_call": model.block,
+        "inner_call": model.block.inner,
+        "function_call": None,
+    }
+    paths = {
+        name: {id(child): path for path, child in module.named_modules()} if module else {}
+        for name, module in calls.items()
+    }
+    block_attributes = {"block.width", "block.inner.width", "block.inner_more.width", "alias.width"}
+    expected_owners = {
+        "root_call": {*block_attributes, "width", "block_more.width", "unrelated.width", *calls},
+        "block_call": block_attributes,
+        "repeated_call": block_attributes,
+        "inner_call": {"block.inner.width", "alias.width"},
+        "function_call": set(),
+    }
     targets = (
-        "width",
+        "width",  # Root-owned.
         "block.width",
         "block.inner.width",
         "block.inner_more.width",
         "block_more.width",
         "unrelated.width",
-        *(op.node.name for op in operations),
+        "alias.width",
+        *calls,
     )
     requirements = tuple(
         AttributeBinding(target, ShapeExpr("constant", 1))
@@ -58,25 +72,18 @@ def test_requirement_index_matches_exhaustive_ownership(function_call: bool) -> 
     )
     # Equal declarations remain distinct entries, including repeated identities.
     requirements += (requirements[0], replace(requirements[0]))
-    indexed = _requirements_by_operation(operations, requirements)
-    for op in operations:
+    indexed = _requirements_by_operation(model, paths, requirements)
+    for name, owned in expected_owners.items():
         expected = tuple(
             req
             for req in requirements
-            if (isinstance(req, AttributeBinding) or req.kind != "metadata_layout")
-            and (
-                req.target == op.node.name
-                or (
-                    op.module is not None
-                    and isinstance(req, AttributeBinding)
-                    and (
-                        req.target.rpartition(".")[0] == (op.module_path or "")
-                        or req.target.startswith(f"{op.module_path}." if op.module_path else "")
-                    )
-                )
+            if (
+                req.target in owned
+                if isinstance(req, AttributeBinding)
+                else req.kind == "call_arguments" and req.target == name
             )
         )
-        assert tuple(map(id, indexed[op.node.name])) == tuple(map(id, expected))
+        assert tuple(map(id, indexed[name])) == tuple(map(id, expected))
 
 
 class _OpaqueBlock(nn.Module):

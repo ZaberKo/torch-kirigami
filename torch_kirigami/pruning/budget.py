@@ -19,22 +19,14 @@ from .types import (
 )
 
 
-def channel_targets(
-    budget: ChannelRatio | ChannelCount, widths: tuple[int, ...]
-) -> tuple[int, ...]:
-    """Resolve final-width limits with exact decimal rounding."""
-    if isinstance(budget, ChannelRatio):
-        ratio = _decimal_ratio(budget.ratio)
-        counted_widths = widths if budget.scope == "local" else (sum(widths),)
-        return tuple(
-            width * (ratio.denominator - ratio.numerator) // ratio.denominator
-            for width in counted_widths
-        )
-    if isinstance(budget, ChannelCount):
-        if tuple(a.tensor.shape[a.dim] for a in budget.channel_axes) != tuple(widths):
-            raise ValueError("Integer budget channel axes do not match planning widths")
-        return (budget.max_channels,) if budget.scope == "global" else budget.max_channels
-    raise TypeError("Expected ChannelRatio or ChannelCount")
+def channel_targets(budget: ChannelRatio, widths: tuple[int, ...]) -> tuple[int, ...]:
+    """Convert a channel ratio into final-width limits with exact decimal rounding."""
+    ratio = _decimal_ratio(budget.ratio)
+    counted_widths = widths if budget.scope == "local" else (sum(widths),)
+    return tuple(
+        width * (ratio.denominator - ratio.numerator) // ratio.denominator
+        for width in counted_widths
+    )
 
 
 def remaining_parameters(before: int, recipes: tuple[TensorRecipe, ...]) -> int:
@@ -65,19 +57,22 @@ class _BudgetTarget:
     limits: tuple[int, ...]
     scope: Literal["local", "global"]
 
-    def remaining(self, impact: Impact, recipes: tuple[TensorRecipe, ...] = ()) -> tuple[int, ...]:
-        """Measure final sizes in limit order, using compiled recipes for parameters."""
+    def measure(self, impact: Impact, recipes: tuple[TensorRecipe, ...] = ()) -> tuple[int, ...]:
+        """Measure the final parameter count or each logical channel width."""
         if self.resource == "parameters":
             return (remaining_parameters(self.widths[0], recipes),)
-        widths = self.channel_widths(impact)
-        return widths if self.scope == "local" else (sum(widths),)
+        return self.channel_widths(impact)
 
     def channel_widths(self, impact: Impact) -> tuple[int, ...]:
-        """Measure surviving positions without counting aliases or overlaps twice."""
+        """Measure final channel widths from the complete positions removed by the impact."""
         return tuple(
             width - len(impact.selection(a.tensor).fully_selected_indices(a.dim))
             for a, width in zip(self.axes, self.widths, strict=True)
         )
+
+    def remaining(self, sizes: tuple[int, ...]) -> tuple[int, ...]:
+        """Express measured sizes in the same order and scope as the limits."""
+        return sizes if self.scope == "local" else (sum(sizes),)
 
     def met(self, remaining: tuple[int, ...]) -> bool:
         """Use the same final-size comparison for every resource and scope."""
@@ -116,8 +111,7 @@ class _BudgetTarget:
 
     def report(
         self,
-        remaining: tuple[int, ...],
-        impact: Impact,
+        sizes: tuple[int, ...],
         trials: int,
         result: StrategyResult,
         exclusions: tuple[tuple[str, str], ...],
@@ -127,10 +121,9 @@ class _BudgetTarget:
         exclusions = (*exclusions, *result.exclusions)
         if self.resource == "parameters":
             return ParameterReport(
-                self.widths[0], remaining[0], self.limits[0], trials, limited, exclusions
+                self.widths[0], sizes[0], self.limits[0], trials, limited, exclusions
             )
-        widths = self.channel_widths(impact)
-        removed = tuple(old - new for old, new in zip(self.widths, widths, strict=True))
+        removed = tuple(old - new for old, new in zip(self.widths, sizes, strict=True))
         return SelectionReport(
             self.axes, self.widths, removed, self.limits, self.scope, trials, limited, exclusions
         )
@@ -140,13 +133,28 @@ def resolve_budget(
     budget: ChannelCount | ChannelRatio | ParameterBudget,
     axes: tuple[AxisRef, ...],
     parameter_count: int,
+    *,
+    excluded_axes: tuple[AxisRef, ...] = (),
 ) -> _BudgetTarget:
     """Freeze one final-size target; the candidate universe never changes its baseline."""
     if isinstance(budget, ParameterBudget):
         return _BudgetTarget("parameters", (), (parameter_count,), (budget.max_params,), "global")
     if not isinstance(budget, (ChannelRatio, ChannelCount)):
         raise TypeError("Expected a parameter or channel budget")
-    if isinstance(budget, ChannelCount) and budget.channel_axes != axes:
-        raise ValueError("ChannelCount axes must match the candidate space in order")
+    if isinstance(budget, ChannelCount):
+        active = set(axes)
+        if tuple(axis for axis in budget.channel_axes if axis in active) != axes or not set(
+            budget.channel_axes
+        ) <= active.union(excluded_axes):
+            raise ValueError(
+                "ChannelCount axes must match the active space axes in order and may include excluded axes"
+            )
+        axes = budget.channel_axes
     widths = tuple(a.tensor.shape[a.dim] for a in axes)
-    return _BudgetTarget("channels", axes, widths, channel_targets(budget, widths), budget.scope)
+    if isinstance(budget, ChannelRatio):
+        limits = channel_targets(budget, widths)
+    else:
+        limits = budget.max_channels
+        if isinstance(limits, int):
+            limits = (limits,)
+    return _BudgetTarget("channels", axes, widths, limits, budget.scope)

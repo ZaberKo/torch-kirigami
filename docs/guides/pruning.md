@@ -180,7 +180,7 @@ closure. It does not add per-candidate costs, so overlapping effects count once.
 | --- | --- | --- |
 | `ParameterBudget(max_params)` | Final number of parameter elements. | All unique registered `nn.Parameter` objects in the model. |
 | `ChannelRatio(ratio, scope="local")` | Final widths, computed as `floor(width * (1 - ratio))`. | `CandidateSpace.channel_axes`. |
-| `ChannelCount(max_channels, channel_axes, scope="local")` | Final widths, given as integers. | The listed axes, which must match the space's `channel_axes` in order. |
+| `ChannelCount(max_channels, channel_axes, scope="local")` | Final widths, given as integers. | The active channel axes in space order and any tracked excluded axes. |
 
 Channel budgets and parameter budgets measure different things. In
 `Linear(4, 8) → ReLU → Linear(8, 3)`, removing 2 of 8 hidden features is a 25%
@@ -203,6 +203,9 @@ With `scope="local"`, every axis gets its own cap. With `scope="global"`, one ca
 applies to the sum of widths, and individual axes can shrink by different
 amounts. The ratio must be in `[0, 1)`. Its decimal value is used exactly, so
 `ChannelRatio(0.29)` on width 100 gives a cap of 71, not 70.
+`ChannelCount` local caps follow the order of its own `channel_axes`. Include
+an excluded axis when you still need to count its width toward an absolute
+target, for example when rebuilding the graph between cumulative pruning rounds.
 
 The denominator is always the original width of each axis in `channel_axes`.
 Removals count as complete axis positions in the joint closure. A removal that
@@ -315,6 +318,21 @@ gradients before planning. Every affected parameter needs a dense, real gradient
 `joint_abs` lets positive and negative products cancel. That cancellation is
 part of its definition.
 
+### PrunerZero
+
+`PrunerZero(graph, gradient_energy)` takes calibration statistics keyed by the
+graph's parameter references. Supply one nonnegative tensor with the same shape
+and device as each matrix or kernel affected by the proposed removals. For
+example, accumulate the elementwise squared gradients over calibration
+batches. The caller controls the data, loss, and batch reduction.
+
+The metric min-max scales each complete statistics tensor, multiplies by the
+squared weights, and sums the scores at newly removed coordinates. Constant
+statistics give zero importance. Biases and one-dimensional parameters
+still follow the pruning plan. Pass the metric to `Greedy` or `DynamicGreedy`.
+Create a new metric after updating the weights, recalibrating, or rebuilding
+the graph.
+
 ### Scores are not accuracy guarantees
 
 All built-in scores are heuristics. Parameter scales, activation statistics, and
@@ -339,15 +357,17 @@ exclude only the ones that fail. If none fails alone, the batch error is raised.
 `accepted_impact` is the complete closure of the removals that the strategy has
 already accepted. Score only what the candidate adds *on top of* that closure.
 Do not subtract two independent totals, because a joint request can affect
-regions that neither part affects alone. `parameter_regions()` computes exactly
-these additional regions:
+regions that neither part affects alone. `parameter_boxes()` returns these
+additional coordinates as disjoint interval boxes, one tuple of half-open
+intervals per tensor dimension:
 
 ```python
 import math
 
 import torch
 
-from torch_kirigami.pruning import PlanningError, parameter_regions
+from torch_kirigami.dep_graph.selection import gather_intervals
+from torch_kirigami.pruning import PlanningError, parameter_boxes
 
 
 class VectorMagnitude:
@@ -357,27 +377,26 @@ class VectorMagnitude:
         values = {ref: tensor.detach() for ref, tensor in context.graph.tensor_bindings()}
         scores = []
         for candidate in candidates:
-            regions = parameter_regions(context, candidate, accepted_impact=accepted_impact)
-            vectors = [s for s in regions if len(s.tensor.shape) == 1]
+            parts = parameter_boxes(context, candidate, accepted_impact=accepted_impact)
+            vectors = [(ref, boxes) for ref, boxes in parts if len(ref.shape) == 1]
             if not vectors:
                 raise PlanningError(f"{candidate.key!r} removes no one-dimensional parameter")
             scores.append(
                 math.fsum(
-                    values[s.tensor][list(region.axes[0])].abs().sum(dtype=torch.float64).item()
-                    for s in vectors
-                    for region in s.regions
+                    gather_intervals(values[ref], box).abs().sum(dtype=torch.float64).item()
+                    for ref, boxes in vectors
+                    for box in boxes
                 )
             )
         return scores
 ```
 
-Here, `parameter_regions()` returns one nonempty `Selection` per affected
-parameter, in original coordinates. It raises `PlanningError` if the influence is
-incomplete. Constructing the additional regions can also raise `AnalysisLimitError`
-if their representation exceeds `max_parts`. Complete constraint violations
-alone do not prevent extraction, because a strategy may
-still repair them. The example raises when a candidate removes no vector
-parameter, rather than scoring it as unimportant. The
+Both queries use original coordinates and require complete joint influence.
+They allow complete results with constraint violations that a later joint request
+may resolve. Use `parameter_regions()` when you need `Selection` objects. It can
+raise `AnalysisLimitError` if the additional regions exceed `max_parts`.
+`parameter_boxes()` avoids this extra limit when reading data for a score. The
+example raises when a candidate removes no vector parameter. The
 [BN-guided workflow](https://github.com/ZaberKo/torch-kirigami/blob/main/examples/workflows/bn_guided_pruning.py)
 uses the same pattern with explicit BatchNorm scales.
 

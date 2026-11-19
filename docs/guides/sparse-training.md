@@ -249,7 +249,7 @@ import torch
 from torch import nn
 
 from torch_kirigami import DependencyGraph
-from torch_kirigami.pruning import CandidateSpace, Greedy, GroupMagnitude, Pruner
+from torch_kirigami.pruning import Greedy, GroupMagnitude, Pruner
 from torch_kirigami.sparsity import CumulativeChannelBudget
 
 model = nn.Sequential(nn.Conv2d(3, 8, 1), nn.ReLU(), nn.Conv2d(8, 4, 1))
@@ -261,8 +261,7 @@ account = CumulativeChannelBudget(graph, space, scope="local")
 
 for ratio in (0.1, 0.2, 0.3):
     budget = account.budget(graph, space, ratio)
-    round_space = CandidateSpace(space.candidates, budget.channel_axes)
-    plan = pruner.plan(round_space, budget=budget, strategy=Greedy(GroupMagnitude()))
+    plan = pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude()))
     model, result = pruner.apply(plan)
     graph = DependencyGraph.build(model, args=(x,))
     pruner = Pruner(model, graph=graph)
@@ -275,8 +274,9 @@ Only successfully applied plans count. A failed plan leaves the accounting
 unchanged. The budget requires candidate axes on named parameters, and it checks
 at every step that the rebuilt graph describes the same domains and the expected
 widths. A domain whose last candidates become blocked keeps its original
-denominator through the rebuilt space's `excluded_channel_axes`. Custom candidate
-spaces must recreate the same logical domains on each new graph.
+denominator through the rebuilt space's `excluded_channel_axes`. Pass that space
+directly to `plan()`. Custom candidate spaces must recreate the same logical
+domains on each new graph.
 
 `state_dict()` and `load_state_dict(state, graph, space)` save and restore the
 accounting. Loading validates the state against a fresh graph and space before it

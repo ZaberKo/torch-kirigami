@@ -36,6 +36,38 @@ from torch_kirigami.pruning import (
 )
 
 
+def test_trial_limit_does_not_rescore_after_the_last_attempt(execution_device):
+    """A known exhausted trial limit stops dynamic scoring immediately."""
+
+    class Score:
+        def __init__(self):
+            self.trials = []
+
+        def score(self, context, candidates, *, accepted_impact):
+            self.trials.append(context.trials)
+            return [float(candidate.key.rsplit(":", 1)[1]) for candidate in candidates]
+
+    model = nn.Sequential(nn.Linear(4, 6), nn.Linear(6, 2))
+    x = torch.randn(2, 4)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    space = pruner.discover_candidates()
+    old = model[0].weight
+    before = model(x).detach()
+    metric = Score()
+    with pytest.raises(PlanningError, match="1 joint trials; strategy trial limit reached"):
+        pruner.plan(space, budget=ParameterBudget(32), strategy=DynamicGreedy(metric, max_trials=1))
+    assert metric.trials == [0] and model[0].weight is old
+    torch.testing.assert_close(model(x), before)
+
+    plan = pruner.plan(
+        space, budget=ParameterBudget(32), strategy=DynamicGreedy(Score(), max_trials=2)
+    )
+    expected = F.linear(model[0](x)[:, 2:], model[1].weight[:, 2:], model[1].bias)
+    pruner.apply(plan)
+    torch.testing.assert_close(model(x), expected)
+
+
 def test_conditional_magnitude_changes_choice_and_matches_manual_model(
     execution_device: str,
 ) -> None:

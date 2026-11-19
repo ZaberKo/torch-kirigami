@@ -9,7 +9,13 @@ from torch import nn
 from torch.nn import functional as F
 
 from tests.support.operators import make_rule
-from torch_kirigami import DependencyGraph, OperatorRegistry, TensorEffects
+from torch_kirigami import (
+    AxisRelation,
+    DependencyGraph,
+    OperatorRegistry,
+    OperatorSpec,
+    TensorEffects,
+)
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -223,3 +229,59 @@ def test_tensor_subclasses_do_not_key_or_populate_native_metadata_cache() -> Non
         validation._meta_key(value)
     with pytest.raises(TypeError, match="ordinary tensor metadata"):
         validation._freeze_meta_output(value)
+
+
+@pytest.mark.parametrize("custom_copy", [False, True])
+def test_meta_module_keeps_aliases_in_its_own_copy(custom_copy, execution_device):
+    """Both passing and failing meta forwards leave live parameter bindings intact."""
+
+    class Scale(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.scale = nn.Parameter(torch.arange(1.0, 5.0))
+            self.scales = {"active": self.scale}
+
+        def forward(self, x):
+            if x.shape[-1] == 2:
+                raise ValueError("unsupported compact width")
+            return x * self.scales["active"]
+
+    class SharedCopyScale(Scale):
+        def __copy__(self):
+            return self
+
+    def scale_spec(op):
+        return OperatorSpec(
+            (
+                AxisRelation.equal(op.inputs[0].axis(0), op.outputs[0].axis(0)),
+                AxisRelation.equal(op.inputs[0].axis(1), op.outputs[0].axis(1)),
+                AxisRelation.equal(op.inputs[0].axis(1), op.bindings["scale"].axis(0)),
+            )
+        )
+
+    scale = SharedCopyScale() if custom_copy else Scale()
+    registry = OperatorRegistry.default().register(
+        type(scale), make_rule(scale_spec, evaluate_on_meta=True)
+    )
+    model = nn.Sequential(nn.Linear(3, 4), scale, nn.Linear(4, 2))
+    x = torch.randn(2, 3)
+    graph = DependencyGraph.build(model, args=(x,), operators=registry)
+    pruner = Pruner(model, graph=graph)
+    axis = graph.parameter("0.weight").axis(0)
+    bindings = tuple(model.parameters())
+    scales = scale.scales
+    full = model(x).detach()
+    with pytest.raises(PlanningError, match="unsupported compact width"):
+        pruner.plan_remove((axis.select([0, 1]),))
+    plan = pruner.plan_remove((axis.select([1]),))
+    assert all(old is new for old, new in zip(bindings, model.parameters(), strict=True))
+    assert scale.scales is scales and scale.scales["active"] is scale.scale
+    torch.testing.assert_close(model(x), full)
+
+    keep = [0, 2, 3]
+    expected = F.linear(
+        model[0](x)[:, keep] * scale.scale[keep], model[2].weight[:, keep], model[2].bias
+    )
+    pruner.apply(plan)
+    assert scale.scales["active"] is scale.scale
+    torch.testing.assert_close(model(x), expected)

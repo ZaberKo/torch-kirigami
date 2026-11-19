@@ -15,9 +15,13 @@ from torch_kirigami.pruning import (
     CandidateSpace,
     ChannelCount,
     ChannelRatio,
+    DynamicGreedy,
     Greedy,
+    GroupMagnitude,
     Magnitude,
+    ParameterBudget,
     PlanningContext,
+    PlanningError,
     Pruner,
     WeightTaylor,
 )
@@ -64,6 +68,53 @@ def test_stable_l2_complex_components_and_zero_region(execution_device):
     assert context.score(Magnitude(), candidates) == pytest.approx(
         (math.hypot(value.real, value.imag), 0)
     )
+
+
+@pytest.mark.parametrize("strategy", [Greedy, DynamicGreedy])
+def test_out_of_range_group_magnitude_excludes_only_its_candidate(strategy, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.grouped = nn.Linear(1, 4, bias=False, dtype=torch.float64)
+            self.independent = nn.Linear(1, 3, bias=False, dtype=torch.float64)
+            self.scale = nn.Parameter(torch.tensor([[1e100], [2e100]], dtype=torch.float64))
+            with torch.no_grad():
+                self.grouped.weight.fill_(1e-100)
+
+        def forward(self, x):
+            return self.grouped(x).unflatten(-1, (-1, 2)) * self.scale, self.independent(x)
+
+    model = Model().eval()
+    x = torch.ones((2, 1), dtype=torch.float64)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph, preserve_io=False)
+    grouped = graph.parameter("grouped.weight").axis(0)
+    independent = graph.parameter("independent.weight").axis(0)
+    candidates = (
+        Candidate("grouped", (grouped.select([0, 1]),), grouped),
+        Candidate("independent", (independent.select([0]),), independent),
+    )
+    axes = (grouped, independent)
+    budget = ParameterBudget(8)
+    context = PlanningContext(graph, candidates, budget, axes, ())
+    # Only the joint request removes a group scale. The singleton norms are
+    # 1e-100, so the normalized energy of the grouped candidate exceeds float range.
+    assert math.isfinite(context.score(GroupMagnitude(p=1), candidates)[0])
+    metric = GroupMagnitude(p=2)
+    with pytest.raises(PlanningError, match="normalized score exceeds float range"):
+        context.score(metric, candidates)
+    grouped_weight, independent_weight = model.grouped.weight, model.independent.weight
+    first, second = model(x)
+    plan = pruner.plan(CandidateSpace(candidates, axes), budget=budget, strategy=strategy(metric))
+    assert plan.selected == ("independent",)
+    assert any(
+        key == "grouped" and "float range" in reason
+        for key, reason in plan.selection_report.exclusions
+    )
+    assert model.grouped.weight is grouped_weight and model.independent.weight is independent_weight
+    pruner.apply(plan)
+    assert model.grouped.weight is grouped_weight
+    torch.testing.assert_close(model(x), (first, second[:, 1:]))
 
 
 @pytest.mark.parametrize("mode", ["elementwise_abs", "joint_abs"])

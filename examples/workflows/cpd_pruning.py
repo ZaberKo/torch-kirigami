@@ -1,7 +1,7 @@
 """Train and physically prune ResNet or ViT with CPD-style importance scores.
 
-Schmitt et al., *Comb, Prune, Distill* (ITSC 2024), Sections III-C and III-D.
-https://arxiv.org/abs/2408.03046
+*Comb, Prune, Distill: Towards Unified Pruning for Vision Model Compression*
+(ITSC 2024).
 
 Each interval trains against labels and a frozen dense teacher. After each
 backward pass, square the signed weight-gradient sum for each output channel,

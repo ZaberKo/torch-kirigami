@@ -26,7 +26,7 @@ from torch_kirigami.pruning import (
     load_checkpoint,
     save_checkpoint,
 )
-from torch_kirigami.pruning.ranking import IndependentRanking
+from torch_kirigami.pruning.score_reuse import IndependentRanking
 
 pytest.importorskip("torchvision")
 pytest.importorskip("datasets")

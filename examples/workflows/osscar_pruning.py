@@ -1,10 +1,8 @@
 """Select channels by layer reconstruction and refit retained weights.
 
 This workflow adopts layer reconstruction and combinatorial search from
-OSSCAR, ICML 2024.
-Paper: *OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
-Combinatorial Optimization*.
-https://proceedings.mlr.press/v235/meng24a.html
+*OSSCAR: One-Shot Structured Pruning in Vision and Language Models with
+Combinatorial Optimization* (ICML 2024).
 
 Here `teacher` is a frozen copy of the original dense model.
 Its layer outputs supply calibration targets for channel selection and

@@ -5,24 +5,29 @@ from __future__ import annotations
 import math
 import weakref
 from collections import OrderedDict
-from collections.abc import Iterable, Mapping, Sequence
-from typing import cast
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from functools import partial, reduce
+from operator import add
 
 import torch
-from torch import nn
 
 from ..dep_graph.contracts import Impact
+from ..dep_graph.dependency_graph import DependencyGraph
 from ..dep_graph.selection import (
     AxisRef,
+    IndexSet,
     IntervalBox,
     Selection,
     TensorRef,
     canonical_boxes,
     gather_intervals,
     region_boxes,
+    slice_intervals,
 )
 from ..settings import config
 from .types import Candidate, MetricContext, PlanningError
+
+_ParameterBoxes = tuple[tuple[TensorRef, tuple[IntervalBox, ...]], ...]
 
 
 def parameter_regions(
@@ -58,7 +63,7 @@ def parameter_regions(
         ValueError: A reference or `accepted_impact` belongs to another graph.
         torch_kirigami.AnalysisLimitError: An additional selection, or an
             intermediate piece of `Selection.subtract`, exceeds the region
-            limit. The built-in metrics score it without this representation.
+        limit. Use `parameter_boxes` to score without rebuilding a selection.
         torch_kirigami.StaleGraphError: The model changed after capture.
     """
     regions = []
@@ -80,13 +85,29 @@ def _joint_parameters(
     return tuple((s, accepted_impact.selection(s.tensor)) for s in impact.parameters)
 
 
-def _additional_boxes(
-    context: MetricContext, candidate: Candidate, accepted_impact: Impact
-) -> tuple[tuple[TensorRef, tuple[IntervalBox, ...]], ...]:
-    """Return `canonical_boxes` of the positions that `parameter_regions` selects.
+def parameter_boxes(
+    context: MetricContext, candidate: Candidate, *, accepted_impact: Impact
+) -> _ParameterBoxes:
+    """Return additional parameter coordinates as disjoint interval boxes.
 
-    Parameters with no additional positions are omitted. Unlike
-    `parameter_regions`, this never reaches the region limit.
+    The coordinate set is the same as in `parameter_regions`. Its decomposition
+    depends only on the coordinates, and does not build a bounded `Selection`.
+
+    Args:
+        context: Dependency queries and original model bindings.
+        candidate: The removal to score.
+        accepted_impact: Complete dependency closure of prior removals.
+
+    Returns:
+        Pairs of parameter reference and nonempty box sequence, in parameter
+        order. Each box has one tuple of half-open intervals per tensor axis.
+        Pass each box to `torch_kirigami.dep_graph.selection.gather_intervals`
+        to read the selected tensor elements.
+
+    Raises:
+        torch_kirigami.pruning.PlanningError: The dependency closure is incomplete.
+        ValueError: A selection or impact belongs to another graph.
+        torch_kirigami.StaleGraphError: The model changed after capture.
     """
     parts = []
     for selection, accepted in _joint_parameters(context, candidate, accepted_impact):
@@ -96,6 +117,27 @@ def _additional_boxes(
     return tuple(parts)
 
 
+def _candidate_parameter_boxes(
+    context: MetricContext, candidates: Iterable[Candidate], accepted_impact: Impact
+) -> Iterator[_ParameterBoxes]:
+    """Yield disjoint additional boxes for each candidate with a parameter basis."""
+    for candidate in candidates:
+        boxes = parameter_boxes(context, candidate, accepted_impact=accepted_impact)
+        if not boxes and not all(
+            seed.issubset(accepted_impact.selection(seed.tensor)) for seed in candidate.remove
+        ):
+            # A prior removal can cover a candidate's parameters without
+            # covering its seeds. Check the candidate alone in that case.
+            original = context.impact(candidate.remove)
+            context.require_complete(original)
+            if not original.parameters:
+                raise PlanningError(
+                    f"Candidate {candidate.key!r} has no affected parameters. "
+                    "Use a custom metric for parameter-free changes."
+                )
+        yield boxes
+
+
 class Magnitude:
     """L1 or L2 norm of the union of all affected parameter regions.
 
@@ -103,7 +145,7 @@ class Magnitude:
     across all affected parameters before one square root is taken; the score is
     not a sum of per-module norms. Biases and custom operator parameters are
     included; buffers are not. With accepted removals, only the additional
-    regions returned by `torch_kirigami.pruning.parameter_regions` are scored.
+    regions returned by `torch_kirigami.pruning.parameter_boxes` are scored.
 
     A request without parameter effects raises `PlanningError`. Zero-valued
     parameters, and effects already covered by accepted removals, can score
@@ -144,7 +186,27 @@ class Magnitude:
             torch_kirigami.pruning.PlanningError: Influence is incomplete, or a
                 request that is not already covered has no parameter effects.
         """
-        return _parameter_scores(self, context, candidates, accepted_impact=accepted_impact)
+        context.graph.validate_impact(accepted_impact)
+        context.require_complete(accepted_impact)
+        return _magnitude_norms(
+            dict(context.graph.tensor_bindings()),
+            _candidate_parameter_boxes(context, candidates, accepted_impact),
+            p=self.p,
+        )
+
+    def _norm_positions(self, requested: IndexSet) -> IndexSet | None:
+        """Require norms only at the positions the candidates request."""
+        return requested
+
+    def _scores_from_norms(
+        self,
+        axis: AxisRef,
+        positions: Iterable[int],
+        removed: Collection[int],
+        norms: Mapping[int, float],
+    ) -> dict[int, float]:
+        """Use the available finite norms without axis normalization."""
+        return {i: norms[i] for i in positions if math.isfinite(norms[i])}
 
 
 class WeightTaylor:
@@ -215,7 +277,74 @@ class WeightTaylor:
                 an affected parameter is complex or has no dense gradient.
         """
         self._sync_cache_settings()
-        return _parameter_scores(self, context, candidates, accepted_impact=accepted_impact)
+        context.graph.validate_impact(accepted_impact)
+        context.require_complete(accepted_impact)
+        bindings = dict(context.graph.tensor_bindings())
+        if self.mode == "joint_abs":
+            box_sums = _signed_taylor_sums
+            finalize = abs
+        else:
+            use_axis_cache = (
+                type(self) is WeightTaylor
+                and "score" not in vars(self)
+                and type(self).score is _TAYLOR_SCORE
+            )
+            box_sums = partial(self._absolute_taylor_sums, use_axis_cache=use_axis_cache)
+            finalize = float
+        totals = [
+            self._region_sums(bindings, boxes, box_sums)
+            for boxes in _candidate_parameter_boxes(context, candidates, accepted_impact)
+        ]
+        return [finalize(reduce(add, values, 0.0)) for values in _device_scalar_values(totals)]
+
+    @staticmethod
+    def _region_sums(
+        bindings: Mapping[TensorRef, torch.Tensor],
+        parts: _ParameterBoxes,
+        box_sums: Callable[
+            [torch.Tensor, torch.Tensor, tuple[IntervalBox, ...]], Iterable[torch.Tensor | float]
+        ],
+    ) -> dict[torch.device, torch.Tensor | float]:
+        """Sum Taylor products per device in parameter and box order."""
+        totals: dict[torch.device, torch.Tensor | float] = {}
+        with torch.no_grad():
+            for ref, boxes in sorted(parts, key=lambda part: part[0].id):
+                weight = bindings[ref]
+                gradient = weight.grad
+                if weight.is_complex() or gradient is None or gradient.is_sparse:
+                    raise PlanningError(
+                        "WeightTaylor requires real parameters and dense current gradients"
+                    )
+                device = weight.device
+                for product_sum in box_sums(weight, gradient, boxes):
+                    previous = totals.get(device)
+                    totals[device] = product_sum if previous is None else previous + product_sum
+        return totals
+
+    def _absolute_taylor_sums(
+        self,
+        weight: torch.Tensor,
+        gradient: torch.Tensor,
+        boxes: tuple[IntervalBox, ...],
+        *,
+        use_axis_cache: bool,
+    ) -> Iterator[float | torch.Tensor]:
+        """Use exact axis coverage for cached absolute products, or read the boxes."""
+        if use_axis_cache and len(boxes) == 1:
+            box = boxes[0]
+            restricted = [
+                dim for dim, intervals in enumerate(box) if intervals != ((0, weight.shape[dim]),)
+            ]
+            if len(restricted) == 1:
+                dim = restricted[0]
+                values = self._axis_sums(weight, dim)
+                if values is not None:
+                    cached = sum(values[i] for start, stop in box[dim] for i in range(start, stop))
+                    if math.isfinite(cached):
+                        yield cached
+                        return
+        for box in boxes:
+            yield _taylor_products(weight, gradient, box).abs().sum(dtype=torch.float64)
 
     def _sync_cache_settings(self) -> None:
         """Release old statistics before scoring under changed resource settings."""
@@ -231,10 +360,9 @@ class WeightTaylor:
 
     def _axis_sums(self, weight: torch.Tensor, dim: int) -> tuple[float, ...] | None:
         """Reduce absolute axis statistics when their reuse is supported."""
-        self._sync_cache_settings()
         gradient = weight.grad
         assert gradient is not None
-        if self.mode != "elementwise_abs" or not config.taylor_cache_size:
+        if not config.taylor_cache_size:
             return None
         width = weight.shape[dim]
         elements_per_position = weight.numel() // width
@@ -245,7 +373,7 @@ class WeightTaylor:
         ):
             return None
         try:
-            key = (id(weight), weight._version, id(gradient), gradient._version, dim, self.mode)
+            key = (id(weight), weight._version, id(gradient), gradient._version, dim)
         except RuntimeError:
             return None  # Inference tensors use ordinary selected-region reductions.
         entry = self._axis_statistics.get(key)
@@ -288,6 +416,138 @@ class WeightTaylor:
 
 
 _TAYLOR_SCORE = WeightTaylor.score
+
+
+def _taylor_products(
+    weight: torch.Tensor, gradient: torch.Tensor, box: IntervalBox
+) -> torch.Tensor:
+    """Read one box, promoting before multiplying to preserve the product's range."""
+    return gather_intervals(weight.detach(), box).to(torch.float64) * gather_intervals(
+        gradient.detach(), box
+    ).to(torch.float64)
+
+
+def _signed_taylor_sums(
+    weight: torch.Tensor, gradient: torch.Tensor, boxes: tuple[IntervalBox, ...]
+) -> Iterator[torch.Tensor]:
+    """Preserve signed contributions until the metric has combined every box."""
+    for box in boxes:
+        yield _taylor_products(weight, gradient, box).sum(dtype=torch.float64)
+
+
+class PrunerZero:
+    """Score structural removals with the fixed Pruner-Zero expression.
+
+    For each matrix or kernel, min-max scale the supplied gradient statistics
+    over the whole tensor and multiply elementwise by squared weights.
+    Constant statistics give zero importance. Each candidate sums the scores
+    of the additional coordinates it removes through the dependency graph.
+    Parameters of rank below two and buffers do not contribute.
+
+    This adapts the per-weight expression from *Pruner-Zero: Evolving Symbolic
+    Pruning Metric From Scratch for Large Language Models* (ICML 2024) to
+    structural groups. The caller supplies the statistics and decides how to
+    collect them. Recreate this metric after recalibration,
+    weight updates, or graph rebuilding. The snapshot stays fixed while
+    `DynamicGreedy` evaluates overlapping removals.
+
+    Args:
+        graph: Dependency graph for the calibrated model.
+        gradient_energy: Nonnegative gradient statistics, keyed by parameter
+            reference from `graph`. For example, supply the elementwise sum of
+            squared gradients across calibration batches. Each tensor must
+            have the shape and device of its parameter.
+
+    Raises:
+        torch_kirigami.pruning.PlanningError: A reference or statistic is invalid,
+            or the computed per-weight importance is nonfinite.
+    """
+
+    @torch.no_grad()
+    def __init__(
+        self, graph: DependencyGraph, gradient_energy: Mapping[TensorRef, torch.Tensor]
+    ) -> None:
+        self._graph_id = graph.id
+        self._importance: dict[TensorRef, torch.Tensor] = {}
+        bindings = dict(graph.tensor_bindings())
+        for ref, energy in gradient_energy.items():
+            if ref not in bindings or ref.kind != "parameter" or len(ref.shape) < 2:
+                raise PlanningError("Pruner-Zero statistics require a matrix or kernel parameter")
+            weight = bindings[ref].detach()
+            if (
+                not weight.is_floating_point()
+                or weight.layout != torch.strided
+                or not energy.is_floating_point()
+                or energy.layout != torch.strided
+                or energy.shape != weight.shape
+                or energy.device != weight.device
+            ):
+                raise PlanningError(f"Pruner-Zero requires gradient statistics matching {ref.id}")
+            dtype = torch.promote_types(
+                torch.float32, torch.promote_types(weight.dtype, energy.dtype)
+            )
+            energy = energy.to(dtype)
+            low, high = torch.aminmax(energy)
+            if not (torch.isfinite(high) & torch.isfinite(low) & (low >= 0)):
+                raise PlanningError(
+                    f"Pruner-Zero requires finite nonnegative statistics for {ref.id}"
+                )
+            span = high - low
+            scale = torch.where(span > 0, span, torch.ones_like(span))
+            # Combine the scales before squaring. Taking the roots separately
+            # also keeps a small, positive ratio from rounding to zero first.
+            terms = (energy - low).sqrt_().div_(scale.sqrt())
+            terms.mul_(weight).square_()
+            if not torch.isfinite(terms).all():
+                raise PlanningError(f"Pruner-Zero importance is nonfinite for {ref.id}")
+            self._importance[ref] = terms
+
+    def score(
+        self,
+        context: MetricContext,
+        candidates: tuple[Candidate, ...],
+        *,
+        accepted_impact: Impact,
+    ) -> list[float]:
+        """Sum the fixed importances at each candidate's additional coordinates.
+
+        Args:
+            context: Planning context for the graph used to construct the metric.
+            candidates: Candidate requests to score separately.
+            accepted_impact: Complete structural effect of prior removals.
+
+        Returns:
+            One score per candidate in input order.
+
+        Raises:
+            torch_kirigami.pruning.PlanningError: The graph changed, influence is
+                incomplete, no matrix or kernel is affected, or a needed statistic
+                is missing.
+        """
+        if context.graph.id != self._graph_id:
+            raise PlanningError("Pruner-Zero requires calibration on the current dependency graph")
+        context.graph.validate_impact(accepted_impact)
+        context.require_complete(accepted_impact)
+        totals: list[dict[torch.device, torch.Tensor | float]] = []
+        for candidate in candidates:
+            partial: dict[torch.device, torch.Tensor | float] = {}
+            for ref, boxes in parameter_boxes(context, candidate, accepted_impact=accepted_impact):
+                if len(ref.shape) < 2:
+                    continue
+                importance = self._importance.get(ref)
+                if importance is None:
+                    raise PlanningError(f"Pruner-Zero calibration has no statistics for {ref.id}")
+                for box in boxes:
+                    value = gather_intervals(importance, box).sum(dtype=torch.float64)
+                    device = importance.device
+                    partial[device] = partial[device] + value if device in partial else value
+            if not partial:
+                original = context.impact(candidate.remove)
+                context.require_complete(original)
+                if not any(len(selection.tensor.shape) >= 2 for selection in original.parameters):
+                    raise PlanningError("Pruner-Zero requires an affected matrix or kernel")
+            totals.append(partial)
+        return [reduce(add, values, 0.0) for values in _device_scalar_values(totals)]
 
 
 class GroupMagnitude:
@@ -364,8 +624,9 @@ class GroupMagnitude:
         Raises:
             torch_kirigami.pruning.PlanningError: A candidate does not select complete slices of its
                 declared axis, influence is incomplete, or scoring has no
-                parameter basis. Also raised for nonfinite normalization values
-                or nonzero joint energy with a zero single-position baseline.
+                parameter basis. Also raised for nonfinite normalization values,
+                an out-of-range normalized score, or nonzero joint energy with
+                a zero single-position baseline.
         """
         if self._cache_size != config.normalization_cache_size:
             self._normalizers.clear()
@@ -375,7 +636,11 @@ class GroupMagnitude:
         domains = tuple(_candidate_domain(candidate) for candidate in candidates)
         if not domains:
             return []
-        parameters = _parameter_bindings(context)
+        parameters = {
+            ref: tensor
+            for ref, tensor in context.graph.tensor_bindings()
+            if ref.kind == "parameter"
+        }
 
         # A second planning context may add constraints affecting completeness.
         # Never reuse its predecessor's proofs, even for the same graph/weights.
@@ -413,13 +678,17 @@ class GroupMagnitude:
             removed = frozenset(
                 accepted_impact.selection(axis.tensor).fully_selected_indices(axis.dim)
             )
-            surviving = [i for i in range(axis.tensor.shape[axis.dim]) if i not in removed]
+            surviving = self._surviving_positions(axis, removed)
             population = tuple(
                 Candidate(f"normalization:{position}", (axis.select([position]),), axis)
                 for position in surviving
             )
-            norms = _parameter_scores(self, context, population, accepted_impact=accepted_impact)
-            scale, scaled_mean_energy = _normalization(norms, self.p)
+            norms = _magnitude_norms(
+                parameters,
+                _candidate_parameter_boxes(context, population, accepted_impact),
+                p=self.p,
+            )
+            scale, scaled_mean_energy = self._normalization(norms)
             # A singleton's normalization query is exactly its conditional score
             # query. Store scalar results instead of propagating/evaluating them
             # again when a later score batch visits the same axis positions.
@@ -440,19 +709,66 @@ class GroupMagnitude:
             else:
                 joint_indices.append(index)
         if joint_indices:
-            joint_norms = _parameter_scores(
-                self,
-                context,
-                tuple(candidates[index] for index in joint_indices),
-                accepted_impact=accepted_impact,
+            joint_norms = _magnitude_norms(
+                parameters,
+                _candidate_parameter_boxes(
+                    context, (candidates[index] for index in joint_indices), accepted_impact
+                ),
+                p=self.p,
             )
             for index, norm in zip(joint_indices, joint_norms, strict=True):
                 norms[index] = norm
         scores = []
         for value, (axis, _count, _first) in zip(norms, domains, strict=True):
             scale, scaled_mean_energy, _position_norms = normalizers[axis]
-            scores.append(_group_score(value, scale, scaled_mean_energy, self.p))
+            scores.append(self._normalized_score(value, scale, scaled_mean_energy))
         return scores
+
+    def _norm_positions(self, requested: IndexSet) -> IndexSet | None:
+        """Require the whole axis to support the same population as ordinary scoring."""
+        return None
+
+    def _scores_from_norms(
+        self,
+        axis: AxisRef,
+        positions: Iterable[int],
+        removed: Collection[int],
+        norms: Mapping[int, float],
+    ) -> dict[int, float]:
+        """Normalize norms whose entire surviving population has been proved."""
+        surviving = self._surviving_positions(axis, removed)
+        scale, mean = self._normalization([norms[i] for i in surviving])
+        return {i: self._normalized_score(norms[i], scale, mean) for i in positions}
+
+    @staticmethod
+    def _surviving_positions(axis: AxisRef, removed: Collection[int]) -> tuple[int, ...]:
+        """Enumerate the normalization population in original axis order."""
+        return tuple(i for i in range(axis.tensor.shape[axis.dim]) if i not in removed)
+
+    def _normalized_score(self, norm: float, scale: float, mean: float) -> float:
+        """Divide one union energy by the average single-position energy."""
+        if scale:
+            try:
+                return (norm / scale) ** self.p / mean
+            except OverflowError as error:
+                raise PlanningError(
+                    "GroupMagnitude normalized score exceeds float range"
+                ) from error
+        if norm != 0:
+            raise PlanningError(
+                "GroupMagnitude has zero singleton normalization but a nonzero joint score. "
+                "Use a custom metric for this jointly activated structure."
+            )
+        return 0.0
+
+    def _normalization(self, norms: Sequence[float]) -> tuple[float, float]:
+        """Return the scale and the average energy relative to it."""
+        if not all(math.isfinite(value) for value in norms):
+            raise PlanningError("GroupMagnitude normalization contains nonfinite weights")
+        scale = max(norms, default=0.0)
+        if not scale:
+            return 0.0, 0.0
+        return scale, math.fsum((norm / scale) ** self.p for norm in norms) / len(norms)
 
 
 def _candidate_domain(candidate: Candidate) -> tuple[AxisRef, int, int]:
@@ -465,73 +781,23 @@ def _candidate_domain(candidate: Candidate) -> tuple[AxisRef, int, int]:
     axis = candidate.axis
     if axis is None or any(selection.tensor != axis.tensor for selection in candidate.remove):
         raise PlanningError("GroupMagnitude requires a candidate selecting its declared axis")
-    boxes = canonical_boxes(
-        tuple(box for selection in candidate.remove for box in region_boxes(selection.regions))
-    )
-    # A union of complete slices is one canonical box that spans every other axis.
-    if len(boxes) != 1 or any(
-        intervals != ((0, size),)
-        for dim, (intervals, size) in enumerate(zip(boxes[0], axis.tensor.shape, strict=True))
-        if dim != axis.dim
-    ):
+    intervals = slice_intervals(axis, candidate.remove)
+    if intervals is None:
         raise PlanningError("GroupMagnitude requires complete slices of its declared axis")
-    intervals = boxes[0][axis.dim]
     return axis, sum(stop - start for start, stop in intervals), intervals[0][0]
 
 
-def _parameter_bindings(context: MetricContext) -> dict[TensorRef, nn.Parameter]:
-    """Select registered parameters without operator-specific scoring roles."""
-    return {
-        ref: cast(nn.Parameter, tensor)
-        for ref, tensor in context.graph.tensor_bindings()
-        if ref.kind == "parameter"
-    }
+def _l1_norm(values: torch.Tensor) -> torch.Tensor:
+    """Sum absolute values of a real or complex box in float64."""
+    dtype = torch.complex128 if values.is_complex() else torch.float64
+    return values.to(dtype).abs().reshape(-1).sum(-1, dtype=torch.float64)
 
 
-def _group_score(norm: float, scale: float, scaled_mean_energy: float, p: int) -> float:
-    """Normalize one union norm with statistics from `_normalization`.
-
-    Raise when joint effects have nonzero energy but all single-position effects
-    have zero energy. Ordinary and accelerated scoring share this calculation.
-    """
-    if scale:
-        return (norm / scale) ** p / scaled_mean_energy
-    if norm != 0:
-        raise PlanningError(
-            "GroupMagnitude has zero singleton normalization but a nonzero joint score. "
-            "Use a custom metric for this jointly activated structure."
-        )
-    return 0.0
-
-
-def _normalization(norms: Sequence[float], p: int) -> tuple[float, float]:
-    """Return the maximum norm and the mean of `(norm / maximum) ** p`.
-
-    Inputs are single-position L1 or L2 norms, not energies. Return `(0, 0)`
-    for empty or all-zero inputs. Scaling avoids overflow in the mean energy.
-    """
-    if not all(math.isfinite(value) for value in norms):
-        raise PlanningError("GroupMagnitude normalization contains nonfinite weights")
-    scale = max(norms, default=0.0)
-    scaled_mean_energy = (
-        math.fsum((value / scale) ** p for value in norms) / len(norms) if scale else 0.0
-    )
-    return scale, scaled_mean_energy
-
-
-def _magnitude_norm(values: torch.Tensor, p: int) -> torch.Tensor:
-    """Reduce one region to an L1 or overflow-safe L2 norm."""
-    if p == 2:
-        dtype = (
-            torch.float64 if values.dtype in (torch.float64, torch.complex128) else torch.float32
-        )
-        values = torch.view_as_real(values.resolve_conj()) if values.is_complex() else values
-        values = values.to(dtype).abs()
-    else:
-        values = values.to(torch.complex128 if values.is_complex() else torch.float64).abs()
-    values = values.reshape(-1)
-    if p == 1:
-        return values.sum(-1, dtype=torch.float64)
+def _l2_norm(values: torch.Tensor) -> torch.Tensor:
+    """Compute a scaled L2 norm without squaring values in their original range."""
+    dtype = torch.float64 if values.dtype in (torch.float64, torch.complex128) else torch.float32
+    values = torch.view_as_real(values.resolve_conj()) if values.is_complex() else values
+    values = values.to(dtype).abs().reshape(-1)
     scale = values.amax(-1)
     divisor = torch.where(scale == 0, torch.ones_like(scale), scale)
     return (values / divisor.unsqueeze(-1)).square().sum(-1, dtype=torch.float64).sqrt() * scale.to(
@@ -539,146 +805,56 @@ def _magnitude_norm(values: torch.Tensor, p: int) -> torch.Tensor:
     )
 
 
-def _parameter_scores(
-    metric: Magnitude | WeightTaylor | GroupMagnitude,
-    context: MetricContext,
-    candidates: tuple[Candidate, ...],
-    *,
-    accepted_impact: Impact,
-) -> list[float]:
-    """Compute additional-region norms or Taylor sums with joint propagation.
-
-    Both magnitude classes receive union L1 or L2 norms here. `GroupMagnitude`
-    converts these norms to normalized energies after this helper returns.
-    """
-    context.graph.validate_impact(accepted_impact)
-    context.require_complete(accepted_impact)
-    bindings = dict(context.graph.tensor_bindings())
-    totals = []
-    for candidate in candidates:
-        parts = _additional_boxes(context, candidate, accepted_impact)
-        totals.append(_region_totals(metric, bindings, parts))
-        if not parts and not all(
-            seed.issubset(accepted_impact.selection(seed.tensor)) for seed in candidate.remove
-        ):
-            # Empty marginal regions can mean prior deletions already cover
-            # the parameter effects. Check the candidate alone only on this
-            # uncommon path, without adding queries to ordinary scoring.
-            original = context.impact(candidate.remove)
-            context.require_complete(original)
-            if not original.parameters:
-                raise PlanningError(
-                    f"{type(metric).__name__} request {candidate.key!r} has no affected parameters. "
-                    "Use a custom metric for parameter-free changes."
-                )
-    return _combine_totals(metric, totals)
-
-
-def _region_totals(
-    metric: Magnitude | WeightTaylor | GroupMagnitude,
+def _magnitude_norms(
     bindings: Mapping[TensorRef, torch.Tensor],
-    parts: Iterable[tuple[TensorRef, tuple[IntervalBox, ...]]],
-) -> dict[torch.device, torch.Tensor | float]:
-    """Reduce one request's parameter boxes from `canonical_boxes` to one value per device.
-
-    Parameters are reduced in tensor-ID order, and each one box at a time.
-    The value, and the choice of cached Taylor axis statistics, therefore
-    depend only on the selected coordinates, not on the propagation order or
-    region decomposition that produced them. Temporary memory follows
-    `gather_intervals` for the largest box. Accelerated rankings call this
-    reduction to reproduce ordinary scores exactly.
-    """
-    l2 = isinstance(metric, (Magnitude, GroupMagnitude)) and metric.p == 2
-    taylor = isinstance(metric, WeightTaylor)
-    native_taylor = (
-        type(metric) is WeightTaylor
-        and "score" not in vars(metric)
-        and type(metric).score is _TAYLOR_SCORE
-    )
-    totals: dict[torch.device, torch.Tensor | float] = {}
-    with torch.no_grad():
-        for ref, boxes in sorted(parts, key=lambda part: part[0].id):
-            weight = bindings[ref]
-            if taylor and (weight.is_complex() or weight.grad is None or weight.grad.is_sparse):
-                raise PlanningError(
-                    "WeightTaylor requires real parameters and dense current gradients"
-                )
-            if native_taylor and len(boxes) == 1:
-                box = boxes[0]
-                partial = tuple(
-                    dim
-                    for dim, intervals in enumerate(box)
-                    if intervals != ((0, weight.shape[dim]),)
-                )
-                if len(partial) == 1:
-                    dim = partial[0]
-                    values = cast(WeightTaylor, metric)._axis_sums(weight, dim)
-                    if values is not None:
-                        value = sum(
-                            values[position]
-                            for start, stop in box[dim]
-                            for position in range(start, stop)
-                        )
-                        # Preserve ordinary region reduction and error
-                        # behavior when cached statistics are nonfinite.
-                        if math.isfinite(value):
-                            previous = totals.get(weight.device)
-                            totals[weight.device] = value if previous is None else previous + value
-                            continue
-            for box in boxes:
-                values = gather_intervals(weight.detach(), box)
-                if taylor:
-                    # Promote before multiplication: a float64 reduction cannot
-                    # recover products already underflowed/overflowed in float32.
-                    values = values.to(torch.float64) * gather_intervals(
-                        weight.grad.detach(), box
-                    ).to(torch.float64)
-                    if cast(WeightTaylor, metric).mode == "elementwise_abs":
-                        values = values.abs()
-                    value = values.sum(dtype=torch.float64)
-                else:
-                    value = _magnitude_norm(values, metric.p)
-                previous = totals.get(weight.device)
-                totals[weight.device] = (
-                    value
-                    if previous is None
-                    else torch.hypot(previous, value)
-                    if l2
-                    else previous + value
-                )
-    return totals
-
-
-def _combine_totals(
-    metric: Magnitude | WeightTaylor | GroupMagnitude,
-    totals: Sequence[Mapping[torch.device, torch.Tensor | float]],
+    requests: Iterable[_ParameterBoxes],
+    *,
+    p: int,
 ) -> list[float]:
-    """Combine `_region_totals` results into one score per request.
+    """Compute L1 or L2 norms from canonical boxes, in request order.
 
-    Devices are combined in name order, so a score does not depend on which
-    devices other requests in the batch use.
+    Each request lists disjoint boxes once per parameter. Reduce detached
+    values in tensor-ID and box order, one box at a time. Keep partial
+    results on their devices until the batch is ready to transfer.
     """
-    l2 = isinstance(metric, (Magnitude, GroupMagnitude)) and metric.p == 2
+    region_norm, merge_tensors, merge_scalars = (
+        (_l2_norm, torch.hypot, math.hypot) if p == 2 else (_l1_norm, add, add)
+    )
+    totals = []
+    for parts in requests:
+        by_device: dict[torch.device, torch.Tensor] = {}
+        for ref, boxes in sorted(parts, key=lambda part: part[0].id):
+            weight = bindings[ref].detach()
+            device = weight.device
+            for box in boxes:
+                norm = region_norm(gather_intervals(weight, box))
+                previous = by_device.get(device)
+                by_device[device] = norm if previous is None else merge_tensors(previous, norm)
+        totals.append(by_device)
+    return [reduce(merge_scalars, values, 0.0) for values in _device_scalar_values(totals)]
+
+
+def _device_scalar_values(
+    totals: Sequence[Mapping[torch.device, torch.Tensor | float]],
+) -> list[list[float]]:
+    """Read all scalar tensors in at most one transfer per device.
+
+    Args:
+        totals: One mapping of scalar values by device for each request.
+
+    Returns:
+        Values in request order, with each request's values in device-name
+        order. Python scalar inputs require no transfer.
+    """
     entries: dict[torch.device, list[tuple[int, torch.Tensor | float]]] = {}
-    for index, partial in enumerate(totals):
-        for device, value in partial.items():
+    for index, by_device in enumerate(totals):
+        for device, value in by_device.items():
             entries.setdefault(device, []).append((index, value))
-    values: list[dict[str, float]] = [{} for _ in totals]
-    # One transfer per device/batch, rather than one synchronization per
-    # affected parameter region. Different parameter devices can still contribute.
-    for device, device_entries in entries.items():
+    values: list[list[float]] = [[] for _ in totals]
+    for device in sorted(entries, key=str):
+        device_entries = entries[device]
         tensors = [value for _, value in device_entries if isinstance(value, torch.Tensor)]
         transferred = iter(torch.stack(tensors).cpu().tolist() if tensors else ())
         for index, value in device_entries:
-            values[index][str(device)] = (
-                next(transferred) if isinstance(value, torch.Tensor) else value
-            )
-    result = []
-    for partial in values:
-        total = 0.0
-        for _device, value in sorted(partial.items()):
-            total = math.hypot(total, value) if l2 else total + value
-        result.append(total)
-    if isinstance(metric, WeightTaylor) and metric.mode == "joint_abs":
-        result = [abs(value) for value in result]
-    return result
+            values[index].append(next(transferred) if isinstance(value, torch.Tensor) else value)
+    return values

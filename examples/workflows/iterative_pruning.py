@@ -1,8 +1,7 @@
 """Alternate internal channel pruning and optional ImageNet recovery training.
 
 This baseline uses dependency-aware removal of coupled tensor coordinates.
-Background paper: *DepGraph: Towards Any Structural Pruning* (CVPR 2023).
-https://openaccess.thecvf.com/content/CVPR2023/html/Fang_DepGraph_Towards_Any_Structural_Pruning_CVPR_2023_paper.html
+See *DepGraph: Towards Any Structural Pruning* (CVPR 2023) for background.
 
 `DependencyGraph.build` and `Pruner.discover_candidates` identify internal widths
 in every ResNet `BasicBlock.conv1`, Bottleneck `conv1` and `conv2`, or ViT
@@ -37,7 +36,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
 from torch_prisma import count_parameters
@@ -219,9 +218,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     graph = DependencyGraph.build(model, args=(example,))

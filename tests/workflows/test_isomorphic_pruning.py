@@ -201,7 +201,7 @@ def test_rounding_cursors_match_exhaustive_recount_with_coupled_actions():
             }
             actions.append(
                 workflow.RemovalAction(
-                    Candidate(str(i), (axes[0].select([i % 24]),)), [str(i)], 0, contributions
+                    Candidate(str(i), (axes[0].select([i % 24]),)), 0, contributions
                 )
             )
         contributors = {
@@ -249,9 +249,7 @@ def test_rounding_cursors_match_exhaustive_recount_with_coupled_actions():
 def test_rounding_visits_each_contributor_at_most_twice():
     axis = TensorRef("wide", (1024,)).axis(0)
     actions = [
-        workflow.RemovalAction(
-            Candidate(str(i), (axis.select([i]),)), [str(i)], 0, {axis: IndexSet.of([i])}
-        )
+        workflow.RemovalAction(Candidate(str(i), (axis.select([i]),)), 0, {axis: IndexSet.of([i])})
         for i in range(1024)
     ]
     visits = []

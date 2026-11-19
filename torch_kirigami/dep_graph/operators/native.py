@@ -40,6 +40,7 @@ from ..relations import (
     SliceRelation,
 )
 from ..selection import IndexSet, Region, TensorRef, full_region
+from .effects import normalization_tensor_arguments
 from .shapes import has_known_provenance, scalar_spec, shape_expression
 
 
@@ -323,15 +324,8 @@ def batch_norm(operation: Operation) -> OperatorSpec:
     """Connect channel positions to affine parameters and running statistics."""
     x, y = one(operation.argument("input", 0)), one(operation.result)
     relations = [ReshapeRelation(x, y, operation.node.name)]
-    # Native torch calls place affine tensors before the running statistics.
-    # F.batch_norm uses the reverse order. Equal shapes cannot identify roles.
-    positions = (
-        {"weight": 1, "bias": 2, "running_mean": 3, "running_var": 4}
-        if operation.node.target is torch.batch_norm
-        else {"running_mean": 1, "running_var": 2, "weight": 3, "bias": 4}
-    )
-    for name, position in positions.items():
-        value = bind(operation, name, position)
+    for ref in normalization_tensor_arguments(operation.node.target):
+        value = bind(operation, ref.name, ref.position)
         if value is not None:
             relations.append(equal(x, 1, one(value), 0, operation.node.name))
     reqs = (requirement(operation, "num_features", x, 1),) if operation.module is not None else ()
@@ -607,17 +601,26 @@ def concatenate(operation: Operation) -> OperatorSpec:
 
 
 def split(operation: Operation) -> OperatorSpec:
-    """Connect static split or unbind outputs to their source partitions."""
+    """Connect split, chunk, or unbind outputs to their ordered source partitions."""
     x = one(operation.argument("input", 0))
-    dim = operation.argument("dim", 2, 0) % len(x.shape)
     target = operation.node.target
-    if target in ("unbind", torch.unbind):
-        dim = operation.argument("dim", 1, 0) % len(x.shape)
-        relations = []
-        for i, y in enumerate(operation.outputs):
-            index = [slice(None)] * len(x.shape)
-            index[dim] = i
-            relations.append(SliceRelation(x, y, tuple(index), operation.node.name))
+    unbind = target in ("unbind", torch.unbind)
+    dim = operation.argument("dim", 1 if unbind else 2, 0) % len(x.shape)
+    arguments = ()
+    if not unbind and target not in ("chunk", torch.chunk):
+        sections = operation.argument("split_size_or_sections", 1)
+        if not isinstance(sections, (int, tuple, list)):
+            raise UnsupportedOperation("Split sections must be static")
+        arguments = (ArgumentRef("split_size_or_sections", 1),)
+    relations, constraints = [], ()
+    offset = 0
+    for y in operation.outputs:
+        size = 1 if unbind else y.shape[dim]
+        index = [slice(None)] * len(x.shape)
+        index[dim] = offset if unbind else slice(offset, offset + size)
+        relations.append(SliceRelation(x, y, tuple(index), operation.node.name))
+        offset += size
+    if unbind:
         # Removing an unbound position changes the number and identity of output ports.
         constraints = (
             AxisBarrier(
@@ -626,29 +629,12 @@ def split(operation: Operation) -> OperatorSpec:
                 operation.node.name,
             ),
         )
-    else:
-        sections = operation.argument("split_size_or_sections", 1)
-        if not isinstance(sections, (int, tuple, list)):
-            raise UnsupportedOperation("Split sections must be static")
-        relations, offset, constraints = [], 0, ()
-        for y in operation.outputs:
-            index = [slice(None)] * len(x.shape)
-            index[dim] = slice(offset, offset + y.shape[dim])
-            relations.append(SliceRelation(x, y, tuple(index), operation.node.name))
-            offset += y.shape[dim]
     requirement_ = Requirement(
         "partition_arguments",
         operation.node.name,
         (x, *operation.outputs),
         "Update split sizes/port bindings while preserving original partition order",
-        (
-            ("axis", x.axis(dim)),
-            ("outputs", operation.outputs),
-            ("unbound", target in ("unbind", torch.unbind)),
-        ),
-        arguments=()
-        if target in ("unbind", torch.unbind)
-        else (ArgumentRef("split_size_or_sections", 1),),
+        arguments=arguments,
     )
     return OperatorSpec(tuple(relations), tuple(constraints), (requirement_,))
 
