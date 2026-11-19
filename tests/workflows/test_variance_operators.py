@@ -9,7 +9,7 @@ from torch import nn
 pytest.importorskip("torchvision")
 pytest.importorskip("datasets")
 
-import variance_pruning as workflow
+from imagenet_models import discover_mlps, mlp_operators
 from torchvision.models.convnext import CNBlockConfig, ConvNeXt
 from torchvision.ops import StochasticDepth, stochastic_depth
 
@@ -21,7 +21,7 @@ from torch_kirigami.pruning import Pruner, load_checkpoint, save_checkpoint
 def test_eval_stochastic_depth_preserves_every_coordinate(mode, execution_device):
     model = nn.Sequential(nn.Conv2d(3, 6, 1), StochasticDepth(0.7, mode), nn.Conv2d(6, 2, 1)).eval()
     inputs = torch.randn(2, 3, 4, 4, device=execution_device)
-    graph = DependencyGraph.build(model, args=(inputs,), operators=workflow.vbp_operators())
+    graph = DependencyGraph.build(model, args=(inputs,), operators=mlp_operators())
     operation = next(op for op in graph.operations() if op.node.target is stochastic_depth)
     for dim in range(4):
         seed = operation.inputs[0].axis(dim).select([0])
@@ -49,7 +49,7 @@ def test_stochastic_depth_training_capture_is_explicitly_rejected(
     inputs = torch.randn(2, 3, 4, 4, device=execution_device)
     rng = torch.get_rng_state()
     with pytest.raises(CaptureError, match=r"model.eval\(\).*training=False"):
-        DependencyGraph.build(model, args=(inputs,), operators=workflow.vbp_operators())
+        DependencyGraph.build(model, args=(inputs,), operators=mlp_operators())
     assert all(module.training for module in model.modules())
     torch.testing.assert_close(torch.get_rng_state(), rng)
 
@@ -68,8 +68,8 @@ def test_convnext_hidden_pruning_with_local_rule_and_checkpoint(execution_device
     original = copy.deepcopy(model)
     reference = copy.deepcopy(model)
     inputs = torch.randn(2, 3, 32, 32, device=execution_device)
-    graph = DependencyGraph.build(model, args=(inputs,), operators=workflow.vbp_operators())
-    pairs, _ = workflow.discover_mlps(graph)
+    graph = DependencyGraph.build(model, args=(inputs,), operators=mlp_operators())
+    pairs, _ = discover_mlps(graph)
     first, second = list(pairs.items())[1]  # A nonzero stochastic-depth probability.
     pruner = Pruner(model, graph=graph)
     plan = pruner.plan_remove([graph.parameter(f"{first}.weight").axis(0).select([1, 3])])

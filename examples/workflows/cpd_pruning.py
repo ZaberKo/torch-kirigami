@@ -30,7 +30,7 @@ from pathlib import Path
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader
@@ -323,8 +323,9 @@ def main() -> None:
     model = make_model(args.model).to(args.device).eval()
     example = torch.zeros(1, 3, 224, 224, device=args.device)
     target = ParameterBudget.from_ratio(model, args.pruning_ratio).max_params
-    train, validation, data = load_images(
-        MODELS[args.model][1],
+    weights = MODELS[args.model][1]
+    train, validation, dataset_info = load_images(
+        weights,
         args.data_dir,
         need_train=args.pruning_ratio > 0 or args.recovery_epochs > 0,
         train_samples=args.train_samples,
@@ -339,18 +340,31 @@ def main() -> None:
         multiprocessing_context="spawn" if args.val_workers else None,
         pin_memory=args.device == "cuda",
     )
+    config = {
+        key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
+    }
+    config.update(weights=str(weights), dataset=dataset_info, max_params=target)
     args.output.mkdir(parents=True, exist_ok=True)
-    records = []
+    records: list[dict[str, object]] = []
+    baseline: float | None = None
 
     def record(stage: str) -> None:
-        """Save accuracy and model measurements at a workflow boundary."""
+        """Evaluate the current model and persist this stage's measurements."""
+        nonlocal baseline
+        accuracy = evaluate(
+            model, validation_loader, args.device, description=f"{stage} evaluation"
+        )
+        if baseline is None:
+            baseline = accuracy["top1"]
         row = {
             "stage": stage,
-            **evaluate(model, validation_loader, args.device, description=f"{stage} evaluation"),
+            **accuracy,
+            "top1_delta_pp": accuracy["top1"] - baseline,
             **measure_model(model, example, args),
         }
         records.append(row)
         print(json.dumps(row), flush=True)
+        write_metrics(args.output, config, records)
 
     record("pretrained")
     if train is not None:
@@ -384,8 +398,9 @@ def main() -> None:
                 with tqdm(
                     batches,
                     total=args.pruning_interval_batches,
-                    desc=f"CPD interval {interval + 1}",
+                    desc=f"CPD interval {interval + 1} ({args.device})",
                     unit="batch",
+                    dynamic_ncols=True,
                 ) as progress:
                     scores = train_interval(model, teacher, optimizer, progress, args)
                 before = dict(model.named_parameters())
@@ -404,8 +419,17 @@ def main() -> None:
             )
         if args.pruning_ratio > 0:
             record("pruned")
+            if args.recovery_epochs:
+                pruned_checkpoint = args.output / "pruned.pt"
+                save_checkpoint(model, pruned_checkpoint)
+                print(f"Saved pre-recovery checkpoint: {pruned_checkpoint}", flush=True)
         for epoch in range(args.recovery_epochs):
-            with tqdm(train_loader, desc=f"Recovery {epoch + 1}", unit="batch") as progress:
+            with tqdm(
+                train_loader,
+                desc=f"CPD recovery {epoch + 1}/{args.recovery_epochs} ({args.device})",
+                unit="batch",
+                dynamic_ncols=True,
+            ) as progress:
                 train_batches(
                     model,
                     teacher,
@@ -427,13 +451,7 @@ def main() -> None:
     ).eval()
     with torch.no_grad():
         torch.testing.assert_close(restored(example), model(example))
-    config = {
-        key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()
-    }
-    config.update(dataset=data, max_params=target)
-    (args.output / "metrics.json").write_text(
-        json.dumps({"config": config, "stages": records}, indent=2) + "\n"
-    )
+    print(f"Checkpoint verified; results: {args.output}", flush=True)
 
 
 if __name__ == "__main__":
