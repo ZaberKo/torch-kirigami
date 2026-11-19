@@ -15,7 +15,7 @@ pytest.importorskip("datasets")
 
 import imagenet_models
 import variance_pruning as workflow
-from imagenet_models import TraceableViT
+from imagenet_models import TraceableViT, discover_mlps, mlp_operators
 from torchvision.models.convnext import CNBlockConfig, ConvNeXt
 from torchvision.models.vision_transformer import VisionTransformer
 
@@ -172,7 +172,7 @@ def test_generic_discovery_adjacent_pairs_compensate_and_restore(execution_devic
     dense = copy.deepcopy(model)
     inputs = torch.randn(8, 3, dtype=torch.float64)
     graph = DependencyGraph.build(model, args=(inputs,))
-    pairs, exclusions = workflow.discover_mlps(graph)
+    pairs, exclusions = discover_mlps(graph)
     assert pairs == {"expand": "bridge", "bridge": "finish"}
     assert not exclusions
     moments = workflow.collect_moments(
@@ -241,7 +241,7 @@ def test_discovery_excludes_unsafe_paths_but_keeps_independent_mlp(case, executi
     model = DiscoveryCases(case).eval()
     inputs = torch.randn(6, 3)
     graph = DependencyGraph.build(model, args=(inputs,))
-    pairs, exclusions = workflow.discover_mlps(graph)
+    pairs, exclusions = discover_mlps(graph)
     assert pairs == {"safe.0": "safe.3"}
     assert "first" in exclusions
     pruner = Pruner(model, graph=graph)
@@ -254,7 +254,7 @@ def test_discovery_excludes_unsafe_paths_but_keeps_independent_mlp(case, executi
 def test_discovery_accepts_evaluation_functional_dropout(execution_device):
     model = DiscoveryCases("functional_dropout").eval()
     graph = DependencyGraph.build(model, args=(torch.randn(6, 3),))
-    pairs, exclusions = workflow.discover_mlps(graph)
+    pairs, exclusions = discover_mlps(graph)
     assert pairs == {"safe.0": "safe.3", "first": "second"}
     assert not exclusions
 
@@ -376,8 +376,8 @@ def test_vbp_real_architecture_calibration_plan_apply_and_compensation(name, exe
     model = (TraceableViT(official) if name.startswith("vit") else official).eval()
     original = copy.deepcopy(model)
     x = torch.randn(2, 3, 224, 224)
-    graph = DependencyGraph.build(model, args=(x[:1],), operators=workflow.vbp_operators())
-    pairs, _ = workflow.discover_mlps(graph)
+    graph = DependencyGraph.build(model, args=(x[:1],), operators=mlp_operators())
+    pairs, _ = discover_mlps(graph)
     assert len(pairs) == (4 if name == "convnext_tiny" else 1)
     moments = workflow.collect_moments(model, pairs, [(x, torch.zeros(2))], execution_device, 1)
     pruner = Pruner(model, graph=graph, granularity=Granularity(by_path=dict.fromkeys(pairs, 2)))

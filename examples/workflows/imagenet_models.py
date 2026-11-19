@@ -13,8 +13,10 @@ The adapters expose structure for dependency analysis and model mutation.
 Each workflow entry chooses its own pruning candidates and selection policy.
 """
 
+from collections import Counter
+
 import torch
-from torch import nn
+from torch import fx, nn
 from torch.nn import functional as F
 from torchvision.models import (
     ConvNeXt_Tiny_Weights,
@@ -31,6 +33,19 @@ from torchvision.models import (
     vit_b_32,
 )
 from torchvision.models.vision_transformer import EncoderBlock, VisionTransformer
+from torchvision.ops import stochastic_depth
+
+from torch_kirigami import (
+    ArgumentRef,
+    AxisRelation,
+    CaptureError,
+    DependencyGraph,
+    Operation,
+    OperatorRegistry,
+    OperatorRule,
+    OperatorSpec,
+    TensorEffects,
+)
 
 MODELS = {
     "resnet18": (resnet18, ResNet18_Weights.IMAGENET1K_V1),
@@ -223,3 +238,133 @@ def make_mlp_model(name: str, *, pretrained: bool = True) -> nn.Module:
     builder, weights = MLP_MODELS[name]
     official = builder(weights=weights if pretrained else None)
     return TraceableViT(official) if name.startswith("vit_") else official
+
+
+class EvaluationStochasticDepthRule(OperatorRule):
+    """Describe torchvision stochastic depth while it acts as identity."""
+
+    def validate_capture(self, node: fx.Node, module: nn.Module | None) -> None:
+        """Reject capture before training stochastic depth can sample."""
+        training = node.kwargs.get("training", node.args[3] if len(node.args) > 3 else True)
+        if training is not False:
+            raise CaptureError("stochastic_depth capture requires model.eval() and training=False")
+
+    def build_spec(self, operation: Operation) -> OperatorSpec:
+        """Preserve every axis in evaluation mode."""
+        x, y = operation.inputs[0], operation.outputs[0]
+        return OperatorSpec(
+            relations=tuple(AxisRelation.equal(x.axis(d), y.axis(d)) for d in range(len(x.shape)))
+        )
+
+    def tensor_effects(self, node: fx.Node, module: nn.Module | None) -> TensorEffects:
+        """Return the input tensor unchanged in evaluation mode."""
+        return TensorEffects(
+            writes_inputs=(), aliases_input=ArgumentRef("input", 0), returns_input=True
+        )
+
+
+def mlp_operators() -> OperatorRegistry:
+    """Register evaluation semantics for dense-MLP vision model capture."""
+    return OperatorRegistry.default().register(
+        stochastic_depth, EvaluationStochasticDepthRule(evaluate_on_meta=True)
+    )
+
+
+def _coordinatewise(operation: Operation) -> bool:
+    """Recognize coordinatewise transforms without writes or active randomness."""
+    module = operation.module
+    if module is not None:
+        if type(module) is nn.Dropout:
+            return not module.training and not module.inplace
+        return type(module) in (
+            nn.GELU,
+            nn.ReLU,
+            nn.SiLU,
+            nn.Tanh,
+            nn.Sigmoid,
+            nn.Identity,
+        ) and not getattr(module, "inplace", False)
+    if operation.node.op == "call_method":
+        return operation.node.target in ("relu", "tanh", "sigmoid")
+    if operation.node.target in (F.relu, F.silu):
+        return not operation.argument("inplace", 1, False)
+    if operation.node.target in (F.gelu, torch.relu, torch.tanh, torch.sigmoid):
+        return True
+    return (
+        operation.node.target is F.dropout
+        and not operation.argument("training", 2, True)
+        and not operation.argument("inplace", 3, False)
+    )
+
+
+def discover_mlps(graph: DependencyGraph) -> tuple[dict[str, str], dict[str, str]]:
+    """Find dense MLP pairs from captured dataflow.
+
+    The producer output must reach one biased Linear through a single-use
+    chain of supported coordinatewise transforms. Its last axis remains the
+    hidden coordinate. Consecutive pairs may share a boundary Linear.
+
+    Args:
+        graph: Evaluation-mode graph captured before calibration hooks exist.
+
+    Returns:
+        Producer-to-consumer module paths and exclusion reasons by producer path.
+    """
+    graph.validate()
+    operations = graph.operations()
+    by_node = {operation.node: operation for operation in operations}
+    calls = Counter(
+        id(operation.module) for operation in operations if operation.module is not None
+    )
+    uses = Counter(
+        ref for operation in operations for ref in {*operation.bindings.values(), *operation.inputs}
+    )
+    pairs: dict[str, str] = {}
+    excluded: dict[str, str] = {}
+    for producer in operations:
+        if type(producer.module) is not nn.Linear:
+            continue
+        path = producer.module_path
+        assert path is not None
+        if calls[id(producer.module)] != 1 or any(
+            uses[ref] != 1 for ref in producer.bindings.values()
+        ):
+            excluded[path] = "Producer is called repeatedly or shares a parameter with another use"
+            continue
+        current = producer
+        while True:
+            if len(current.outputs) != 1 or len(current.node.users) != 1:
+                excluded[path] = "Hidden value branches or does not have exactly one consumer"
+                break
+            node = next(iter(current.node.users))
+            following = by_node.get(node)
+            if following is None or following.inputs != current.outputs:
+                excluded[path] = "Hidden value is returned or combined with other inputs"
+                break
+            if type(following.module) is nn.Linear:
+                consumer = following.module
+                if (
+                    consumer.bias is None
+                    or consumer.in_features != producer.module.out_features
+                    or calls[id(consumer)] != 1
+                    or any(uses[ref] != 1 for ref in following.bindings.values())
+                ):
+                    excluded[path] = (
+                        "Consumer must be biased, width-matched, and used without parameter sharing"
+                    )
+                    break
+                assert following.module_path is not None
+                pairs[path] = following.module_path
+                break
+            if (
+                not _coordinatewise(following)
+                or len(following.outputs) != 1
+                or following.outputs[0].shape != producer.outputs[0].shape
+                or following.bindings
+            ):
+                excluded[path] = f"Unsupported hidden transform: {node.op} {node.target}"
+                break
+            current = following
+    for consumer in pairs.values():
+        excluded.pop(consumer, None)
+    return pairs, excluded

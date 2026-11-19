@@ -28,10 +28,15 @@ WORKFLOWS = (
     "cpd_pruning",
     "stability_pruning",
     "variance_pruning",
+    "dvbp_pruning",
     "isomorphic_pruning",
     "osscar_pruning",
     "vit_head_pruning",
 )
+RATIO_OPTIONS = {
+    "dvbp_pruning": ("hidden_pruning_ratio", 0.2),
+    "isomorphic_pruning": ("family_pruning_ratio", 0.05),
+}
 
 
 @pytest.mark.parametrize("cuda_available", [False, True])
@@ -75,8 +80,8 @@ def test_example_launches_with_only_shared_support_files(tmp_path, recipe):
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    ratio_flag = "--family_pruning_ratio" if recipe == "isomorphic_pruning" else "--pruning_ratio"
-    assert ratio_flag in completed.stdout
+    ratio_name, _default = RATIO_OPTIONS.get(recipe, ("pruning_ratio", 0.05))
+    assert f"--{ratio_name} " in completed.stdout
     assert "--max_params" not in completed.stdout
     assert "--channel_pruning_ratio" not in completed.stdout
     assert "--max_macs" not in completed.stdout
@@ -119,8 +124,8 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     assert options.latency_warmup == latency_defaults["warmup"].default
     assert options.latency_repetitions == latency_defaults["repetitions"].default
     assert not options.compile_latency
-    ratio_name = "family_pruning_ratio" if recipe == "isomorphic_pruning" else "pruning_ratio"
-    assert getattr(options, ratio_name) == 0.05
+    ratio_name, default_ratio = RATIO_OPTIONS.get(recipe, ("pruning_ratio", 0.05))
+    assert getattr(options, ratio_name) == default_ratio
     if recipe == "isomorphic_pruning":
         assert options.calibration_batches == 100 and options.calibration_batch_size == 64
     if recipe == "cpd_pruning":
@@ -143,7 +148,7 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
             recipe,
             "--device",
             "cpu",
-            "--family_pruning_ratio" if recipe == "isomorphic_pruning" else "--pruning_ratio",
+            f"--{ratio_name}",
             "0.1",
             "--train_batch_size",
             "16",
@@ -208,8 +213,8 @@ def test_workflow_rejects_invalid_sparse_schedule(monkeypatch, recipe, flag, val
 
 @pytest.mark.parametrize("recipe", WORKFLOWS)
 @pytest.mark.parametrize("ratio", ["-0.1", "1", "nan", "inf"])
-def test_workflow_rejects_invalid_parameter_ratio(monkeypatch, capsys, recipe, ratio):
-    ratio_name = "family_pruning_ratio" if recipe == "isomorphic_pruning" else "pruning_ratio"
+def test_workflow_rejects_invalid_pruning_ratio(monkeypatch, capsys, recipe, ratio):
+    ratio_name, _default = RATIO_OPTIONS.get(recipe, ("pruning_ratio", 0.05))
     monkeypatch.setattr(sys, "argv", [recipe, "--device", "cpu", f"--{ratio_name}", ratio])
     with pytest.raises(SystemExit) as error:
         importlib.import_module(recipe).parse_args()

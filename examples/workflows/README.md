@@ -1,6 +1,6 @@
 # Structural pruning workflow examples
 
-These twelve examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
+These examples use ImageNet classification to demonstrate structural pruning, evaluation, and checkpoint restoration.
 Each entry owns its CLI and training stages.
 The examples implement selected research ideas, with explicit changes to scope and training.
 They do not claim the papers' published accuracy.
@@ -8,7 +8,7 @@ They do not claim the papers' published accuracy.
 Three modules provide shared infrastructure:
 
 - `imagenet_data.py` loads local data and evaluates accuracy.
-- `imagenet_models.py` loads official weights and supplies ViT adapters.
+- `imagenet_models.py` loads official weights, supplies ViT adapters, and discovers dense MLP pairs.
 - `model_metrics.py` uses Torch Prisma to measure complexity and inference latency.
 
 ## Prepare the environment and data
@@ -48,7 +48,7 @@ Omit `--data_dir` to use the cached snapshot.
 Alternatively, supply a snapshot directory that contains `data/` with the Parquet shards.
 
 Every recorded stage evaluates the validation split.
-Training, Taylor calibration, VBP, and OSSCAR also require the training split.
+Training, Taylor calibration, VBP, DVBP, and OSSCAR also require the training split.
 Magnitude pruning with zero fine-tuning epochs needs only validation data.
 
 ### Caches and preprocessing
@@ -91,10 +91,10 @@ Other entries retain deterministic preprocessing and omit the papers' complete a
 | `convnext_tiny` | `ConvNeXt_Tiny_Weights.IMAGENET1K_V1` |
 
 BN-guided pruning supports the three ResNets.
-VBP supports both ViTs and ConvNeXt-Tiny.
+VBP and DVBP support both ViTs and ConvNeXt-Tiny.
 Head pruning supports both ViTs.
 The remaining entries support the three ResNets and both ViTs.
-Default models are ResNet-18, ConvNeXt-Tiny for VBP, and ViT-B/16 for head pruning.
+Default models are ResNet-18, ConvNeXt-Tiny for VBP, and ViT-B/16 for DVBP and head pruning.
 
 All entries protect external input and output dimensions, including the classifier.
 Each method defines its candidate scope below.
@@ -103,7 +103,7 @@ Candidate discovery does not guarantee executable pruning.
 
 ### Size targets and selection
 
-Except for Isomorphic, `--pruning_ratio` specifies the fraction of initial whole-model parameters to remove.
+`--pruning_ratio` specifies the fraction of initial whole-model parameters to remove in entries that use that option.
 The default is `0.05`.
 The parameter count includes unique registered parameter elements, including frozen parameters and inserted gates.
 It excludes buffers.
@@ -124,6 +124,7 @@ The basic entry also offers dynamic rescoring for magnitude and Taylor.
 Dynamic rescoring does not collect fresh gradients or activations.
 
 Isomorphic uses a family-action ratio and its own selection strategy.
+DVBP uses a global MLP hidden-neuron ratio.
 OSSCAR selects channels through reconstruction and local search.
 Their method sections describe these procedures.
 
@@ -139,7 +140,7 @@ Option names use underscores and do not accept abbreviations.
 | `--train_workers`, `--val_workers` | `8` | Control DataLoader workers. Zero uses the main process. |
 | `--seed` | `7` | Control shuffled sample selection and training randomness. |
 | `--finetune_epochs` | `0` | Add task-only training after pruning. Iterative pruning applies this after each round. |
-| `--lr` | `0.001` | Set SGD learning rate. VBP defaults to AdamW at `0.000015`. |
+| `--lr` | `0.001` | Set SGD learning rate. VBP and DVBP default to AdamW at `0.000015`. |
 | `--compile_latency` | Disabled | Compile only the inference forward used for latency measurement. |
 | `--latency_warmup`, `--latency_repetitions` | `5`, `20` | Set untimed warmup and timed inference repetitions. |
 | `--output` | `runs/<entry>` | Select the result directory. |
@@ -522,6 +523,38 @@ python variance_pruning.py \
   --finetune_epochs 0 --output runs/convnext_tiny_variance
 ```
 
+### Denoised Variance-Based Pruning and OB2C
+
+*Denoised Variance-Based Pruning with Optimal Brain Bias Compensation* (ECCV 2026).
+
+Calibration collects a mean and centered covariance from the inputs of each MLP's second linear layer.
+All token or spatial positions contribute activation rows.
+The Marchenko–Pastur noise threshold uses the number of calibration images.
+With the default batch settings, calibration reads up to 8,192 training images.
+`--calibration_batches 0` uses the full loader.
+
+`--hidden_pruning_ratio` has two uses.
+For a ratio of 0.20, the score is 80% raw variance plus 20% denoised variance, and the target is to remove 20% of the discovered MLP hidden neurons across the model.
+The selection keeps at least one aligned block per MLP.
+`--granularity 8` ranks blocks of eight lowest remaining scores by their summed score and can increase the actual reduction.
+Use `--granularity 1` for per-neuron ranking.
+The dependency graph checks the complete selection before any weights change.
+
+OB2C fits the surviving columns of each second linear layer against the original layer under the damped denoised covariance. It adjusts the bias to preserve the original calibration mean.
+Calibration and denoising use the selected device. Compensation solves run in float64 on CPU.
+The workflow computes corrected values before structural apply, copies them into the compact model, and verifies the saved checkpoint.
+
+The example uses one covariance per MLP for all three torchvision models. The authors' ConvNeXt code uses a joint covariance per stage, which can change selection and compensation.
+Torchvision weights, width alignment, and optional cross-entropy fine-tuning are workflow choices.
+The default run is training-free.
+
+```bash
+python dvbp_pruning.py \
+  --model vit_b_16 --device cuda --compile_latency \
+  --hidden_pruning_ratio 0.20 --granularity 8 --calibration_batches 32 \
+  --finetune_epochs 0 --output runs/vit_b_16_dvbp
+```
+
 ### Isomorphic Pruning
 
 #### Research basis
@@ -678,16 +711,21 @@ python vit_head_pruning.py \
 
 ## Outputs, restoration, and comparison
 
-Each output directory contains:
+Each successful run writes:
 
-- `metrics.json`: effective settings, data metadata, stage measurements, and method reports.
+- `metrics.json`: effective settings, data metadata, stage measurements, and method reports. Each completed evaluation updates this file and emits the same stage record as a JSON line on stdout.
 - `model.pt`: final compact structure and values, including learned gates, corrected biases, or refitted weights.
+
+Some entries also write:
+
+- `pruned.pt`: CPD and DVBP save this model checkpoint at the end of pruning when post-pruning training is enabled. DVBP saves it after OB2C compensation. Load it with the same model constructor as `model.pt` to evaluate the compact model before recovery.
 - `training.pt`: caller-owned optimizer, algorithm, configuration, and random-number state.
 
-The saved training state does not provide a general resume CLI.
+Model checkpoints support evaluation and fresh fine-tuning. CPD and DVBP keep optimizer state in memory for the current run.
+The workflows do not provide a general resume CLI.
 Each successful run checks checkpoint outputs against the compact model in memory.
-Each entry recreates its optimizer after physical parameter replacement.
-VBP and OSSCAR restoration must use the corrected or refitted checkpoint, not only structural plans.
+Fine-tuning creates its optimizer after physical parameter replacement.
+Restore VBP, DVBP, and OSSCAR with `model.pt`, which includes the corrected or refitted values as well as the structure.
 
 For a completed head-pruning run, restore the matching adapter from this directory:
 

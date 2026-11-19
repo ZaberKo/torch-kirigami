@@ -90,14 +90,23 @@ def test_interval_tries_next_group_and_preserves_momentum(execution_device):
 
 
 @pytest.mark.parametrize(
-    "model_name,ratio,intervals",
+    "model_name,ratio,intervals,recovery_epochs,target_reached",
     [
-        ("resnet18", "0.012", 2),
-        ("vit_b_16", "0.01", 1),
+        ("resnet18", "0.012", 2, 1, True),
+        ("resnet18", "0.012", 1, 1, False),
+        ("vit_b_16", "0.01", 1, 0, True),
     ],
 )
 def test_cpd_workflow_reaches_target_and_restores_checkpoint(
-    execution_device, tmp_path, monkeypatch, capsys, model_name, ratio, intervals
+    execution_device,
+    tmp_path,
+    monkeypatch,
+    capsys,
+    model_name,
+    ratio,
+    intervals,
+    recovery_epochs,
+    target_reached,
 ):
     def make_model(name, **_kwargs):
         return workflow_resnet() if name == "resnet18" else TraceableViT(tiny_vit(image_size=224))
@@ -122,7 +131,7 @@ def test_cpd_workflow_reaches_target_and_restores_checkpoint(
             "--max_intervals",
             str(intervals),
             "--recovery_epochs",
-            "1",
+            str(recovery_epochs),
             "--train_workers",
             "0",
             "--val_workers",
@@ -136,17 +145,39 @@ def test_cpd_workflow_reaches_target_and_restores_checkpoint(
         ],
     )
     with torch.device("cpu"):
-        workflow.main()
-    assert capsys.readouterr().out.count("Pruned ") == intervals
+        if target_reached:
+            workflow.main()
+        else:
+            with pytest.raises(workflow.PlanningError, match="interval limit reached"):
+                workflow.main()
+    output = capsys.readouterr().out
+    assert output.count("Pruned ") == intervals
     metrics = json.loads((tmp_path / "metrics.json").read_text())
-    pretrained, pruned, recovered = metrics["stages"]
-    assert [row["stage"] for row in (pretrained, pruned, recovered)] == [
-        "pretrained",
-        "pruned",
-        "recovered",
-    ]
+    logged = [json.loads(line) for line in output.splitlines() if line.startswith("{")]
+    assert [row for row in logged if "stage" in row] == metrics["stages"]
+    assert metrics["config"]["weights"] == str(workflow.MODELS[model_name][1])
+    assert metrics["stages"][0]["top1_delta_pp"] == 0.0
+    pruned_checkpoint = tmp_path / "pruned.pt"
+    if not target_reached:
+        assert [row["stage"] for row in metrics["stages"]] == ["pretrained"]
+        assert not (tmp_path / "model.pt").exists()
+        assert not pruned_checkpoint.exists()
+        return
+    assert "Checkpoint verified; results:" in output
+    stages = ["pretrained", "pruned", "recovered"] if recovery_epochs else ["pretrained", "pruned"]
+    assert [row["stage"] for row in metrics["stages"]] == stages
+    pretrained, pruned = metrics["stages"][:2]
     assert pruned["#Params"] <= metrics["config"]["max_params"] < pretrained["#Params"]
-    assert recovered["#Params"] == pruned["#Params"]
+    assert metrics["stages"][-1]["#Params"] == pruned["#Params"]
+    assert pruned_checkpoint.is_file() == bool(recovery_epochs)
+    assert not (tmp_path / "training.pt").exists()
+    if recovery_epochs:
+        intermediate = workflow.load_checkpoint(
+            make_model(model_name), pruned_checkpoint, map_location=execution_device
+        ).eval()
+        with torch.no_grad():
+            loss = F.cross_entropy(intermediate(x), torch.tensor([1, 2]))
+        assert loss.item() == pytest.approx(pruned["loss"])
     compact = workflow.load_checkpoint(
         make_model(model_name), tmp_path / "model.pt", map_location=execution_device
     )
