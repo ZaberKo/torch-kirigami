@@ -25,6 +25,7 @@ WORKFLOWS = (
     "group_sparsity",
     "soft_pruning",
     "gate_pruning",
+    "cpd_pruning",
     "stability_pruning",
     "variance_pruning",
     "isomorphic_pruning",
@@ -122,6 +123,9 @@ def test_workflow_full_data_defaults_and_explicit_cli_scope(monkeypatch, recipe)
     assert getattr(options, ratio_name) == 0.05
     if recipe == "isomorphic_pruning":
         assert options.calibration_batches == 100 and options.calibration_batch_size == 64
+    if recipe == "cpd_pruning":
+        assert options.pruning_interval_batches == 50
+        assert options.temperature == options.distillation_weight == 1.0
     assert not hasattr(options, "layers") and not hasattr(options, "threads")
     if recipe in ("bn_guided_pruning", "gate_pruning", "group_sparsity", "stability_pruning"):
         assert options.sparse_loss_weight == 1e-4
