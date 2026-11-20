@@ -30,13 +30,16 @@ from torch_kirigami import (
     AxisRelation,
     DependencyGraph,
     Diagnostic,
+    Fixed,
     IndexSet,
     OperatorRegistry,
     OperatorSpec,
     TensorRef,
+    config,
 )
 from torch_kirigami.dep_graph.operation import TensorEffects
 from torch_kirigami.dep_graph.relations import AxisPort, BlockMap
+from torch_kirigami.dep_graph.solver import DependencySolver
 from torch_kirigami.pruning import (
     Candidate,
     CandidateSpace,
@@ -114,7 +117,7 @@ class ExplicitScores:
 
 def build(model, x, granularity=1):
     graph = DependencyGraph.build(model.eval(), args=(x,))
-    space = Pruner(model, graph=graph).discover_candidates()
+    space = workflow.candidate_space(Pruner(model, graph=graph))
     active = set(space.channel_axes)
     alignment = {
         operation.module_path: granularity
@@ -969,8 +972,7 @@ def test_attention_units_joint_taylor_and_independent_compact_reference(executio
     model = ResidualAttention().double().eval()
     original = copy.deepcopy(model)
     x = torch.randn(2, 3, 3, dtype=torch.float64)
-    graph, pruner, raw = build(model, x, granularity=2)
-    space = workflow.attention_candidates(graph, raw)
+    graph, pruner, space = build(model, x, granularity=2)
     for parameter in model.parameters():
         parameter.grad = torch.randn_like(parameter)
     axis = graph.parameter("stem.weight").axis(0)
@@ -1020,8 +1022,7 @@ def test_attention_units_joint_taylor_and_independent_compact_reference(executio
     generic = copy.deepcopy(model)
     for source, target in zip(model.parameters(), generic.parameters(), strict=True):
         target.grad = source.grad.clone()
-    other_graph, other_pruner, other_raw = build(generic, x, granularity=2)
-    other_space = workflow.attention_candidates(other_graph, other_raw)
+    _, other_pruner, other_space = build(generic, x, granularity=2)
     other_strategy = workflow.Isomorphic(GenericTaylor(), ratio=0.25)
     other_plan = other_pruner.plan(
         other_space, budget=ParameterBudget(10000), strategy=other_strategy
@@ -1071,14 +1072,13 @@ def test_attention_units_incompatible_shared_heads_fail_without_mutation(executi
     x = torch.randn(2, 3, 3)
     model = ResidualAttention(second_heads=4).eval()
     before = {name: value.clone() for name, value in model.state_dict().items()}
-    graph, _pruner, space = build(model, x)
+    graph = DependencyGraph.build(model, args=(x,))
     with pytest.raises(PlanningError, match="incompatible head partitions"):
-        workflow.attention_candidates(graph, space)
+        workflow.attention_blocks(graph)
     graph.validate()
     assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())
     supported = ResidualAttention(second_heads=2).eval()
-    graph, pruner, space = build(supported, x)
-    space = workflow.attention_candidates(graph, space)
+    _, pruner, space = build(supported, x)
     for parameter in supported.parameters():
         parameter.grad = torch.ones_like(parameter)
     pruner.apply(
@@ -1086,3 +1086,68 @@ def test_attention_units_incompatible_shared_heads_fail_without_mutation(executi
     )
     assert supported.attention.embed_dim == supported.other.embed_dim == 6
     assert supported(x).shape == (2, 3, 2)
+
+
+def test_vit_discovers_balanced_candidates_from_patch_embedding(monkeypatch, execution_device):
+    model = imagenet_models.TraceableViT(miniature_model("vit_b_32")).eval()
+    x = torch.randn(1, 3, 224, 224)
+    graph = DependencyGraph.build(model, args=(x,))
+    pruner = Pruner(model, graph=graph)
+    stem = graph.parameter("conv_proj.weight").axis(0)
+    embed_axes = set(workflow.attention_blocks(graph))
+    hidden = graph.parameter("encoder.layers.encoder_layer_0.mlp.0.weight").axis(0)
+    original = DependencySolver.propagate
+    requests = []
+
+    def counted(self, *, remove, constraints=()):
+        seeds = tuple(remove)
+        for seed in seeds:
+            for axis in embed_axes:
+                if seed.tensor == axis.tensor and (
+                    positions := seed.fully_selected_indices(axis.dim)
+                ):
+                    requests.append(tuple(positions))
+        return original(self, remove=seeds, constraints=constraints)
+
+    monkeypatch.setattr(DependencySolver, "propagate", counted)
+    cached = workflow.candidate_space(pruner)
+    stem_candidates = [c for c in cached.candidates if c.axis == stem]
+    hidden_candidates = [c for c in cached.candidates if c.axis == hidden]
+    expected_blocks = [(0, 4), (1, 5), (2, 6), (3, 7)]
+    assert [tuple(c.remove[0].fully_selected_indices(stem.dim)) for c in stem_candidates] == (
+        expected_blocks
+    )
+    assert [tuple(c.remove[0].fully_selected_indices(hidden.dim)) for c in hidden_candidates] == [
+        (i,) for i in range(16)
+    ]
+    assert requests == expected_blocks
+
+    config.candidate_cache_size = 0
+    requests.clear()
+    uncached = workflow.candidate_space(pruner)
+    assert cached == uncached
+    assert len(requests) > len(expected_blocks)
+    assert set(requests) == set(expected_blocks)
+
+    impact = pruner.impact((stem_candidates[0],))
+    assert impact.status == "resolved" and impact.complete
+    plan = pruner.plan_remove(stem_candidates[0].remove)
+    pruner.apply(plan)
+    assert model.conv_proj.out_channels == model.encoder.layers[0].self_attention.embed_dim == 6
+    assert model(x).shape == (1, 1000)
+
+
+def test_isomorphic_candidate_space_excludes_unavailable_attention_axes(execution_device):
+    model = imagenet_models.TraceableViT(miniature_model("vit_b_32")).eval()
+    x = torch.randn(1, 3, 224, 224)
+    graph = DependencyGraph.build(model, args=(x,))
+    stem = graph.parameter("conv_proj.weight").axis(0)
+    space = workflow.candidate_space(Pruner(model, graph=graph, constraints=(Fixed(stem),)))
+    embedding = set(workflow.attention_blocks(graph))
+    assert stem in space.excluded_channel_axes
+    assert not embedding.intersection(space.channel_axes)
+    assert space.candidates
+    assert any(
+        key == "domain:conv_proj.weight:0" and "fixed_axis" in reason
+        for key, reason in space.exclusions
+    )

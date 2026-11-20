@@ -425,6 +425,24 @@ class BroadcastRelation:
         return (Selection(self.small, (full_region(self.small.shape),)).subtract(projected),)
 
 
+def _shared_reshape_axis_counts(
+    left_shape: tuple[int, ...], right_shape: tuple[int, ...]
+) -> tuple[int, int]:
+    """Return the counts of matching leading and trailing axes without overlap."""
+    prefix = 0
+    for left, right in zip(left_shape, right_shape, strict=False):
+        if left != right:
+            break
+        prefix += 1
+    suffix = 0
+    while (
+        suffix < min(len(left_shape), len(right_shape)) - prefix
+        and left_shape[-1 - suffix] == right_shape[-1 - suffix]
+    ):
+        suffix += 1
+    return prefix, suffix
+
+
 @dataclass(frozen=True)
 class ReshapeRelation:
     """Map row-major positions between shapes with equal element counts.
@@ -473,17 +491,7 @@ class ReshapeRelation:
         # Row-major reshapes preserve matching prefix and suffix coordinates.
         # Convert only the middle: splitting a merged batch axis must not expand
         # unchanged patch/feature axes into one interval per batch/token position.
-        prefix = 0
-        for left, right in zip(source.tensor.shape, target.shape, strict=False):
-            if left != right:
-                break
-            prefix += 1
-        suffix = 0
-        while (
-            suffix < min(len(source.tensor.shape), len(target.shape)) - prefix
-            and source.tensor.shape[-1 - suffix] == target.shape[-1 - suffix]
-        ):
-            suffix += 1
+        prefix, suffix = _shared_reshape_axis_counts(self.left.shape, self.right.shape)
         source_stop = len(source.tensor.shape) - suffix
         target_stop = len(target.shape) - suffix
         regions: list[Region] = []

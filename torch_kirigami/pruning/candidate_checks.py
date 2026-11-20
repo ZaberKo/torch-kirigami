@@ -121,7 +121,9 @@ class CandidateFilter:
         self._fixed: dict[AxisRef, Fixed] = {}
         all_constraints = (*graph.constraints, *constraints)
         self._native = all(has_native_semantics(c) for c in all_constraints)
-        self._rejections: OrderedDict[_RequestKey, tuple[Diagnostic, ...]] = OrderedDict()
+        self._rejections: OrderedDict[tuple[str, _RequestKey], tuple[Diagnostic, ...]] = (
+            OrderedDict()
+        )
         self._by_axis: dict[AxisRef, list[Constraint]] = defaultdict(list)
         self._by_tensor: dict[str, list[Constraint]] = defaultdict(list)
         self._alignment_by_axis: dict[AxisRef, AlignmentClass] = {}
@@ -347,10 +349,15 @@ class CandidateFilter:
         )
         if cacheable:
             key = self.request_key(candidate.remove)
-            if key in self._rejections:
-                self.graph.validate()
-                self._rejections.move_to_end(key)
-                return self._rejections[key]
+            canonical_key = None
+            if len(candidate.remove) == 1:
+                canonical = self.index.canonical_seeds(candidate.remove)
+                canonical_key = ("no_conflict", tuple((s.tensor, s.regions) for s in canonical))
+            for lookup in (("request", key), canonical_key):
+                if lookup in self._rejections:
+                    self.graph.validate()
+                    self._rejections.move_to_end(lookup)
+                    return self._rejections[lookup]
         requested = () if accepted_impact is None else accepted_impact.requested
         try:
             seeds = (*requested, *candidate.remove)
@@ -361,10 +368,26 @@ class CandidateFilter:
             )
             result = tuple(d for d in impact.diagnostics if d.irreversible)
             if cacheable and impact.complete:
-                self._remember(self._rejections, key, result)
+                # Different origins can have different traversal limits, so
+                # share across those origins only when a complete, compact
+                # closure rules out irreversible conflicts on every subset.
+                if canonical_key is not None and not result and self._is_compact(impact):
+                    self._remember(self._rejections, canonical_key, ())
+                else:
+                    self._remember(self._rejections, ("request", key), result)
             return result
         finally:
             self.graph.validate()
+
+    @staticmethod
+    def _is_compact(impact: Impact) -> bool:
+        """Check that irreversible constraint checks could inspect all affected axes."""
+        try:
+            return all(
+                selection.compact_shape() is not None for selection in impact.selections.values()
+            )
+        except AnalysisLimitError:
+            return False
 
     def _project(
         self, candidate: Candidate, accepted: Impact | None

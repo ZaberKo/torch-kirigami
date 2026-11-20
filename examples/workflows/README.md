@@ -210,8 +210,8 @@ score(i) = sum_j ||w_i - w_j||_2
 This criterion has quadratic work in output width.
 The example extends it to ViT FFN rows and uses global parameter budgeting with one-shot deletion.
 
-Pruner-Zero accumulates squared gradients of batch-mean cross-entropy in evaluation mode.
-It min-max scales the accumulated statistics over each entire weight tensor and multiplies them by the squared weights.
+Pruner-Zero takes the L2 norm of each weight's batch-mean cross-entropy gradients in evaluation mode.
+It min-max scales these norms over each entire weight tensor and multiplies them by the squared weights.
 Each candidate sums the scores of the newly removed matrix and kernel entries across its dependency closure.
 A constant gradient statistic gives zero importance. Biases and normalization vectors still follow the plan.
 The calibration limit and batch size use `--calibration_batches` and `--train_batch_size`.
@@ -481,7 +481,7 @@ python stability_pruning.py \
 
 #### Research basis
 
-*Variance-Based Pruning for Accelerating and Compressing Trained Networks* (ICCV 2025) introduced VBP.
+Variance-Based Pruning for Accelerating and Compressing Trained Networks (ICCV 2025) introduced VBP.
 
 #### Implemented
 
@@ -587,7 +587,8 @@ The ratio is not a whole-model parameter reduction and is not derived through ta
 The original parameter count supplies only a non-increase guard.
 An invalid joint allocation fails before mutation.
 
-Native attention candidates remove the same local dimension from every head.
+Discovery builds each native attention candidate from the same local dimension in every head.
+This applies to graph-declared producer axes that share those coordinates, including ViT patch embeddings.
 Head count stays unchanged while per-head width decreases.
 Optional fine-tuning uses task loss only.
 
@@ -650,6 +651,7 @@ breakpoints. Each tested allocation still uses a joint structural plan to measur
 the actual parameter count. Layer costs are not approximated as additive.
 
 Each consumer is a separate operation, so earlier changes remain if a later consumer fails.
+The `pruned` stage in `metrics.json` records the retained positions, calibration observations, and search objectives for each reconstructed layer.
 
 #### Differences and omissions
 

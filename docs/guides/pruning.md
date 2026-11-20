@@ -323,8 +323,8 @@ part of its definition.
 `PrunerZero(graph, gradient_energy)` takes calibration statistics keyed by the
 graph's parameter references. Supply one nonnegative tensor with the same shape
 and device as each matrix or kernel affected by the proposed removals. For
-example, accumulate the elementwise squared gradients over calibration
-batches. The caller controls the data, loss, and batch reduction.
+example, take the per-weight L2 norm across calibration-batch gradients.
+The caller controls the data, loss, and batch reduction.
 
 The metric min-max scales each complete statistics tensor, multiplies by the
 squared weights, and sums the scores at newly removed coordinates. Constant
@@ -510,9 +510,12 @@ are.
 
 After application:
 
-- The module object is the same, but each replaced parameter is a new
-  `nn.Parameter`. `result.parameter_map` maps old parameters to new ones.
-  `result.coordinate_maps` maps original regions to compact regions.
+- The module object keeps its identity. Each replaced parameter is a new
+  `nn.Parameter`, and `result.parameter_map` maps old parameters to new ones.
+  The mapping keeps the old parameters and their attached gradients in memory.
+  If you only need the pruned model, call `pruner.apply(plan)` and continue using
+  your existing model reference.
+- `result.coordinate_maps` maps original regions to compact regions.
 - Aliases of one registered parameter stay aliases. Distinct tensors that share
   storage are not supported when pruning must replace them.
 - Gradient hooks are not transferred. `apply()` rejects a tensor with hooks that

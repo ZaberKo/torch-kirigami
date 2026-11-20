@@ -24,8 +24,8 @@ Research metrics
   filter's Euclidean distances to the other filters in the same layer.
   The example uses static scoring and extends the criterion to Linear layers.
 - `pruner_zero` adopts *Pruner-Zero: Evolving Symbolic Pruning Metric From
-  Scratch for Large Language Models* (ICML 2024). It uses squared ImageNet
-  batch gradients to calibrate per-weight importance, then sums the scores
+  Scratch for Large Language Models* (ICML 2024). It takes the L2 norm of each
+  weight's ImageNet batch gradients, then sums the resulting importance scores
   over structural removal regions.
 """
 
@@ -331,7 +331,7 @@ def calibrate_pruner_zero(
     device: torch.device | str,
     max_batches: int,
 ) -> PrunerZero:
-    """Collect squared batch-mean gradients without updating weights or `.grad`."""
+    """Collect per-weight L2 norms of batch-mean gradients without changing `.grad`."""
     if loader is None:
         raise ValueError("Pruner-Zero requires an ImageNet training loader")
     if type(max_batches) is not int or max_batches < 0:
@@ -390,6 +390,8 @@ def calibrate_pruner_zero(
             module.training = training
     if not seen:
         raise ValueError("Cannot calibrate Pruner-Zero on an empty loader")
+    for statistic in energy.values():
+        statistic.sqrt_()
     return PrunerZero(graph, energy)
 
 
@@ -535,7 +537,7 @@ def main() -> None:
         f"{plan.selection_report.trials} joint trials; applying on {options.device}",
         flush=True,
     )
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     record(
         "pruned",
         max_params=plan.selection_report.max_params,

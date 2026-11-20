@@ -241,7 +241,7 @@ def main() -> None:
             else original_params - reduction * index // options.rounds
         )
         plan = make_plan(pruner, space, ParameterBudget(max_params))
-        model, _ = pruner.apply(plan)
+        pruner.apply(plan)
         if index < options.rounds:
             graph = DependencyGraph.build(model, args=(example,))
             pruner = Pruner(model, graph=graph, granularity=alignment)

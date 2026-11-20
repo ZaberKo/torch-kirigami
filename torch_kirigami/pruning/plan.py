@@ -164,8 +164,10 @@ class PruningResult:
         plan: The plan that was applied.
         structure: Model structure after application.
         parameter_map: Read-only mapping from each replaced `nn.Parameter` object
-            to its new compact `nn.Parameter`. Use it to rebuild optimizers;
-            optimizer state is not migrated.
+            to its new compact `nn.Parameter`. The mapping holds strong references
+            to the old parameters, so their weights and any attached gradients
+            stay in memory while the mapping is live. Keep it while remapping
+            optimizer parameters or migrating state in caller code.
         coordinate_maps: Original-to-compact region mappings for every replaced
             tensor, keyed by tensor reference.
         report: Execution notes, including the optimizer and graph rebuild

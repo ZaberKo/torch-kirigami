@@ -1,7 +1,7 @@
 """Candidate spaces shared by planning, channel-budget accounting, and sparse training."""
 
 from collections import OrderedDict, defaultdict
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import cast
@@ -128,7 +128,6 @@ def discover_candidates(
     Fully excluded domains are removed before the channel baseline is frozen.
     """
     graph.validate()
-    checks = CandidateFilter(graph, constraints)
     operations = graph.operations()
     if targets is not None:
         if isinstance(targets, str):
@@ -155,7 +154,18 @@ def discover_candidates(
                 f"Candidate targets declare no channel axes: {sorted(set(targets) - matching)}"
             )
         operations = tuple(selected)
-    domains = discover(graph, operations)
+    return _build_discovered_space(graph, constraints, discover(graph, operations))
+
+
+def _build_discovered_space(
+    graph: DependencyGraph,
+    constraints: tuple[Constraint, ...],
+    domains: tuple[CandidateAxis, ...],
+    *,
+    overrides: Mapping[AxisRef, tuple[Candidate, ...]] | None = None,
+) -> CandidateSpace:
+    """Build and filter declared domains, using complete candidates supplied by the caller."""
+    checks = CandidateFilter(graph, constraints)
     candidates, axes, excluded_axes, exclusions = [], [], [], []
     for domain in domains:
         fixed = checks.fixed_rejection(domain.axis)
@@ -164,7 +174,9 @@ def discover_candidates(
             exclusions.append((f"domain:{domain.key}", str(fixed)))
             continue
         kept, rejected = [], []
-        for candidate in _candidates(domain):
+        override = overrides.get(domain.axis) if overrides is not None else None
+        domain_candidates = _candidates(domain) if override is None else override
+        for candidate in domain_candidates:
             reasons = checks.rejections(candidate)
             if reasons:
                 rejected.append((candidate.key, "; ".join(map(str, reasons))))

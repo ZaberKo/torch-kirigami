@@ -11,8 +11,10 @@ from .relations import (
     AxisRelation,
     BlockMap,
     BroadcastRelation,
+    PermuteRelation,
     Relation,
     ReshapeRelation,
+    _shared_reshape_axis_counts,
 )
 from .selection import AxisRef, IndexSet, Selection, TensorRef
 
@@ -91,12 +93,23 @@ class IdentityAxisIndex:
                     continue
                 if type(relation) is BroadcastRelation:
                     target = _broadcast_axis(relation, axis)
-                elif (
-                    type(relation) is ReshapeRelation
-                    and relation.left.shape == relation.right.shape
-                ):
+                elif type(relation) is ReshapeRelation:
+                    prefix, suffix = _shared_reshape_axis_counts(
+                        relation.left.shape, relation.right.shape
+                    )
                     ref = relation.right if axis.tensor == relation.left else relation.left
-                    target = ref.axis(axis.dim)
+                    if axis.dim < prefix:
+                        target = ref.axis(axis.dim)
+                    elif axis.dim >= len(axis.tensor.shape) - suffix:
+                        target = ref.axis(axis.dim - len(axis.tensor.shape))
+                    else:
+                        target = None
+                elif type(relation) is PermuteRelation:
+                    target = (
+                        relation.right.axis(relation.dims.index(axis.dim))
+                        if axis.tensor == relation.left
+                        else relation.left.axis(relation.dims[axis.dim])
+                    )
                 else:
                     endpoints = _equal_endpoints(relation)
                     if endpoints is None or axis not in endpoints:

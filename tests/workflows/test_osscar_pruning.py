@@ -1002,10 +1002,10 @@ def test_entry_sequentially_reconstructs_to_parameter_target_and_saves_refitted_
     assert stage["after_params"] <= stage["max_params"] <= stage["before_params"]
     assert stage["target_met"]
     if ratio:
-        assert len(report["reconstruction"]) >= 2
-        assert all(item["observations"] == 32 for item in report["reconstruction"])
+        assert len(stage["reconstruction"]) >= 2
+        assert all(item["observations"] == 32 for item in stage["reconstruction"])
     else:
-        assert not report["reconstruction"]
+        assert not stage["reconstruction"]
         assert stage["after_params"] == stage["before_params"]
         for path, value in built[0].state_dict().items():
             torch.testing.assert_close(value.cpu(), original_states[0][path], rtol=0, atol=0)

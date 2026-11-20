@@ -422,7 +422,7 @@ def main() -> None:
         similarity=similarity,
     )
     selection_report = plan.selection_report
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     window.reset()  # Original channel coordinates no longer describe the compact model.
     record(
         "pruned",

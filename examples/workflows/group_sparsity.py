@@ -350,7 +350,7 @@ def main() -> None:
         record("sparse_trained")
 
     plan = make_plan(pruner, space, budget)
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     record(
         "pruned",
         max_params=plan.selection_report.max_params,

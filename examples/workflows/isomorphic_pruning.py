@@ -94,6 +94,7 @@ from torch_kirigami.pruning import (
     parameter_boxes,
     save_checkpoint,
 )
+from torch_kirigami.pruning.candidates import _build_discovered_space, discover
 
 
 def collect_task_gradients(
@@ -305,13 +306,13 @@ class PaperTaylor:
 _PAPER_SCORE = PaperTaylor.score
 
 
-def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> CandidateSpace:
+def attention_blocks(graph: DependencyGraph) -> dict[AxisRef, tuple[IndexSet, ...]]:
     """Use a head-dimension unit across all heads of native self-attention.
 
     Native MHA fixes the head count and requires equal retained head widths.
     Following the reference's channel-group unit, one action removes the same
-    local dimension in every head. Other graph-declared candidates are unchanged.
-    No independent per-channel scores are added to estimate a block's score.
+    local dimension in every head. Discovery analyzes and scores these complete
+    actions. Other graph-declared axes keep their default candidates.
     """
     index = graph.identity_axes
     groups: dict[AxisRef, tuple[IndexSet, ...]] = {}
@@ -335,30 +336,32 @@ def attention_candidates(graph: DependencyGraph, space: CandidateSpace) -> Candi
                 if axis in groups and groups[axis] != partitions:
                     raise PlanningError("Shared attention width has incompatible head partitions")
                 groups[axis] = partitions
-    candidates = []
-    for candidate in space.candidates:
-        axis = candidate.axis
-        partitions = groups.get(axis)
-        if partitions is None:
-            candidates.append(candidate)
-            continue
-        positions = candidate.remove[0].fully_selected_indices(axis.dim)
-        if (
-            len(candidate.remove) != 1
-            or len(positions) != 1
-            or candidate.remove != (axis.select(positions),)
-        ):
-            raise PlanningError(
-                "Native attention adaptation requires singleton discovered candidates"
-            )
-        position = next(iter(positions))
-        if position >= len(partitions[0]):
-            continue  # This position is included by its first-head representative.
-        indices = [partition.intervals[0][0] + position for partition in partitions]
-        candidates.append(Candidate(candidate.key, (axis.select(indices),), axis))
-    return CandidateSpace(
-        tuple(candidates), space.channel_axes, space.excluded_channel_axes, space.exclusions
-    )
+    blocks_by_partition = {
+        partitions: tuple(IndexSet.of(column) for column in zip(*partitions, strict=True))
+        for partitions in set(groups.values())
+    }
+    return {axis: blocks_by_partition[partitions] for axis, partitions in groups.items()}
+
+
+def candidate_space(pruner: Pruner) -> CandidateSpace:
+    """Supply complete per-head candidates to ordinary domain discovery."""
+    graph = pruner.graph
+    if graph is None:
+        raise PlanningError("Isomorphic candidate discovery requires a dependency graph")
+    blocks = attention_blocks(graph)
+    if not blocks:
+        return pruner.discover_candidates()
+
+    domains = discover(graph, graph.operations())
+    overrides = {
+        axis: tuple(
+            Candidate(f"{domain.key}:{position:012d}", (axis.select(block),), axis)
+            for position, block in enumerate(blocks[axis])
+        )
+        for domain in domains
+        if (axis := domain.axis) in blocks
+    }
+    return _build_discovered_space(graph, pruner.constraints, domains, overrides=overrides)
 
 
 def dependency_signature(operations: tuple[Operation, ...], impact: Impact) -> tuple[object, ...]:
@@ -967,8 +970,9 @@ def main() -> None:
 
     record("pretrained")
     graph = DependencyGraph.build(model, args=(example,))
-    space = Pruner(model, graph=graph).discover_candidates()
-    space = attention_candidates(graph, space)
+    print("Discovering pruning candidates", flush=True)
+    started = time.perf_counter()
+    space = candidate_space(Pruner(model, graph=graph))
     active_axes = set(space.channel_axes)
     alignment = {
         operation.module_path: options.granularity
@@ -983,7 +987,10 @@ def main() -> None:
     config["discovered_axes"] = [
         axis.tensor.paths or (axis.tensor.id,) for axis in space.channel_axes
     ]
-    print(f"Inspecting all {len(space.candidates)} discovered candidates", flush=True)
+    print(
+        f"Discovered {len(space.candidates)} candidates in {time.perf_counter() - started:.1f}s",
+        flush=True,
+    )
     calibration = {"batches": 0, "samples": 0}
     if options.family_pruning_ratio > 0:
         if train is None:
@@ -1007,7 +1014,7 @@ def main() -> None:
         f"Plan completed in {time.perf_counter() - started:.1f}s; {len(strategy.families)} families; common ratio {strategy.ratio}",
         flush=True,
     )
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     record(
         "pruned",
         families=strategy.families,

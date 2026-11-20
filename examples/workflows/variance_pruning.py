@@ -1,7 +1,7 @@
 """Calibrate MLP activations and compensate removed neurons' mean contributions.
 
 This workflow implements variance ranking and local mean compensation from
-*Variance-Based Pruning for Accelerating and Compressing Trained Networks*
+Variance-Based Pruning for Accelerating and Compressing Trained Networks
 (ICCV 2025).
 
 `DependencyGraph` discovers eligible dense MLP producer/consumer pairs.
@@ -446,7 +446,7 @@ def main() -> None:
         space, budget=budget, strategy=Greedy(ActivationVariance(graph, pairs, moments))
     )
     corrected_biases = prepare_bias_compensation(graph, plan, pairs, moments)
-    model, _result = pruner.apply(plan)
+    pruner.apply(plan)
     with torch.no_grad():
         for path, value in corrected_biases.items():
             model.get_parameter(path).copy_(value)

@@ -249,7 +249,7 @@ def main() -> None:
     started = time.perf_counter()
     plan = pruner.plan(space, budget=budget, strategy=Greedy(GroupMagnitude(p=2)))
     print(f"Plan completed in {time.perf_counter() - started:.1f}s", flush=True)
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     report = plan.selection_report
     record(
         "pruned",

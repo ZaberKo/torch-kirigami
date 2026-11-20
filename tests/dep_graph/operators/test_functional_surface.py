@@ -12,6 +12,42 @@ from torch_kirigami import CaptureError, DependencyGraph
 from torch_kirigami.pruning import PlanningError, Pruner, PruningPlan
 
 
+@pytest.mark.parametrize("dim", [1, -1])
+def test_cat_couples_only_axes_outside_the_concatenation(dim, execution_device):
+    class Model(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.left, self.right = nn.Linear(4, 6), nn.Linear(4, 6)
+            self.head = nn.Linear(6 if dim == 1 else 12, 2)
+
+        def forward(self, left, right):
+            return self.head(torch.cat((self.left(left), self.right(right)), dim=dim))
+
+    model = Model().eval()
+    left = torch.randn(2, 3, 4)
+    right = torch.randn(2, 5 if dim == 1 else 3, 4)
+    graph = DependencyGraph.build(model, args=(left, right))
+    pruner = Pruner(model, graph=graph)
+    keep = [0, 2, 4, 5]
+    left_features = model.left(left)[..., keep]
+    if dim == 1:
+        right_features = model.right(right)[..., keep]
+        head_columns = keep
+    else:
+        right_features = model.right(right)
+        head_columns = keep + list(range(6, 12))
+    expected = F.linear(
+        torch.cat((left_features, right_features), dim=dim),
+        model.head.weight[:, head_columns],
+        model.head.bias,
+    )
+
+    pruner.apply(pruner.plan_remove((graph.parameter("left.weight").axis(0).select([1, 3]),)))
+    assert model.left.out_features == 4
+    assert model.right.out_features == (4 if dim == 1 else 6)
+    torch.testing.assert_close(model(left, right), expected)
+
+
 @pytest.mark.parametrize("kind", ["batch", "instance", "group"])
 @pytest.mark.parametrize("keywords", [False, True])
 def test_native_norm_argument_roles_and_compact_reference(kind, keywords, execution_device):

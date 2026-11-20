@@ -586,7 +586,7 @@ def reshape(operation: Operation) -> OperatorSpec:
 
 
 def concatenate(operation: Operation) -> OperatorSpec:
-    """Connect each input to its original offset region in the concatenation."""
+    """Map concatenated regions and align complete slices on all other axes."""
     items = operation.argument("tensors", 0)
     y = one(operation.result)
     dim = operation.argument("dim", 1, 0) % len(y.shape)
@@ -596,6 +596,11 @@ def concatenate(operation: Operation) -> OperatorSpec:
         index = [slice(None)] * len(y.shape)
         index[dim] = slice(offset, offset + x.shape[dim])
         relations.append(SliceRelation(y, x, tuple(index), operation.node.name))
+        # Inputs must retain the same coordinates on every unsplit axis.
+        # A slice alone transfers a removal only inside this input's port.
+        relations.extend(
+            equal(x, d, y, d, operation.node.name) for d in range(len(y.shape)) if d != dim
+        )
         offset += x.shape[dim]
     return OperatorSpec(tuple(relations))
 

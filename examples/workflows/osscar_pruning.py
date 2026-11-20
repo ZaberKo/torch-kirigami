@@ -60,7 +60,7 @@ from typing import Any
 import torch
 from imagenet_data import evaluate, load_images
 from imagenet_models import MODELS, make_model
-from model_metrics import measure_model
+from model_metrics import measure_model, write_metrics
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, RandomSampler
@@ -977,12 +977,7 @@ def main() -> None:
         }
         records.append(row)
         print(json.dumps(row), flush=True)
-        (options.output / "metrics.json").write_text(
-            json.dumps(
-                {"config": config, "stages": records, "reconstruction": reconstruction}, indent=2
-            )
-            + "\n"
-        )
+        write_metrics(options.output, config, records)
 
     record("pretrained")
     for first, second in pairs.items():
@@ -1040,6 +1035,7 @@ def main() -> None:
         after_params=after_params,
         max_params=budget.max_params,
         target_met=True,
+        reconstruction=reconstruction,
     )
     optimizer = torch.optim.SGD(model.parameters(), lr=options.lr, momentum=0.9)
     for epoch in range(options.finetune_epochs):

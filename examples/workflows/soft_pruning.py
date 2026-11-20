@@ -347,7 +347,7 @@ def main() -> None:
     plan = pruner.plan_remove(
         [selection for candidate in selected for selection in candidate.remove]
     )
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     record(
         "pruned",
         max_params=selection_report.max_params,

@@ -514,7 +514,7 @@ def main() -> None:
         for path in pairs
     )
     updates = prepare_compensation(graph, plan, pairs, statistics)
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     with torch.no_grad():
         for path, value in updates.items():
             model.get_parameter(path).copy_(value)

@@ -371,7 +371,7 @@ def main() -> None:
         budget=budget,
         strategy=Greedy(metric),
     )
-    model, _ = pruner.apply(plan)
+    pruner.apply(plan)
     record(
         "pruned",
         max_params=plan.selection_report.max_params,

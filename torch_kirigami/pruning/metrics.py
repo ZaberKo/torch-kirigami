@@ -454,8 +454,8 @@ class PrunerZero:
     Args:
         graph: Dependency graph for the calibrated model.
         gradient_energy: Nonnegative gradient statistics, keyed by parameter
-            reference from `graph`. For example, supply the elementwise sum of
-            squared gradients across calibration batches. Each tensor must
+            reference from `graph`. For example, supply the per-weight L2 norm
+            across calibration-batch gradients. Each tensor must
             have the shape and device of its parameter.
 
     Raises:
